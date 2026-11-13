@@ -197,7 +197,7 @@ the app to carry on to its own page, from this machine and never a browser.
 | | |
 |---|---|
 | `packages/spec` | schemas, interfaces, levels, consent lines, the consumer wire |
-| `packages/interfaces` | `chat`, `google.calendar`, `calendar`, `contacts`, `mail`, `notifications`, `desktop`, `exchange`, `privacy.session`, `statements` (financial accounts' pulled files, read only), `monero.view`, `test.echo` |
+| `packages/interfaces` | `chat`, `google.calendar`, `calendar`, `contacts`, `mail`, `notifications` (with the manager's own notices about its accounts: [docs/notifications.md](docs/notifications.md)), `desktop`, `exchange`, `privacy.session`, `statements` (financial accounts' pulled files, read only), `monero.view`, `test.echo` |
 | `packages/manager` | the service: registry (`db.ts`), extractor supervisor with the per-account lock (`supervisor.ts`), router (`router.ts`), HTTP and sockets (`http.ts`), providers (`providers/google.ts`, the OAuth way in), CLI (`cli.ts`), page (`web/`) |
 | `packages/browser` | a sandboxed browser for extractors: Xvfb, an ordinary Chromium with a persistent profile and an extension, x11vnc for the live view, the extension's loopback bridge, the names the extension leaves in pages, made per install and account when it is copied (`src/markers.ts`), what every hook shares to keep out of the page's sight (`src/page`, docs/page-traces.md), and the profile's service workers cleared before a launch whose extension worker changed, since Chromium otherwise keeps running the first one (`src/worker.ts`) |
 | `packages/sandbox` | a sandboxed native app for extractors: bubblewrap with its own network (pasta), Xvfb and x11vnc, a private session bus whose notifications and portals are ours, `xdg-open` shims, a watched downloads folder ([docs/native-sandbox.md](docs/native-sandbox.md)) |
@@ -212,6 +212,7 @@ the app to carry on to its own page, from this machine and never a browser.
 [docs/native-sandbox.md](docs/native-sandbox.md): native apps (Telegram Desktop, Haveno) in a sandbox whose display, bus, files, PATH and network are ours, and the deeper taps we have not needed.
 [docs/x.md](docs/x.md): X's direct messages read and written from inside x.com's own chat client (now ES modules and a Kotlin/JS core, not webpack), its hooks and their fallbacks, how the status says which one broke, and your real-account checklist.
 [docs/statements.md](docs/statements.md): financial accounts as files for an app such as dither-finance, the spool, the daily pull, Python's JSON; [docs/simplefin.md](docs/simplefin.md), [docs/monero.md](docs/monero.md), [docs/venmo.md](docs/venmo.md), [docs/amazon.md](docs/amazon.md) and [docs/schwab.md](docs/schwab.md) are its kinds.
+[docs/notifications.md](docs/notifications.md): the `notifications` interface, its `urgency`, and the built-in `notices` account that says when an account needs you.
 [docs/telegram.md](docs/telegram.md), [docs/gmessages.md](docs/gmessages.md), [docs/dav.md](docs/dav.md), [docs/ics.md](docs/ics.md), [docs/mail.md](docs/mail.md), [docs/github.md](docs/github.md): each with what you have to do and what only a real account can check.
 
 ## Licence

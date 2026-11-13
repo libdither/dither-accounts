@@ -89,6 +89,8 @@ export class Approvers {
       onChange?: () => void;
       /** Counts an outcome in the daily audit (app `approver`). */
       count?: (account: string, op: string, outcome: string) => void;
+      /** A request named a device that is not paired here (the manager's notices say so). */
+      onNoDevice?: (account: string, rpId: string, op: 'create' | 'get') => void;
     },
   ) {
     this.file = join(opts.dataDir, 'approvers.json');
@@ -335,7 +337,10 @@ export class Approvers {
       return a;
     };
     const dev = this.device(deviceId);
-    if (!dev) return Promise.resolve(done({ ok: false, reason: 'no-device', message: 'that device is not paired here' }));
+    if (!dev) {
+      this.opts.onNoDevice?.(account.id, rpId, op);
+      return Promise.resolve(done({ ok: false, reason: 'no-device', message: 'that device is not paired here' }));
+    }
     // A refusal names the device, so the account can say where it was refused (docs/approver.md: what a refusal does).
     const named = (a: ApproverAnswer): ApproverAnswer => (a.ok ? a : { ...a, deviceName: dev.name });
     // New passkeys go only to the device the account's pane names.

@@ -4,7 +4,7 @@
  * requests, commits, discussions, and the latest comment's anchor. A fetched subject or comment (resolve.ts) adds its
  * state, author and text, and the links GitHub gives (a release's tag page).
  */
-import type { Notification, NotificationActor } from '@dither-accounts/interfaces';
+import type { Notification, NotificationActor, Urgency } from '@dither-accounts/interfaces';
 
 /** A thread as GET /notifications gives it (the fields this uses). */
 export interface Thread {
@@ -126,6 +126,35 @@ export function commentInfo(o: any): CommentInfo {
   return { url: typeof o?.html_url === 'string' ? o.html_url : null, author: actorOf(o?.user), body: excerpt(o?.body) };
 }
 
+/**
+ * GitHub's reason as the interface's urgency (docs/github.md has the table and why): a security alert is `high`; what
+ * names you (a mention, a review or approval asked of you, an assignment, an invitation) and activity on what you
+ * opened is `normal`; what you only watch or took part in, CI and state changes are `low`. A reason GitHub adds later
+ * has none (read as normal).
+ */
+export const URGENCY: Record<string, Urgency> = {
+  security_alert: 'high',
+  review_requested: 'normal',
+  mention: 'normal',
+  team_mention: 'normal',
+  assign: 'normal',
+  invitation: 'normal',
+  approval_requested: 'normal',
+  member_feature_requested: 'normal',
+  author: 'normal',
+  comment: 'low',
+  subscribed: 'low',
+  manual: 'low',
+  state_change: 'low',
+  ci_activity: 'low',
+  your_activity: 'low',
+  security_advisory_credit: 'low',
+};
+
+export function urgencyOf(reason: string | null | undefined): Urgency | undefined {
+  return reason && Object.hasOwn(URGENCY, reason) ? URGENCY[reason] : undefined;
+}
+
 export function toNotification(t: Thread, r: { subject?: SubjectInfo | null; comment?: CommentInfo | null } = {}): Notification {
   const subjectUrl = r.subject?.url ?? subjectWebUrl(t);
   const comment = hasComment(t);
@@ -145,6 +174,7 @@ export function toNotification(t: Thread, r: { subject?: SubjectInfo | null; com
     actors: actor ? [actor] : [],
     at: Date.parse(t.updated_at) || 0,
     unread: !!t.unread,
+    ...(urgencyOf(t.reason) ? { urgency: urgencyOf(t.reason) } : {}),
   };
 }
 

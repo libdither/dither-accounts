@@ -2,7 +2,8 @@
  * The registry: accounts, apps, their grants and requests, and daily call counts. Secrets are not here: each account's
  * live in its directory (secret.json, 0600) where its extractor reads them, and provider clients in providers/. The one
  * random value kept here (kv) is not a credential: what this install's page-visible names are made from (supervisor.ts).
- * Nothing an account says passes through this file: the manager routes, it does not keep.
+ * Nothing an account says passes through this file (the manager routes, it does not keep), except the manager's own
+ * notices about its accounts (notices.ts), in its own words: never an extractor's text.
  */
 import { Database } from 'bun:sqlite';
 import type { Level } from '@dither-accounts/spec';
@@ -100,6 +101,22 @@ CREATE TABLE IF NOT EXISTS approval (
   decided_at  INTEGER
 );
 CREATE INDEX IF NOT EXISTS approval_at ON approval(created_at);
+
+-- The manager's own notices (notices.ts, docs/notifications.md), the last 200: one per account and condition (id
+-- "attention:<account>"), its Notification as JSON (the manager's words, an account's label and kind; never an
+-- extractor's text), whether it is unread, and when it was last announced (at most once per 30 minutes).
+CREATE TABLE IF NOT EXISTS notice (
+  id           TEXT PRIMARY KEY,
+  subject      TEXT NOT NULL,
+  reason       TEXT NOT NULL,
+  notification TEXT NOT NULL,
+  at           INTEGER NOT NULL,
+  unread       INTEGER NOT NULL,
+  emitted_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS notice_at ON notice(at);
+-- Accounts whose notices are muted (notify.mute) until a time.
+CREATE TABLE IF NOT EXISTS notice_mute (subject TEXT PRIMARY KEY, until INTEGER NOT NULL);
 `;
 
 export function newId(prefix: string): string {

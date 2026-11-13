@@ -8,7 +8,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GitHub, type GitHubError, parseLink, parseScopes, rateLimitRetryAt } from '../extractors/github/src/api.ts';
-import { commentAnchor, fromPageToken, kindOf, pageToken, subjectInfo, subjectWebUrl, type Thread, toNotification } from '../extractors/github/src/map.ts';
+import { commentAnchor, fromPageToken, kindOf, pageToken, subjectInfo, subjectWebUrl, type Thread, toNotification, URGENCY, urgencyOf } from '../extractors/github/src/map.ts';
 import { Resolver } from '../extractors/github/src/resolve.ts';
 import { scopeVerdict, tokenType } from '../extractors/github/src/scopes.ts';
 import { applyUnread, fresh, loadState, markRead, prune, saveState, unreadIds } from '../extractors/github/src/state.ts';
@@ -61,6 +61,7 @@ test('a thread as a Notification, before and after resolving', () => {
     actors: [],
     at: Date.parse('2026-11-07T10:00:00Z'),
     unread: true,
+    urgency: 'normal',
   });
   const n = toNotification(t, {
     subject: subjectInfo('Issue', { html_url: 'https://github.com/octo/hello/issues/12', state: 'open', user: { login: 'mona', html_url: 'https://github.com/mona', avatar_url: 'https://a/m' }, body: 'desc' }),
@@ -77,6 +78,19 @@ test('a thread as a Notification, before and after resolving', () => {
   // A state change: whoever merged it.
   expect(toNotification(thread({ reason: 'state_change', subject: { type: 'PullRequest', url: 'https://api.github.com/repos/octo/hello/pulls/7', latest_comment_url: 'https://api.github.com/repos/octo/hello/pulls/7' } }), { subject: subjectInfo('PullRequest', { state: 'closed', merged: true, user: { login: 'mona' }, merged_by: { login: 'hubot' } }) })).toMatchObject({ actors: [{ name: 'hubot' }], subject: { state: 'merged' } });
   expect(subjectInfo('Release', { html_url: 'https://github.com/o/r/releases/tag/v1', prerelease: true }).state).toBe('prerelease');
+});
+
+test('urgency from GitHub’s reason: every reason GitHub documents, and none for one it adds later', () => {
+  const by = (u: string) => Object.keys(URGENCY).filter((r) => URGENCY[r] === u).sort();
+  expect(by('high')).toEqual(['security_alert']);
+  expect(by('normal')).toEqual(['approval_requested', 'assign', 'author', 'invitation', 'member_feature_requested', 'mention', 'review_requested', 'team_mention']);
+  expect(by('low')).toEqual(['ci_activity', 'comment', 'manual', 'security_advisory_credit', 'state_change', 'subscribed', 'your_activity']);
+  expect(urgencyOf('something_new')).toBeUndefined();
+  expect(urgencyOf(null)).toBeUndefined();
+  expect(urgencyOf('constructor')).toBeUndefined();
+  expect(toNotification(thread({ reason: 'security_alert' })).urgency).toBe('high');
+  expect(toNotification(thread({ reason: 'ci_activity' })).urgency).toBe('low');
+  expect('urgency' in toNotification(thread({ reason: 'something_new' }))).toBe(false);
 });
 
 test('page tokens carry only the query of GitHub’s next link', () => {

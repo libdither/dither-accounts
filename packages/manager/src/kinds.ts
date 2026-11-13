@@ -33,6 +33,8 @@ export interface Manifest {
 
 export interface Kind extends Manifest {
   dir: string;
+  /** Part of the manager itself (the `notices` account, notices.ts): never started as a process, never removed. */
+  builtin?: boolean;
   ifaces: Iface[];
   /** op name → its interface. */
   opIface: Map<string, Iface>;

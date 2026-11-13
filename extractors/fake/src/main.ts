@@ -26,7 +26,11 @@ const link = linkManager({
     link.emit({ t: 'hello', version: '1', label: link.label });
     // config.vncSocket: pretend to offer a live view on that Unix socket (the page's live view proxy test).
     const lv = typeof link.config.vncSocket === 'string' ? { liveView: { vncSocket: link.config.vncSocket, width: 800, height: 600 } } : {};
-    link.emit({ t: 'status', status: 'online', self: { displayName: 'Fake', handle: 'fake-one' }, ...lv, ...layers(link.config) });
+    // config.crash: end at once (the manager's notices count crashes); config.attention: say it needs you, with that
+    // message (and config.attentionKind, and config.attentionStatus: a passing state such as connecting).
+    if (link.config.crash) process.exit(3);
+    const at = typeof link.config.attention === 'string' ? { status: String(link.config.attentionStatus ?? 'attention'), attention: { kind: String(link.config.attentionKind ?? 'login'), message: link.config.attention } } : { status: 'online' };
+    link.emit({ t: 'status', ...at, self: { displayName: 'Fake', handle: 'fake-one' }, ...lv, ...layers(link.config) });
     link.log('info', 'fake extractor up');
   },
   async onCommand(cmd) {

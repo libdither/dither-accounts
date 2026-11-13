@@ -69,7 +69,7 @@ test('import-dither-chat: in place, enabled as it was, demo refused, a second ti
   const dry = await run('--all', '--dry-run');
   expect(dry.out).toContain('would import acc_fakeChatA001');
   expect(dry.out).toContain('skip   acc_demoAccnt003  demo label acc_demoAccnt003: a demo account');
-  expect(m.store.accounts()).toEqual([]);
+  expect(m.store.accounts().filter((a) => a.kind !== 'notices')).toEqual([]);
 
   const r = await run('--all');
   expect(r.exitCode).toBe(0);

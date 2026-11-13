@@ -77,7 +77,8 @@ export function candidates(iface: string, kinds: string[] | null): AccountInfo[]
   const s = state.value;
   if (!s) return [];
   const implementing = new Set(s.kinds.filter((k) => iface === 'accounts' || k.interfaces.includes(iface)).map((k) => k.kind));
-  return s.accounts.filter((a) => implementing.has(a.kind) && (!kinds || kinds.includes(a.kind)));
+  // The manager's own accounts are not an app's to manage.
+  return s.accounts.filter((a) => implementing.has(a.kind) && (!kinds || kinds.includes(a.kind)) && !(iface === 'accounts' && a.builtin));
 }
 
 export function accountLabel(id: string): string {

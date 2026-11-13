@@ -91,6 +91,8 @@ export class Router {
   private auditCounts = new Map<string, { n: number; last: number }>();
   private auditTimer: Timer;
   readonly handlers: Handler[];
+  /** Accounts the manager answers itself (the built-in `notices`, notices.ts): their ops go here, not to a process. */
+  readonly inProcess = new Map<string, (op: string, input: Record<string, unknown>) => Promise<unknown>>();
 
   constructor(
     private store: Store,
@@ -141,7 +143,7 @@ export class Router {
           dry ||= g.dryRun;
         }
       }
-      const manages = this.manages(appId, a.kind, grants);
+      const manages = !this.inProcess.has(a.id) && this.manages(appId, a.kind, grants);
       if (!Object.keys(per).length && !manages) continue;
       const st = this.sup.state(a.id);
       const origin = a.created_by === appId ? 'self' : a.created_by === 'import' ? 'import' : a.created_by ? 'app' : 'page';
@@ -285,6 +287,8 @@ export class Router {
   };
 
   private async dispatch(c: Call): Promise<unknown> {
+    const own = this.inProcess.get(c.account.id);
+    if (own) return own(c.op, c.input);
     try {
       c.span?.event('to the extractor');
       // The extractor's span (one that reads `trace`) is a child of the call's.
@@ -327,11 +331,12 @@ export class Router {
     const target = 'account' in a ? this.store.account(a.account) : null;
     const kind = a.do === 'create' ? a.kind : target?.kind;
     if (!kind) return fail('unknown-account', 'no such account');
+    if (target && this.inProcess.has(target.id)) return fail('denied', `${target.label} is part of the manager`);
     if (!this.manages(appId, kind, grants)) return fail('denied', `this app may not manage ${kind} accounts`);
     const now = Date.now();
     switch (a.do) {
       case 'create': {
-        if (!this.kinds.has(a.kind)) return fail('invalid', `no extractor for kind "${a.kind}"`);
+        if (!this.kinds.has(a.kind) || this.kinds.get(a.kind)!.builtin) return fail('invalid', `no extractor for kind "${a.kind}"`);
         const id = a.id && /^[\w-]{4,64}$/.test(a.id) ? a.id : newId('acc');
         if (this.store.account(id)) return fail('invalid', `account ${id} exists`);
         const dir = accountDir(this.opts.dataDir, id);
@@ -393,6 +398,7 @@ export class Router {
    * manager made it; a directory imported in place stays, so the app it came from can run it again.
    */
   async remove(account: Row, purge: boolean): Promise<{ dir: string; purged: boolean; why?: string }> {
+    if (this.inProcess.has(account.id)) return fail('denied', `${account.label} is part of the manager`);
     await this.sup.stop(account.id);
     releaseLock(account.dir);
     this.store.run('DELETE FROM account WHERE id = ?', account.id);

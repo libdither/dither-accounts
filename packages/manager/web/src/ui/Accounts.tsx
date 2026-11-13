@@ -22,7 +22,7 @@ interface GoogleStatus {
   accounts: { id: string; email: string | null; scopes: string[] }[];
 }
 
-const origin = (a: AccountInfo) => (a.createdBy === 'import' ? 'Imported from dither-chat' : a.createdBy ? `Made by ${appName.value.get(a.createdBy) ?? 'an app since forgotten'}` : 'Added here');
+const origin = (a: AccountInfo) => (a.builtin ? 'Part of the manager' : a.createdBy === 'import' ? 'Imported from dither-chat' : a.createdBy ? `Made by ${appName.value.get(a.createdBy) ?? 'an app since forgotten'}` : 'Added here');
 
 // ---------------------------------------------------------------- the list
 
@@ -285,7 +285,7 @@ function AccountOverview({ a, d, reload }: { a: AccountInfo; d: AccountDetail | 
           rows={[
             ['State', `${(a.status?.status as string | undefined) ?? (a.online ? 'online' : a.running ? 'starting' : 'not running')}${a.error ? ` · ${a.error}` : ''}`],
             ['Online for', a.online && p?.onlineSince ? since(p.onlineSince) : null],
-            ['Process', p?.pid ? `pid ${p.pid}, running ${since(p.startedAt)}` : 'not running'],
+            ['Process', a.builtin ? 'part of the manager' : p?.pid ? `pid ${p.pid}, running ${since(p.startedAt)}` : 'not running'],
             [
               'Memory',
               p?.tree.length ? (
@@ -655,20 +655,25 @@ function AccountPane({ a, tab, sub }: { a: AccountInfo; tab: Tab; sub?: string }
               Live view
             </button>
           )}
-          <button class="btn" disabled={!a.enabled} onClick={restart} data-restart>
-            Restart
-          </button>
-          {secretFields.length > 0 && (
-            <button class="btn ghost" onClick={() => setReplacing(true)} data-replace-secret>
-              Replace sign-in
-            </button>
+          {/* The manager's own notices are part of it: nothing to restart, disable or remove. */}
+          {!a.builtin && (
+            <>
+              <button class="btn" disabled={!a.enabled} onClick={restart} data-restart>
+                Restart
+              </button>
+              {secretFields.length > 0 && (
+                <button class="btn ghost" onClick={() => setReplacing(true)} data-replace-secret>
+                  Replace sign-in
+                </button>
+              )}
+              <button class="btn ghost" onClick={toggle} data-toggle>
+                {a.enabled ? 'Disable' : 'Enable'}
+              </button>
+              <button class="btn ghost danger-text" onClick={remove} data-remove>
+                Remove
+              </button>
+            </>
           )}
-          <button class="btn ghost" onClick={toggle} data-toggle>
-            {a.enabled ? 'Disable' : 'Enable'}
-          </button>
-          <button class="btn ghost danger-text" onClick={remove} data-remove>
-            Remove
-          </button>
         </div>
       </header>
       {replacing && <ReplaceSecret a={a} fields={secretFields} onClose={() => setReplacing(false)} />}

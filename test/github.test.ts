@@ -164,6 +164,7 @@ test('a new thread is announced, with its link, repository, state, who and what'
     subject: { kind: 'issue', title: 'It broke', url: `${fake.origin}/octo/hello/issues/${id}`, state: 'open' },
     actors: [{ name: 'hubot', url: `${fake.origin}/hubot` }],
     unread: true,
+    urgency: 'normal',
   });
   expect(n.url).toMatch(new RegExp(`^${fake.origin}/octo/hello/issues/${id}#issuecomment-\\d+$`));
   expect(n.at).toBe(fake.thread(id)!.updatedAt);
@@ -179,7 +180,7 @@ test('a new thread is announced, with its link, repository, state, who and what'
   expect(news().find((x) => x.id === pr)).toMatchObject({ reason: 'review_requested', url: `${fake.origin}/octo/hello/pull/${pr}`, subject: { kind: 'pull_request', state: 'open' }, actors: [{ name: 'mona' }], body: `The description of ${pr}` });
   fake.changeState(pr, 'merged', 'hubot');
   await until(() => news().filter((x) => x.id === pr).length === 2, 8000, 'the merge');
-  expect(news().filter((x) => x.id === pr)[1]).toMatchObject({ reason: 'state_change', subject: { state: 'merged' }, actors: [{ name: 'hubot' }] });
+  expect(news().filter((x) => x.id === pr)[1]).toMatchObject({ reason: 'state_change', subject: { state: 'merged' }, actors: [{ name: 'hubot' }], urgency: 'low' });
 });
 
 test('read elsewhere: notify.read, though a 304 cannot say it; unread again: notify.new', async () => {

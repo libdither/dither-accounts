@@ -105,7 +105,12 @@ beforeAll(async () => {
   for (const r of reg.requests) expect((await fetch(`${m.url}/api/requests/${r.id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status).toBe(200);
   app = new AccountsClient({ url: m.url, app: reg.app, token: reg.token, onEvents: (a, evs) => (events[a] ??= []).push(...evs) });
   await until(() => app.connected, 5000, 'the app connected');
-}, 30_000);
+  // The signed-in account most tests use, made here rather than in the first test, so that any one of them runs alone
+  // (bun test -t): each test below that uses it starts from it up, its Gmail page too.
+  signedIn = (await app.admin({ do: 'create', kind: 'google', label: 'Google (test)', config: config(0, { gmailPollSeconds: 2 }) })).id;
+  await until(() => statusOf(signedIn)?.status === 'online' && statusOf(signedIn)?.details?.email === WEB.email && statusOf(signedIn)?.details?.endpointsSeen === 2, 60_000, 'online');
+  await until(() => layerOf(signedIn, 'Gmail page')?.state === 'ok', 30_000, 'the Gmail page up');
+}, 120_000);
 
 afterAll(async () => {
   if (!bins) return;
@@ -126,7 +131,6 @@ afterAll(async () => {
 it(
   'signed in: online, with a live view and the session as facts',
   async () => {
-    signedIn = (await app.admin({ do: 'create', kind: 'google', label: 'Google (test)', config: config(0, { gmailPollSeconds: 2 }) })).id;
     await until(() => statusOf(signedIn)?.status === 'online' && statusOf(signedIn)?.details?.email === WEB.email && statusOf(signedIn)?.details?.endpointsSeen === 2, 60_000, 'online');
     await until(() => layerOf(signedIn, 'Gmail page')?.state === 'ok', 30_000, 'the Gmail page up');
     const st = statusOf(signedIn);
@@ -370,6 +374,7 @@ it(
   async () => {
     const dir = accountDir(signedIn);
     const calls = fake.mailCalls.length;
+    const opened = fake.mailOpened.length;
     const shapesAt = existsSync(join(dir, 'gmail-shapes.json')) ? readFileSync(join(dir, 'gmail-shapes.json'), 'utf8') : null;
     for (const [script, why] of [
       [{ steps: [{ nav: '#search/in:inbox dinner plans' }, { openRead: 0 }, { collect: true }] }, 'step 1: nav: search word 2 is not an operator'],
@@ -392,7 +397,7 @@ it(
     // nothing was collected.
     await Bun.sleep(1500);
     expect(fake.mailCalls.length).toBe(calls);
-    expect(fake.mailOpened.length).toBe(2);
+    expect(fake.mailOpened.length).toBe(opened);
     expect(existsSync(join(dir, 'gmail-shapes.json')) ? readFileSync(join(dir, 'gmail-shapes.json'), 'utf8') : null).toBe(shapesAt);
   },
   60_000,
@@ -475,6 +480,7 @@ it(
     const starts = () => logOf(signedIn).split('\n').filter((l) => l.startsWith('--- ')).length;
     const before = starts();
     const loads = { calendar: fake.pageLoads('calendar', 0), gmail: fake.pageLoads('gmail', 0) };
+    const calendarReloads = statusOf(signedIn).details.calendarReloads;
     const listed = async () => {
       const t0 = Date.now();
       expect((await app.call(googleCalendar, signedIn, 'calendar.calendarList.list', {})).items.length).toBeGreaterThan(0);
@@ -516,7 +522,7 @@ it(
     await until(() => layerOf(signedIn, 'Gmail page')?.state === 'ok', 30_000, 'the Gmail page up');
     expect(await probeGmail(signedIn)).toMatchObject({ accepted: true, error: null });
     expect(layerOf(signedIn, 'Gmail page').note).toMatch(/^hook up, signed in; reloaded 2× \(last at \d\d:\d\d UTC\)$/);
-    expect(statusOf(signedIn).details).toMatchObject({ gmailReloads: 2, calendarReloads: 1, gmailPage: true, calendarPage: true });
+    expect(statusOf(signedIn).details).toMatchObject({ gmailReloads: 2, calendarReloads, gmailPage: true, calendarPage: true });
     // The Calendar tab was not touched, nor the extractor restarted.
     expect(fake.pageLoads('calendar', 0)).toBe(loads.calendar);
     expect(layerOf(signedIn, 'Calendar API').state).toBe('ok');
@@ -532,6 +538,8 @@ const expectedIds = (f: (m: FakeMessage) => boolean) =>
     .sort((a, b) => b.date - a.date || (BigInt(b.id) > BigInt(a.id) ? 1 : -1))
     .map((x) => x.id);
 const mailCall = (op: string, input: Record<string, unknown>) => app.call(mailIface, signedIn, op as any, input as any) as Promise<any>;
+/** bv answers refused for their layout so far (the layout test's), which the self-check counts. */
+let bvRefused = 0;
 
 it(
   'Gmail mail through the manager, read-only: mailboxes, list paging, get, attachment, raw, search, changes; Calendar alongside',
@@ -581,12 +589,12 @@ it(
     // That message is unread: it was looked at again after each read (the unread guard), and Gmail (this fake) left it so.
     expect(src.labels).toContain('^u');
     expect(statusOf(signedIn).details.readsMarkRead).toBe(false);
-    // Search: Gmail's syntax; ids only with operators only, with the estimate; free text refused there.
+    // Search: Gmail's syntax; ids only with operators only, the estimate null (bv's json[4] is not one); free text refused there.
     const found = await mailCall('mail.search', { query: 'in:inbox is:unread', limit: 200 });
     expect(found.messages.map((m: any) => m.id)).toEqual(expectedIds((x) => x.labels.includes('^i') && x.labels.includes('^u')));
     const idsOnly = await mailCall('mail.search', { query: 'in:inbox newer_than:30d', idsOnly: true });
     expect(idsOnly).toMatchObject({ ids: expectedIds((x) => x.labels.includes('^i') && x.date > Date.now() - 30 * 86_400_000), next: null });
-    expect(typeof idsOnly.estimate).toBe('number');
+    expect(idsOnly.estimate).toBeNull();
     const refused = (await mailCall('mail.search', { query: 'dinner plans', idsOnly: true }).catch((e) => e)) as CallFailed;
     expect([refused.code, refused.status]).toEqual(['failed', 400]);
     // Changes from Gmail's sync.
@@ -622,6 +630,7 @@ it(
     try {
       const e = (await mailCall('mail.list', { mailboxId: '^i', limit: 5 }).catch((x) => x)) as CallFailed;
       expect([e.code, e.status]).toEqual(['failed', 502]);
+      bvRefused++;
       expect(e.message).toBe("Gmail's list and search (bv) answer is not laid out as this extractor knows it (at json[2][0][0][2]: expected the row's date in ms (13 digits), got an id); nothing was returned rather than possibly wrong mail");
       await until(() => layerOf(signedIn, 'Gmail protocol')?.state === 'failed', 5000, 'the layer failed');
       expect(layerOf(signedIn, 'Gmail protocol').note).toContain("bv: at json[2][0][0][2]: expected the row's date in ms (13 digits), got an id");
@@ -640,6 +649,7 @@ it(
 it(
   "the watch: new inbox mail is mail.arrived and its mailboxes mail.changed, from Gmail's sync",
   async () => {
+    await mailCall('mail.mailboxes', {}); // the watch starts with the first mail call
     await until(() => String(statusOf(signedIn)?.details?.gmailWatch).startsWith('looked at'), 15_000, 'the watch looking');
     const n = events[signedIn]!.length;
     const fresh = fake.gmail.arrive({ subject: `Watched ${WEB.mailMark}` });
@@ -669,8 +679,8 @@ it(
     expect(existsSync(join(accountDir(signedIn), 'gmail-selfcheck.request'))).toBe(false);
     const text = readFileSync(out, 'utf8');
     const r = JSON.parse(text);
-    expect(r).toMatchObject({ ok: true, page: { syncSeen: true, accountKey: true, syncPoint: true }, mailboxes: { system: 10, user: 3 }, inbox: { listed: 50, idsDecimal: true, datesInRange: true, newestFirst: true }, allMail: { listed: 50 }, searchIds: { idsDecimal: true, estimate: 'number' }, message: { found: true, raw: { parsed: true, messageIdHeader: true }, get: { stillSeen: true } } });
-    expect(r.fingerprints.bv.failed).toBe(1); // the layout test's, kept as the first mismatch
+    expect(r).toMatchObject({ ok: true, page: { syncSeen: true, accountKey: true, syncPoint: true }, mailboxes: { system: 10, user: 3 }, inbox: { listed: 50, idsDecimal: true, datesInRange: true, newestFirst: true }, allMail: { listed: 50 }, searchIds: { idsDecimal: true, estimate: 'null' }, message: { found: true, raw: { parsed: true, messageIdHeader: true }, get: { stillSeen: true } } });
+    expect(r.fingerprints.bv.failed).toBe(bvRefused); // the layout test's, if it ran, kept as the first mismatch
     const read = [...new Set(fake.gmail.rawFetched.slice(fetched))];
     expect(read.length).toBe(1);
     const msg = fake.gmail.messages.find((x) => x.id === read[0])!;
@@ -737,7 +747,7 @@ it(
 it('no cookie, key, query or event content in the logs or the statuses', () => {
   // The statuses and other events (mail.arrived carries a message, as it should, to apps with a mail grant).
   const said = JSON.stringify(Object.values(events).map((evs) => evs.filter((e) => !String(e.t).startsWith('mail.'))));
-  const logs = [signedIn, signedOut, mailOff].map((id) => readFileSync(join(m!.store.account(id)!.dir, 'adapter.log'), 'utf8')).join('\n');
+  const logs = [signedIn, signedOut, mailOff].filter(Boolean).map((id) => readFileSync(join(m!.store.account(id)!.dir, 'adapter.log'), 'utf8')).join('\n');
   for (const secret of [WEB.sapisid, WEB.pageKey, WEB.htmlKey, 'secret-query', 'secret-hash', 'page-own-secret-body', 'Dinner', "Luigi's", ...MAIL_SECRETS, fake.gmail.xsrf, fake.gmail.ik, 'Plans', 'Person']) {
     expect(said).not.toContain(secret);
     expect(logs).not.toContain(secret);
@@ -748,12 +758,14 @@ it('no cookie, key, query or event content in the logs or the statuses', () => {
 it(
   'stopping the manager stops every process it started for them',
   async () => {
-    const displays = [signedIn, signedOut].map((id) => Number(String(statusOf(id).details.display).slice(1)));
-    expect(processesOf([signedIn, signedOut]).length).toBeGreaterThanOrEqual(8); // two extractors, each Xvfb, x11vnc, Chromium and its helpers
+    // The running ones this run made (`mail: false`'s was stopped in its test).
+    const ids = [signedIn, signedOut].filter(Boolean);
+    const displays = ids.map((id) => Number(String(statusOf(id).details.display).slice(1)));
+    expect(processesOf(ids).length).toBeGreaterThanOrEqual(4 * ids.length); // each an extractor, Xvfb, x11vnc, Chromium and its helpers
     app.close();
     await m!.stop();
     m = null;
-    await until(() => processesOf([signedIn, signedOut]).length === 0, 15_000, 'every process gone');
+    await until(() => processesOf(ids).length === 0, 15_000, 'every process gone');
     for (const n of displays) expect(existsSync(`/tmp/.X${n}-lock`)).toBe(false);
   },
   30_000,

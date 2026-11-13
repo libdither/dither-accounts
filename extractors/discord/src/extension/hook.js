@@ -947,6 +947,8 @@
         return search(cmd);
       case 'walkMembers':
         return walkMembers(cmd);
+      case 'mentionables':
+        return mentionables(cmd);
       case 'threads':
         return threads(cmd);
       case 'markRead':
@@ -2841,6 +2843,155 @@
       }
       setTimeout(finish, 5000);
     });
+  }
+
+  // ------------------------------------------------------------------ mentions
+  // Who a channel can ping, for the composer's @ list (src/mentionables.ts). From the client's stores: a DM's or a
+  // group's recipients; in a server, who wrote in the channel lately (nothing typed), else the loaded members whose
+  // names hold the letters typed and those the client's own member search finds for them (op 8, at most 10, as its @
+  // list asks), each only if their roles and the channel's overwrites let them see it; the roles that may be pinged;
+  // and whether this account may write @everyone. It goes only into the answer: never out as members or people.
+  const PERM_VIEW_CHANNEL = 1n << 10n;
+  const PERM_MENTION_EVERYONE = 1n << 17n;
+  const PERM_ADMINISTRATOR = 1n << 3n;
+  /** How long the member search may take before the answer goes without it. */
+  const MENTION_SEARCH_WAIT = 1000;
+  /** At most this many people go back; the adapter ranks and cuts them. */
+  const MENTION_CAP = 60;
+
+  const permOf = (v) => {
+    try {
+      return v === undefined || v === null ? 0n : typeof v === 'bigint' ? v : BigInt(String(v));
+    } catch (e) {
+      return 0n;
+    }
+  };
+  const sentAt = (id) => {
+    try {
+      return Number((BigInt(id) >> 22n) + 1420070400000n);
+    } catch (e) {
+      return 0;
+    }
+  };
+
+  /** Who wrote in a channel among the messages the client holds, newest first: user id -> when. */
+  function channelSpeakers(channelId) {
+    const out = new Map();
+    let list = [];
+    try {
+      const ms = mod.MessageStore && mod.MessageStore.getMessages(channelId);
+      list = ms ? (typeof ms.toArray === 'function' ? ms.toArray() : Array.isArray(ms._array) ? ms._array : []) : [];
+    } catch (e) {}
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      const id = m && m.author && m.author.id;
+      if (id && !out.has(id)) out.set(id, sentAt(m.id));
+    }
+    return out;
+  }
+
+  /** A server's roles as the client holds them, with their permissions. */
+  function serverRoles(g) {
+    let roles = null;
+    const rs = mod.GuildRoleStore;
+    for (const f of ['getSortedRoles', 'getRoles', 'getRolesSnapshot']) {
+      if (roles) break;
+      try {
+        if (rs && typeof rs[f] === 'function') roles = rs[f](g.id);
+      } catch (e) {}
+    }
+    try {
+      if (!roles && typeof mod.GuildStore.getRoles === 'function') roles = mod.GuildStore.getRoles(g.id);
+    } catch (e) {}
+    if (!roles) roles = g.roles;
+    return (Array.isArray(roles) ? roles : Object.values(roles || {})).filter((r) => r && r.id);
+  }
+
+  /**
+   * Whether someone can see a server channel, worked out as Discord does from the roles and overwrites the client
+   * holds (a thread by its parent's): true, false, or null when the client does not hold them as a member.
+   */
+  function canSee(g, perms, channel, userId) {
+    if ((g.ownerId ?? g.owner_id) === userId) return true;
+    let member = null;
+    try {
+      member = mod.GuildMemberStore && mod.GuildMemberStore.getMember(g.id, userId);
+    } catch (e) {}
+    if (!member) return null;
+    const mine = new Set(Array.isArray(member.roles) ? member.roles : []);
+    let p = perms.get(g.id) || 0n;
+    for (const id of mine) p |= perms.get(id) || 0n;
+    if (p & PERM_ADMINISTRATOR) return true;
+    const parentId = channel.parent_id ?? channel.parentId;
+    const target = (THREAD_TYPES.includes(channel.type) && parentId && mod.ChannelStore.getChannel(parentId)) || channel;
+    const ow = target.permissionOverwrites ?? target.permission_overwrites;
+    const list = (Array.isArray(ow) ? ow : Object.values(ow || {})).filter((o) => o && o.id);
+    const apply = (o) => o && (p = (p & ~permOf(o.deny)) | permOf(o.allow));
+    apply(list.find((o) => o.id === g.id));
+    let allow = 0n;
+    let deny = 0n;
+    for (const o of list)
+      if (o.id !== g.id && mine.has(o.id)) {
+        allow |= permOf(o.allow);
+        deny |= permOf(o.deny);
+      }
+    p = (p & ~deny) | allow;
+    apply(list.find((o) => o.id === userId));
+    return (p & PERM_VIEW_CHANNEL) !== 0n;
+  }
+
+  async function mentionables(cmd) {
+    const channel = mod.ChannelStore.getChannel(String(cmd.channelId));
+    if (!channel) throw new Error('this account cannot see that channel');
+    const me = currentUser();
+    const selfId = (me && me.id) || null;
+    const query = String(cmd.query || '')
+      .replace(/^@+/, '')
+      .trim()
+      .toLowerCase();
+    const guildId = channel.guild_id ?? channel.guildId ?? null;
+    const g = guildId ? guildOf(guildId) : null;
+    const spoke = channelSpeakers(channel.id);
+    const perms = g ? new Map(serverRoles(g).map((r) => [r.id, permOf(r.permissions)])) : null;
+    const found = new Map();
+    const add = (u, nick) => {
+      const user = pickUser(u);
+      if (!user || !user.id || user.id === selfId || found.has(user.id) || found.size >= MENTION_CAP) return;
+      const names = [nick, user.global_name, user.username];
+      if (query && !names.some((n) => typeof n === 'string' && n.toLowerCase().includes(query))) return;
+      if (g && canSee(g, perms, channel, user.id) === false) return;
+      found.set(user.id, { user, nick: nick || null });
+    };
+    const answer = (roles, everyone) => ({ people: [...found.values()].map((x) => ({ ...x, lastSpoke: spoke.get(x.user.id) || undefined })), roles, everyone });
+    if (!g) {
+      for (const r of Array.isArray(channel.recipients) ? channel.recipients : []) add(typeof r === 'string' ? mod.UserStore.getUser(r) : r, null);
+      return answer([], false);
+    }
+    for (const id of spoke.keys()) add(mod.UserStore.getUser(id), nickOf(g.id, id));
+    if (query) {
+      let members = [];
+      try {
+        const gm = mod.GuildMemberStore;
+        if (gm && typeof gm.getMembers === 'function') members = gm.getMembers(g.id) || [];
+      } catch (e) {}
+      for (const m of Array.isArray(members) ? members : Object.values(members)) {
+        const id = m && (m.userId ?? (m.user && m.user.id));
+        if (id) add(mod.UserStore.getUser(id), m.nick);
+      }
+      // The client's own member search, as its @ list runs it; its chunks are the walk's, never passed on as seen.
+      const net = await Promise.race([walkMembers({ guildId: g.id, query, limit: 10 }).catch(() => null), new Promise((r) => setTimeout(() => r(null), MENTION_SEARCH_WAIT))]);
+      for (const m of (net && net.members) || []) add(m.user, m.nick);
+    }
+    let everyone = false;
+    try {
+      everyone = !!mod.PermissionStore && mod.PermissionStore.can(PERM_MENTION_EVERYONE, channel) === true;
+    } catch (e) {}
+    const roles = serverRoles(g)
+      .filter((r) => r.id !== g.id && typeof r.name === 'string' && (everyone || r.mentionable) && (!query || r.name.toLowerCase().includes(query)))
+      .sort((a, b) => (Number(b.position) || 0) - (Number(a.position) || 0))
+      .slice(0, 25)
+      .map((r) => ({ id: r.id, name: r.name, color: r.colorString || hexColor(r.color) || null }));
+    return answer(roles, everyone);
   }
 
   async function rest(verb, url, query, body) {

@@ -31,6 +31,15 @@
      "space": ""
     }
    },
+   "mentionables": {
+    "input": "{ conversation: string; limit: number; query: string }",
+    "output": "{\n  /** Best first, at most the command's limit. */\n  people: MentionablePerson[];\n  roles?: MentionableRole[];\n  /** You may write */\n  everyone?: boolean;\n}",
+    "example": {
+     "conversation": "",
+     "limit": 0,
+     "query": ""
+    }
+   },
    "threads": {
     "input": "{ conversation: string; offset: number; archived: boolean }",
     "output": "{\n  count: number;\n  /** More after these: ask again with offset + count. */\n  more: boolean;\n  /** The network is still indexing this channel's threads (Discord's 202): ask the same again after this long. */\n  retryAfterMs?: number;\n}",
@@ -303,7 +312,7 @@
    "CallMode": "/** Voice calls. Two ways to carry one, so they can be compared: */\ntype CallMode = \"bridge\" | \"direct\";",
    "CallParticipant": "type CallParticipant = {\n  /** Native user id. */\n  id: string;\n  muted: boolean;\n  deafened: boolean;\n  speaking: boolean;\n  video?: boolean;\n};",
    "CallState": "type CallState = { conversation: string; participants: CallParticipant[] };",
-   "Capability": "type Capability = \"history\"\n| \"send\"\n| \"forward\"\n| \"openDirect\"\n| \"search\"\n| \"walkMembers\"\n| \"threads\"\n| \"markRead\"\n| \"typing\"\n| \"react\"\n| \"edit\"\n| \"redact\"\n| \"about\"\n| \"configure\"\n| \"profile\"\n| \"resolve\"\n| \"addMembers\"\n| \"createGroup\"\n| \"members\"\n| \"requests\"\n| \"relationships\"\n| \"join\"\n| \"media\"\n| \"sendMedia\"\n| \"e2ee\"\n| \"liveView\"\n| \"calls\"\n| \"editProfile\"\n| \"connect\"\n| \"disconnect\"\n| \"listThreads\";",
+   "Capability": "type Capability = \"history\"\n| \"send\"\n| \"forward\"\n| \"openDirect\"\n| \"search\"\n| \"walkMembers\"\n| \"mentionables\"\n| \"threads\"\n| \"markRead\"\n| \"typing\"\n| \"react\"\n| \"edit\"\n| \"redact\"\n| \"about\"\n| \"configure\"\n| \"profile\"\n| \"resolve\"\n| \"addMembers\"\n| \"createGroup\"\n| \"members\"\n| \"requests\"\n| \"relationships\"\n| \"join\"\n| \"media\"\n| \"sendMedia\"\n| \"e2ee\"\n| \"liveView\"\n| \"calls\"\n| \"editProfile\"\n| \"connect\"\n| \"disconnect\"\n| \"listThreads\";",
    "ConversationFact": "type ConversationFact = {\n  /** Discord channel snowflake | Matrix room id | Matrix thread \"<roomId>|<rootEventId>\" | Signal group \"group:<base64 id>\" | Signal 1:1 \"dm:<selfAci>:<peerAci>\" */\n  nativeId: string;\n  shape: Shape;\n  variant?: \"rules\" | \"media\" | \"text\" | \"announcement\" | \"forum\" | \"voice\" | \"stage\" | \"feed\";\n  /** Omit for directs: the UI names them after the peer. */\n  name?: string;\n  topic?: string;\n  avatarUrl?: string;\n  encrypted?: boolean;\n  archived?: boolean;\n  /** Threads: the conversation they hang off. */\n  parentConversation?: string;\n  /** Containing spaces (a graph: a Matrix room may be in several). */\n  spaces?: SpaceRef[];\n  /** Identity native IDs. Only for direct, group and self; big channels skip this. */\n  participants?: string[];\n  mute?: NativeMute;\n  lastMessageAt?: number;\n};",
    "CustomEmojiFact": "/** A custom emoji. Reactions refer to it by key; the hub keeps a catalog per network. */\ntype CustomEmojiFact = { key: string; name: string; url: string; animated?: boolean };",
    "ForwardFact": "/** Where a forwarded message came from, as far as the network says. Discord names the channel, message and */\ntype ForwardFact = {\n  conversation?: string;\n  message?: string;\n  /** The original's community, when the conversation alone does not say (a Discord guild id). */\n  space?: string;\n  author?: string;\n  authorName?: string;\n  ts?: number;\n};",
@@ -311,6 +320,8 @@
    "IdentityFact": "type IdentityFact = {\n  nativeId: string;\n  handle?: string;\n  displayName?: string;\n  avatarUrl?: string;\n  isBot?: boolean;\n  isSelf?: boolean;\n  /** In the address book / friends list. Contacts get a Person, strangers in big channels do not. */\n  contact?: boolean;\n};",
    "JoinRule": "/** How people get in. open: anyone who finds it or has the link. invite: only those invited. ask: they ask, a member */\ntype JoinRule = \"space\" | \"invite\" | \"open\" | \"ask\";",
    "MemberFact": "/** Someone seen as a member of a space. The identity fact for `who` is emitted first. */\ntype MemberFact = {\n  /** Native identity id. */\n  who: string;\n  /** ms epoch: when they joined the space, where the network says. */\n  joinedAt?: number;\n  /** Role names in the space. */\n  roles?: string[];\n  /** Their nickname in the space. */\n  nick?: string;\n};",
+   "MentionablePerson": "type MentionablePerson = {\n  /** Native identity id, as `<@nativeId>` in a body. */\n  nativeId: string;\n  name: string;\n  handle?: string;\n  avatar?: string;\n  isBot?: boolean;\n  /** ms of their last message in this conversation, when the adapter knows it. */\n  lastSpoke?: number;\n};",
+   "MentionableRole": "/** A role that may be pinged here (Discord: a mentionable role, or any role while you have Mention Everyone). */\ntype MentionableRole = {\n  id: string;\n  name: string;\n  /** #RRGGBB */\n  color?: string;\n  count?: number;\n};",
    "MessageFact": "/** Canonical message body: a Discord-flavoured Markdown subset. */\ntype MessageFact = {\n  /** Discord snowflake | Matrix event id | Signal \"<authorAci>:<sentTimestamp>\" */\n  nativeId: string;\n  conversation: string;\n  author: string;\n  ts: number;\n  editedTs?: number;\n  kind?: \"call\" | \"encrypted\" | \"media\" | \"text\" | \"system\" | \"sticker\";\n  body: string;\n  replyTo?: string;\n  /** This message is the root of that thread conversation. */\n  threadRoot?: string;\n  mentionsSelf?: boolean;\n  /** With mentionsSelf: the mention was */\n  mentionsAll?: boolean;\n  attachments?: AttachmentFact[];\n  /** Full reaction snapshot (backfill). Live changes use the `reaction` event. */\n  reactions?: ReactionFact[];\n  /** This message forwards another, as the network marks it. body and attachments are the forwarded content. */\n  forward?: ForwardFact;\n  extra?: Record<string, unknown>;\n};",
    "NativeMute": "type NativeMute = {\n  level?: \"all\" | \"mentions\" | \"none\";\n  /** ms epoch; muted until then. */\n  until?: number;\n};",
    "Network": "/** The dither-chat ontology: one vocabulary for Discord, Signal, Matrix and WhatsApp. */\ntype Network = \"discord\"\n| \"signal\"\n| \"matrix\"\n| \"whatsapp\"\n| \"telegram\"\n| \"gmessages\"\n| \"messenger\"\n| \"instagram\"\n| \"x\"\n| \"email\";",

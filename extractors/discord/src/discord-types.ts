@@ -355,6 +355,8 @@ export type HookCommand =
   | { kind: 'search'; guildId?: string; channelId?: string; params: Record<string, string | number | boolean | string[]> }
   /** reply RawWalk (search.ts): one member query of the gateway (op 8, as the client's own member search asks it). */
   | { kind: 'walkMembers'; guildId: string; query: string; limit: number; recent?: boolean; after?: string }
+  /** reply RawMentionables (mentionables.ts): who a channel can ping, from the client's stores and its own @ list's member search. */
+  | { kind: 'mentionables'; channelId: string; query: string; limit: number }
   | { kind: 'threads'; channelId: string; archived: boolean; offset: number }
   | { kind: 'markRead'; channelId: string; messageId: string }
   | { kind: 'typing'; channelId: string; stop?: boolean }

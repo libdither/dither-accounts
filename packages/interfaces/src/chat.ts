@@ -8,6 +8,7 @@
  */
 import type { About, AdapterCommand, AdapterEvent, AddMembersResult, AddPreview, AddResult, CreateGroupResult, DirectVoiceSession, HistoryResult, NetworkSearchResult, OpenDirectResult, PersonAbout, ReactionContext, ThreadsResult } from '@dither-chat/protocol';
 import { ev, iface, op, type Schema, s } from '@dither-accounts/spec';
+import type { Mentionables } from '@dither-chat/protocol';
 
 type Cmd = Exclude<AdapterCommand, { t: 'shutdown' }>;
 /** A command's input: the variant(s) with this `t`, without `t` and `id` (distributes over `call`'s variants). */
@@ -31,6 +32,7 @@ export const chat = iface({
     history: op('read', 'Older messages of a conversation', input('history'), out<HistoryResult>(), 120_000),
     search: op('read', "Search messages on the network's own servers: a server, a DM, or everything at once", input('search'), out<NetworkSearchResult>(), 60_000),
     walkMembers: op('read', "A server's members whose names start with some letters", input('walkMembers'), out<{ count: number; total?: number }>(), 60_000),
+    mentionables: op('read', 'Who a conversation can ping, for the @ picker', input('mentionables'), out<Mentionables>(), 15_000),
     threads: op('read', "A page of a channel's threads, active or archived", input('threads'), out<ThreadsResult>(), 60_000),
     reactionContext: op('read', 'Which reactions you may use here', input('reactionContext'), out<ReactionContext>()),
     reactors: op('read', 'Who is behind a reaction count', input('reactors'), out<{ authors: string[] }>()),

@@ -12,8 +12,11 @@
  * frame's origin, crossOrigin and the top origin as Chromium writes them), log out and in with it; then, with the
  * session gone, a pull signs itself in (clicking the widget's button, which ignores clicks until it has hydrated) and
  * pulls; after an idle logout that leaves a sign-in page whose passkey option asks for nothing, a pull loads a fresh
- * one and signs in there; then a code asked for after the passkey holds every pull, typing nothing, until you are in. No key, credential
- * id or user handle on the wire to the manager. Skipped without Xvfb, chromium or x11vnc.
+ * one and signs in there; when Schwab stops asking for the passkey, two tries and the pull asks for you with what the
+ * widget said (masked); then a code asked for after the passkey holds every pull, typing nothing, until you are in.
+ * Then restarts: one soon after a pull signs nothing in; one when a pull is due but right after a passkey try waits out
+ * the gap, then signs in and pulls. No key, credential id or user handle on the wire to the manager. Skipped without
+ * Xvfb, chromium or x11vnc.
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -37,6 +40,8 @@ let hub: Server<undefined>;
 let sock: ServerWebSocket<undefined> | null = null;
 let proc: Subprocess | null = null;
 let dir: string;
+/** The account's config (the manager's `{t:'config'}` replaces it live). No gap between sign-ins, but where a step sets one. */
+let config: Record<string, unknown> = {};
 const events: any[] = [];
 const replies = new Map<string, any>();
 
@@ -88,6 +93,11 @@ beforeAll(async () => {
     },
   });
   dir = mkdtempSync(join(tmpdir(), 'dacc-schwab-'));
+  config = { testOrigin: fake.origin, testFrameOrigin: fake.frameOrigin, paceScale: 0.05, schedule: false, signInGapMinutes: 0 };
+  spawn(config);
+}, 30_000);
+
+function spawn(cfg: Record<string, unknown>) {
   proc = Bun.spawn(['bun', join(import.meta.dir, '../src/main.ts')], {
     env: {
       ...process.env,
@@ -95,13 +105,28 @@ beforeAll(async () => {
       DITHER_ACCOUNT_ID: 'acc_schwabtest',
       DITHER_ADAPTER_TOKEN: 'token',
       DITHER_ACCOUNT_DIR: dir,
-      DITHER_ACCOUNT_CONFIG: JSON.stringify({ testOrigin: fake.origin, testFrameOrigin: fake.frameOrigin, paceScale: 0.05, schedule: false }),
+      DITHER_ACCOUNT_CONFIG: JSON.stringify(cfg),
       DITHER_ACCOUNT_LABEL: 'Schwab test',
     },
     stdout: process.env.KEEP ? Bun.file(join(dir, 'stdout.log')) : 'ignore',
     stderr: process.env.KEEP ? Bun.file(join(dir, 'stderr.log')) : 'ignore',
   });
-}, 30_000);
+}
+
+/** What a restart of the manager does to the account: the extractor stops (its browser with it) and starts again on
+ * the same account directory. Schwab's session cookie does not outlive the browser, and here the session ends too. */
+async function restart(cfg: Record<string, unknown>) {
+  const hellos = events.filter((e) => e.t === 'hello').length;
+  sock!.send(JSON.stringify({ t: 'shutdown' }));
+  if ((await Promise.race([proc!.exited, Bun.sleep(15_000).then(() => null)])) === null) {
+    proc!.kill('SIGKILL');
+    await proc!.exited;
+  }
+  fake.expire();
+  spawn(cfg);
+  await until(() => events.filter((e) => e.t === 'hello').length > hellos, 30_000, 'the extractor back after the restart');
+}
+const inLog = (re: RegExp) => events.some((e) => e.t === 'log' && re.test(String(e.msg)));
 
 afterAll(async () => {
   if (!bins) return;
@@ -228,13 +253,30 @@ it(
     expect([...fake.rp.creds.values()].map((c) => c.counter)).toEqual([3]);
     expect(fake.log.filter((l) => l === 'passkey-signin')).toHaveLength(3);
 
+    // Schwab stops asking for the passkey (as after a few sign-ins in a row): two tries of at most two clicks each, then
+    // the pull asks for you, saying what the widget said (digits masked).
+    fake.expire();
+    fake.throttled = true;
+    const before = fake.log.length;
+    expect((await call('statements.refresh')).result).toEqual({ started: true });
+    await until(() => pulls().length === 4, 120_000, 'the pull Schwab would not sign in');
+    expect(pulls()[3]).toMatchObject({ ok: false });
+    expect(pulls()[3].needs).toContain('Schwab did not ask for the passkey (the page says "Too many attempts (error ####). Please try again later.")');
+    const throttled = fake.log.slice(before).filter((l) => l === 'passkey-throttled').length;
+    expect(throttled).toBeGreaterThanOrEqual(2);
+    expect(throttled).toBeLessThanOrEqual(4);
+    expect(fake.log.slice(before).filter((l) => l === 'passkey-signin')).toHaveLength(0);
+    expect(events.filter((e) => e.t === 'log' && /^automatic sign-in try \d of 2 failed/.test(e.msg))).toHaveLength(2);
+    await until(() => lastStatus()?.attention?.kind === 'login', 10_000, 'the sign-in attention');
+    fake.throttled = false;
+
     // Schwab asks for a code after the passkey: the account holds, types nothing, and refuses pulls until you are in.
     fake.expire();
     fake.codeAfterPasskey = true;
     const logged = fake.log.length;
     expect((await call('statements.refresh')).result).toEqual({ started: true });
-    await until(() => pulls().length === 4, 120_000, 'the held pull');
-    expect(pulls()[3]).toMatchObject({ ok: false, needs: CHALLENGE_MESSAGE });
+    await until(() => pulls().length === 5, 120_000, 'the held pull');
+    expect(pulls()[4]).toMatchObject({ ok: false, needs: CHALLENGE_MESSAGE });
     expect(fake.log.slice(logged)).toEqual(['passkey-signin']);
     expect([...fake.rp.creds.values()].map((c) => c.counter)).toEqual([4]);
     await until(() => String(lastStatus()?.details?.autoSignIn).startsWith('held (code)'), 10_000, 'held');
@@ -249,12 +291,40 @@ it(
     await until(() => lastStatus()?.details?.autoSignIn === 'ready', 60_000, 'the hold lifted');
     await until(() => lastStatus()?.status === 'online', 30_000, 'online again');
     // The pull that was held goes once you are in.
-    await until(() => pulls().length === 5, 120_000, 'the pull after the hold');
-    expect(pulls()[4]).toMatchObject({ ok: true });
+    await until(() => pulls().length === 6, 120_000, 'the pull after the hold');
+    expect(pulls()[5]).toMatchObject({ ok: true });
+
+    // A restart (every deploy restarts the manager) finds Schwab signed out, but the last pull is recent: no sign-in.
+    let mark = fake.log.length;
+    await restart(config);
+    await until(() => inLog(/^no sign-in at start: the last pull is recent/), 60_000, 'the start that signs nothing in');
+    await Bun.sleep(1500);
+    expect(fake.log.slice(mark)).toEqual([]);
+    expect(lastStatus().details.pageKind).toBe('signin');
+    expect(lastStatus().status).toBe('online');
+
+    // A restart when a pull is due, but a passkey try just before it: the sign-in waits out the gap (signInGapMinutes,
+    // here 15 s; the last try is in state.json, so the restart does not forget it), then signs in, and the pull follows.
+    const stFile = join(dir, 'state.json');
+    const kept = JSON.parse(readFileSync(stFile, 'utf8'));
+    delete kept.lastSignedInPull;
+    kept.lastPasskeyTry = Date.now();
+    writeFileSync(stFile, JSON.stringify(kept));
+    mark = fake.log.length;
+    await restart({ ...config, signInGapMinutes: 0.25 });
+    await until(() => inLog(/^waiting until \S+ to sign in \(start\)/), 60_000, 'the start waiting out the gap');
+    await until(() => String(lastStatus()?.details?.autoSignIn).startsWith('waiting until'), 10_000, 'the status says it waits');
+    expect(lastStatus().layers.find((l: any) => l.name === 'signed in')).toMatchObject({ state: 'waiting', note: expect.stringContaining('to sign in with the passkey') });
+    expect(fake.log.slice(mark)).toEqual([]);
+    await until(() => pulls().length === 7, 120_000, 'the pull after the wait');
+    expect(pulls()[6]).toMatchObject({ ok: true });
+    expect(fake.log.slice(mark)).toEqual(['passkey-signin']);
+    expect(inLog(/^signed in by itself with the passkey \(start, try 1\)/)).toBe(true);
 
     // Nothing secret went to the manager: no key, no full credential id, no user handle.
     const secret = JSON.parse(readFileSync(join(dir, 'secret.json'), 'utf8')).passkeys[0];
-    expect(secret.signCount).toBe(4);
+    expect(secret.signCount).toBe(5);
+    expect([...fake.rp.creds.values()].map((c) => c.counter)).toEqual([5]);
     const wire = JSON.stringify(events);
     for (const x of [secret.privateKey, secret.id, secret.userHandle]) expect(wire).not.toContain(x);
     expect(existsSync(join(dir, 'profile', 'Default', 'Preferences'))).toBe(true);

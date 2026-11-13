@@ -48,7 +48,9 @@ self.PAGE = {
    * that are visible and enabled; the name from aria-labelledby, aria-label, text, value, title and images' alt). One
    * that says sign in, log in, use or continue with a passkey comes first; links about passkeys (learn, add, manage)
    * never count. With `click`, it is clicked (what you would click; nothing else is pressed or typed). Also says
-   * whether a captcha shows (an invisible reCAPTCHA badge does not count).
+   * whether a captcha shows (an invisible reCAPTCHA badge does not count), and what the frame's alerts say (`said`:
+   * short visible texts of alerts, status lines and error boxes, for the log when no passkey request comes; the
+   * extractor masks digits and addresses before logging them).
    */
   passkey: (click) => {
     const vis = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden' && Number(getComputedStyle(el).opacity) !== 0;
@@ -75,12 +77,20 @@ self.PAGE = {
       [...document.querySelectorAll('iframe')].some((f) => CAPTCHA.test(f.src || '') && !/size=invisible/.test(f.src || '') && vis(f)) ||
       [...document.querySelectorAll('.g-recaptcha, .h-captcha, .cf-turnstile, [data-sitekey]')].some(vis) ||
       /verify (that )?you('| a)re (a )?human|are you a robot|complete the captcha/i.test(text);
+    const said = [
+      ...new Set(
+        [...document.querySelectorAll('[role=alert], [role=alertdialog], [role=status], [aria-live=assertive], [aria-live=polite], [class*=error i], [class*=alert i], [class*=warning i]')]
+          .filter(vis)
+          .map((el) => (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim())
+          .filter((t) => t.length > 2 && t.length <= 200),
+      ),
+    ].slice(0, 6);
     let clicked = false;
     if (click && best) {
       best.el.click();
       clicked = true;
     }
-    return { passkey: !!best, captcha, clicked };
+    return { passkey: !!best, captcha, clicked, said };
   },
 
   /** The controls on the page, by kind and what they say (no values, nothing with a $ amount), for the log. */

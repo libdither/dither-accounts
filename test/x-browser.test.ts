@@ -149,7 +149,7 @@ it(
       'hook.endpoints': 'found (thunk.api)',
       'hook.notifications': 'found (loader)',
       'hook.profiles': 'found (module)',
-      'hook.posts': 'found (module)',
+      'hook.posts': 'found (timeline)',
       'hook.actions': 'found (module)',
       'hook.reactors': 'pending',
       'hook.requests': 'found (graph)',
@@ -572,7 +572,7 @@ it(
     const text = readFileSync(file, 'utf8');
     for (const secret of ['legacy line', 'saturday', 'pizza', 'hello', 'Weekend plans', ALICE.displayName, ALICE.screenName, BOB.screenName, 'fake-session', SELF.displayName, CARA.name, CARA.handle, FINN.handle, 'tomatoes', 'love this', 'garden', 'Lisbon']) expect(text).not.toContain(secret);
     // The feed's part: what was found and the shapes of what X answered.
-    expect(d.page.feed).toMatchObject({ hooks: { webpack: { ok: true }, store: { ok: true }, endpoints: { ok: true }, notifications: { ok: true }, profiles: { ok: true }, posts: { ok: true }, actions: { ok: true }, reactors: { ok: true, via: 'loader' } }, endpoints: { via: 'thunk.api' }, notifications: { chunk: 'bundle.Notifications' }, reactors: { chunk: 'shared~bundle.QuoteTweetActivity~bundle.TweetActivity' } });
+    expect(d.page.feed).toMatchObject({ hooks: { webpack: { ok: true }, store: { ok: true }, endpoints: { ok: true }, notifications: { ok: true }, profiles: { ok: true }, posts: { ok: true, via: 'timeline' }, actions: { ok: true }, reactors: { ok: true, via: 'loader' } }, endpoints: { via: 'thunk.api' }, notifications: { chunk: 'bundle.Notifications' }, reactors: { chunk: 'shared~bundle.QuoteTweetActivity~bundle.TweetActivity' } });
     expect(d.page.feed.actions.keys).toEqual(expect.arrayContaining(['like', 'unlike', 'retweet', 'unretweet', 'sendTweet']));
     expect(d.page.feed.responses.created).toMatchObject({ entities: { tweets: { '<id>': { full_text: 'string' } } }, result: 'string' });
     // The last reactors read was of someone else's post: a timeline with nothing in it.

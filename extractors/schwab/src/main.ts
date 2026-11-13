@@ -717,14 +717,15 @@ async function askedOf(tabId: number, afterPasskey: boolean): Promise<Hold['what
 type Try = SignInTry<Hold['what']>;
 
 /** One try, in the account's tab: the summary; if it lands on the sign-in page, the passkey option; then the app settled. */
-async function signInOnce(force: boolean): Promise<Try> {
+async function signInOnce(): Promise<Try> {
   const t = userTab();
   if (!t) return { ok: false, reason: 'the browser has no tab' };
-  if (kind !== 'signin' || force) {
-    // The summary goes to the app when signed in, and to the sign-in page when not. Settling starts again from here.
-    appSince = 0;
-    await host.go(t.id, START_URL, 60_000).catch((e) => log('debug', `loading the summary: ${String((e as Error)?.message ?? e).slice(0, 120)}`));
-  }
+  // Always loaded afresh, even when the tab is on a sign-in page already: the one Schwab leaves after logging an idle
+  // session out ("we've logged you out … due to inactivity", then "There was a problem logging you in") shows the
+  // passkey option, but clicking it asks for nothing (seen live 2026-11-13); a freshly loaded one works. The summary
+  // goes to the app when signed in, and to the sign-in page when not. Settling starts again from here.
+  appSince = 0;
+  await host.go(t.id, START_URL, 60_000).catch((e) => log('debug', `loading the summary: ${String((e as Error)?.message ?? e).slice(0, 120)}`));
   let frames: number[] = [];
   const end = Date.now() + 25_000;
   while (Date.now() < end) {
@@ -783,7 +784,7 @@ async function signIn(trigger: Trigger, force: boolean): Promise<void> {
   if (!force && settledOnApp()) return;
   const blocked = blockedNow();
   if (blocked) throw new NeedsYou(blocked, 'login');
-  await signin.run<Hold['what']>(trigger, (i) => signInOnce(force && !i), {
+  await signin.run<Hold['what']>(trigger, () => signInOnce(), {
     done: settledOnApp,
     hold: (what) => {
       st.hold = { what, message: holdMessage(what), since: Date.now() };

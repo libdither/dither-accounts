@@ -18,7 +18,8 @@
  *
  * Steps the test pushes, each done by the page where it is (nothing here clicks for the extractor): `password` on the
  * sign-in page (to the code page), `code` on the code page (signed in), `security` and `logout` on the summary or the
- * security page (to the passkey settings, or signed out), `register` in the settings frame (a passkey made), `passkey`
+ * security page (to the passkey settings, or signed out), `idle` on the summary (Schwab's inactivity logout: a sign-in
+ * page whose passkey option asks for nothing until it is loaded again), `register` in the settings frame (a passkey made), `passkey`
  * in the sign-in widget (the person clicks "Log in with a passkey"). `expire()` ends every session.
  */
 import { FakeRp } from '../../../packages/passkey/test/fake-rp.ts';
@@ -148,17 +149,19 @@ setInterval(async () => {
     const next = await fetch('/api/next?path=' + encodeURIComponent('${path}')).then(r => r.json());
     if (next.action === 'security') location.href = '/app/security/passkeys/';
     if (next.action === 'logout') location.href = '/logout/';
+    if (next.action === 'idle') location.href = '/logout/?inactivity=1';
   } catch (e) {} finally { appBusy = false; }
 }, 300);`;
 
 /** The sign-in widget, in a frame on the sign-in page. */
-const WIDGET = (app: string, hydrateMs: number) => `
+const WIDGET = (app: string, hydrateMs: number, dead = false) => `
 ${b64uJs}
 const button = document.getElementById('pk');
 let hydrated = false;
 setTimeout(() => { hydrated = true; }, ${hydrateMs});
 button.addEventListener('click', async () => {
   if (!hydrated) return; // prerendered: a click before the script is up does nothing
+  if (${dead}) return; // the sign-in page left after an idle logout: its passkey option asks for nothing
   try {
     const o = await fetch('/gw/passkey/options', { method: 'POST' }).then(r => r.json());
     const cred = await navigator.credentials.get({ publicKey: { challenge: dec(o.challenge), rpId: 'localhost', userVerification: 'required', allowCredentials: [] } });
@@ -220,6 +223,7 @@ export function startFakeSchwab(): FakeSchwab {
     code: ['/mfa/frame'],
     security: ['/clientapps/accounts/summary/'],
     logout: ['/clientapps/accounts/summary/', '/app/security/passkeys/'],
+    idle: ['/clientapps/accounts/summary/'],
     register: ['/ui/passkeys'],
     passkey: ['/ui/login'],
   };
@@ -242,7 +246,7 @@ export function startFakeSchwab(): FakeSchwab {
       }
       // ---- the gateway's widget and passkey settings (served on both origins; the app's pages frame frameOrigin's)
       if (p === '/ui/login')
-        return html(PAGE('Log in', '<button id="pk" type="button"><span>Log in with a passkey</span></button> <a href="#">Learn about passkeys</a><p id="err"></p>', WIDGET(me.origin, me.hydrateMs)));
+        return html(PAGE('Log in', '<button id="pk" type="button"><span>Log in with a passkey</span></button> <a href="#">Learn about passkeys</a><p id="err"></p>', WIDGET(me.origin, me.hydrateMs, u.searchParams.has('inactivity'))));
       if (p === '/ui/passkeys') return html(PAGE('Passkeys', '<p id="list">No passkeys yet</p>', SETTINGS));
       if (p === '/gw/passkey/options' && req.method === 'POST') {
         const challenge = me.rp.challenge();
@@ -311,16 +315,16 @@ export function startFakeSchwab(): FakeSchwab {
         return html(
           PAGE(
             'Log in (fake Schwab)',
-            `<label>Login ID <input name="id"></label><label>Password <input type="password" name="pw"></label><button>Log in</button>
-<iframe src="${me.frameOrigin}/ui/login" title="Log in" allow="publickey-credentials-get *" width="500" height="120"></iframe>`,
+            `${u.searchParams.has('inactivity') ? "<p>For your security, we've logged you out of your account due to inactivity.</p><p>There was a problem logging you in.</p>" : ''}<label>Login ID <input name="id"></label><label>Password <input type="password" name="pw"></label><button>Log in</button>
+<iframe src="${me.frameOrigin}/ui/login${u.search}" title="Log in" allow="publickey-credentials-get *" width="500" height="120"></iframe>`,
             STEP(p, '/api/password', '/mfa/verify') +
               `\naddEventListener('message', (e) => { if (e.origin !== '${me.frameOrigin}') return; if (e.data === 'signed-in') location.href = '/clientapps/accounts/summary/'; if (e.data === 'code') location.href = '/mfa/verify'; });`,
           ),
         );
       if (p === '/logout/') {
         sessions.clear();
-        log.push('logout');
-        return redirect('/Areas/Access/Login');
+        log.push(u.searchParams.has('inactivity') ? 'idle-logout' : 'logout');
+        return redirect(`/Areas/Access/Login${u.search}`);
       }
       // As Schwab's: the code is asked for in a frame; the top page says nothing about it.
       if (p === '/mfa/verify') return html(PAGE('Log in (fake Schwab)', '<iframe src="/mfa/frame" title="Login" width="600" height="300"></iframe>'));

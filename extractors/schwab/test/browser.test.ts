@@ -11,7 +11,8 @@
  * (login, passkey, passkey_check), a passkey enrolled in the settings frame and checked by the relying party (the
  * frame's origin, crossOrigin and the top origin as Chromium writes them), log out and in with it; then, with the
  * session gone, a pull signs itself in (clicking the widget's button, which ignores clicks until it has hydrated) and
- * pulls; then a code asked for after the passkey holds every pull, typing nothing, until you are in. No key, credential
+ * pulls; after an idle logout that leaves a sign-in page whose passkey option asks for nothing, a pull loads a fresh
+ * one and signs in there; then a code asked for after the passkey holds every pull, typing nothing, until you are in. No key, credential
  * id or user handle on the wire to the manager. Skipped without Xvfb, chromium or x11vnc.
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test';
@@ -217,15 +218,25 @@ it(
     expect(lastStatus().details.autoSignInsThisRun).toBeGreaterThanOrEqual(1);
     expect(lastStatus().details.lastAutoSignIn).toBeString();
 
+    // Schwab logs the idle session out and leaves the tab on a sign-in page whose passkey option asks for nothing: a pull
+    // loads a fresh sign-in page instead of clicking that one, and signs in there.
+    fake.push('idle');
+    await until(() => fake.log.includes('idle-logout') && lastStatus()?.details?.pageKind === 'signin', 30_000, 'logged out for inactivity');
+    expect((await call('statements.refresh')).result).toEqual({ started: true });
+    await until(() => pulls().length === 3, 120_000, 'the pull after the idle logout');
+    expect(pulls()[2]).toMatchObject({ ok: true });
+    expect([...fake.rp.creds.values()].map((c) => c.counter)).toEqual([3]);
+    expect(fake.log.filter((l) => l === 'passkey-signin')).toHaveLength(3);
+
     // Schwab asks for a code after the passkey: the account holds, types nothing, and refuses pulls until you are in.
     fake.expire();
     fake.codeAfterPasskey = true;
     const logged = fake.log.length;
     expect((await call('statements.refresh')).result).toEqual({ started: true });
-    await until(() => pulls().length === 3, 120_000, 'the held pull');
-    expect(pulls()[2]).toMatchObject({ ok: false, needs: CHALLENGE_MESSAGE });
+    await until(() => pulls().length === 4, 120_000, 'the held pull');
+    expect(pulls()[3]).toMatchObject({ ok: false, needs: CHALLENGE_MESSAGE });
     expect(fake.log.slice(logged)).toEqual(['passkey-signin']);
-    expect([...fake.rp.creds.values()].map((c) => c.counter)).toEqual([3]);
+    expect([...fake.rp.creds.values()].map((c) => c.counter)).toEqual([4]);
     await until(() => String(lastStatus()?.details?.autoSignIn).startsWith('held (code)'), 10_000, 'held');
     expect(['verify', 'login']).toContain(lastStatus().attention?.kind);
     expect(lastStatus().attention.message).toBe(CHALLENGE_MESSAGE);
@@ -238,12 +249,12 @@ it(
     await until(() => lastStatus()?.details?.autoSignIn === 'ready', 60_000, 'the hold lifted');
     await until(() => lastStatus()?.status === 'online', 30_000, 'online again');
     // The pull that was held goes once you are in.
-    await until(() => pulls().length === 4, 120_000, 'the pull after the hold');
-    expect(pulls()[3]).toMatchObject({ ok: true });
+    await until(() => pulls().length === 5, 120_000, 'the pull after the hold');
+    expect(pulls()[4]).toMatchObject({ ok: true });
 
     // Nothing secret went to the manager: no key, no full credential id, no user handle.
     const secret = JSON.parse(readFileSync(join(dir, 'secret.json'), 'utf8')).passkeys[0];
-    expect(secret.signCount).toBe(3);
+    expect(secret.signCount).toBe(4);
     const wire = JSON.stringify(events);
     for (const x of [secret.privateKey, secret.id, secret.userHandle]) expect(wire).not.toContain(x);
     expect(existsSync(join(dir, 'profile', 'Default', 'Preferences'))).toBe(true);

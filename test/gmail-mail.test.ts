@@ -239,6 +239,10 @@ test("answers are read by their anchors; one laid out otherwise is refused, sayi
   expect(notAMessage(Buffer.from('From a@example.com Thu Jan  1 00:00:00 2026\nFrom: a@example.com\n\nx'), null)).toBe('no header line at the start (an mbox "From " line first)');
   expect(notAMessage(Buffer.from('just some text\n'), null)).toBe('no header line at the start (a first line with no field name and colon, 15 bytes)');
   expect(notAMessage(Buffer.from('just some text\n'), null)).not.toContain('just');
+  // Taken as a message with no headers only when the caller says it is one, and never with markup after the blank line.
+  expect(notAMessage(Buffer.from('\r\nbody\r\n'), null, { headerless: true })).toBeNull();
+  expect(notAMessage(Buffer.from('\r\n<html>x</html>'), null, { headerless: true })).toBe('no header line at the start (a blank line first)');
+  expect(notAMessage(Buffer.from('\r\nbody'), 'text/html', { headerless: true })).toBe('an HTML page, not a message');
   expect(notAMessage(Buffer.from('X-Thing: 1\r\n\r\nbody'), null)).toBe('no message header in the header block');
 });
 
@@ -831,4 +835,18 @@ test('the self-check: counts, booleans and types only, nothing the mailbox holds
   expect(r2.page).toMatchObject({ syncPoint: false });
   expect(r2.mailboxes).toMatchObject({ count: 13, source: 'bv', user: 3 });
   expect(r2.evidence).toMatchObject({ bvTrailerEqualsPagePoint: null, bvTrailerMonotonic: true });
+});
+
+test('a message Gmail keeps with no headers: its blank-line-first original is read when Gmail lists it with no sender, refused otherwise', async () => {
+  const bare = fake.gmail.arrive({ subject: '', body: `Bare ${MARK}`, headerless: true, from: { email: '' }, labels: ['^all', '^i'] });
+  const posing = fake.gmail.arrive({ subject: '', body: `Posing ${MARK}`, headerless: true, labels: ['^all', '^i'] });
+  // Not seen in a listing yet: refused, as any download that starts with a blank line.
+  await expect(mailOf().get({ id: bare.id })).rejects.toMatchObject({ status: 502, message: expect.stringContaining('(a blank line first)') });
+  const mail = mailOf();
+  await mail.list({ mailboxId: '^i', limit: 5 });
+  const g = await mail.get({ id: bare.id });
+  expect(g).toMatchObject({ id: bare.id, from: [], to: [], subject: '', messageId: null, text: `Bare ${MARK}\n`, size: Buffer.byteLength(fakeEml(bare)) });
+  expect((await mail.raw({ id: bare.id })).size).toBe(Buffer.byteLength(fakeEml(bare)));
+  // Listed with a sender, the same shape is not a message with no headers: refused.
+  await expect(mail.get({ id: posing.id })).rejects.toMatchObject({ status: 502, message: expect.stringContaining('(a blank line first)') });
 });

@@ -528,9 +528,12 @@ export function parseS(json: unknown): SAnswer {
  * first line, a blank line after the block) holding at least one of the headers every message has, and is not an
  * HTML page (what a wrong key or a sign-in page would be). The reason when it is not, without its content.
  */
-export function notAMessage(bytes: Uint8Array, type: string | null | undefined): string | null {
+export function notAMessage(bytes: Uint8Array, type: string | null | undefined, opts: { headerless?: boolean } = {}): string | null {
   if (type && /^text\/html\b/i.test(type)) return 'an HTML page, not a message';
   const head = Buffer.from(bytes.subarray(0, 256 * 1024)).toString('latin1');
+  // A message with no headers at all: an empty header block, so a blank line first, then its body. Taken only when
+  // the caller knows the message is headerless (Gmail lists it with no sender), and never when markup follows.
+  if (opts.headerless && /^\r?\n/.test(head) && !/^\s*</.test(head)) return null;
   const end = head.search(/\r?\n\r?\n/);
   if (!/^[\x21-\x39\x3b-\x7e]{1,76}:/.test(head)) return `no header line at the start (${startOf(bytes.length, head)})`;
   if (end < 0) return 'no end to the header block';

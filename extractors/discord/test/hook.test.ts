@@ -384,6 +384,111 @@ describe('hook.js with several rspack runtimes', () => {
     expect(p.posted.find((m) => m.t === 'reply' && m.id === 'f')).toMatchObject({ ok: true, result: { nativeId: '88' } });
   });
 
+  describe('stickers and voice messages', () => {
+    const here = { id: '101', name: 'wave', format_type: 1, tags: '👋', guild_id: 'g1', available: true };
+    const elsewhere = { id: '102', name: 'party', format_type: 3, tags: 'tada', guild_id: 'g2', available: true };
+    const locked = { id: '103', name: 'boost', format_type: 1, guild_id: 'g1', available: false };
+    const standard = { id: '201', name: 'hello', format_type: 1, tags: '😺', pack_id: 'p1' };
+    const SENDABLE = 0;
+    const PREMIUM = 1;
+    // A stand-in for the client's own sendability rule: the same arguments, and the names its source carries.
+    function rule(st: any, user: any, channel: any) {
+      const nitro = { canUseCustomStickersEverywhere: (u: any) => !!u?.premiumType };
+      const members = { getSelfMember: (g: string) => (g === 'g1' || g === 'g2' ? {} : null) };
+      if (st.pack_id) return SENDABLE;
+      if (!members.getSelfMember(st.guild_id)) return 2;
+      if (!st.available) return 3;
+      if (channel?.guild_id === st.guild_id) return SENDABLE;
+      return nitro.canUseCustomStickersEverywhere(user) ? SENDABLE : PREMIUM;
+    }
+    const stickerPage = (withRule = true) => {
+      handlers.clear();
+      me = { id: '1', username: 'someone', premiumType: 0 } as any;
+      const p = page();
+      p.runHook();
+      const web = runtime(p.win, 'web');
+      chunk(p.win, '700', {
+        stores: storeModule,
+        stickers: (_m: any, e: any) => {
+          e.A = store('StickersStore', { getAllGuildStickers: () => new Map([['g2', [elsewhere]], ['g1', [here, locked]]]), getPremiumPacks: () => [{ id: 'p1', name: 'Wumpus', cover_sticker_id: '201', stickers: [standard] }] });
+        },
+        ...(withRule ? { rules: (_m: any, e: any) => ((e.Ux = { SENDABLE: 0 }), (e.W$ = rule)) } : {}),
+      });
+      web.T('stores');
+      web.T('stickers');
+      if (withRule) web.T('rules');
+      p.tick();
+      channelStore.getChannel = (id: string) => ({ id, guild_id: 'g1', type: 0 });
+      return p;
+    };
+    const run = async (p: ReturnType<typeof page>, id: string, c: unknown) => {
+      p.win.down({ t: 'cmd', id, cmd: c });
+      await Bun.sleep(1);
+      return p.posted.find((m) => m.t === 'reply' && m.id === id);
+    };
+    afterEach(() => {
+      channelStore.getChannel = () => null;
+      me = null;
+    });
+
+    test("lists what the client's own rule lets this account send: this server first, standard packs, nothing that needs Nitro", async () => {
+      const p = stickerPage();
+      const r = await run(p, 'st1', { kind: 'stickers', channelId: '5', offset: 0, limit: 8 });
+      expect(r).toMatchObject({ ok: true });
+      expect(r.result.packs).toEqual([
+        { id: 'g1', name: 'Guild g1', source: 'server', stickers: [{ id: '101', name: 'wave', format_type: 1, tags: '👋' }] },
+        { id: 'p1', name: 'Wumpus', source: 'standard', cover: '201', stickers: [{ id: '201', name: 'hello', format_type: 1, tags: '😺' }] },
+      ]);
+      expect(r.result).toMatchObject({ next: null, note: 'Stickers from other servers need Nitro.' });
+      const one = await run(p, 'st2', { kind: 'stickers', channelId: '5', offset: 0, limit: 1 });
+      expect(one.result.next).toBe(1);
+      expect((await run(p, 'st3', { kind: 'stickers', channelId: '5', offset: 1, limit: 1 })).result.packs.map((x: any) => x.id)).toEqual(['p1']);
+    });
+
+    test("without the client's rule, only this server's own and the standard packs", async () => {
+      const p = stickerPage(false);
+      const r = await run(p, 'st4', { kind: 'stickers', channelId: '5', offset: 0, limit: 8 });
+      expect(r.result.packs.map((x: any) => [x.id, x.stickers.map((y: any) => y.id)])).toEqual([
+        ['g1', ['101']],
+        ['p1', ['201']],
+      ]);
+    });
+
+    test("a sticker goes through the client's own sendStickers", async () => {
+      const p = stickerPage();
+      const calls: any[][] = [];
+      (messageActions as any).sendStickers = (...args: any[]) => (calls.push(args), Promise.resolve({ body: { id: '90' } }));
+      try {
+        const r = await run(p, 'st5', { kind: 'send', channelId: '5', content: '', nonce: 'n9', stickerIds: ['101'], replyTo: '4' });
+        expect(r).toMatchObject({ ok: true, result: { nativeId: '90' } });
+        expect(calls).toEqual([['5', ['101'], '', { nonce: 'n9', messageReference: { channel_id: '5', message_id: '4' } }]]);
+      } finally {
+        delete (messageActions as any).sendStickers;
+      }
+    });
+
+    test('a voice message: the flag, no text, and its length and waveform on the uploaded file', async () => {
+      const p = stickerPage();
+      const posts: any[] = [];
+      const realPost = rest.post;
+      rest.post = async (req: any) => {
+        posts.push(req);
+        if (req.url.endsWith('/attachments')) return { body: { attachments: [{ id: '0', upload_url: 'https://storage.example/v', upload_filename: 'up/voice-message.ogg' }] } };
+        return { body: { id: '91' } };
+      };
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = (async () => ({ ok: true, status: 200 })) as any;
+      try {
+        await run(p, 'v1', { kind: 'send', channelId: '5', content: 'ignored', nonce: 'n10', files: [{ name: 'voice-message.ogg', mime: 'audio/ogg', size: 3, base64: btoa('ogg') }], voice: { duration_secs: 2.5, waveform: 'AAEC' } });
+        await Bun.sleep(5);
+      } finally {
+        rest.post = realPost;
+        globalThis.fetch = realFetch;
+      }
+      expect(posts[1]).toMatchObject({ url: '/channels/5/messages', body: { content: '', flags: 8192, attachments: [{ id: '0', filename: 'voice-message.ogg', uploaded_filename: 'up/voice-message.ogg', duration_secs: 2.5, waveform: 'AAEC' }] } });
+    });
+  });
+
   describe('reacting', () => {
     const emojiA = { id: '1', name: 'here', animated: false, available: true, guildId: 'g1' };
     const emojiB = { id: '2', name: 'there', animated: true, available: true, guildId: 'g2' };
@@ -651,8 +756,9 @@ describe('hook.js with several rspack runtimes', () => {
       expect(server.noun).toBe('Server');
       expect(server.fields).toMatchObject({
         name: { value: 'Test server', canEdit: true },
-        topic: { value: 'About it', canEdit: false, reason: 'Change the server description in Discord.' },
-        avatar: { value: null, canEdit: false },
+        // A Community server's description and its icon, with Manage Server.
+        topic: { value: 'About it', canEdit: true },
+        avatar: { value: null, canEdit: true },
         nsfw: { value: false, canEdit: false },
       });
       expect(server.facts).toEqual([
@@ -674,7 +780,7 @@ describe('hook.js with several rspack runtimes', () => {
       try {
         const ch = await ask(p, { kind: 'configure', channelId: '300', patch: { name: 'renamed', rate_limit_per_user: 30, permission_overwrites: [], type: 5 } });
         expect(ch).toMatchObject({ ok: true, result: { channel: { id: '300', name: 'renamed', guild_id: '100' } } });
-        const g = await ask(p, { kind: 'configure', guildId: '100', patch: { name: 'New name', description: 'not offered' } });
+        const g = await ask(p, { kind: 'configure', guildId: '100', patch: { name: 'New name', description: 'Now offered', banner: 'not offered' } });
         expect(g).toMatchObject({ ok: true, result: { guild: { id: '100', name: 'New name' } } });
         expect((await ask(p, { kind: 'configure', channelId: '../users/@me', patch: { name: 'x' } })).ok).toBe(false);
         expect((await ask(p, { kind: 'configure', channelId: '300', patch: { icon: 'data:' } })).ok).toBe(false);
@@ -683,7 +789,7 @@ describe('hook.js with several rspack runtimes', () => {
       }
       expect(calls).toEqual([
         { url: '/channels/300', query: undefined, body: { name: 'renamed', rate_limit_per_user: 30 } },
-        { url: '/guilds/100', query: undefined, body: { name: 'New name' } },
+        { url: '/guilds/100', query: undefined, body: { name: 'New name', description: 'Now offered' } },
       ]);
     });
 
@@ -904,7 +1010,8 @@ describe('hook.js with several rspack runtimes', () => {
       const seen: any[] = [];
       rest.get = (req: any) => (seen.push(req), Promise.resolve({ body: body(WHO) }));
       const r = await ask(profilePage({}), { kind: 'profile', userId: WHO });
-      expect(seen).toEqual([{ url: '/users/42/profile', query: { type: 'popout', with_mutual_guilds: true, with_mutual_friends: true }, body: undefined }]);
+      // Then your note on them, as the client's profile asks for it (self.test.ts).
+      expect(seen).toEqual([{ url: '/users/42/profile', query: { type: 'popout', with_mutual_guilds: true, with_mutual_friends: true }, body: undefined }, { url: '/users/@me/notes/42', query: undefined, body: undefined }]);
       expect(r.result).toMatchObject({ bio: 'hi there', mutual_guilds: [{ id: '100', nick: 'Annie' }], mutual_friends: [{ id: '7' }] });
     });
 
@@ -2420,7 +2527,7 @@ describe('network search and member walks', () => {
     const p = searchPage();
     const r = await ask(p, 't1', { kind: 'threads', channelId: CH, archived: true, offset: 25 });
     expect(restCalls).toEqual([{ url: `/channels/${CH}/threads/search`, query: { archived: true, sort_by: 'last_message_time', sort_order: 'desc', offset: 25 }, body: undefined }]);
-    expect(r.result).toEqual({ threads: [expect.objectContaining({ id: THREAD, parent_id: CH })], more: true });
+    expect(r.result).toEqual({ threads: [expect.objectContaining({ id: THREAD, parent_id: CH })], more: true, messages: [] });
     // The list is Discord's search index: a 202 (resolved, as the live client does) is a wait, not "no threads".
     answer = async () => ({ status: 202, body: { message: 'Index not yet available. Try again later', code: 110000, documents_indexed: 0, retry_after: 3 } });
     expect((await ask(p, 't2', { kind: 'threads', channelId: CH, archived: false, offset: 0 })).result).toEqual({ indexing: 3, threads: [], more: false });
@@ -2566,5 +2673,201 @@ describe('network search and member walks', () => {
     q.win.down({ t: 'cmd', id: 'r3', cmd: { kind: 'walkMembers', guildId: G, query: '', limit: 100, recent: true } });
     await Bun.sleep(0);
     expect(dispatched).toEqual([{ type: 'GUILD_SEARCH_RECENT_MEMBERS', guildId: G, query: '', continuationToken: undefined }]);
+  });
+});
+
+describe('calls ringing you and voice channels (passive)', () => {
+  const voiceStates = new Map<string, Record<string, any>>();
+  const callCalls: string[] = [];
+  const callActions = {
+    call() {},
+    ring: (c: string) => void callCalls.push(`ring ${c}`),
+    stopRinging: async (c: string, r?: string[]) => void callCalls.push(`stop ${c}${r ? ` ${r}` : ''}`),
+  };
+  const voiceActions = { selectVoiceChannel: (c: string) => void callCalls.push(`select ${c}`), disconnect() {} };
+  const channels: Record<string, any> = { dm: { id: 'dm', type: 1 }, vc: { id: 'vc', type: 2, guild_id: '100' } };
+
+  function callsPage() {
+    handlers.clear();
+    callCalls.length = 0;
+    voiceStates.clear();
+    me = { id: '1', username: 'someone' };
+    userStoreGetUser.value = (id: string) => ({ id, username: `user${id}` });
+    channelStore.getChannel = (id: string) => channels[id] ?? null;
+    const p = page();
+    p.runHook();
+    const web = runtime(p.win, 'web');
+    chunk(p.win, '700', {
+      stores: storeModule,
+      voice: (_m: any, e: any) => {
+        e.v = store('VoiceStateStore', {
+          getVoiceStatesForChannel: (c: string) => voiceStates.get(c) ?? {},
+          getAllVoiceStates: () => ({ '100': voiceStates.get('vc') ?? {} }),
+          addChangeListener() {},
+          removeChangeListener() {},
+        });
+        e.c = callActions;
+        e.a = voiceActions;
+        e.u = store('AuthenticationStore', { getSessionId: () => 'session' });
+      },
+    });
+    web.T('stores');
+    web.T('voice');
+    p.tick();
+    const sent = (event: string) => p.posted.filter((x) => x.t === 'dispatch' && x.event === event).map((x) => x.data);
+    return { p, sent };
+  }
+  afterEach(() => {
+    channelStore.getChannel = () => null;
+    userStoreGetUser.value = () => null;
+    me = null;
+  });
+  const cmd = async (p: ReturnType<typeof page>, id: string, c: unknown) => {
+    p.win.down({ t: 'cmd', id, cmd: c });
+    await Bun.sleep(0);
+    return p.posted.find((m) => m.t === 'reply' && m.id === id);
+  };
+
+  test('a call that rings you: who rings whom and who is in it, from what the gateway told the client', () => {
+    const { p, sent } = callsPage();
+    expect(p.posted.find((m) => m.t === 'finders').results.CallActions).toBe(true);
+    voiceStates.set('dm', { '2': { userId: '2', channelId: 'dm' } });
+    emit('CALL_CREATE', { channelId: 'dm', messageId: '900', ongoingRings: { '1': '2' } });
+    voiceStates.set('dm', { '2': { userId: '2', channelId: 'dm' }, '1': { userId: '1', channelId: 'dm', selfMute: true } });
+    emit('CALL_UPDATE', { channelId: 'dm', messageId: '900', ongoingRings: {} });
+    emit('CALL_DELETE', { channelId: 'dm' });
+    expect(sent('CALL_STATE')).toEqual([
+      { channelId: 'dm', messageId: '900', ringing: ['1'], rungBy: { '1': '2' }, voice: ['2'], video: false, deleted: false },
+      { channelId: 'dm', messageId: '900', ringing: [], rungBy: {}, voice: ['1', '2'], video: false, deleted: false },
+      { channelId: 'dm', messageId: '900', ringing: [], rungBy: {}, voice: [], video: false, deleted: true },
+    ]);
+  });
+
+  test("voice channels' people, at most once a second, with their status line", () => {
+    const { p, sent } = callsPage();
+    p.tick(); // the snapshot after connecting: nobody yet
+    voiceStates.set('vc', { '5': { userId: '5', channelId: 'vc', selfVideo: true } });
+    emit('VOICE_STATE_UPDATES', { voiceStates: [{ userId: '5', channelId: 'vc', oldChannelId: null }] });
+    emit('VOICE_STATE_UPDATES', { voiceStates: [{ userId: '5', channelId: 'vc', oldChannelId: null }] });
+    expect(sent('VOICE_PEOPLE')).toEqual([]);
+    p.tick();
+    expect(sent('VOICE_PEOPLE')).toEqual([{ channels: [{ channelId: 'vc', guildId: '100', members: [{ id: '5', muted: false, deafened: false, video: true, streaming: false }] }] }]);
+    emit('VOICE_CHANNEL_STATUS_UPDATE', { id: 'vc', guildId: '100', status: 'playing chess' });
+    expect(sent('VOICE_STATUS')).toEqual([{ channels: [{ channelId: 'vc', status: 'playing chess' }] }]);
+  });
+
+  test("Decline is the client's own stopRinging; joining a DM with ring rings the others after selecting it", async () => {
+    const { p, sent } = callsPage();
+    emit('CALL_CREATE', { channelId: 'dm', messageId: '900', ongoingRings: { '1': '2' } });
+    expect(await cmd(p, 'd1', { kind: 'declineCall', channelId: 'dm' })).toMatchObject({ ok: true });
+    expect(callCalls).toEqual(['stop dm']);
+    expect(sent('CALL_STATE').at(-1)).toMatchObject({ ringing: [] });
+    callCalls.length = 0;
+    // A direct join (it waits for a voice server that never comes here): the ring follows the client's own join.
+    (dispatcher as any).addInterceptor = () => {};
+    try {
+      p.win.down({ t: 'cmd', id: 'j1', cmd: { kind: 'call', call: 'x', op: 'join', channelId: 'dm', mode: 'direct', ring: true } });
+      await Bun.sleep(0);
+      expect(p.posted.find((m) => m.t === 'reply' && m.id === 'j1')).toBeUndefined();
+      expect(callCalls).toEqual(['select dm', 'ring dm']);
+    } finally {
+      delete (dispatcher as any).addInterceptor;
+    }
+  });
+});
+
+describe('rich messages (src/rich.ts)', () => {
+  /** Let the hook's command chain (a few promise steps) run, without waiting on a clock. */
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  };
+  const members = new Map<string, { roles: string[] }>();
+  function richPage() {
+    handlers.clear();
+    me = { id: '1', username: 'someone' };
+    guildRecords.clear();
+    guildRecords.set('100', { id: '100', name: 'Test server' });
+    const p = page();
+    p.runHook();
+    const web = runtime(p.win, 'web');
+    chunk(p.win, '700', {
+      stores: storeModule,
+      rich: (_m: any, e: any) => {
+        e.m = store('GuildMemberStore', { getMember: (g: string, u: string) => (g === '100' ? (members.get(u) ?? null) : null), getNick: () => null });
+        e.g = store('GuildRoleStore', { getRoles: () => ({ '100': { id: '100', name: '@everyone', position: 0 }, '201': { id: '201', name: 'Helpers', position: 1, colorString: '#5c7cfa' } }) });
+      },
+    });
+    web.T('stores');
+    web.T('rich');
+    p.tick();
+    const sent = (event: string) => p.posted.filter((x) => x.t === 'dispatch' && x.event === event).map((x) => x.data);
+    return { p, sent };
+  }
+  afterEach(() => {
+    members.clear();
+    guildRecords.clear();
+    me = null;
+  });
+
+  test("a message's flags, components (the client's record shape), role names and command go along, whitelisted", () => {
+    const { sent } = richPage();
+    const message = {
+      id: '900',
+      channelId: '300',
+      guildId: '100',
+      author: { id: '5', username: 'bot', bot: true },
+      content: 'ping <@&201>',
+      timestamp: '2026-11-01T00:00:00.000Z',
+      flags: 4096 | 32768,
+      applicationId: '5',
+      mentionRoles: ['201'],
+      interactionMetadata: { type: 2, name: 'deploy', user: { id: '7', username: 'ann', secret: 'x' } },
+      components: [
+        { type: 1, id: '0', components: [{ type: 2, id: '0,0', customId: 'go', style: 1, label: 'Go', emoji: { id: '9', name: 'rocket', animated: false, extra: 1 } }] },
+        { type: 12, id: '1', items: [{ media: { url: 'https://media.discordapp.net/a.png', proxyUrl: 'https://media.discordapp.net/a.png?p', contentType: 'image/png', width: 10, height: 10, loadingState: 2 }, description: 'alt', spoiler: false }] },
+      ],
+      attachments: [{ id: '1', filename: 'v.ogg', content_type: 'audio/ogg', url: 'https://cdn.discordapp.com/a/v.ogg', duration_secs: 3.5, waveform: 'AAA=', description: 'a voice note', flags: 8 }],
+      embeds: [{ type: 'rich', rawTitle: 't', color: 0xff0000, footer: { text: 'f', iconProxyURL: 'https://images-ext-1.discordapp.net/f.png' }, timestamp: { toISOString: () => '2026-11-01T00:00:00.000Z' }, video: { url: 'https://www.youtube.com/embed/x', width: 1, height: 1 } }],
+    };
+    emit('MESSAGE_CREATE', { channelId: '300', message });
+    const m = sent('MESSAGE_CREATE')[0].message;
+    expect(m.flags).toBe(4096 | 32768);
+    expect(m.application_id).toBe('5');
+    expect(m.mention_roles).toEqual(['201']);
+    expect(m.mention_role_names).toEqual([{ id: '201', name: 'Helpers', color: '#5c7cfa' }]);
+    expect(m.interaction_metadata).toEqual({ type: 2, name: 'deploy', user: expect.objectContaining({ id: '7', username: 'ann' }) });
+    expect(JSON.stringify(m)).not.toContain('secret');
+    expect(m.components[0].components[0]).toMatchObject({ type: 2, custom_id: 'go', style: 1, label: 'Go', emoji: { id: '9', name: 'rocket', animated: false } });
+    expect(m.components[1].items[0]).toEqual({ media: { url: 'https://media.discordapp.net/a.png', proxy_url: 'https://media.discordapp.net/a.png?p', content_type: 'image/png', width: 10, height: 10, attachment_id: undefined }, description: 'alt', spoiler: false });
+    expect(JSON.stringify(m)).not.toContain('loadingState');
+    expect(m.attachments[0]).toMatchObject({ duration_secs: 3.5, waveform: 'AAA=', description: 'a voice note', flags: 8 });
+    expect(m.embeds[0]).toMatchObject({ color: 0xff0000, footer: { text: 'f', icon_url: 'https://images-ext-1.discordapp.net/f.png' }, timestamp: '2026-11-01T00:00:00.000Z', video: { url: 'https://www.youtube.com/embed/x', width: 1, height: 1 } });
+  });
+
+  test('your own roles go with the snapshot, and with a server joined; no one else is looked up', () => {
+    members.set('1', { roles: ['201'] });
+    members.set('5', { roles: ['201'] });
+    const { p, sent } = richPage();
+    emit('CONNECTION_OPEN');
+    const snap = p.posted.find((x) => x.t === 'snapshot');
+    expect(snap.data.selfRoles).toBeDefined();
+    emit('GUILD_CREATE', { guild: { id: '100', name: 'Test server' } });
+    expect(sent('GUILD_CREATE')[0].self_roles).toEqual(['201']);
+  });
+
+  test("a purge and a batch of reactions are forwarded", () => {
+    const { sent } = richPage();
+    emit('MESSAGE_DELETE_BULK', { ids: ['1', '2', 3], channelId: '300', guildId: '100' });
+    expect(sent('MESSAGE_DELETE_BULK')).toEqual([{ ids: ['1', '2'], channelId: '300', guildId: '100' }]);
+    emit('MESSAGE_REACTION_ADD_MANY', { channelId: '300', messageId: '900', reactions: [{ emoji: { id: null, name: '🔥' }, users: ['7'], reactionType: 0 }] });
+    expect(sent('MESSAGE_REACTION_ADD_MANY')[0]).toMatchObject({ channelId: '300', messageId: '900', reactions: [{ emoji: { id: null, name: '🔥' }, reactionType: 0, users: [{ id: '7' }] }] });
+  });
+
+  test("a send AutoMod blocked comes back as an error that says so", async () => {
+    const { p } = richPage();
+    messageActions.sendMessage = (() => Promise.reject({ hasErr: false, status: 400, body: { code: 200000, message: 'Message was blocked by AutoMod' } })) as any;
+    p.win.down({ t: 'cmd', id: 'am', cmd: { kind: 'send', channelId: '300', content: 'bad words', nonce: 'n9' } });
+    await settle();
+    expect(p.posted.find((m) => m.t === 'reply' && m.id === 'am')).toMatchObject({ ok: false, error: "This server's AutoMod blocked it: Message was blocked by AutoMod" });
   });
 });

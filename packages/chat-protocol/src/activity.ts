@@ -24,8 +24,10 @@ export type VisitView =
   /** Requests waiting on you (docs/add.md). */
   | 'requests'
   /** dither-calendar's pane (docs/calendar.md). */
-  | 'calendar';
-export const VISIT_VIEWS: readonly VisitView[] = ['inbox', 'triage', 'conversation', 'space', 'person', 'people', 'profile', 'folder', 'spaces', 'search', 'settings', 'accounts', 'directory', 'mail', 'requests', 'calendar'];
+  | 'calendar'
+  /** Notices (docs/notices.md). */
+  | 'notices';
+export const VISIT_VIEWS: readonly VisitView[] = ['inbox', 'triage', 'conversation', 'space', 'person', 'people', 'profile', 'folder', 'spaces', 'search', 'settings', 'accounts', 'directory', 'mail', 'requests', 'calendar', 'notices'];
 
 /**
  * How the user got there. `notification`: a tap on a push (sw.js, the Android app); `toast`: on the in-app

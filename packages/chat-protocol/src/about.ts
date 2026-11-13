@@ -12,6 +12,10 @@
 import type { MediaUrl } from './adapter.ts';
 import type { PostFact } from './feed.ts';
 import { NETWORK_META, type Network } from './ontology.ts';
+import type { AboutLeaving, InviteLinkFact, InviteOptions } from './servers.ts';
+import { PIN_DURATIONS } from './poll.ts';
+import type { AboutOwnership, AboutThread } from './threads.ts';
+import type { AboutLabel, AboutModeration, MemberMod } from './moderation.ts';
 
 /** Who may do something, as far as the networks agree. */
 export type Who = 'everyone' | 'admins';
@@ -49,11 +53,17 @@ export interface AboutValues {
   history: HistoryVisibility;
   /** End-to-end encrypted. On Matrix it can be turned on, never off. */
   encrypted: boolean;
+  /** Minutes of no activity before a new thread hides itself (Discord's default auto-archive): 60, 1440, 4320, 10080. */
+  autoArchive: number;
+  /** How many may be in a voice channel at once (Discord). 0: no limit. */
+  userLimit: number;
+  /** A voice channel's audio quality, bits a second (Discord). */
+  bitrate: number;
 }
 
 export type AboutKey = keyof AboutValues;
 
-export const ABOUT_KEYS: readonly AboutKey[] = ['name', 'topic', 'avatar', 'disappearing', 'slowMode', 'nsfw', 'announceOnly', 'editInfo', 'addMembers', 'joinApproval', 'joinRule', 'history', 'encrypted'];
+export const ABOUT_KEYS: readonly AboutKey[] = ['name', 'topic', 'avatar', 'disappearing', 'slowMode', 'nsfw', 'announceOnly', 'editInfo', 'addMembers', 'joinApproval', 'joinRule', 'history', 'encrypted', 'autoArchive', 'userLimit', 'bitrate'];
 
 /** One setting: its value, and whether this account may change it. */
 export interface AboutSetting<K extends AboutKey = AboutKey> {
@@ -62,6 +72,13 @@ export interface AboutSetting<K extends AboutKey = AboutKey> {
   canEdit: boolean;
   /** Why not, in words (shown on hover and under the setting). Also a limit worth knowing when canEdit is true. */
   reason?: string;
+  /** The values this account may pick here, where they depend on the place (Discord's bitrate by the server's boosts). */
+  options?: number[];
+  /**
+   * Only the change can be sent, not the value read back (Signal's join approval: signal-cli does not say whether it
+   * is on). The panel offers it as a choice, with the reason saying why the current value is unknown.
+   */
+  writeOnly?: boolean;
 }
 
 export type AboutFields = { [K in AboutKey]?: AboutSetting<K> };
@@ -75,6 +92,10 @@ export interface AboutMember {
   rank?: number;
   /** CSS colour of their role (Discord). */
   color?: string;
+  /** Their member label in a group (Signal), a few words and an emoji. */
+  label?: { text?: string; emoji?: string };
+  /** How this account stands to them, for moderating (capability 'moderate', moderation.ts). */
+  mod?: MemberMod;
 }
 
 export interface AboutRole {
@@ -104,6 +125,12 @@ export interface AboutInvite {
   reason?: string;
   /** A Matrix address (alias) or room id, which works as a link without anyone making one. */
   derived?: boolean;
+  /** Every link the account may see, newest first (capability 'inviteLinks'); `link` is then the newest of them. */
+  links?: InviteLinkFact[];
+  /** The space's own short address, which never runs out (Discord's vanity URL). */
+  vanity?: string;
+  /** The expiry and use limits a new link may have, and the defaults (capability 'inviteLinks'). */
+  options?: InviteOptions;
 }
 
 export interface AboutPinned {
@@ -111,6 +138,11 @@ export interface AboutPinned {
   messages: string[];
   canEdit: boolean;
   reason?: string;
+  /**
+   * The network's whole list, just read (Discord's pinned list). Absent: the network keeps none this account can read
+   * (Signal), so the hub adds the pins it saw itself.
+   */
+  complete?: boolean;
 }
 
 /**
@@ -241,6 +273,20 @@ export interface About {
   pinned?: AboutPinned;
   /** Read-only details only some networks have: "Room version", "Verification level", "Created". */
   facts?: { label: string; value: string }[];
+  /** Leaving it (capability 'leave', servers.ts). */
+  leaving?: AboutLeaving;
+  /** Your own nickname here (capability 'nick', the `setNick` command): value null for none. */
+  nick?: { value: string | null; canEdit: boolean; reason?: string; max?: number };
+  /** You blocked this group: nothing from it reaches you (capability 'block'; the `block` command changes it). */
+  blocked?: boolean;
+  /** A thread's archiving, locking and following (threads.ts). */
+  thread?: AboutThread;
+  /** A group with an owner: who, and whether this account may remove people or hand it over (threads.ts). */
+  ownership?: AboutOwnership;
+  /** What this account may do to its members (capability 'moderate', moderation.ts). */
+  moderation?: AboutModeration;
+  /** Your own member label here (Signal); `configure` with key 'label' changes it. */
+  label?: AboutLabel;
 }
 
 export interface AboutTarget {
@@ -251,8 +297,8 @@ export interface AboutTarget {
 /** One change. `invite` makes, replaces or turns off the invite link; `pin` pins or unpins a message. */
 export type AboutChange =
   | { [K in AboutKey]: { key: K; value: AboutValues[K] } }[AboutKey]
-  | { key: 'invite'; op: 'create' | 'revoke' }
-  | { key: 'pin'; message: string; remove?: boolean };
+  | { key: 'invite'; op: 'create' | 'revoke'; /** create: seconds, 0 never. */ maxAge?: number; /** create: 0 no limit. */ maxUses?: number; temporary?: boolean; /** revoke: which link, else the newest. */ code?: string }
+  | { key: 'pin'; message: string; remove?: boolean; /** How long it stays pinned, one of poll.ts PIN_DURATIONS for the network (null: until unpinned); absent: its default. */ seconds?: number | null };
 
 // ---------------------------------------------------------------- per network
 
@@ -266,6 +312,10 @@ export interface AboutRules {
   /** Any timer works, not just the ones offered (Signal sets any number of seconds). */
   disappearingFree?: boolean;
   slowMode?: number[];
+  /** Discord: thread auto-archive minutes, voice user limits and bitrates its own settings offer. */
+  autoArchive?: number[];
+  userLimit?: number[];
+  bitrate?: number[];
   nameMax?: number;
   topicMax?: number;
 }
@@ -275,9 +325,12 @@ const DAY = 24 * HOUR;
 
 export const ABOUT_RULES: Record<Network, AboutRules> = {
   discord: {
-    conversation: ['name', 'topic', 'avatar', 'slowMode', 'nsfw', 'announceOnly'],
+    conversation: ['name', 'topic', 'avatar', 'slowMode', 'nsfw', 'announceOnly', 'autoArchive', 'userLimit', 'bitrate'],
     space: ['name', 'topic', 'avatar', 'nsfw'],
     slowMode: [0, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, HOUR, 2 * HOUR, 6 * HOUR],
+    autoArchive: [60, 1440, 4320, 10080],
+    userLimit: [0, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 50, 75, 99],
+    bitrate: [8000, 16000, 24000, 32000, 48000, 64000, 80000, 96000, 128000, 256000, 384000],
     nameMax: 100,
     topicMax: 1024,
   },
@@ -333,6 +386,11 @@ export const ABOUT_RULES: Record<Network, AboutRules> = {
     conversation: [],
     space: [],
   },
+  // Nor have the calendar's chats.
+  calendar: {
+    conversation: [],
+    space: [],
+  },
 };
 
 export const ABOUT_LABEL: Record<AboutKey, string> = {
@@ -349,6 +407,9 @@ export const ABOUT_LABEL: Record<AboutKey, string> = {
   joinRule: 'Who can join',
   history: 'Who can read history',
   encrypted: 'End-to-end encryption',
+  autoArchive: 'Hide threads after inactivity',
+  userLimit: 'User limit',
+  bitrate: 'Bitrate',
 };
 
 /** "5 minutes", "1 day", "Off". */
@@ -385,8 +446,12 @@ export const HISTORY_LABEL: Record<HistoryVisibility, string> = {
  */
 export function aboutChangeProblem(network: Network, kind: AboutTarget['kind'], change: AboutChange): string | null {
   const rules = ABOUT_RULES[network];
-  if (change.key === 'invite') return change.op === 'create' || change.op === 'revoke' ? null : 'unknown invite operation';
-  if (change.key === 'pin') return typeof change.message === 'string' && change.message ? null : 'which message?';
+  if (change.key === 'invite') return inviteChangeProblem(change);
+  if (change.key === 'pin') {
+    if (typeof change.message !== 'string' || !change.message) return 'which message?';
+    if (change.seconds === undefined || change.remove) return null;
+    return PIN_DURATIONS[network]?.includes(change.seconds) ? null : 'Not one of the pin durations this network offers';
+  }
   if (!ABOUT_KEYS.includes(change.key)) return `unknown setting ${String(change.key)}`;
   if (!rules[kind].includes(change.key)) return `${ABOUT_LABEL[change.key]} is not a setting here`;
   const v = change.value as unknown;
@@ -402,13 +467,20 @@ export function aboutChangeProblem(network: Network, kind: AboutTarget['kind'], 
       if (rules.topicMax && v.length > rules.topicMax) return `a description is at most ${rules.topicMax} characters here`;
       return null;
     case 'avatar':
-      return 'changing the picture is not supported yet';
+      // A new picture: the hub hands the adapter the uploaded file as a file:// URL in its spool (moderation.ts PICTURE_TYPES).
+      return typeof v === 'string' && v.startsWith('file://') ? null : 'which picture?';
     case 'disappearing':
       if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return 'a timer is a whole number of seconds';
       if (!rules.disappearingFree && !rules.disappearing?.includes(v)) return `${durationLabel(v)} is not one of the timers offered here`;
       return null;
     case 'slowMode':
       return typeof v === 'number' && rules.slowMode?.includes(v) ? null : 'not one of the slow mode choices';
+    case 'autoArchive':
+      return typeof v === 'number' && rules.autoArchive?.includes(v) ? null : 'not one of the choices for hiding threads';
+    case 'userLimit':
+      return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 99 ? null : 'a user limit is 0 (none) to 99';
+    case 'bitrate':
+      return typeof v === 'number' && rules.bitrate?.includes(v) ? null : 'not one of the bitrate choices';
     case 'editInfo':
     case 'addMembers':
       return v === 'everyone' || v === 'admins' ? null : 'everyone or admins';
@@ -421,6 +493,15 @@ export function aboutChangeProblem(network: Network, kind: AboutTarget['kind'], 
     default:
       return typeof v === 'boolean' ? null : 'on or off';
   }
+}
+
+/** An invite change's shape: create with whole, non-negative limits, revoke with a code if any. */
+function inviteChangeProblem(c: Extract<AboutChange, { key: 'invite' }>): string | null {
+  if (c.op !== 'create' && c.op !== 'revoke') return 'unknown invite operation';
+  const whole = (n: unknown) => n === undefined || (typeof n === 'number' && Number.isInteger(n) && n >= 0);
+  if (!whole(c.maxAge) || !whole(c.maxUses)) return 'an expiry and a use limit are whole numbers';
+  if (c.code !== undefined && (typeof c.code !== 'string' || !/^[\w-]{1,64}$/.test(c.code))) return 'which link?';
+  return null;
 }
 
 // ---------------------------------------------------------------- people
@@ -457,6 +538,18 @@ export interface PersonAbout {
   links?: { label: string; value: string; url?: string; verified?: boolean }[];
   /** Anything else worth a line: "Business account", "Local time". */
   facts?: { label: string; value: string }[];
+  /** Badges the network shows on their profile, by name, with the network's picture. */
+  badges?: { name: string; icon?: MediaUrl }[];
+  /** A frame drawn around their picture (Discord's avatar decoration). */
+  decoration?: MediaUrl;
+  /** Their profile's own colours, as CSS hex, top first (Discord's theme colours). */
+  themeColors?: string[];
+  /** Your safety number with them (capability 'safetyNumbers'). */
+  safety?: SafetyNumber;
+  /** When the person is you: what the `setProfile` command can change on this account. Absent: only the bio. */
+  editable?: ProfileField[];
+  /** When the person is you: your username and its link, where the network has them and one is set. */
+  username?: { name: string; link?: string };
   /**
    * Their recent posts, newest first (X: up to 20 from their profile's Posts tab, reposts included, a pinned one
    * first with `pinned`). Only in an answer to `profile`, never in a `personAbout` event.
@@ -466,6 +559,24 @@ export interface PersonAbout {
   counts?: { followers?: number; following?: number; posts?: number };
   /** They follow you (X). */
   followsYou?: boolean;
+}
+
+/** What `setProfile` may change: the bio, the profile name, the emoji by the bio, the picture, the username, pronouns, the banner and its colour. */
+export type ProfileField = 'bio' | 'name' | 'emoji' | 'avatar' | 'username' | 'pronouns' | 'banner' | 'accent';
+
+/**
+ * A safety number (Signal): the digits two people compare to know nobody sits between them, and what their phones
+ * scan instead. `trust`: verified (you compared it and said so), unverified (trusted as first seen, Signal's default),
+ * untrusted (it changed and is not accepted yet).
+ */
+export interface SafetyNumber {
+  /** The digits, without spaces (Signal shows 60 in 12 groups of 5). */
+  digits: string;
+  /** What Signal's QR code holds, base64: shown as a QR code of those bytes, for their phone to scan. */
+  scannable?: string;
+  trust: 'verified' | 'unverified' | 'untrusted';
+  /** ms epoch: when their key last changed, if it changed since this device first saw it. */
+  changedAt?: number;
 }
 
 /**

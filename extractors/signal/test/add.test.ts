@@ -197,7 +197,7 @@ afterAll(async () => {
 });
 
 describe('group links and message requests, offline', () => {
-  test("a group's id from its master key is libsignal's (vectors from libsignal-client 0.103 in signal-cli 0.14.9)", () => {
+  test("a group's id from its master key is libsignal's (vectors from the libsignal-client bundled in signal-cli 0.14.8)", () => {
     // GroupSecretParams.deriveFromMasterKey(new GroupMasterKey(key)).getPublicParams().getGroupIdentifier()
     expect(groupIdOfMasterKey(key(0))).toBe('tp/S9Mife/m1aODI3X7zDLnMR0Hhwnc85WnQRB0CpfQ=');
     expect(groupIdOfMasterKey(key(7))).toBe('4V5qb92NezHrnm/23S+/9387dfdHqLZZcpf2L+h7Jm4=');
@@ -267,7 +267,7 @@ describe('adding on Signal against a fake signal-cli', () => {
   });
 
   test('quiet: a message request gets no read receipt, typing, reply, reaction or timer, from any command', async () => {
-    const out = ['sendReceipt', 'sendTyping', 'send', 'sendReaction', 'updateContact', 'remoteDelete'];
+    const out = ['sendReceipt', 'sendTyping', 'send', 'sendReaction', 'updateContact', 'remoteDelete', 'sendPollVote', 'sendPollCreate', 'sendPinMessage'];
     const before = out.map((m) => calls(m).length);
     const mark = events.length;
     push(dmFrom(JAMIE, 'Jamie', T + 500, 'are you around?'));
@@ -281,6 +281,9 @@ describe('adding on Signal against a fake signal-cli', () => {
     await expect(cmd({ t: 'react', conversation: dm(JAMIE), message: `${JAMIE}:${T + 500}`, key: '👍' })).rejects.toThrow('Accept this message request first');
     await expect(cmd({ t: 'configure', target: { kind: 'conversation', nativeId: dm(JAMIE) }, change: { key: 'disappearing', value: 3600 } })).rejects.toThrow('Accept this message request first');
     await expect(cmd({ t: 'redact', conversation: dm(JAMIE), message: `${SELF}:${T + 600}` })).rejects.toThrow('Accept this message request first');
+    await expect(cmd({ t: 'pollVote', conversation: dm(JAMIE), message: `${JAMIE}:${T + 500}`, options: ['0'] })).rejects.toThrow('Accept this message request first');
+    await expect(cmd({ t: 'pollCreate', conversation: dm(JAMIE), poll: { question: 'Q', options: ['a', 'b'], multi: false } })).rejects.toThrow('Accept this message request first');
+    await expect(cmd({ t: 'configure', target: { kind: 'conversation', nativeId: dm(JAMIE) }, change: { key: 'pin', message: `${JAMIE}:${T + 500}` } })).rejects.toThrow('Accept this message request first');
     await Bun.sleep(300);
     expect(out.map((m) => calls(m).length)).toEqual(before);
     expect(of('request', mark)).toEqual([]); // nothing new: it was on the list
@@ -506,7 +509,7 @@ describe('adding on Signal against a fake signal-cli', () => {
     await until('the request', () => requestOf(`message:${ELI}`, mark));
     const at = events.length;
     adapter.onHubConnect();
-    expect(events.slice(at).map((e) => e.t)).toEqual(['hello', 'status', 'requests']);
+    expect(events.slice(at).map((e) => e.t)).toEqual(['hello', 'status', 'requests', 'relationships']);
     expect(of('requests', at)[0].requests.map((r) => r.nativeId)).toEqual([`message:${ELI}`]);
   });
 

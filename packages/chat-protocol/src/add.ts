@@ -93,6 +93,8 @@ export interface RequestFact {
    * possible spam", "Discord says you share no server or friend with them".
    */
   warning?: string;
+  /** The network filed it as spam (Discord's spam folder): it never notifies, and sits last under Requests. */
+  spam?: boolean;
 }
 
 /** How you stand with someone that an account's list holds (capability 'relationships'). Incoming requests are RequestFacts. */

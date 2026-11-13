@@ -40,6 +40,29 @@ export interface SigAttachment {
   isVoiceNote?: boolean;
 }
 
+/** JsonStoryMessage: a story, a picture or video (fileAttachment) or text. Colours are "#AARRGGBB". */
+export interface SigStory {
+  allowsReplies?: boolean;
+  groupId?: string | null;
+  fileAttachment?: SigAttachment | null;
+  textAttachment?: {
+    text?: string | null;
+    style?: string | null;
+    textForegroundColor?: string | null;
+    textBackgroundColor?: string | null;
+    preview?: { url?: string | null; title?: string | null } | null;
+    backgroundGradient?: { startColor?: string | null; endColor?: string | null; colors?: string[] | null; positions?: number[] | null; angle?: number | null } | null;
+    backgroundColor?: string | null;
+  } | null;
+}
+
+/** JsonSyncStoryMessage: a story you posted on another device. */
+export interface SigSyncStory {
+  destinationNumber?: string | null;
+  destinationUuid?: string | null;
+  dataMessage?: SigStory | null;
+}
+
 export interface SigQuote {
   id: number; // sent timestamp of the quoted message
   author?: string | null;
@@ -74,10 +97,19 @@ export interface SigGroupInfo {
   type?: 'UPDATE' | 'DELIVER' | string;
 }
 
+/** One of a shared contact's phones or emails. `type` is HOME, MOBILE, WORK or CUSTOM (then `label` names it). */
+export interface SigContactValue {
+  value?: string | null;
+  type?: string | null;
+  label?: string | null;
+}
+
 export interface SigSharedContact {
   name?: { nickname?: string | null; given?: string | null; family?: string | null; prefix?: string | null; suffix?: string | null; middle?: string | null } | null;
-  phone?: { value?: string | null }[] | null;
-  email?: { value?: string | null }[] | null;
+  avatar?: { attachment?: SigAttachment | null; isProfile?: boolean } | null;
+  phone?: SigContactValue[] | null;
+  email?: SigContactValue[] | null;
+  address?: { type?: string | null; label?: string | null; street?: string | null; pobox?: string | null; neighborhood?: string | null; city?: string | null; region?: string | null; postcode?: string | null; country?: string | null }[] | null;
   organization?: string | null;
 }
 
@@ -101,7 +133,8 @@ export interface SigDataMessage {
   remoteDelete?: { timestamp: number } | null;
   contacts?: SigSharedContact[] | null;
   pollCreate?: { question?: string | null; allowMultiple?: boolean; options?: string[] | null } | null;
-  pollVote?: (SigTargeted & { optionIndexes?: number[]; voteCount?: number; author?: string | null; authorNumber?: string | null; authorUuid?: string | null }) | null;
+  /** The poll's author (author, authorNumber, authorUuid) and its timestamp; the voter is the message's sender. */
+  pollVote?: { targetSentTimestamp: number; optionIndexes?: number[]; voteCount?: number; author?: string | null; authorNumber?: string | null; authorUuid?: string | null } | null;
   pollTerminate?: { targetSentTimestamp: number } | null;
   textStyles?: SigTextStyle[] | null;
   groupInfo?: SigGroupInfo | null;
@@ -133,7 +166,7 @@ export interface SigReadMessage {
 
 export interface SigSyncMessage {
   sentMessage?: SigSentMessage | null;
-  sentStoryMessage?: unknown;
+  sentStoryMessage?: SigSyncStory | null;
   blockedNumbers?: string[] | null;
   blockedGroupIds?: string[] | null;
   readMessages?: SigReadMessage[] | null;
@@ -170,7 +203,7 @@ export interface SigEnvelope extends SigAddressish {
   serverDeliveredTimestamp?: number;
   dataMessage?: SigDataMessage | null;
   editMessage?: SigEditMessage | null;
-  storyMessage?: unknown;
+  storyMessage?: SigStory | null;
   syncMessage?: SigSyncMessage | null;
   callMessage?: SigCallMessage | null;
   receiptMessage?: SigReceiptMessage | null;
@@ -222,7 +255,8 @@ export interface SigGroup {
   isMember?: boolean;
   isBlocked?: boolean;
   messageExpirationTime?: number;
-  members?: { number?: string | null; uuid?: string | null; isAdmin?: boolean }[];
+  /** label, labelEmoji: the member label each set (signal-cli 0.14.8, JsonGroupMember). */
+  members?: { number?: string | null; uuid?: string | null; isAdmin?: boolean; label?: string | null; labelEmoji?: string | null }[];
   pendingMembers?: { number?: string | null; uuid?: string | null }[];
   requestingMembers?: { number?: string | null; uuid?: string | null }[];
   admins?: { number?: string | null; uuid?: string | null }[];
@@ -253,4 +287,15 @@ export interface SigUserStatus {
 export interface SigJoinResult extends Partial<SigSendResult> {
   groupId?: string | null;
   onlyRequested?: boolean;
+}
+
+/** listStickerPacks (ListStickerPacksCommand.JsonStickerPack). */
+export interface SigStickerPack {
+  packId: string;
+  url?: string | null;
+  installed?: boolean;
+  title?: string | null;
+  author?: string | null;
+  cover?: { id: number; emoji?: string | null; contentType?: string | null } | null;
+  stickers?: { id: number; emoji?: string | null; contentType?: string | null }[] | null;
 }

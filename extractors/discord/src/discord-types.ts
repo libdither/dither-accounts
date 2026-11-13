@@ -9,6 +9,13 @@
  * map.ts turns these into protocol facts.
  */
 
+import type { CallEffect, CallParticipant, CallStage } from '@dither-chat/protocol';
+import type { RawSelfUp, SelfHookCommand } from './self.ts';
+import type { AttentionDispatch, AttentionHookCommand } from './attention.ts';
+import type { InteractDispatch, InteractHookCommand } from './interact.ts';
+import type { RawThreadFields, ThreadDispatch, ThreadHookCommand } from './threads.ts';
+import type { SendingHookCommand } from './sending.ts';
+
 // ----------------------------------------------------------------- raw Discord
 
 export interface RawUser {
@@ -47,6 +54,15 @@ export interface RawChannel {
   /** threads */
   thread_metadata?: { archived?: boolean; locked?: boolean };
   last_message_id?: string | null;
+  /** A thread's membership, tags and counts, a forum's tags (threads.ts RawThreadFields). */
+  member?: RawThreadFields['member'];
+  applied_tags?: string[];
+  available_tags?: RawThreadFields['available_tags'];
+  default_sort_order?: number | null;
+  default_forum_layout?: number | null;
+  flags?: number | null;
+  message_count?: number | null;
+  create_timestamp?: string | null;
 }
 
 export interface RawAttachment {
@@ -58,6 +74,15 @@ export interface RawAttachment {
   height?: number;
   url: string;
   proxy_url?: string;
+  /** Alt text. */
+  description?: string | null;
+  /** IS_SPOILER 8, CONTAINS_EXPLICIT_MEDIA 16 (rich.ts). */
+  flags?: number;
+  /** The client's record says a spoiler itself. */
+  spoiler?: boolean;
+  /** A voice message's length and waveform (base64, a byte a point). */
+  duration_secs?: number;
+  waveform?: string;
 }
 
 export interface RawEmbed {
@@ -66,16 +91,69 @@ export interface RawEmbed {
   description?: string;
   url?: string;
   provider?: { name?: string };
-  author?: { name?: string };
+  author?: { name?: string; icon_url?: string; url?: string };
   fields?: { name: string; value: string }[];
   thumbnail?: { url?: string };
   image?: { url?: string };
+  /** An int from the gateway; the hook passes either form (rich.ts embedMore). */
+  color?: number | string;
+  footer?: { text?: string; icon_url?: string };
+  timestamp?: string | number;
+  video?: { url?: string; proxy_url?: string; width?: number; height?: number };
+}
+
+/** A message component, raw or from the client's record, as the hook whitelists it (rich.ts). */
+export interface RawComponent {
+  type: number;
+  custom_id?: string;
+  style?: number;
+  label?: string;
+  emoji?: { id?: string | null; name?: string | null; animated?: boolean } | null;
+  url?: string;
+  disabled?: boolean;
+  placeholder?: string;
+  min_values?: number;
+  max_values?: number;
+  options?: { label?: string; value?: string; description?: string; emoji?: RawComponent['emoji']; default?: boolean }[];
+  components?: RawComponent[];
+  accessory?: RawComponent;
+  content?: string;
+  media?: RawComponentMedia;
+  file?: RawComponentMedia;
+  items?: { media?: RawComponentMedia; description?: string | null; spoiler?: boolean }[];
+  description?: string | null;
+  spoiler?: boolean;
+  divider?: boolean;
+  name?: string;
+  size?: number;
+}
+export interface RawComponentMedia {
+  url?: string;
+  proxy_url?: string;
+  content_type?: string;
+  width?: number;
+  height?: number;
+  attachment_id?: string;
 }
 
 export interface RawEmoji {
   id?: string | null;
   name: string | null;
   animated?: boolean;
+}
+
+/**
+ * A poll as the hook picks it (polls.ts): counts by answer id and your own answers, when the client or the gateway
+ * said them. An older hook sent `answers` as their words alone.
+ */
+export interface RawPoll {
+  question?: string;
+  answers?: ({ id: string; text?: string; emoji?: RawEmoji | null } | string)[];
+  expiry?: string | null;
+  allow_multiselect?: boolean;
+  finalized?: boolean;
+  counts?: Record<string, number>;
+  mine?: string[];
 }
 
 export interface RawReaction {
@@ -120,12 +198,36 @@ export interface RawMessage {
   message_snapshots?: { content?: string; timestamp?: string; attachments?: RawAttachment[]; embeds?: RawEmbed[] }[];
   /** format_type: 1 PNG, 2 APNG, 3 Lottie, 4 GIF. Older hooks sent the name alone. */
   sticker_items?: RawStickerItem[];
-  poll?: { question?: string; answers?: string[] };
+  poll?: RawPoll;
   nonce?: string | number;
   /** Absent when the hook did not say (a partial update). */
   pinned?: boolean;
   /** The author's member object the gateway sent with a guild message, as it came (never looked up). */
   member?: Omit<RawSeenMember, 'user'>;
+  /** A call message (type 3): who was in the call, and when it ended (null: still going on). */
+  call?: { participants: string[]; ended_timestamp: string | null };
+  /** MessageFlags (rich.ts MESSAGE_FLAG). */
+  flags?: number;
+  components?: RawComponent[];
+  application_id?: string;
+  webhook_id?: string;
+  /** Roles pinged, by id. */
+  mention_roles?: string[];
+  /** The roles the hook found named in it, with names and colours from the client's role store. */
+  mention_role_names?: { id: string; name: string; color?: string }[];
+  /** The command a bot's message answers: interaction type 2 a command, 3 a component, 5 a modal. */
+  interaction_metadata?: { type?: number; name?: string; user?: RawUser };
+  interaction?: { type?: number; name?: string; user?: RawUser };
+  /** An activity invite: type 1 join, 2 spectate, 3 listen, 5 join request. */
+  activity?: { type?: number };
+  application?: { name?: string };
+}
+
+/** The stickersPage hook command's reply. */
+export interface RawStickerPage {
+  packs: { id: string; name: string; source: 'server' | 'standard'; cover?: string; stickers: { id: string; name: string; format_type: number; tags?: string }[] }[];
+  next: number | null;
+  note?: string;
 }
 
 /** The least Discord sends to draw a sticker: https://docs.discord.food/resources/sticker#sticker-item-structure */
@@ -237,6 +339,8 @@ export interface RawSnapshot {
    * them. Absent: the list may not be in yet, and no `requests` is sent from it.
    */
   requestsKnown?: boolean;
+  /** Your own roles in each server, by id, from the client's member store: never anyone else's (rich.ts). */
+  selfRoles?: Record<string, string[]>;
 }
 
 /** Someone's presence as the hook forwards it: invisible is offline; devices where they are on. */
@@ -285,13 +389,21 @@ export type BridgeUp =
   /** A sign-in request Discord refused, from the client's own log. */
   | { t: 'loginIssue'; route: string; status: number; captcha?: string; message?: string; code?: number }
   /** A call's bridge signalling, its participants (with their users, so they have names), or its end. */
-  | { t: 'call'; call: string; signal?: unknown; state?: { channelId: string; participants: { id: string; muted: boolean; deafened: boolean; speaking: boolean; video?: boolean }[] }; users?: RawUser[]; ended?: string }
+  | { t: 'call'; call: string; signal?: unknown; state?: { channelId: string; participants: CallParticipant[]; stage?: CallStage }; users?: RawUser[]; ended?: string; effect?: CallEffect }
   | { t: 'reply'; id: string; ok: true; result?: unknown }
   | { t: 'reply'; id: string; ok: false; error: string; retryAfter?: number }
-  | { t: 'log'; level: 'debug' | 'info' | 'warn' | 'error'; msg: string; data?: unknown };
+  | { t: 'log'; level: 'debug' | 'info' | 'warn' | 'error'; msg: string; data?: unknown }
+  /** The account itself: notices, settings, whom you ignore (self.ts). */
+  | RawSelfUp;
 
 /** Flux actions the hook forwards. Keep this list in sync with hook.js. */
 export type DispatchName =
+  /** Mentions, the notification center, notification settings, message requests (attention.ts). */
+  | AttentionDispatch
+  /** An interaction's outcome and a form a bot opened, the hook's own (interact.ts). */
+  | InteractDispatch
+  /** This account's thread membership, forum posts loaded (threads.ts). */
+  | ThreadDispatch
   | 'MESSAGE_CREATE'
   | 'MESSAGE_UPDATE'
   | 'MESSAGE_DELETE'
@@ -327,7 +439,11 @@ export type DispatchName =
   | 'UPDATE_STRANGER_STATUS'
   /** Someone added to a group DM, or gone from it: a RawRecipientChange. */
   | 'CHANNEL_RECIPIENT_ADD'
-  | 'CHANNEL_RECIPIENT_REMOVE';
+  | 'CHANNEL_RECIPIENT_REMOVE'
+  /** A moderator's purge: { ids, channelId, guildId }. */
+  | 'MESSAGE_DELETE_BULK'
+  /** Reactions in a batch: { channelId, messageId, reactions: { users, emoji, reactionType }[] } (users by id). */
+  | 'MESSAGE_REACTION_ADD_MANY';
 
 /** Who was added to a group DM or left it, and the group as the client's store then had it (null: not loaded). */
 export interface RawRecipientChange {
@@ -342,8 +458,32 @@ export type BridgeDown =
   | { t: 'ping' };
 
 export type HookCommand =
+  /** recentMentions, mute, markUnread, markReadMany, messageRequestAnswer (attention.ts). */
+  | AttentionHookCommand
+  /** ixComponent, ixCommands, ixRun, ixSuggest, ixSubmit: bots and apps (interact.ts). */
+  | InteractHookCommand
+  /** Threads, forum posts, publishing, group DMs (threads.ts). */
+  | ThreadHookCommand
+  /** suppressEmbeds, save, savedList, nativeScheduled, cancelScheduled (sending.ts). */
+  | SendingHookCommand
   | { kind: 'lab'; op: string; [k: string]: unknown }
-  | { kind: 'send'; channelId: string; content: string; replyTo?: string; nonce: string; files?: { name: string; mime: string; size: number; base64: string }[] }
+  | {
+      kind: 'send';
+      channelId: string;
+      content: string;
+      replyTo?: string;
+      nonce: string;
+      files?: { name: string; mime: string; size: number; base64: string }[];
+      /** Send these stickers, as the client's picker does (MessageActions.sendStickers). */
+      stickerIds?: string[];
+      /** The one file is a voice message: IS_VOICE_MESSAGE, no text, its length and waveform on the file. */
+      voice?: { duration_secs: number; waveform: string };
+      /** silent and mentionReplied: the client's own send options (sending.ts sendOptions). */
+      silent?: boolean;
+      mentionReplied?: boolean;
+    }
+  /** reply RawStickerPage: the stickers the client's own rule lets this account send here, a page of packs from `offset`. */
+  | { kind: 'stickers'; channelId: string; offset: number; limit: number }
   /** reply { nativeId } of the forward; the note follows it as its own message, as the client's forward does. */
   | { kind: 'forward'; channelId: string; source: { channelId: string; messageId: string }; note?: string; nonce: string }
   | { kind: 'openDirect'; userId: string }
@@ -357,7 +497,7 @@ export type HookCommand =
   | { kind: 'walkMembers'; guildId: string; query: string; limit: number; recent?: boolean; after?: string }
   /** reply RawMentionables (mentionables.ts): who a channel can ping, from the client's stores and its own @ list's member search. */
   | { kind: 'mentionables'; channelId: string; query: string; limit: number }
-  | { kind: 'threads'; channelId: string; archived: boolean; offset: number }
+  | { kind: 'threads'; channelId: string; archived: boolean; offset: number; mine?: boolean }
   | { kind: 'markRead'; channelId: string; messageId: string }
   | { kind: 'typing'; channelId: string; stop?: boolean }
   | { kind: 'react'; channelId: string; messageId: string; emoji: string; remove?: boolean; burst?: boolean }
@@ -365,6 +505,11 @@ export type HookCommand =
   | { kind: 'reactionContext'; channelId: string }
   | { kind: 'edit'; channelId: string; messageId: string; content: string }
   | { kind: 'redact'; channelId: string; messageId: string }
+  /** Moderating (moderation.ts): one action on a member, the Bans list, someone else's message, reactions. */
+  | { kind: 'moderate'; guildId: string; userId: string; op: 'kick' | 'ban' | 'unban' | 'timeout' | 'role' | 'voiceMute' | 'voiceDeafen' | 'move' | 'disconnect'; deleteSeconds?: number; seconds?: number; roleId?: string; remove?: boolean; on?: boolean; channelId?: string }
+  | { kind: 'bans'; guildId: string }
+  | { kind: 'modRedact'; channelId: string; messageId: string }
+  | { kind: 'clearReactions'; channelId: string; messageId: string; emoji?: string; userId?: string }
   | { kind: 'fetchMedia'; url: string }
   /** Sign old attachment links again (POST /attachments/refresh-urls); result { refreshed: { original, refreshed }[] }. */
   | { kind: 'refreshUrls'; urls: string[] }
@@ -379,7 +524,9 @@ export type HookCommand =
   /** Your own bio, as the client's profile settings save it (PATCH /users/@me/profile); reply RawProfile of yourself. */
   | { kind: 'setProfile'; bio: string }
   /** join: reply { direct?: DirectVoiceSession }. */
-  | { kind: 'call'; call: string; op: 'join'; channelId: string; mode: 'bridge' | 'direct'; muted?: boolean; deafened?: boolean }
+  | { kind: 'call'; call: string; op: 'join'; channelId: string; mode: 'bridge' | 'direct'; muted?: boolean; deafened?: boolean; ring?: boolean }
+  /** Stop a call ringing for you: the client's own Decline (CallActions.stopRinging). */
+  | { kind: 'declineCall'; channelId: string }
   | { kind: 'call'; call: string; op: 'leave' }
   | { kind: 'call'; call: string; op: 'mute'; muted: boolean; deafened: boolean }
   | { kind: 'call'; call: string; op: 'signal' | 'note'; data: unknown }
@@ -401,7 +548,9 @@ export type HookCommand =
   /** reply RawAddRecipients: friends added to a group DM, one PUT each through the client's REST module. */
   | { kind: 'addRecipients'; channelId: string; userIds: string[] }
   /** reply RawCreateGroupDM: a new group DM with friends, through the client's ensurePrivateChannel; a name set after. */
-  | { kind: 'createGroupDM'; userIds: string[]; name?: string };
+  | { kind: 'createGroupDM'; userIds: string[]; name?: string }
+  /** Block, ignore, notes, your presence, sessions, your profile beyond the bio (self.ts). */
+  | SelfHookCommand;
 
 /** The hook's answer to addRecipients. */
 export interface RawAddRecipients {
@@ -434,6 +583,8 @@ export interface RawRole {
   position: number;
   /** Shown apart in the member list. */
   hoist?: boolean;
+  /** Given and taken by an integration or by boosting, never by hand. */
+  managed?: boolean;
 }
 
 /** A loaded server member: who, and their role ids. */
@@ -442,10 +593,14 @@ export interface RawMember {
   roles: string[];
   /** The colour the client shows their name in. */
   color?: string | null;
+  /** Whether this account may use each permission on them, by the client's hierarchy check (null: it could not say). */
+  manage?: Partial<Record<'kickMembers' | 'banMembers' | 'moderateMembers' | 'manageRoles', boolean | null>>;
+  /** ISO time their timeout ends. */
+  timeout_until?: string;
 }
 
 /** What this account may do where it is, by the client's own check. null: the client did not say. */
-export type RawCan = Partial<Record<'createInvite' | 'manageChannels' | 'manageGuild' | 'sendMessages' | 'manageMessages' | 'manageRoles' | 'manageThreads' | 'pinMessages', boolean | null>>;
+export type RawCan = Partial<Record<'createInvite' | 'manageChannels' | 'manageGuild' | 'sendMessages' | 'manageMessages' | 'manageRoles' | 'manageThreads' | 'pinMessages' | 'kickMembers' | 'banMembers' | 'moderateMembers' | 'muteMembers' | 'deafenMembers' | 'moveMembers' | 'useSoundboard', boolean | null>>;
 
 /** The settings fields of a channel the hook adds to RawChannel. */
 export interface RawAboutChannel extends RawChannel {
@@ -453,6 +608,11 @@ export interface RawAboutChannel extends RawChannel {
   rate_limit_per_user?: number;
   /** The @everyone overwrite denies Send Messages (here, or on a thread's parent). */
   everyone_denies_send?: boolean;
+  /** Minutes before a new thread hides itself. */
+  default_auto_archive_duration?: number | null;
+  /** Voice: how many at once (0 none), and its bitrate. */
+  user_limit?: number | null;
+  bitrate?: number | null;
 }
 
 export interface RawAboutGuild extends RawGuild {
@@ -478,6 +638,10 @@ export interface RawAbout {
   can: RawCan;
   /** On the server, when the target is in one. */
   guildCan?: RawCan;
+  /** This account's top role's position (null: none, or the client did not say). */
+  top_position?: number | null;
+  /** The server's boost tier, 0 to 3: how high a voice channel's bitrate may go. */
+  premium_tier?: number;
 }
 
 /** The only fields `configure` may send. */
@@ -486,6 +650,13 @@ export interface RawAboutPatch {
   topic?: string;
   rate_limit_per_user?: number;
   nsfw?: boolean;
+  default_auto_archive_duration?: number;
+  user_limit?: number;
+  bitrate?: number;
+  /** A server's. */
+  description?: string;
+  /** A server's icon, as a data URI. */
+  icon?: string;
 }
 
 // ------------------------------------------------------------------- profiles
@@ -542,6 +713,14 @@ export interface RawProfile {
   friends?: RawUser[];
   /** Why the profile fetch failed, when it did; the rest is what the stores still had. */
   error?: string;
+  /** Badges on their profile: the client's id, words and icon hash. */
+  badges?: { id: string | null; description: string | null; icon: string | null }[];
+  /** Their profile's colours, as numbers. */
+  theme_colors?: number[];
+  /** The frame on their picture: its asset hash. */
+  decoration?: string;
+  /** Your note on them (never asked for yourself). null: none. */
+  note?: string | null;
 }
 
 // --------------------------------------------------------------------- adding

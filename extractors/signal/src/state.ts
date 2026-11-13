@@ -15,12 +15,19 @@
  *             conversation is yours (`ours`) or signal-cli says it was accepted (add.ts isMessageRequest)
  *   ours      1:1 peers you wrote to (here or on another device) or whose request you accepted here
  *   invites   groups you are invited to: who invited you (when a group update said) and since when
+ *   keys      each person's identity key as last seen (people.ts KnownKey), to tell when their safety number changes
+ *   username  your username and its link as updateAccount last said them (signal-cli cannot read the link otherwise)
+ *   seenAt    when the daemon was last up and read, to tell a long outage (a sync request follows one)
+ *   syncedAt  when a sync request last went to your phone
+ *   stories   the owner turned stories on (off unless they did; the daemon reads it when it starts)
+ *   storyFiles  files signal-cli downloaded for stories, and when each story ends: deleted then
  *
  * Writes are debounced and atomic (tmp + rename).
  */
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import type { PinTimer } from './mapping.ts';
+import type { PinTimer, QuoteSource } from './mapping.ts';
+import type { KnownKey } from './people.ts';
 import type { SigGroup } from './types.ts';
 
 export interface Expiring {
@@ -44,6 +51,12 @@ interface StateFile {
   heard?: Record<string, number>;
   ours?: string[];
   invites?: Record<string, Invite>;
+  keys?: Record<string, KnownKey>;
+  username?: { name: string; link?: string } | null;
+  seenAt?: number;
+  syncedAt?: number;
+  stories?: boolean;
+  storyFiles?: [path: string, until: number][];
 }
 
 /** An invitation to a group: who sent it, when a group update named them, and since when (ms epoch). */
@@ -64,6 +77,7 @@ interface IndexEntry {
   r?: string; // quoted message id
   f?: string[]; // downloaded attachment files
   o?: string; // the message this edit's id stands for
+  q?: QuoteSource; // what a reply to it quotes
 }
 
 const INDEX_MAX = 5000;
@@ -82,6 +96,12 @@ export class AdapterState {
   heard = new Map<string, number>();
   ours = new Set<string>();
   invites = new Map<string, Invite>();
+  keys = new Map<string, KnownKey>();
+  username: { name: string; link?: string } | null = null;
+  seenAt = 0;
+  syncedAt = 0;
+  stories = false;
+  storyFiles: [path: string, until: number][] = [];
   private timer?: Timer;
 
   constructor(private path: string) {
@@ -102,6 +122,12 @@ export class AdapterState {
       for (const [id, ts] of Object.entries(s.heard ?? {})) if (typeof ts === 'number') this.heard.set(id, ts);
       for (const id of s.ours ?? []) this.ours.add(id);
       for (const [id, inv] of Object.entries(s.invites ?? {})) if (inv && typeof inv.ts === 'number') this.invites.set(id, inv);
+      for (const [id, k] of Object.entries(s.keys ?? {})) if (k && typeof k.f === 'string') this.keys.set(id, k);
+      if (s.username?.name) this.username = s.username;
+      this.seenAt = typeof s.seenAt === 'number' ? s.seenAt : 0;
+      this.syncedAt = typeof s.syncedAt === 'number' ? s.syncedAt : 0;
+      this.stories = s.stories === true;
+      this.storyFiles = (s.storyFiles ?? []).filter((x) => Array.isArray(x) && typeof x[0] === 'string' && typeof x[1] === 'number');
       // From before message requests were kept: who wrote in a 1:1 and is still unread, as when their first message came.
       if (s.heard === undefined) {
         for (const [c, list] of this.unread) {
@@ -127,15 +153,21 @@ export class AdapterState {
     this.heard.clear();
     this.ours.clear();
     this.invites.clear();
+    this.keys.clear();
+    this.username = null;
+    this.seenAt = 0;
+    this.syncedAt = 0;
     this.save();
   }
 
-  remember(id: string, conversation: string, text: string, replyTo?: string, files?: string[]) {
+  remember(id: string, conversation: string, text: string, replyTo?: string, files?: string[], quote?: QuoteSource) {
     const prev = this.index.get(id);
     this.index.delete(id);
     const r = replyTo ?? prev?.r;
     const f = files?.length ? files : prev?.f;
-    this.index.set(id, { c: conversation, t: text.length > TEXT_MAX ? text.slice(0, TEXT_MAX - 1) + '…' : text, ...(r ? { r } : {}), ...(f ? { f } : {}) });
+    // An edit keeps the files of the message it edits, and a quote of it shows them still.
+    const q = quote ? { ...quote, ...(!quote.a && prev?.q?.a ? { a: prev.q.a } : {}) } : prev?.q;
+    this.index.set(id, { c: conversation, t: text.length > TEXT_MAX ? text.slice(0, TEXT_MAX - 1) + '…' : text, ...(r ? { r } : {}), ...(f ? { f } : {}), ...(q ? { q } : {}) });
     while (this.index.size > INDEX_MAX) this.index.delete(this.index.keys().next().value!);
     this.save();
   }
@@ -172,6 +204,11 @@ export class AdapterState {
 
   replyOf(id: string) {
     return this.index.get(id)?.r;
+  }
+
+  /** What a reply to this message quotes, when this device has seen it since quotes were kept. */
+  quoteOf(id: string) {
+    return this.index.get(id)?.q;
   }
 
   addUnread(conversation: string, author: string, ts: number) {
@@ -213,6 +250,12 @@ export class AdapterState {
       heard: Object.fromEntries(this.heard),
       ours: [...this.ours],
       invites: Object.fromEntries(this.invites),
+      keys: Object.fromEntries(this.keys),
+      username: this.username,
+      seenAt: this.seenAt,
+      syncedAt: this.syncedAt,
+      stories: this.stories,
+      storyFiles: this.storyFiles,
     };
     try {
       const tmp = this.path + '.tmp';

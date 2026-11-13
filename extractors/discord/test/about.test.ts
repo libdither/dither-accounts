@@ -19,7 +19,8 @@ describe('mapAbout', () => {
     expect(a.fields).toEqual({
       name: { value: 'Example server', canEdit: true },
       topic: { value: '', canEdit: false, reason: 'Only Community servers have a description, set in Discord.' },
-      avatar: { value: `https://cdn.discordapp.com/icons/${guild.id}/abc123.webp?size=128`, canEdit: false, reason: 'Changing the picture is not supported yet.' },
+      // Manage Server changes the icon (moderation.ts reads the file the hub gives).
+      avatar: { value: `https://cdn.discordapp.com/icons/${guild.id}/abc123.webp?size=128`, canEdit: true },
       nsfw: { value: true, canEdit: false, reason: 'Discord sets this for the server.' },
     });
     expect(a.you).toEqual({ role: 'Owner', rank: 1 });
@@ -63,7 +64,7 @@ describe('configurePlan', () => {
     expect(() => configurePlan(canChannels, { key: 'avatar', value: 'x' })).toThrow('Changing the picture is not supported yet.');
     expect(() => configurePlan(canChannels, { key: 'announceOnly', value: true })).toThrow("Change who can send in the channel's permissions, in Discord.");
     expect(() => configurePlan(canChannels, { key: 'invite', op: 'create' })).toThrow('Invite links are not supported on Discord yet.');
-    expect(() => configurePlan(canChannels, { key: 'pin', message: '1' })).toThrow('Pinning is not supported on Discord yet.');
+    expect(() => configurePlan(canChannels, { key: 'pin', message: '1' })).toThrow('A pin is not a setting');
     expect(() => configurePlan(canChannels, { key: 'disappearing', value: 60 })).toThrow('Disappearing messages is not a Discord setting.');
     expect(() => configurePlan({ selfId: SELF, channel: dm, can: {} }, { key: 'name', value: 'x' })).toThrow('has no such setting');
     expect(() => configurePlan({ selfId: SELF, guild, can: { manageGuild: true } }, { key: 'topic', value: 'x' })).toThrow('Only Community servers');
@@ -81,7 +82,7 @@ test('changedFacts re-states what the PATCH answered, mutes kept', () => {
   const st = newState();
   st.guilds.set(guild.id, guild);
   st.guildSettings.set(guild.id, { guild_id: guild.id, muted: true });
-  expect(changedFacts({ guild: { id: guild.id, name: 'New' } }, st)).toEqual([{ t: 'space', space: expect.objectContaining({ nativeId: guild.id, name: 'New', mute: { level: 'none' } }) }]);
+  expect(changedFacts({ guild: { id: guild.id, name: 'New' } }, st)).toEqual([{ t: 'space', space: expect.objectContaining({ nativeId: guild.id, name: 'New', mute: { level: 'none', muted: true } }) }]);
   expect(changedFacts({ channel: { id: '500000000000000001', type: 4, guild_id: guild.id, name: 'Cat' } }, st)).toEqual([{ t: 'space', space: expect.objectContaining({ kind: 'section', name: 'Cat' }) }]);
   expect(changedFacts({ channel: { ...text, name: 'renamed' } }, st)).toEqual([{ t: 'conversation', conversation: expect.objectContaining({ nativeId: text.id, name: 'renamed' }) }]);
   expect(changedFacts({}, st)).toEqual([]);

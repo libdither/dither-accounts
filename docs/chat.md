@@ -20,7 +20,7 @@ same wire as before: dither-chat's adapter protocol, copied as `packages/chat-pr
 typed from the protocol, and every `AdapterEvent` but replies and logs is an event. Levels:
 
 - **read**: history, search, walkMembers, reactionContext, reactors, fetchMedia, about, profile, resolve
-- **write**: send, forward, openDirect, markRead, typing, react, edit, redact, call
+- **write**: send, forward, openDirect, markRead, typing, react, edit, redact, call, declineCall
 - **manage**: configure, action (relogin, startLink, resync), add, answer, lab
 
 `hello` and `status` are the account's own state: the manager keeps the latest of each and gives them to an app when it
@@ -132,14 +132,266 @@ sentence> }` with nothing done (not an error), and the request gets the stranger
 refusal. Decline, block and Add friend by username never carry it. A client build whose `addRelationship` takes plain
 arguments has no place for the confirm, so a confirmed accept there is refused ("accept it in the live view").
 
-Not built: Ask (servers that take applications are not handled apart: Join comes back with whatever check or refusal
-Discord gives), follow and contacts (Discord has neither), and message requests (Discord's inbox for DMs from
-strangers).
+Not built: Ask as its own action (a server that takes applications still comes back from Join with `check: 'rules'`;
+the application itself is then answered from the server's page, "Servers" below), follow and contacts (Discord has
+neither). Message requests and spam DMs are in "Attention" below.
 
 Everything above is tested against fakes of the client's modules (`test/hook.test.ts`, `test/add.test.ts`, and
 `test/pipeline.test.ts` into dither-chat's hub store); the module shapes, the accept's captcha and screening
 answers, the 80013 refusal and the confirm, the spam and stranger flags, and the analytics contexts are what the
 client is known to use (read from its bundle as of November 2026), and are confirmed only on a live account.
+
+## The account itself (Discord)
+
+What Discord says of the account and its person-level actions, for dither-chat's docs/account-self.md
+(`extractors/discord/src/self.ts`, hook.js "your own self", `test/self.test.ts`). Everything is read from the client's
+own stores as they change, and written the way its own settings pages and buttons write it; nothing polls.
+
+| Capability | Advertised when the hook found |
+|---|---|
+| `block`, `ignore` | `RelationshipActions` and `RelationshipStore` |
+| `contactNotes`, `sessions` | `Rest` |
+| `setPresence` | `SettingsActions` (the settings proto's action creator, by its `ProtoClass.typeName`) and `UserSettingsProtoStore` |
+
+| Event or command | On Discord |
+|---|---|
+| `notices` | `UserRequiredActionStore.getAction()` (the gateway's required action: verify email or phone, a captcha, `AGREEMENTS`, `REQUIRE_SAFETY_FLOWS`) and, once the client has read it itself, `SafetyHubStore.getAccountStanding()` (limited, very limited, at risk, suspended), each in plain words with the live view. Sent at subscribe and on `USER_REQUIRED_ACTION_UPDATE` / `SAFETY_HUB_FETCH_SUCCESS`, the whole list each time; never done here. |
+| `selfState` | `UserSettingsProtoStore.settings` (status, custom status and when they end; privacy: DMs from server members, message requests) and `getGuildFolders()`, on `USER_SETTINGS_PROTO_UPDATE`. Your age check (`ageVerificationStatus` on your user) is a privacy line. Only parts that changed are sent. |
+| `ignored` | Everyone `RelationshipStore.isIgnored(id)` says, after each relationship change or `RELATIONSHIP_IGNORE_USER_SUCCESS`. |
+| `block` | The shared command (as Signal's): a person only. Block is `addRelationship({ userId, context, type: 2 })`, as the Block button; `unblock` is `removeRelationship` as the friends list's Unblock (`friendRemove` type 2). Reply `{ blocked }`, relationship events as for `remove`. A group is refused in words. |
+| `ignore` | `ignoreUser(id, location)` / `unignoreUser`, as the Ignore button. Those show a toast on failure and say nothing else, so the store decides: an ignore must be in it when the call returns, an unignore within 5 s. |
+| `contactNotes` | Your note on someone, as Signal's: read with a profile only (`NoteStore`, else the `GET /users/@me/notes/{id}` the client's profile makes, then `USER_NOTE_UPDATE` into the store as the client does), sent as an identity fact `{ nativeId, note }` ('' when none; nothing when the read failed for another reason than 404, so a note is never taken for cleared). `setContact` with `note` is `PUT /users/@me/notes/{id}` `{ note }` (256 characters, checked first), then the identity fact again. Never for yourself. A `nickname` is left alone: dither neither reads nor writes Discord's friend nicknames. |
+| `setPresence` | `SettingsActions.updateAsync('status', draft => ..., 0)` as the status picker: `status`, `statusExpiresAtMs`, `customStatus` (text, emoji name, expiry), made with the proto's own message types read from `ProtoClass.fields`. A server's own emoji cannot be named in text and is refused. |
+| `sessions` | `GET /auth/sessions` as the Devices page, the sandbox's own marked by `AuthenticationStore.getAuthSessionIdHash()`. Signing others out asks for the password: the live view. |
+| `setProfile` beyond the bio | Your own profile lists `editable`: `bio`, `name`, `avatar`, `pronouns`, `banner`, `accent`. `PATCH /users/@me` (`global_name` from `name`, `avatar` as a data URL) and `PATCH /users/@me/profile` (`bio`, `pronouns`, `banner`, `accent_color`), as the profile settings. `emoji` and `username` are refused in words. A banner without Nitro is Discord's refusal, passed on. |
+| `profile` | Also badges (`getUserProfile().badges`), theme colours, the avatar decoration's asset, and your note (above). |
+
+Untested against a live account: shapes are from the client's code (build of 2026-11-12) and the fakes in
+`test/self.test.ts`.
+
+## Attention: mentions, requests, notification settings, read states
+
+What Discord knows about what needs the owner, beyond messages as they come (`extractors/discord/src/attention.ts`,
+the hook's "attention" section; dither-chat's docs/notifications.md "From the network itself" and
+docs/research/discord-gaps.md). Each through the client's own modules as a click would, read from build 671535
+(2026-11-12):
+
+| What | How | Capability |
+|---|---|---|
+| Mentions in channels the client never loaded | `RecentMentionsActions.fetchRecentMentions({ limit: 25, roles: true, everyone: true })`, as the Inbox's Mentions tab; its answer is heard as `LOAD_RECENT_MENTIONS_SUCCESS` (whoever asked, the owner in the live view too). Without the module, the same `GET /users/@me/mentions` through the REST helper. Asked 45 s after a snapshot (start, reconnect) and when a notification-center mention item comes without its message, on the history pace, never more often than every 5 minutes (`MentionsPacer`). Each hit once, as a message fact with `live: false, late: true`, `mentionsSelf`, and `mentionsAll` unless it names the owner; a thread nobody opened first, from the client's channel store | `mentions` |
+| Notification center | `NOTIFICATION_CENTER_ITEM_CREATE`: a `recent_mention` or `reply_mention` item with its message is a late mention at once; without, it asks the list. `REACTION_NOTIFICATION_SENT` (someone reacted to your message) is a `reaction` fact. Other items (friend accepted, events starting) are left: the relationships say the first, and the hub has no Discord events | — |
+| Message requests and spam DMs | A DM's `isMessageRequest`, `isMessageRequestTimestamp` and `isSpam` (picked with the channel): a `request` of kind `message` about its conversation, `nativeId` `message:<channel id>`, from the other person, answers accept, decline, block; spam ones `spam: true` and a warning. Gone when the flags clear (`CHANNEL_UPDATES`), the DM closes, or `MESSAGE_REQUEST_ACCEPT_OPTIMISTIC`. The snapshot's DMs are all of them, so one not there is gone. They ride in every `requests` list beside the friend requests (`withMessageRequests`). Answering: the client's request module when its lazy chunk is loaded (`MessageRequestActions`, found by its source), else the same calls through the REST helper: accept `PUT /channels/{id}/recipients/@me {consent_status: 2}` then `MESSAGE_REQUEST_ACCEPT_OPTIMISTIC`, decline `PUT /channels/recipients/@me/batch-reject`, block the friends module's block then decline | `requests` |
+| Notification settings as they change | `USER_GUILD_SETTINGS_FULL_UPDATE`, `_GUILD_UPDATE`, `_CHANNEL_UPDATE`, `_CHANNEL_UPDATE_BULK`, `_GUILD_AND_CHANNELS_UPDATE`, `CHANNEL_MUTE_EXPIRED`, `GUILD_MUTE_EXPIRED`: the server's (or the DMs') settings as the store has them after, with its channels; the adapter sends the fact of each place whose mute changed since the snapshot, `mute: {}` where one was cleared. A server's mute carries `suppressEveryone` and `suppressRoles`; any mute set with Discord's Mute carries `muted: true` | — |
+| Mute with a timer | `NotificationSettingsActions.updateGuildNotificationSettings(guildId, settings)` for a server, `updateChannelOverrideSettings({ guildId, channelId, settings })` for a category, channel or DM (guild null), as its menus; `settings` `{ muted: true, mute_config: { selected_time_window: seconds or -1, end_time } }` or `{ muted: false }`. The reply is the target's mute as the store then has it | `mute` |
+| Mark unread | `POST /channels/{c}/messages/{m}/ack {manual: true, mention_count: 0}` for the message before the first unread, through the REST helper. The gateway's `MESSAGE_ACK` with `manual` (from any app) is a `read` with `manual` | `markUnread` |
+| Many read | The client's own `BULK_ACK` action (`context: 'APP'`), which acks them locally and posts 100 at a time to `/read-states/ack-bulk`; up to 50 a command | `markReadMany` |
+
+Not built: thread notification settings, account-wide notification settings, safety warnings in DMs, the ICYMI feed
+(Discord's ranking; dither has its own), notification center acks. Everything here is tested against fakes
+(`test/attention.test.ts`, `test/hook-attention.test.ts`, and `test/attention-pipeline.test.ts` into dither-chat's hub
+store) and has not run on a live client.
+
+## Servers: events, leaving, links, nicknames, rules
+
+dither-chat's docs/servers.md is the hub's side. The Discord extractor's is `src/servers.ts` (mapping and the commands
+on the adapter's paces) and hook.js's "servers" section (the client's own stores and actions). Capabilities, each
+only when the hook found the module behind it (`serverCapabilities`): `events` (GuildScheduledEventStore), `rsvp`
+(and the events module), `leave` (the server module's `leaveGuild`), `gates` (membership screening's
+`fetchVerificationForm`/`submitVerificationForm`, or onboarding's store and actions), `inviteLinks` (the invite module
+and REST), `nick` (`changeNickname` and the member store).
+
+| What | How |
+|---|---|
+| Events, passively | After the snapshot and when a server is joined (`GUILD_CREATE`): every server's events from the store, no request, as `scheduledEvents`. `GUILD_SCHEDULED_EVENT_CREATE/UPDATE/DELETE`, `…_USER_ADD/REMOVE` and `…_EXCEPTION_*` pass on as the event as the store now has it (`scheduledEvent`, `scheduledEventGone`): the count moves, only your own answer is said, never who else answered. Recurrence as an RRULE; an exception's original start is its snowflake. |
+| `scheduledEvents` | What opening the server's events list does: `getGuildEventsForCurrentUser` once per server (your answers), then `fetchGuildEventUserCounts` per event. On the look pace. |
+| `rsvp` | `createRsvpForGuildEvent` / `deleteRsvpForGuildEvent`, as the Interested button. One occurrence gets an answer of its own only where it differs from the series' (as the client keeps them). |
+| `leave` | Refused before anything when the account owns the server ("You own this server: …"). Else `leaveGuild`, as the Leave Server confirm; then a leave for each of its categories and channels and for the server. A group DM or a DM: "Threads, forums and group DMs" below. |
+| About of a server | `serverAbout` from the stores (owner, your nickname, vanity code, where a new link leads): `leaving`, `nick`, `invite` with `links`, `vanity` and Discord's dialog choices (`DISCORD_INVITE_OPTIONS`: 7 days and no limit by default). Someone who may manage the server gets every link, as the settings' Invites tab loads them (one GET of `/guilds/{id}/invites` per About read); anyone else sees the links this session made. |
+| `configure` invite | create: `createInvite(channel, {max_age, max_uses, temporary})` on the rules channel, else the system channel, else the first text channel you may invite to; only the choices Discord's dialog offers. revoke: `revokeInvite`, for a link you made or with Manage Server. |
+| `setNick` | `changeNickname(guild, null, '@me', nick)`, as the Change Nickname dialog; refused without the permission. |
+| `gate` | A pending member: the screening form as the client fetches it to show it (`fetchVerificationForm`); rules alone are `rules`, questions make it `apply`. Else, a server with onboarding the member has not finished: the client's onboarding fetch and its prompts. Else null. |
+| `answerGate` | Checked against the gate as it stands (`gateAnswerProblem`), then `submitVerificationForm` with the TERMS field ticked only when the owner's answer says `agree: true` (the hook refuses it too), or `selectOption` per pick, `completeOnboarding` and `finishOnboarding`. An application submitted waits: `gate` events carry its outcome (`GUILD_JOIN_REQUEST_UPDATE` for your own request only). |
+
+Tested against fakes of the client's modules (`test/servers.test.ts`); the module shapes and payloads are read from the
+client's bundle (2026-11-12) and are not confirmed on a live account.
+
+## Threads, forums and group DMs
+
+dither-chat's docs/threads.md is the hub's side. The Discord extractor's is `src/threads.ts` (mapping, the About parts
+and the commands on the adapter's paces) and hook.js's "threads" section. Capabilities (`threadCapabilities`), each
+only when the hook found what it needs: `followThreads` (JoinedThreadsStore and the thread actions), `threadState` (the
+thread actions), and with the REST client `createThreads`, `forumPosts`, `myThreads`, `crosspost`, `removeMembers`,
+`transferOwner`, `groupPicture` and `leave` (for group DMs and DMs).
+
+| What | How |
+|---|---|
+| Membership, passively | Every channel the hook picks carries this account's membership of a thread (`member`: flags, mute, its end; null when not in it) from JoinedThreadsStore, a post's tags, a thread's start and message count, a forum's tags, default order and layout. The snapshot's threads are the ones the account is in. `THREAD_MEMBER_UPDATE` and `THREAD_MEMBERS_UPDATE` pass on only when they are about this account (never anyone else: no member lists), as the thread now stands. The conversation fact carries `thread` and `forum`, and a thread's membership as its native mute: not in it, mentions only; in it, its own setting (`ALL_MESSAGES` 2, `ONLY_MENTIONS` 4, `NO_MESSAGES` 8) or none (as its channel), and its mute. A channel override's mute (attention.ts) wins. |
+| Posts loaded, passively | `LOAD_FORUM_POSTS`, `LOAD_THREADS_SUCCESS` and `LOAD_ARCHIVED_THREADS_SUCCESS` (when the client's own forum view or thread browser loaded them) pass on their threads and first messages. |
+| `threads` | As before (`/threads/search`, now with each page's first and latest messages, and `ids`). With `mine`: `/channels/{id}/users/@me/threads/archived/private`, the thread browser's Private tab, paged by the last archive time. |
+| `followThread` | Join: the request Join Thread makes (`POST /thread-members/@me`, location "Thread Browser") through the REST helper, since the client's own `joinThread` turns a refusal into a dialog; then the store must list the account. Leave: the client's `leaveThread`. |
+| `threadNotify` | The bell menu's `setNotificationSettings(channel, {flags} or {muted, mute_config})`, which joins first where it must; the flags keep `HAS_INTERACTED`. |
+| `threadState` | Checked against a fresh About (`AboutThread`: who started it may archive while it is open, Manage Threads may do all). Then `lockThread`, `unlockThread`, `archiveThread`, `unarchiveThread`, the client's own. |
+| `createThread` | The body the client's thread form posts (name, type 10/11/12, the parent's auto-archive), to `/messages/{id}/threads` or `/threads`; then its first message, if any, as an ordinary send. |
+| `createPost` | Checked by `postProblem` against the forum's tags; files uploaded as a send's are; then the New Post body to `/threads?use_nested_fields=true` (name, auto-archive, `applied_tags`, the first message). |
+| `crosspost` | The Publish request (`/messages/{id}/crosspost`) through the REST helper (the client's own swallows a refusal into a dialog). A message already published carries the `published` mark (`CROSSPOSTED`). |
+| `leave` (a conversation) | A group DM: `DELETE /channels/{id}` with `silent` as Leave Group sends it, then a leave event. A DM: the same request, Close DM; no leave event, since Discord only hides it. A channel or thread: refused. |
+| `removeMember`, `setOwner` | Checked against a fresh About (`AboutOwnership`: only the owner, only someone in it), then the private channel actions' `removeRecipient` / `setDMOwner`. |
+| `setPicture` | A PNG, JPEG, GIF or WebP from the spool, at most 8 MB, as a data URL in `PATCH /channels/{id} {icon}`, as Change Icon sends it; null removes it. |
+| Newer channel types | 17 lobby as a group, 18 game DM as a DM, 19 media post as a thread, 20 and 21 as channels (map.ts). |
+
+Tested against a replica of the client (`test/hook-threads.test.ts`) and the mapping (`test/threads.test.ts`); the
+module shapes and payloads are read from the client's bundle (build 671535, 2026-11-12) and are not confirmed on a
+live account.
+
+## Moderating: members, others' messages, labels (Discord, Signal)
+
+dither-chat's docs/moderation.md is the hub's side. Capability `moderate` (both), `memberLabels` (Signal), `setPicture`
+(both), and `leave` on Signal. The commands: `moderate` (`ModAction`: remove, ban, unban, admin, role, timeout, end),
+`bans`, `setLabel`, `clearReactions`, and `redact` with `moderator`. The About carries `moderation` (each power with
+why not), `members.list[].mod` (`above` when they outrank you, roles held, timeout) and `label`; the reaction context
+carries `moderation` for others' messages. Each is one click on the hub, re-checked here against the same read.
+
+| What | Discord (`src/moderation.ts`, hook.js "moderation") | Signal (`src/groups.ts`) |
+|---|---|---|
+| Powers | `PermissionStore.can` for Kick, Ban, Timeout Members and Manage Roles on the server; per loaded member `canManageUser` (hierarchy); roles below your top role (`getHighestRole`), never @everyone or managed ones. Fails closed | admins of the group (`members[].isAdmin`), not once it is ended |
+| Remove | the moderation module's `kickUser`, else `DELETE /guilds/{g}/members/{u}` | `updateGroup removeMember` |
+| Ban, unban | `banUser(g, u, delete_message_seconds)` with the ban dialog's choices, `unbanUser`; else `PUT`/`DELETE /guilds/{g}/bans/{u}`. The Bans list: one `GET /guilds/{g}/bans?limit=1000` on a click | `updateGroup ban` / `unban`; the banned from `listGroups.banned` |
+| Admins | (roles instead) | `updateGroup admin` / `removeAdmin` |
+| Roles | `GuildActions.updateMemberRoles(g, u, roles, added, removed)` with the whole list, as the member menu; else `PATCH` the member's `roles` | — |
+| Timeout | `setCommunicationDisabledUntil` with an ISO end (null ends it), the client's durations; else `PATCH communication_disabled_until` | — |
+| End a group | — | `terminateGroup` |
+| Join requests | — | `requestingMembers` of groups you admin as requests `join:<group>:<aci>` (kind `join`); accept `updateGroup member`, decline `removeMember` |
+| Others' messages | Manage Messages (`reactionContext.manageMessages`): `MessageActions.deleteMessage`; reactions: `DELETE …/reactions`, `…/reactions/{emoji}`, `…/reactions/{emoji}/0/{user}`, then `reactionsCleared` or a reaction removal | an admin's `sendAdminDelete`; nobody removes others' reactions |
+| Label | — | `updateGroup memberLabel`, then `memberLabelEmoji` (one field per call) |
+| Picture | a server icon: the hub's `file://` path read into a data URI, `PATCH /guilds/{g} {icon}`. A group DM's: not here | `updateGroup avatar <path>` |
+| Settings | server `description` (Community), channel `default_auto_archive_duration`, `user_limit`, `bitrate` (up to the boost tier's ceiling) | link approval: `updateGroup link enabled-with-approval` / `enabled` (written, never read) |
+| Leave | (servers) | `quitGroup` with `admin` as its only admin, `delete` only when asked; no `leave` event, the group stays read-only |
+
+Not built: Discord's audit log, AutoMod, pruning, emoji/sticker/soundboard management, integrations, moderator reports,
+raid actions, role member lists. Tested against fakes of the client's modules (`test/moderation.test.ts`,
+`test/hook-moderation.test.ts`) and a fake signal-cli (`test/adapter.test.ts`, "groups admin"); nothing live.
+
+## Rich messages (Discord)
+
+What a Discord message carries beyond its text, files and plain embeds reaches the hub as dither-chat's protocol has
+it (`chat-protocol/src/rich.ts`; dither-chat `docs/rich-messages.md`). `extractors/discord/src/rich.ts` does the
+mapping; `hook.js` whitelists it from the gateway's raw object or the client's own record (camelCase) alike:
+
+- Message flags: sent silently (`MessageFact.silent`, so the hub never alerts on it), ephemeral, previews hidden,
+  crosspost (its webhook's name says "Server #channel"; its reference is not a reply), the server's own, a suspended
+  author.
+- Components: a bot's buttons and selects as rows with their custom ids and the message's `application`, which the
+  `interact` command presses (next section). Components V2 messages, which have no content and no embeds, are
+  flattened into the body and attachments.
+- Roles: `mention_roles`, and the roles a message names with their names and colours from the client's role store.
+  Your own roles in each server come from the client's member store, for you only (the snapshot's `selfRoles`, a
+  joined server's `self_roles`, GUILD_MEMBER_UPDATE of you), and a ping to one of them is `mentionsSelf`.
+- Attachments' alt text, spoiler and explicit flags, a voice message's length and waveform; embeds' colour, footer,
+  timestamp, author icon and video (Discord's proxies preferred; a YouTube, Twitch or Vimeo player page is passed as
+  a player, loaded by the app only when clicked).
+- `interaction_metadata` ("X used /cmd"), `activity` and `application` (activity invites).
+- MESSAGE_DELETE_BULK deletes each message; MESSAGE_REACTION_ADD_MANY adds each reaction (poll votes left out).
+- A send AutoMod blocks (codes 200000 and 200001) answers "This server's AutoMod blocked it: …".
+- System types 13 to 17, 22, 25 to 41, 45, 64, 66 and Discord's notices have words of their own.
+
+Tested against hand-written raw and record shapes (`test/rich.test.ts`, `test/hook.test.ts`), one test into
+dither-chat's hub store. The record shapes were read from the client's bundle (2026-11-12), not seen on a live account.
+
+## Bots and apps (Discord)
+
+Pressing a bot's buttons, choosing in its selects, its slash commands with their suggestions, apps' message commands,
+and the forms (modals) bots open in answer (dither-chat `docs/apps.md`; protocol `chat-protocol/src/apps.ts`).
+`extractors/discord/src/interact.ts` maps; hook.js's "bots and apps" section runs each through the client's own code,
+read from build 671535:
+
+| What | The client's own | Capability |
+|---|---|---|
+| Press, choose | `executeMessageComponentInteraction` (its nonce, session, the message's flags, the application id; it refuses a second press while one waits) | `interactComponents` |
+| Commands listed | `ApplicationCommandIndexStore.query` with `allowFetch`, as typing `/` runs it: each place's index loaded once, its permission checks, built-ins left out | `interactCommands`, `interactContext` (message commands) |
+| Run, suggestions | `executeCommand`, with an autocomplete context for suggestions (the gateway's APPLICATION_COMMAND_AUTOCOMPLETE_RESPONSE to its nonce answers) | `interactCommands` |
+| A form | the client sends forms only from inside its dialog, so the hook does what the dialog does: `queueInteraction`, a snowflake nonce, the session id, its REST helper with the dialog's body, its failure action on a refusal | `interactModals` |
+
+Outcomes (`interaction` events: sending, answered, failed, timedOut, modal) come from INTERACTION_SUCCESS and
+_FAILURE, INTERACTION_MODAL_CREATE and a MESSAGE_CREATE carrying the nonce, for the hook's own nonces only; nothing
+back in 15 s is a timeout. A form a bot opens comes up as an `appModal` event. A message the client no longer holds is
+read once around it (GET messages `around`, as jumping to it reads it). None of it is paced behind other work (a click
+goes when it is made) and none is retried. User commands, files in options and forms, and app-page (iframe) forms are
+not built.
+
+The client's local notices (Clyde, author `1`, flagged ephemeral: a failed send or interaction said on that screen
+only) are no longer passed on as messages (`ingest.ts`).
+
+Tested against a replica of the client's modules (`test/hook-interact.test.ts`) and pure mapping tests
+(`test/interact.test.ts`); not run on a live account.
+
+## Polls and pins
+
+dither-chat's docs/polls.md has the model; protocol `poll.ts` has the shapes (`pollUpdate`, `pollVote`, `pollCreate`,
+`pollEnd`, and the capabilities `polls`, `pollVote`, `pollCreate`, `pollEnd`, `pin`). Nothing here has run against a
+real account; the tests use the hook replica (`extractors/discord/test/hook-polls.test.ts`) and the fake signal-cli.
+
+**Discord** (`extractors/discord/src/polls.ts`, the hook's "polls and pins" section):
+- A poll is picked from the gateway's object (its `results`) or from the client's record, where votes are reactions
+  of their own kind (`count_details.vote`, `me_vote`). It comes on its message as `extra.poll`.
+- A vote is a reaction of the vote kind (type 2), which the client turns `MESSAGE_POLL_VOTE_ADD`/`REMOVE` and the
+  batched form into. The hook sends it with the poll as the client then counts it, when it has the message loaded:
+  the counts go out whole. Otherwise the vote moves its answer by one. Your own vote is said when you make it (the
+  hub moves the counts), so an echo of it without counts is not counted again. A vote is never a reaction.
+  `POLL_RESULT` (type 46) closes the poll it points at.
+- Who voted is never asked for (`POLL_ANSWER_VOTERS`). The client asks only when someone clicks a count.
+- Voting and End Now go through the client's poll actions module, found by the requests its code makes
+  (`POLL_ANSWERS` with `answer_ids`, `POLL_EXPIRE`). That module is in a lazy chunk, so without it the same request
+  goes through its REST helper. A poll is made with `MessageActions.sendPollMessage` (the Create Poll dialog's call),
+  with the durations the dialog offers.
+- Pin and unpin are the pin button's request (`PUT`/`DELETE /channels/{c}/messages/pins/{m}`) through the REST
+  helper. The client's own `pinMessage` shows a refusal as a dialog in the page and resolves either way, so it could
+  not report one. An archived thread is refused first.
+- A channel's pinned list is read when its About is opened (`pinnedList`): the pages the pins popout loads (25
+  each, up to 4), then `CHANNEL_PINS_ACK`, as the popout does. It is kept a minute. The pinned messages go out as
+  facts with a pin each at its time, and the About's `pinned` is `complete` when Discord said there were no more.
+  Who may pin: anyone in a DM or group DM; elsewhere, Pin Messages or Manage Messages.
+
+**Signal** (docs/signal.md "Polls and pins").
+
+## Sending extras (Discord)
+
+dither-chat's `docs/sending.md`: a reply without a ping, sending silently, previews off, saved messages and reminders,
+Discord's own scheduled messages (`extractors/discord/src/sending.ts`, hook.js "sending extras"). The hub's own Send
+later needs nothing here: it sends through the ordinary `send` at its time.
+
+- `send` with `silent` and `mentionReplied: false`: the client's own `sendMessage` options, `flags: 4096` and
+  `allowedMentions: { parse: [users, roles, everyone], replied_user: false }`, as its reply bar's @ toggle and @silent
+  build them; on the REST path, the same as `flags` and `allowed_mentions`. Capabilities `silentSend`, `replyMention`.
+- `suppressEmbeds`: the patch its own Remove Embeds sends, with `SUPPRESS_EMBEDS` added to the flags the message has
+  (read first, as a jump to it does, when the client has not loaded it).
+- Saved messages (`savedMessages`, needs `SavedMessagesStore` and its save module): `save` (with `dueAt`, a reminder)
+  and remove through the client's own functions; `savedList` runs its Saved list's own fetch (the next page with
+  `before`) and reads its store. `SAVED_MESSAGES_UPDATE` (loaded by the client itself on connecting),
+  `SAVED_MESSAGE_CREATE/DELETE` and its own timer's `MESSAGE_REMINDER_DUE` are forwarded as `saved`, `unsaved` and
+  `reminderDue`.
+- `nativeScheduled` and `cancelScheduled` (`nativeScheduled`): only where the client's own gate for its experiment
+  `2026-08-scheduled-messages` says so (else `{ enabled: false }` and no request); the list is the request its
+  Scheduled list makes, cancel its own action.
+- The reaction picker's custom emoji are ordered by `TopEmojiStore` (persisted; never fetched by us).
+
+The functions are found by their code (`PUT_SAVED_MESSAGE`, `GET_BOOKMARKS`, `SCHEDULED_MESSAGES_DELETE_START`, the
+gate's `getConfig({location:` with `isPrivate()`), read from the client's bundle (2026-11-12). Tested against replicas
+with that minified text (`test/hook-sending.test.ts`, `test/sending.test.ts`); never on a live account. Not built:
+DMs-wide search and search tabs (the request's body is in a chunk not read), channel summaries (they come only when a
+channel is opened in Discord's own UI), Discord's AI features (gated).
+
+## Stickers and voice messages (Discord)
+
+`sendStickers` and `sendVoice` (extractors/discord `src/media.ts`, hook.js `stickers`). The sticker picker's page is
+read from the client's `StickersStore`: this server's stickers, other servers', then the standard packs the client has
+loaded; nothing is fetched. Each sticker is kept only where the client's own sendability rule (the module whose
+function checks `canUseCustomStickersEverywhere` and `getSelfMember`) answers SENDABLE: one that needs Nitro is left
+out and the page says so, never sent another way. Without that module, only this server's own and the standard packs.
+A sticker goes through `MessageActions.sendStickers` (REST `sticker_ids` without it). A recording goes through the
+same upload path files take (upload URL, PUT, the message), as the client's recorder sends one: flag IS_VOICE_MESSAGE,
+no text, the file named `voice-message.ogg` with `duration_secs` and `waveform`; only an Ogg file is sent that way.
+Checked against the bundle replica in `test/hook.test.ts`, not on a live account. dither-chat's `docs/media-kinds.md`
+has the app's side (and why there is no GIF picker).
 
 ## Making a group
 
@@ -214,6 +466,20 @@ Only a live run proves, most likely to bite first:
   config error), a profile endpoint that refuses lookups (403: the invite decides), names over 255 bytes, and invites
   to people on slow remote servers within the 25 s budget.
 - Every network but Matrix: that the real hub has the conversation before it reads the answer (shown here with fakes).
+
+## Calls ringing you and voice channels
+
+dither-chat's docs/calls.md "Ringing" has the whole picture; here, where it comes from.
+
+- **Discord** (`extractors/discord/src/calls.ts`, hook.js "calls ringing, voice channels"). The hook subscribes to
+  `CALL_CREATE`/`CALL_UPDATE`/`CALL_DELETE` (with `ongoingRings`: who is rung, and by whom) and reads the call
+  channel's voice states from the client's store: `callState` facts, one per call message. `declineCall` is the
+  client's own `CallActions.stopRinging`; a call `join` with `ring` calls `CallActions.ring` after the join, as the
+  client's call button does. `VOICE_STATE_UPDATES` (at most one list per channel a second) and the voice state store
+  after connecting give `voice` events; `VOICE_CHANNEL_STATUS_UPDATE` and `CHANNEL_INFO` give `voiceStatus`. All of it
+  is what the client was sent anyway. Capabilities `callStates`, `voicePresence`, `declineCall` and `ringCalls` follow
+  the modules the hook found.
+- **Signal** (`extractors/signal/src/calls.ts`): `callStates` from the call messages in envelopes (docs/signal.md "Calls").
 
 ## Adding chat accounts here
 
@@ -296,7 +562,7 @@ The rest of the CLI covers `accounts`, `apps`, `approve <request> [--level L] [-
 ## Testing
 
 - **Unit tests:** `bun test` in each `extractors/<kind>` runs that adapter's own tests in their new place.
-  - Discord's `pipeline.test.ts` feeds the adapter's facts into dither-chat's real hub store. It needs a dither-chat checkout beside this repo (or `DITHER_CHAT_REPO`) and is skipped without one.
+  - Discord's `pipeline.test.ts` and `attention-pipeline.test.ts` feed the adapter's facts into dither-chat's real hub store. It needs a dither-chat checkout beside this repo (or `DITHER_CHAT_REPO`) and is skipped without one.
 - **Matrix testbed:** `extractors/matrix/testbed/testbed.ts`, with its integration harnesses in `extractors/matrix/test/` (see its README). Use `DITHER_TESTBED_DIR` and `DITHER_TESTBED_PORT` so a run has its own homeserver.
 - **This repo's tests:** `test/chat-import.test.ts` covers the import, the process check, forgetting an account, and the interface's types. `test/chat-add.test.ts` adds chat accounts the page's way and reads them as the hub does: a fake chat account (and the hub's `createGroup` through the manager to it), Signal on a fake signal-cli (QR, new code, linked) and WhatsApp on a fake bridge (QR, pairing code).
 - **End to end:** dither-chat's `scripts/verify-accounts-matrix.ts` moves a testbed Matrix account from a hub into a manager and back. `scripts/verify-chat-add.ts` here adds Matrix (testbed), Signal and WhatsApp (fakes) on the page in headless Chromium and checks a throwaway hub sees and uses them.

@@ -25,8 +25,19 @@
 
 import type { AboutChange, AboutTarget, PersonAbout, PersonRelationship } from './about.ts';
 import type { AddAction, AddRef, RelationshipFact, RequestAnswer, RequestFact } from './add.ts';
-import type { CallMode, CallState } from './call.ts';
+import type { AttentionCapability, AttentionCommand } from './attention.ts';
+import type { InteractCapability, InteractCommand, InteractEvent } from './apps.ts';
+import type { PollCapability, PollCommand, PollUpdate } from './poll.ts';
+import type { CallEffect, CallFact, CallInput, CallMode, CallState, StageAction, VoiceMember } from './call.ts';
+import type { GateAnswer, ScheduledEventFact, SpaceGate } from './servers.ts';
+import type { MessageModeration, ModAction, ReactionClear } from './moderation.ts';
+import type { LinkPreviewOut } from './extra.ts';
 import type { AccountStatus, AttachmentKind, Attention, MessageKind, Network, ReactionStyle, Shape, SpaceKind, Variant } from './ontology.ts';
+import type { SelfCapability, SelfCommand, SelfEvent } from './self.ts';
+import type { VoiceFact } from './rich.ts';
+import type { MediaCapability, MediaCommand, MediaEvent, VoiceOut } from './media.ts';
+import type { ForumFact, ThreadFact, ThreadsCapability, ThreadsCommand } from './threads.ts';
+import type { SendCapability, SendCommand, SendEvent } from './sending.ts';
 
 /** How far a message got with someone: their device has it, they read it, they played it (a voice note, a video). */
 export type ReceiptState = 'delivered' | 'read' | 'played';
@@ -50,6 +61,25 @@ export type Capability =
   | 'liveView'
   /** Voice calls (see call.ts). */
   | 'calls'
+  /** Says when calls ring you, go on and end, in conversations you are not calling in from here (the `callState` event). */
+  | 'callStates'
+  /** Stops a call ringing for you, the network's own way (the `declineCall` command). */
+  | 'declineCall'
+  /** A call joined in a direct or group conversation rings the others there (the call join's `ring`). */
+  | 'ringCalls'
+  /**
+   * Says who is in which voice channel when you are not in it (the `voice` event): only what the network's client was
+   * sent anyway, no request of its own. Kept only with the adversarial `voice` setting on.
+   */
+  | 'voicePresence'
+  /** In a call: one person's volume and mute for this account only (the call's `local` op), and their values in its state. */
+  | 'callVolume'
+  /** In a call: the account's own client takes the device's noise suppression and sensitivity (the call's `input` op). */
+  | 'callInput'
+  /** In a stage call: speakers, audience, raised hands and the topic in its state, and the call's `stage` op. */
+  | 'stage'
+  /** In a call: the sounds this account may play (the call's `sounds` and `sound` ops), and effects others send (the call event's `effect`). */
+  | 'soundboard'
   /** Forwarding a message it can read into another conversation, the network's own way (the `forward` command). */
   | 'forward'
   /** Reads a conversation's or space's settings, members and permissions (the `about` command, about.ts). */
@@ -87,8 +117,60 @@ export type Capability =
   | 'walkMembers'
   /** `mentionables`: who a conversation can ping, for the @ picker (mentions.ts). */
   | 'mentionables'
+  /** Bodies keep `<@person:per_…>` and `<@identity:idn_…>` as written: the hub does not lower them (docs/mentions.md). */
+  | 'personRefs'
   /** Lists a channel's threads, archived ones too (the `threads` command), so an index job finds threads nobody opened. */
-  | 'listThreads';
+  | 'listThreads'
+  /** Says a space's scheduled events (the scheduledEvent(s) events) and reads them fresh (the `scheduledEvents` command, servers.ts). */
+  | 'events'
+  /** Says Interested in a scheduled event, or takes it back (the `rsvp` command). */
+  | 'rsvp'
+  /** Leaves a conversation or space (the `leave` command), where its About's `leaving` says it may. */
+  | 'leave'
+  /** Reads what a space asks before you are in (rules, an application, onboarding) and answers it (`gate`, `answerGate`). */
+  | 'gates'
+  /** Lists invite links and makes them with an expiry and a use limit (About.invite.links, options; `configure` invite). */
+  | 'inviteLinks'
+  /** Sets your own nickname in a space (About.nick, the `setNick` command). */
+  | 'nick'
+  /**
+   * Shows your safety number with each person and whether you verified it (PersonAbout.safety), and marks it verified
+   * or clears that (the `verify` command). A change of their key comes as a system line in your 1:1 (Signal).
+   */
+  | 'safetyNumbers'
+  /** Blocks and unblocks people and groups outside a request (the `block` command, About.blocked). */
+  | 'block'
+  /** Keeps your private nickname and note for someone on the network too (IdentityFact nickname and note, the `setContact` command). */
+  | 'contactNotes'
+  /** Tells the sender you played a voice note or opened a video of theirs (the `viewed` command; Signal's viewed receipt). */
+  | 'viewed'
+  /** Sends a link preview with a message (`send`'s `preview`). Advertised only while the account's own setting allows previews. */
+  | 'linkPreviews'
+  /** Resets the encrypted session with someone in a direct conversation (the `resetSession` command; Signal's end session). */
+  | 'resetSession'
+  /**
+   * Moderates where the account may (moderation.ts): About.moderation and the `moderate` and `bans` commands for
+   * members, ReactionContext.moderation, `redact` with `moderator` and `clearReactions` for others' messages.
+   */
+  | 'moderate'
+  /** Shows members' labels in groups (AboutMember.label) and sets your own (About.label, the `setLabel` command; Signal). */
+  | 'memberLabels'
+  /** Changes a group's or server's picture through `configure` with key 'avatar' (a file:// URL the hub gives it). */
+  | 'setPicture'
+  /** Mentions found late, native mutes, unread by hand, many read at once (attention.ts). */
+  | AttentionCapability
+  /** Bots' buttons, selects, slash commands and forms (apps.ts). */
+  | InteractCapability
+  /** Stickers, voice messages, view-once, stories (media.ts). */
+  | MediaCapability
+  /** Polls read, voted in, made and ended; pins changed (poll.ts). */
+  | PollCapability
+  /** Silent sends, replies without a ping, previews taken off, saved messages, the network's scheduled messages (sending.ts). */
+  | SendCapability
+  /** The account's own self and block, ignore, notes (self.ts, docs/account-self.md). */
+  | SelfCapability
+  /** Following threads, starting threads and posts, archiving, publishing, running a group (threads.ts). */
+  | ThreadsCapability;
 
 // ---------------------------------------------------------------- facts
 
@@ -101,6 +183,13 @@ export interface IdentityFact {
   isSelf?: boolean;
   /** In the address book / friends list. Contacts get a Person, strangers in big channels do not. */
   contact?: boolean;
+  /**
+   * Your private nickname for them as the network keeps it (Signal's nickname, capability 'contactNotes'); '' when
+   * none. Left out when the adapter did not read it. `displayName` is then their own or address-book name, without it.
+   */
+  nickname?: string;
+  /** Your private note about them as the network keeps it (Signal's contact note, capability 'contactNotes'); '' when none. */
+  note?: string;
 }
 
 /** Someone seen as a member of a space. The identity fact for `who` is emitted first. */
@@ -121,10 +210,20 @@ export interface SpaceRef {
   position?: string;
 }
 
+/**
+ * The network's own notification setting for a place. An empty object says nothing is set there: an adapter sends
+ * it to clear a mute it told before (a fact without `mute` leaves the one the hub has).
+ */
 export interface NativeMute {
   level?: 'all' | 'mentions' | 'none';
   /** ms epoch; muted until then. */
   until?: number;
+  /** Muted outright (Discord's Mute), rather than set to notify on nothing. */
+  muted?: boolean;
+  /** A space's: @everyone and @here do not notify there (Discord's "Suppress @everyone and @here"). */
+  suppressEveryone?: boolean;
+  /** A space's: role mentions do not notify there. */
+  suppressRoles?: boolean;
 }
 
 export interface SpaceFact {
@@ -160,6 +259,10 @@ export interface ConversationFact {
   participants?: string[];
   mute?: NativeMute;
   lastMessageAt?: number;
+  /** A thread's own facts: whether you follow it, its tags, who started it (threads.ts). */
+  thread?: ThreadFact;
+  /** A forum or media channel's tags and default order (threads.ts). */
+  forum?: ForumFact;
 }
 
 /**
@@ -188,6 +291,9 @@ export interface MessageFact {
   reactions?: ReactionFact[];
   /** This message forwards another, as the network marks it. body and attachments are the forwarded content. */
   forward?: ForwardFact;
+  /** Its sender sent it silently (Discord's @silent): it may show and count, but it never alerts (docs/rich-messages.md). */
+  silent?: boolean;
+  /** Embeds as `embeds` (api.ts EmbedView), and the keys of rich.ts RichExtra. */
   extra?: Record<string, unknown>;
 }
 
@@ -236,6 +342,8 @@ export interface ReactionContext {
   custom: { id: string; name: string; icon?: MediaUrl; emoji: CustomEmojiFact[] }[];
   /** Absent: this network has no super reactions. */
   super?: { available: boolean; reason?: string };
+  /** What this account may do to others' messages here (capability 'moderate'). Absent: nothing. */
+  moderation?: MessageModeration;
 }
 
 /**
@@ -254,6 +362,14 @@ export interface AttachmentFact {
   width?: number;
   height?: number;
   url: MediaUrl;
+  /** Its description (alt text), shown with it and searched (docs/rich-messages.md). */
+  alt?: string;
+  /** Marked as a spoiler: drawn blurred until clicked. */
+  spoiler?: boolean;
+  /** The network flagged it as explicit: drawn blurred until clicked, as a spoiler. */
+  explicit?: boolean;
+  /** A voice message (rich.ts VoiceFact): drawn as a player with its waveform. */
+  voice?: VoiceFact;
 }
 
 /** A file to send, in the hub's spool. The adapter reads it during the send; the hub deletes it afterwards. */
@@ -263,6 +379,23 @@ export interface OutgoingAttachment {
   mime: string;
   size: number;
   kind: AttachmentKind;
+  /** Send it as the network's voice message (capability 'sendVoice', media.ts): the only file of its send. */
+  voice?: VoiceOut;
+}
+
+/** What the `setProfile` command changes: only the fields given (see it there). */
+export interface ProfileChange {
+  bio?: string;
+  name?: string;
+  emoji?: string;
+  avatar?: OutgoingAttachment | null;
+  username?: string | null;
+  /** Your pronouns ('' clears them). */
+  pronouns?: string;
+  /** The picture across the top of your profile, or null to remove it (Discord: Nitro only). */
+  banner?: OutgoingAttachment | null;
+  /** The colour across the top when there is no banner picture, CSS hex, or null. */
+  accent?: string | null;
 }
 
 /** What openDirect answers. The conversation fact has already been emitted when this arrives. */
@@ -322,21 +455,30 @@ export type AdapterEvent =
   | { t: 'space'; space: SpaceFact }
   | { t: 'conversation'; conversation: ConversationFact }
   | { t: 'leave'; kind: 'space' | 'conversation'; nativeId: string }
-  /** Create or replace (edits re-send the whole message). live=false marks backfill: no notifications. */
-  | { t: 'message'; message: MessageFact; live?: boolean }
+  /**
+   * Create or replace (edits re-send the whole message). live=false marks backfill: no notifications. `late` (with
+   * live=false): a message that concerns you, heard late from the network's own list (Discord's recent mentions,
+   * capability 'mentions'); new to the hub and younger than LATE_NEWS_MS by its own ts, it is triaged as a live one.
+   */
+  | { t: 'message'; message: MessageFact; live?: boolean; late?: boolean }
   /** A message is gone. `reason: 'expired'`: its disappearing timer ran out, rather than someone deleting it. */
   | { t: 'delete'; conversation: string; nativeId: string; reason?: 'expired' }
   | { t: 'reaction'; conversation: string; message: string; author: string; key: string; remove?: boolean; style?: ReactionStyle; colors?: string[]; emoji?: CustomEmojiFact }
   /** A moderator removed every reaction on a message, or every one with this key. */
   | { t: 'reactionsCleared'; conversation: string; message: string; key?: string }
-  /** Read state as the network reports it. Counts override the hub's own tally when given. */
-  | { t: 'read'; conversation: string; upToTs: number; unread?: number; mentions?: number }
+  /**
+   * Read state as the network reports it. Counts override the hub's own tally when given. `manual`: you marked it
+   * unread on the network, so the read point moves back to upToTs (otherwise it only moves forward).
+   */
+  | { t: 'read'; conversation: string; upToTs: number; unread?: number; mentions?: number; manual?: boolean }
   /**
    * History the hub keeps (docs/history.md). `by` is who did it and `ts` when, where the network says; else the hub
    * uses the time it heard.
    *
    * A message pinned or unpinned. */
   | { t: 'pin'; conversation: string; message: string; pinned: boolean; by?: string; ts?: number }
+  /** Votes in a poll as they come, or the poll closing (capability 'polls', poll.ts PollUpdate). */
+  | ({ t: 'pollUpdate' } & PollUpdate)
   /** Someone given a role or losing one: a Discord role by name, a Matrix power level ("Admin", "Moderator"), admin on Signal or WhatsApp. */
   | { t: 'role'; target: AboutTarget; member: string; role: string; given: boolean; color?: string; by?: string; ts?: number }
   /**
@@ -370,7 +512,16 @@ export type AdapterEvent =
    */
   | { t: 'typing'; conversation: string; author: string; stop?: boolean; ttl?: number; name?: string }
   /** A call this hub started: bridge signalling for the device, the call's state, or its end. */
-  | { t: 'call'; call: string; signal?: unknown; state?: CallState; ended?: string }
+  | { t: 'call'; call: string; signal?: unknown; state?: CallState; ended?: string; effect?: CallEffect }
+  /** A call ringing you, going on, or over (capability 'callStates', call.ts CallFact): the whole fact each time. */
+  | { t: 'callState'; call: CallFact }
+  /**
+   * Everyone in one voice channel now (capability 'voicePresence'), replacing what the hub had for it; [] is nobody.
+   * `space`: its guild. Only what the network's client was sent anyway. Kept only with the adversarial `voice` setting.
+   */
+  | { t: 'voice'; conversation: string; space?: string; members: VoiceMember[]; ts?: number }
+  /** A voice channel's status line ("playing chess"), set by whoever is in it; null clears it. Not about anyone: kept like a topic. */
+  | { t: 'voiceStatus'; conversation: string; text: string | null }
   /**
    * Requests waiting on you (capability 'requests', add.ts): the account's whole list, sent after connect. It replaces
    * the hub's; until one comes the hub keeps what it had, so a network that knows its list only later loses nothing.
@@ -393,9 +544,25 @@ export type AdapterEvent =
   | { t: 'relationships'; list: RelationshipFact[] }
   /** One changed; relationship 'stranger': it is gone. */
   | { t: 'relationship'; fact: RelationshipFact }
+  /** A space's scheduled events, the whole list (capability 'events'), replacing what the hub kept for this account. */
+  | { t: 'scheduledEvents'; space: string; events: ScheduledEventFact[] }
+  /** One scheduled event new or changed. */
+  | { t: 'scheduledEvent'; event: ScheduledEventFact }
+  /** One gone (deleted; not merely over or cancelled, which are statuses). */
+  | { t: 'scheduledEventGone'; space: string; nativeId: string }
+  /** What a space asks of this account now (capability 'gates'); null: nothing (passed, approved, or left). */
+  | { t: 'gate'; space: string; gate: SpaceGate | null }
+  /** saved, unsaved, reminderDue (sending.ts). */
+  | SendEvent
   | { t: 'reply'; id: string; ok: true; result?: unknown }
   | { t: 'reply'; id: string; ok: false; error: string }
-  | { t: 'log'; level: 'debug' | 'info' | 'warn' | 'error'; msg: string; data?: unknown };
+  | { t: 'log'; level: 'debug' | 'info' | 'warn' | 'error'; msg: string; data?: unknown }
+  /** interaction, appModal (apps.ts). */
+  | InteractEvent
+  /** story, storyGone (media.ts). */
+  | MediaEvent
+  /** Notices, own presence and settings, whom it ignores (self.ts). */
+  | SelfEvent;
 
 // ---------------------------------------------------------------- hub -> adapter
 
@@ -424,6 +591,8 @@ export interface ThreadsResult {
   more: boolean;
   /** The network is still indexing this channel's threads (Discord's 202): ask the same again after this long. */
   retryAfterMs?: number;
+  /** The page's threads, native ids in the network's order (threads.ts ThreadPageView); absent from an older adapter. */
+  ids?: string[];
 }
 
 /** What a network search asks for, from the hub's query language (search.ts) in the network's terms. */
@@ -458,7 +627,24 @@ export type AdapterCommand =
   /** Call lab only (scripts/call-lab.ts, DITHER_LAB=1): a command for the lab probe in the sandbox. */
   | { t: 'lab'; id: string; lab: { op: string; [k: string]: unknown }; timeout?: number }
   /** reply.result: { nativeId } of the sent message if known (the echo still arrives as a message fact). */
-  | { t: 'send'; id: string; conversation: string; body: string; replyTo?: string; attachments?: OutgoingAttachment[] }
+  | {
+      t: 'send';
+      id: string;
+      conversation: string;
+      body: string;
+      replyTo?: string;
+      attachments?: OutgoingAttachment[];
+      /** capability 'linkPreviews' */
+      preview?: LinkPreviewOut;
+      /** A sticker from the `stickers` reply, by its id (capability 'sendStickers'); body may be empty with it. */
+      sticker?: string;
+      /** The files open once (capability 'sendViewOnce'). */
+      viewOnce?: boolean;
+      /** capability 'silentSend': nobody is notified of it (Discord's @silent). Left out by the hub otherwise. */
+      silent?: boolean;
+      /** capability 'replyMention', with replyTo: false, the reply does not ping its author. Absent: the network's default (it pings). */
+      mentionReplied?: boolean;
+    }
   /**
    * Forward a message this account can read, the network's own way (capability 'forward'). `note` goes with it,
    * as the network's own client would send one. reply.result: { nativeId } of the forward, or { fallback: reason }
@@ -498,8 +684,16 @@ export type AdapterCommand =
    * the archived ones. Discord's user route is DiscordChatExporter's: /channels/{id}/threads/search. Conversation
    * facts for the threads first (each with parentConversation), then reply.result: ThreadsResult.
    */
-  | { t: 'threads'; id: string; conversation: string; archived: boolean; offset: number }
+  | { t: 'threads'; id: string; conversation: string; archived: boolean; offset: number; /** Only private archived threads this account is in (capability 'myThreads'). */ mine?: boolean }
   | { t: 'markRead'; id: string; conversation: string; upTo: string }
+  /**
+   * You played a voice note or opened a video in someone else's message (capability 'viewed'): tell them, the way the
+   * network's own client would. The adapter sends nothing where its rules say not to (a message request, read receipts
+   * off). reply.result: { sent: boolean }
+   */
+  | { t: 'viewed'; id: string; conversation: string; message: string }
+  /** Reset the encrypted session in a direct conversation (capability 'resetSession'). reply.result: {} */
+  | { t: 'resetSession'; id: string; conversation: string }
   /** You are typing here, or (`stop`) no longer: say so on the network, the way its own client would. Best effort. */
   | { t: 'typing'; id: string; conversation: string; stop?: boolean }
   | { t: 'react'; id: string; conversation: string; message: string; key: string; remove?: boolean; style?: ReactionStyle; emoji?: CustomEmojiFact }
@@ -508,7 +702,28 @@ export type AdapterCommand =
   /** Name the people behind a total: identity facts first, then reply.result: { authors: string[] } */
   | { t: 'reactors'; id: string; conversation: string; message: string; key: string; style?: ReactionStyle }
   | { t: 'edit'; id: string; conversation: string; message: string; body: string }
-  | { t: 'redact'; id: string; conversation: string; message: string }
+  /**
+   * Delete a message for everyone. `moderator` (capability 'moderate'): it is someone else's, deleted as an admin or
+   * moderator may (Discord's Manage Messages, Signal's admin delete); the adapter checks it may first.
+   */
+  | { t: 'redact'; id: string; conversation: string; message: string; moderator?: true }
+  /**
+   * Take reactions off a message as a moderator (capability 'moderate', ReactionContext.moderation.reactions): all of
+   * them, one emoji's (`key`), or one person's (`key` and `who`, a native identity id). reply.result: {}
+   */
+  | ({ t: 'clearReactions'; id: string; conversation: string; message: string } & ReactionClear)
+  /**
+   * One moderating action on a group's or server's members (capability 'moderate', moderation.ts), checked by the hub
+   * against a fresh About.moderation. reply.result: the About as it now stands.
+   */
+  | { t: 'moderate'; id: string; target: AboutTarget; action: ModAction }
+  /** Who is banned from a server, one read as its own Bans list makes it (capability 'moderate'). Identity facts first, then reply.result: BansResult. */
+  | { t: 'bans'; id: string; target: AboutTarget }
+  /**
+   * Your own member label in a group, '' to clear it (capability 'memberLabels', checked against memberLabelProblem).
+   * reply.result: the About as it now stands.
+   */
+  | { t: 'setLabel'; id: string; conversation: string; text: string; emoji?: string }
   /** reply.result: { mime: string, base64: string } */
   | { t: 'fetchMedia'; id: string; url: MediaUrl }
   /** Settings, members and permissions of a conversation or space. Identity facts for members first, then reply.result: About */
@@ -529,13 +744,32 @@ export type AdapterCommand =
    * Change the account's own profile (capability 'editProfile'). Only the fields given change. `bio`: the bio or
    * About text ('' clears it). The adapter checks the network's limit (about.ts BIO_LIMIT) and fails with a plain
    * error past it. reply.result: PersonAbout of the account itself as it now stands.
+   *
+   * The other fields are offered only where that PersonAbout's `editable` lists them: `name` your profile name,
+   * `emoji` the emoji beside your bio (Signal's About emoji, '' clears), `avatar` a picture in the hub's spool (null
+   * removes yours), `username` your username (Signal picks its number: name.12; null deletes it), `pronouns`,
+   * `banner` (a picture in the spool, or null) and `accent` (a colour across the top of your profile, or null).
    */
-  | { t: 'setProfile'; id: string; change: { bio?: string } }
-  /** reply.result for join: { direct?: DirectVoiceSession }. One call per account at a time. */
-  | { t: 'call'; id: string; call: string; op: 'join'; conversation: string; mode: CallMode; muted?: boolean; deafened?: boolean }
+  | { t: 'setProfile'; id: string; change: ProfileChange }
+  /**
+   * reply.result for join: { direct?: DirectVoiceSession }. One call per account at a time. `ring` (capability
+   * 'ringCalls'): in a direct or group conversation, ring the others as the network's own call button does.
+   */
+  | { t: 'call'; id: string; call: string; op: 'join'; conversation: string; mode: CallMode; muted?: boolean; deafened?: boolean; ring?: boolean; input?: CallInput }
+  /** Stop a call ringing for you (capability 'declineCall'): `call` is the CallFact's nativeId. reply.result: {} */
+  | { t: 'declineCall'; id: string; conversation: string; call: string }
   | { t: 'call'; id: string; call: string; op: 'leave' }
   | { t: 'call'; id: string; call: string; op: 'mute'; muted: boolean; deafened: boolean }
   | { t: 'call'; id: string; call: string; op: 'signal' | 'note'; data: unknown }
+  /** One person's volume (0 to VOLUME_MAX) or mute, for this account only (capability 'callVolume'). `user` native. */
+  | { t: 'call'; id: string; call: string; op: 'local'; user: string; volume?: number; muted?: boolean }
+  /** The microphone's handling for the account's own client (capability 'callInput'). */
+  | { t: 'call'; id: string; call: string; op: 'input'; input: CallInput }
+  /** A stage action (capability 'stage'); `user` native, for invite and audience. */
+  | { t: 'call'; id: string; call: string; op: 'stage'; action: StageAction; user?: string }
+  /** reply.result: { sounds: CallSound[]; reason?: string } (capability 'soundboard'). */
+  | { t: 'call'; id: string; call: string; op: 'sounds' }
+  | { t: 'call'; id: string; call: string; op: 'sound'; sound: string; guild: string }
   /**
    * What an invite, address, name or handle is, without joining, following or telling anyone (capability 'resolve').
    * Identity facts it names first, then reply.result: AddPreview. Not found or expired: an error sentence.
@@ -568,8 +802,70 @@ export type AdapterCommand =
    * Identity facts, then the new conversation's fact (shape 'group', its participants), then reply.result: CreateGroupResult.
    */
   | { t: 'createGroup'; id: string; name?: string; people: string[] }
+  /**
+   * A space's scheduled events as the network has them now (capability 'events'): what opening its events list in the
+   * network's own client reads, counts and your answers included. reply.result: ScheduledEventsResult.
+   */
+  | { t: 'scheduledEvents'; id: string; space: string }
+  /**
+   * Say Interested in a scheduled event, or take it back (capability 'rsvp'); `occurrence`: one occurrence of a repeating
+   * event (EventException.nativeId or its original start as a string), else the series. reply.result: ScheduledEventFact.
+   */
+  | { t: 'rsvp'; id: string; space: string; event: string; occurrence?: string; interested: boolean }
+  /**
+   * Leave a conversation or space (capability 'leave'): a Discord server or group DM, a Signal group. The hub has
+   * checked a fresh About's `leaving`. `silent`: without telling the others, where the network can. The leave event
+   * first, then reply.result: LeaveResult.
+   */
+  | {
+      t: 'leave';
+      id: string;
+      target: AboutTarget;
+      silent?: boolean;
+      /** Native identity ids made admin as you leave (AboutLeaving.needsAdmin; Signal's `--admin`). */
+      admins?: string[];
+      /** Forget the group's data on this device too (AboutLeaving.canForget; Signal's `--delete`). */
+      forget?: true;
+    }
+  /** What a space asks of this account now (capability 'gates'). reply.result: SpaceGate | null. */
+  | { t: 'gate'; id: string; space: string }
+  /** The owner's answer to it, checked against gateAnswerProblem (capability 'gates'). reply.result: GateResult. */
+  | { t: 'answerGate'; id: string; space: string; answer: GateAnswer }
+  /** Your own nickname in a space, '' to clear it (capability 'nick', checked against nickProblem). reply.result: the About as it now stands. */
+  | { t: 'setNick'; id: string; space: string; nick: string }
+  /**
+   * Mark your safety number with someone verified (capability 'safetyNumbers'): `safetyNumber` is the one the owner
+   * compared, and the adapter refuses when it is not the current one ("It changed; look again"). `clear` takes the
+   * mark away. reply.result: PersonAbout of them as it now stands.
+   */
+  | { t: 'verify'; id: string; who: string; safetyNumber?: string; clear?: true }
+  /**
+   * Block or (`unblock`) unblock a person (kind 'identity') or a group (kind 'conversation'), on the owner's click
+   * (capability 'block'). Nothing from them reaches you while blocked. reply.result: { blocked: boolean }; a
+   * relationship event follows for a person.
+   */
+  | { t: 'block'; id: string; target: { kind: 'identity' | 'conversation'; nativeId: string }; unblock?: true }
+  /**
+   * Your private nickname or note for someone, kept on the network too (capability 'contactNotes'). Only the fields
+   * given change; '' clears one. reply.result: {}; an identity fact with what the network now keeps follows.
+   */
+  | { t: 'setContact'; id: string; who: string; nickname?: string; note?: string }
   /** Account-specific actions, e.g. 'relogin', 'startLink', 'resync'. */
   | { t: 'action'; id: string; action: string; args?: unknown }
-  | { t: 'shutdown' };
+  | { t: 'shutdown' }
+  /** mute, markUnread, markReadMany (attention.ts). */
+  | AttentionCommand
+  /** appCommands, appAutocomplete, interact (apps.ts). */
+  | InteractCommand
+  /** stickers, addStickerPack, storyViewed, storyReply (media.ts). */
+  | MediaCommand
+  /** pollVote, pollCreate, pollEnd (poll.ts). */
+  | PollCommand
+  /** suppressEmbeds, save, savedList, nativeScheduled, cancelScheduled (sending.ts). */
+  | SendCommand
+  /** Block, ignore, notes, own presence, sessions (self.ts). */
+  | SelfCommand
+  /** followThread, threadNotify, threadState, createThread, createPost, crosspost, removeMember, setOwner, setPicture (threads.ts). */
+  | ThreadsCommand;
 
 export type AdapterCommandType = AdapterCommand['t'];

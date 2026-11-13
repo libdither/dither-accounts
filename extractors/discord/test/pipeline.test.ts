@@ -132,7 +132,7 @@ describe('hub ingest of adapter facts', () => {
   test('announcement channel carries the per-channel mute', () => {
     const boot = store.bootstrap();
     const ann = boot.conversations.find((c) => c.nativeId === CH_ANN)!;
-    expect(ann.nativeMute).toEqual({ level: 'none' });
+    expect(ann.nativeMute).toEqual({ level: 'none', muted: true });
   });
 
   test('thread -> thread shape with parent conversation', () => {

@@ -28,6 +28,8 @@ import {
   parseConversation,
   parseMsgId,
   personAbout,
+  quoteAttachment,
+  quoteSource,
 } from '../src/mapping.ts';
 import type { SigContact, SigGroup, SigReceive } from '../src/types.ts';
 
@@ -76,6 +78,8 @@ describe('incoming data messages', () => {
       kind: 'text',
       body: `Hey <@${SELF}> and <@${SAM}>, the **purple V4** is *evil*. It was ~~easy~~. Spoiler: ||I flashed it||. Beta: \`heel hook\``,
       mentionsSelf: true,
+      // Which of Alice's devices sent it and when Signal's server had it, kept as they came.
+      extra: { sourceDevice: expect.any(Number), serverReceivedTs: T + 1180, serverDeliveredTs: expect.any(Number) },
     });
     expect(of(r.events, 'conversation')).toHaveLength(0); // known group: no stub
     expect(r.messages[0]).toMatchObject({ nativeId: `${ALICE}:${T + 1000}`, conversation: GROUP, author: ALICE, kind: 'text', timer: 0 });
@@ -95,7 +99,8 @@ describe('incoming data messages', () => {
     expect(m.replyTo).toBe(`${SELF}:${T - 60000}`);
     expect(m.body).toBe("perfect, I'll bring the spare chalk bag");
     expect(m.mentionsSelf).toBeUndefined();
-    expect(m.extra).toEqual({ quote: { author: SELF, ts: T - 60000, text: 'yes! **7pm** at Mesa?' } });
+    expect(m.extra).toMatchObject({ quote: { author: SELF, ts: T - 60000, text: 'yes! **7pm** at Mesa?' } });
+    expect((m.extra!.quote as object as { attachments?: unknown }).attachments).toBeUndefined();
   });
 
   test('attachments: file:// under the account dir, long-text attachment dropped', () => {
@@ -164,7 +169,7 @@ describe('incoming data messages', () => {
 
   test('disappearing message carries its timer and files', () => {
     const r = map('disappearing');
-    expect(message(r.events).extra).toEqual({ expiresInSeconds: 3600 });
+    expect(message(r.events).extra).toMatchObject({ expiresInSeconds: 3600 });
     expect(r.messages[0]).toMatchObject({ expiresInSeconds: 3600, timer: 3600, files: [`${DIR}/attachments/D00rC0de1jpg2aaa3bbb.jpg`] });
   });
 
@@ -172,7 +177,8 @@ describe('incoming data messages', () => {
     const m = message(map('view-once').events);
     expect(m.kind).toBe('media');
     expect(m.attachments).toBeUndefined();
-    expect(m.extra).toEqual({ viewOnce: true });
+    expect(m.extra).toMatchObject({ viewOnce: true });
+    expect(m.extra!.attachmentNotes).toBeUndefined();
   });
 
   test('incoming call offer', () => {
@@ -189,6 +195,27 @@ describe('incoming data messages', () => {
   test('pin, poll', () => {
     expect(message(map('pin').events)).toMatchObject({ kind: 'system', body: 'Alice Chen pinned a message.', replyTo: `${SAM}:${T + 14000}` });
     expect(message(map('poll').events)).toMatchObject({ kind: 'text', body: '📊 **Thursday or Friday?**\n• Thursday\n• Friday' });
+  });
+
+  test("a poll is structured on its message, options by position", () => {
+    expect(message(map('poll').events).extra?.poll).toEqual({ question: 'Thursday or Friday?', options: [{ id: '0', text: 'Thursday' }, { id: '1', text: 'Friday' }] });
+  });
+
+  test("a vote is the voter's whole vote with its number, on the poll's message; a vote names nobody else", () => {
+    const r = map('poll-vote');
+    expect(of(r.events, 'message')).toEqual([]);
+    expect(of(r.events, 'pollUpdate')).toEqual([{ t: 'pollUpdate', conversation: GROUP, message: `${SAM}:${T + 26000}`, vote: { voter: ALICE, options: ['1'], seq: 2, ts: T + 27000 } }]);
+    // Taken back: no options. A poll author named by number only resolves like a pin's target.
+    const back = fixture('poll-vote');
+    Object.assign(back.envelope!.dataMessage!.pollVote!, { optionIndexes: [], authorUuid: null });
+    expect(of(mapReceive(back, ctx({ aciOfNumber: (n) => (n === '+15550161' ? SAM : undefined) })).events, 'pollUpdate')[0]).toMatchObject({ vote: { options: [], seq: 2 } });
+    expect(of(mapReceive(back, ctx()).events, 'pollUpdate')).toEqual([]);
+  });
+
+  test('a poll ended by its author: a line, and the poll closed', () => {
+    const r = map('poll-terminate');
+    expect(message(r.events)).toMatchObject({ kind: 'system', body: 'Sam Rivera ended the poll.', replyTo: `${SAM}:${T + 26000}` });
+    expect(of(r.events, 'pollUpdate')).toEqual([{ t: 'pollUpdate', conversation: GROUP, message: `${SAM}:${T + 26000}`, ended: true, ts: T + 28000 }]);
   });
 
   test('pin and unpin: a pin event for the target message, by whoever did it; a pin with a duration ends then', () => {
@@ -222,11 +249,139 @@ describe('incoming data messages', () => {
     expect(of(mapReceive(rcv, ctx()).events, 'pin')).toEqual([{ t: 'pin', conversation: GROUP, message: `${ALICE}:${T + 1000}`, pinned: true, by: SELF, ts: sent.timestamp! }]);
   });
 
-  test('housekeeping and failures produce no messages', () => {
+  test('housekeeping produces no messages', () => {
     expect(of(map('profile-key-update').events, 'message')).toHaveLength(0);
-    const r = map('decrypt-error');
-    expect(of(r.events, 'message')).toHaveLength(0);
+  });
+
+  test('a message that could not be decrypted: a line in the 1:1 with its sender, nothing of it, once', () => {
+    const seen = new Set<string>();
+    const once = (k: string) => (seen.has(k) ? false : (seen.add(k), true));
+    const r = map('decrypt-error', { once });
     expect(r.logs.some((l) => l.level === 'warn' && l.msg.includes('ProtocolInvalidMessageException'))).toBe(true);
+    expect(of(r.events, 'conversation').map((e) => e.conversation.nativeId)).toEqual([`dm:${SELF}:${SAM}`]);
+    // An id of its own: the message coming again decrypted (a retry keeps its timestamp) does not land on it.
+    expect(message(r.events)).toEqual({ nativeId: `${SAM}:${T + 21000}:undecrypted`, conversation: `dm:${SELF}:${SAM}`, author: SAM, ts: T + 21000, kind: 'system', body: 'A message from Sam Rivera could not be decrypted.', extra: { sourceDevice: 3 } });
+    expect(of(map('decrypt-error', { once }).events, 'message')).toHaveLength(0);
+    // A duplicate was shown already; your own sends coming back are not lost.
+    for (const type of ['ProtocolDuplicateMessageException', 'SelfSendException']) {
+      const rcv = fixture('decrypt-error');
+      rcv.exception!.type = type;
+      rcv.envelope!.timestamp += 1;
+      expect(of(mapReceive(rcv, ctx()).events, 'message')).toHaveLength(0);
+    }
+    // An envelope that did decrypt (the error came later) is shown as itself.
+    const ok = fixture('text-styles-mentions');
+    ok.exception = { type: 'AttachmentInvalidException', message: 'x' };
+    expect(message(mapReceive(ok, ctx()).events).body).toContain('purple V4');
+  });
+});
+
+describe('what a message carries besides its text', () => {
+  test('voice notes and captions as notes on their attachments, in order; a file that did not download is named, not dropped', () => {
+    const rcv = fixture('attachment');
+    const atts = rcv.envelope!.dataMessage!.attachments!;
+    atts[0].caption = ' the crux ';
+    atts[2].isVoiceNote = true;
+    atts.push({ contentType: 'video/mp4', filename: 'send.mp4', id: 'Gone0000video.mp4', size: 5_000_000 }, { contentType: 'image/png', filename: 'stream.png', id: null, size: 10 });
+    const r = mapReceive(rcv, ctx({ exists: (p) => !p.includes('Gone0000') }));
+    const m = message(r.events);
+    expect(m.attachments!.map((a) => a.name)).toEqual(['v4.jpg', 'Vn0te1aac2bbb3ccc4dd.aac']);
+    expect(m.extra).toMatchObject({
+      attachmentNotes: [{ caption: 'the crux' }, { voiceNote: true }],
+      missingAttachments: [
+        { name: 'send.mp4', mime: 'video/mp4', size: 5_000_000 },
+        { name: 'stream.png', mime: 'image/png', size: 10 },
+      ],
+    });
+    expect(r.messages[0].files).toHaveLength(2);
+    // Nothing but a file that did not come: still a message, of media.
+    const only = fixture('attachment');
+    only.envelope!.dataMessage!.message = null;
+    only.envelope!.dataMessage!.attachments = [{ contentType: 'image/jpeg', filename: 'a.jpg', id: 'Gone0000a.jpg', size: 1 }];
+    const m2 = message(mapReceive(only, ctx({ exists: () => false })).events);
+    expect(m2).toMatchObject({ kind: 'media', body: '' });
+    expect(m2.attachments).toBeUndefined();
+    expect(m2.extra!.missingAttachments).toEqual([{ name: 'a.jpg', mime: 'image/jpeg', size: 1 }]);
+  });
+
+  test('link previews become embeds, the picture only when it downloaded', () => {
+    const rcv = fixture('text-styles-mentions');
+    const dm = rcv.envelope!.dataMessage!;
+    dm.message = 'look https://www.example.org/route';
+    dm.mentions = [];
+    dm.textStyles = [];
+    dm.previews = [
+      { url: 'https://www.example.org/route', title: ' The route ', description: '5.12a, 30 m', image: { contentType: 'image/jpeg', id: 'Pr3view.jpg', size: 900 } },
+      { url: 'javascript:alert(1)', title: 'no' },
+    ];
+    expect(message(mapReceive(rcv, ctx()).events).extra!.embeds).toEqual([
+      { url: 'https://www.example.org/route', title: 'The route', description: '5.12a, 30 m', provider: 'example.org', image: `file://${DIR}/attachments/Pr3view.jpg` },
+    ]);
+    expect(message(mapReceive(rcv, ctx({ exists: () => false })).events).extra!.embeds).toEqual([{ url: 'https://www.example.org/route', title: 'The route', description: '5.12a, 30 m', provider: 'example.org' }]);
+  });
+
+  test('a shared contact: a card with all of it, and one line in the body for search and previews', () => {
+    const rcv = fixture('text-styles-mentions');
+    const dm = rcv.envelope!.dataMessage!;
+    dm.message = null;
+    dm.mentions = [];
+    dm.textStyles = [];
+    dm.contacts = [
+      {
+        name: { given: 'Robin', family: 'Okafor' },
+        avatar: { attachment: { contentType: 'image/jpeg', id: 'Av4tar.jpg' }, isProfile: false },
+        phone: [{ value: '+15550142', type: 'MOBILE' }, { value: '+15550143', type: 'CUSTOM', label: 'Gym' }],
+        email: [{ value: 'robin@example.org', type: 'WORK' }],
+        address: [{ type: 'HOME', street: '1 Crag Rd', city: 'Boulder', region: 'CO', postcode: '80302', country: 'US' }],
+        organization: 'Route setters',
+      },
+    ];
+    const m = message(mapReceive(rcv, ctx()).events);
+    expect(m.body).toBe('👤 Robin Okafor · +15550142, +15550143, robin@example.org');
+    expect(m.extra!.contacts).toEqual([
+      {
+        name: 'Robin Okafor',
+        line: '👤 Robin Okafor · +15550142, +15550143, robin@example.org',
+        phones: [{ value: '+15550142', label: 'Mobile' }, { value: '+15550143', label: 'Gym' }],
+        emails: [{ value: 'robin@example.org', label: 'Work' }],
+        organization: 'Route setters',
+        addresses: [{ text: '1 Crag Rd, Boulder, CO 80302, US', label: 'Home' }],
+        avatar: `file://${DIR}/attachments/Av4tar.jpg`,
+      },
+    ]);
+  });
+
+  test("a quote's attachments carry their kind and thumbnail", () => {
+    const rcv = fixture('reply-quote');
+    rcv.envelope!.dataMessage!.quote!.attachments = [{ contentType: 'image/jpeg', filename: 'v4.jpg', thumbnail: { contentType: 'image/jpeg', id: 'Thumb1.jpg', size: 2000 } }, { contentType: 'audio/aac', filename: null }];
+    expect((message(mapReceive(rcv, ctx()).events).extra!.quote as { attachments: unknown }).attachments).toEqual([
+      { mime: 'image/jpeg', name: 'v4.jpg', thumbnail: `file://${DIR}/attachments/Thumb1.jpg` },
+      { mime: 'audio/aac', name: null },
+    ]);
+  });
+
+  test('a story reply and a story reaction show as such; the story itself never comes', () => {
+    const rcv = fixture('reply-quote');
+    const dm = rcv.envelope!.dataMessage!;
+    delete dm.quote;
+    dm.storyContext = { authorUuid: SELF, sentTimestamp: T - 5000 };
+    expect(message(mapReceive(rcv, ctx()).events).extra).toMatchObject({ storyReply: { author: SELF, ts: T - 5000 } });
+    dm.message = null;
+    dm.reaction = { emoji: '❤️', targetAuthorUuid: SELF, targetSentTimestamp: T - 5000 };
+    const m = message(mapReceive(rcv, ctx()).events);
+    expect(m).toMatchObject({ body: '❤️', author: ALICE, conversation: DM_ALICE });
+    expect(m.extra).toMatchObject({ storyReply: { author: SELF, ts: T - 5000, emoji: '❤️' } });
+    dm.reaction.isRemove = true;
+    expect(mapReceive(rcv, ctx()).events.filter((e) => e.t === 'message' || e.t === 'reaction')).toHaveLength(0);
+  });
+
+  test('what a reply to a message quotes is kept in signal-cli syntax, cut to fit', () => {
+    const r = map('text-styles-mentions');
+    expect(r.messages[0].quote).toMatchObject({ m: [`4:1:${SELF}`, `10:1:${SAM}`], s: expect.arrayContaining(['17:9:BOLD']) });
+    expect(quoteSource('x'.repeat(1200), ['1100:1:abc', '3:1:def'], ['0:1200:BOLD'])).toEqual({ t: 'x'.repeat(1000), m: ['3:1:def'] });
+    expect(quoteAttachment('image/png', 'a:b.png', '/data/x.png')).toBe('image/png:a_b.png:/data/x.png');
+    expect(quoteAttachment('audio/aac', null)).toBe('audio/aac');
+    expect(quoteAttachment(null, 'f.bin', 'C:/x')).toBe('application/octet-stream:f.bin');
   });
 });
 
@@ -344,7 +499,7 @@ describe('contacts and groups', () => {
   };
 
   test('listContacts -> contact identity (ACI lowercased, number as handle)', () => {
-    expect(contactIdentity(contact, { contact: true })).toEqual({ nativeId: ALICE, handle: '+15550137', displayName: 'Alice Chen', contact: true });
+    expect(contactIdentity(contact, { contact: true })).toEqual({ nativeId: ALICE, handle: '+15550137', displayName: 'Alice Chen', contact: true, nickname: '', note: '' });
     expect(contactIdentity({ ...contact, uuid: null }, { contact: true })).toBeNull();
     expect(contactIdentity({ ...contact, uuid: SELF }, { contact: true, self: SELF })).toMatchObject({ isSelf: true });
   });

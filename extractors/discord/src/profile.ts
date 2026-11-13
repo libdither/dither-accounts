@@ -6,6 +6,7 @@
 import type * as P from '@dither-chat/protocol';
 import type { RawConnectedAccount, RawEmoji, RawMutualGuild, RawProfile, RawUser } from './discord-types.ts';
 import { avatarUrl, isoToMs, snowflakeToMs, userDisplayName } from './map.ts';
+import { EDITABLE } from './self.ts';
 
 /** RelationshipStore types. Anything else (none, implicit, a suggestion) is no standing at all. */
 export const RELATIONSHIP: Record<number, P.PersonRelationship> = { 1: 'friend', 2: 'blocked', 3: 'requesting', 4: 'requested' };
@@ -141,5 +142,13 @@ export function mapProfile(raw: RawProfile, who: string): P.PersonAbout {
   if (!raw.mutual_friends && raw.mutual_friends_count) facts.push({ label: 'Mutual friends', value: String(raw.mutual_friends_count) });
   if (raw.legacy_username) facts.push({ label: 'Originally known as', value: raw.legacy_username });
   if (facts.length) out.facts = facts;
+  // What the profile shows beyond its text, and your note on them (asked with the profile only).
+  const badges = (raw.badges ?? []).filter((b) => b?.description).map((b) => ({ name: b.description!, ...(b.icon && /^[\w-]+$/.test(b.icon) ? { icon: `https://cdn.discordapp.com/badge-icons/${b.icon}.png` } : {}) }));
+  if (badges.length) out.badges = badges;
+  if (raw.decoration && /^[\w-]+$/.test(raw.decoration)) out.decoration = `https://cdn.discordapp.com/avatar-decoration-presets/${raw.decoration}.png?size=96&passthrough=false`;
+  const colors = (raw.theme_colors ?? []).filter((c) => Number.isInteger(c) && c >= 0 && c <= 0xffffff).map((c) => `#${c.toString(16).padStart(6, '0')}`);
+  if (colors.length) out.themeColors = colors;
+  // Your note on them goes as an identity fact (self.ts noteFact), not here. What you may change, on your own.
+  if (self) out.editable = EDITABLE;
   return out;
 }

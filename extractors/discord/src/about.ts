@@ -7,7 +7,7 @@
  * say (no PermissionStore, or the check threw), the setting is locked with UNSURE as the reason.
  */
 
-import { ABOUT_LABEL, ADD_MEMBERS_MAX } from '@dither-chat/protocol';
+import { ABOUT_LABEL, ABOUT_RULES, ADD_MEMBERS_MAX } from '@dither-chat/protocol';
 import type * as P from '@dither-chat/protocol';
 import type { RawAbout, RawAboutPatch, RawCan, RawRole, RawSeenMember, RawUser } from './discord-types.ts';
 import { CHANNEL_TYPE, groupIconUrl, guildIconUrl, isThread, mapPrivateChannel, snowflakeToMs, userDisplayName } from './map.ts';
@@ -98,8 +98,8 @@ export function mapAbout(raw: RawAbout): P.About {
   if (!c && g) {
     // The server itself.
     set('name', g.name ?? '', may(guildCan.manageGuild, NEED_GUILD));
-    set('topic', g.description ?? '', no(g.community ? 'Change the server description in Discord.' : 'Only Community servers have a description, set in Discord.'));
-    set('avatar', guildIconUrl(g) ?? null, no(PICTURE));
+    set('topic', g.description ?? '', g.community ? may(guildCan.manageGuild, NEED_GUILD) : no('Only Community servers have a description, set in Discord.'));
+    set('avatar', guildIconUrl(g) ?? null, may(guildCan.manageGuild, NEED_GUILD));
     // 1 explicit, 3 age-restricted; Discord sets it.
     if (g.nsfw_level != null) set('nsfw', g.nsfw_level === 1 || g.nsfw_level === 3, no('Discord sets this for the server.'));
   } else if (c?.type === CHANNEL_TYPE.CATEGORY) {
@@ -126,6 +126,15 @@ export function mapAbout(raw: RawAbout): P.About {
     if (!thread && c.type !== CHANNEL_TYPE.VOICE && c.type !== CHANNEL_TYPE.STAGE) set('topic', c.topic ?? '', edit);
     set('slowMode', c.rate_limit_per_user ?? 0, edit);
     if (!thread) set('nsfw', !!c.nsfw, edit);
+    // Plain fields of the channel's PATCH (docs/moderation.md): when new threads hide themselves, a voice channel's size and sound.
+    if (AUTO_ARCHIVE_TYPES.has(c.type)) set('autoArchive', c.default_auto_archive_duration ?? 4320, edit);
+    if (c.type === CHANNEL_TYPE.VOICE) {
+      set('userLimit', c.user_limit ?? 0, edit);
+      set('bitrate', c.bitrate ?? 64000, edit);
+      const f = fields.bitrate!;
+      f.options = bitrateChoices(raw.premium_tier ?? 0);
+      if (f.canEdit) f.reason = `Up to ${bitrateMax(raw.premium_tier ?? 0) / 1000} kbps with this server's boosts.`;
+    }
     const manage = may(can.manageChannels, NEED_CHANNELS);
     set('announceOnly', !!c.everyone_denies_send, no(manage.ok ? SEND_RULES : manage.reason!));
   }
@@ -183,6 +192,12 @@ export function mapAbout(raw: RawAbout): P.About {
   };
 }
 
+/** Channels whose new threads hide themselves after a while: text, announcement, forum, media. */
+const AUTO_ARCHIVE_TYPES = new Set<number>([CHANNEL_TYPE.TEXT, CHANNEL_TYPE.ANNOUNCEMENT, CHANNEL_TYPE.FORUM, CHANNEL_TYPE.MEDIA]);
+/** A voice channel's highest bitrate by the server's boost tier (Discord: 96, 128, 256, 384 kbps). */
+export const bitrateMax = (tier: number) => [96000, 128000, 256000, 384000][Math.max(0, Math.min(3, tier | 0))]!;
+export const bitrateChoices = (tier: number) => (ABOUT_RULES.discord.bitrate ?? []).filter((b) => b <= bitrateMax(tier));
+
 /** What `configure` asks the hook for: one PATCH of one channel or server. */
 export interface ConfigurePlan {
   channelId?: string;
@@ -194,20 +209,25 @@ export interface ConfigurePlan {
  * The PATCH for a change, or an Error in words. Checked against the About built from the same raw read, so a
  * setting this account may not change, or that the target does not have, is refused here too.
  */
-export function configurePlan(raw: RawAbout, change: P.AboutChange): ConfigurePlan {
+export function configurePlan(raw: RawAbout, change: P.AboutChange, picture?: string): ConfigurePlan {
   switch (change.key) {
     case 'invite':
       throw new Error('Invite links are not supported on Discord yet.');
     case 'pin':
-      throw new Error('Pinning is not supported on Discord yet.');
+      throw new Error('A pin is not a setting: it goes by message (polls.ts).');
     case 'avatar':
-      throw new Error(PICTURE);
+      // A server's icon, as a data URI the adapter read from the hub's file (a group DM's is not built here).
+      if (raw.channel || !picture) throw new Error(PICTURE);
+      break;
     case 'announceOnly':
       throw new Error(SEND_RULES);
     case 'name':
     case 'topic':
     case 'slowMode':
     case 'nsfw':
+    case 'autoArchive':
+    case 'userLimit':
+    case 'bitrate':
       break;
     default:
       throw new Error(`${ABOUT_LABEL[change.key]} is not a Discord setting.`);
@@ -223,7 +243,24 @@ export function configurePlan(raw: RawAbout, change: P.AboutChange): ConfigurePl
       return { ...target, patch: { name } };
     }
     case 'topic':
-      return { ...target, patch: { topic: String(change.value ?? '') } };
+      return { ...target, patch: raw.channel ? { topic: String(change.value ?? '') } : { description: String(change.value ?? '') } };
+    case 'avatar':
+      return { ...target, patch: { icon: picture! } };
+    case 'autoArchive': {
+      const n = Number(change.value);
+      if (!(ABOUT_RULES.discord.autoArchive ?? []).includes(n)) throw new Error('not one of the choices for hiding threads');
+      return { ...target, patch: { default_auto_archive_duration: n } };
+    }
+    case 'userLimit': {
+      const n = Number(change.value);
+      if (!Number.isInteger(n) || n < 0 || n > 99) throw new Error('a user limit is 0 (none) to 99');
+      return { ...target, patch: { user_limit: n } };
+    }
+    case 'bitrate': {
+      const n = Number(change.value);
+      if (!(field.options ?? []).includes(n)) throw new Error(`Up to ${bitrateMax(raw.premium_tier ?? 0) / 1000} kbps with this server's boosts.`);
+      return { ...target, patch: { bitrate: n } };
+    }
     case 'slowMode': {
       const n = Number(change.value);
       if (!Number.isInteger(n) || n < 0 || n > 21600) throw new Error('not one of the slow mode choices');
@@ -267,7 +304,8 @@ export function withRecipients(raw: RawAbout, users: RawUser[]): RawAbout {
 
 /** The About after a change Discord accepted: the client's stores may not have caught up with the PATCH yet. */
 export function withChange(about: P.About, change: P.AboutChange): P.About {
-  if (change.key === 'invite' || change.key === 'pin') return about;
+  // A new icon comes back as the server's fact, with its own URL.
+  if (change.key === 'invite' || change.key === 'pin' || change.key === 'avatar') return about;
   const f = about.fields[change.key];
   if (!f) return about;
   const value = change.key === 'name' && typeof change.value === 'string' ? change.value.trim() : change.value;

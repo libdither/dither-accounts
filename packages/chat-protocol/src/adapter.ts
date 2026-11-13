@@ -85,6 +85,8 @@ export type Capability =
   | 'search'
   /** Lists a space's members on request, by name prefix (the `walkMembers` command): an active walk, not only what was seen. */
   | 'walkMembers'
+  /** `mentionables`: who a conversation can ping, for the @ picker (mentions.ts). */
+  | 'mentionables'
   /** Lists a channel's threads, archived ones too (the `threads` command), so an index job finds threads nobody opened. */
   | 'listThreads';
 
@@ -490,6 +492,7 @@ export type AdapterCommand =
    *   the hub walks by name.
    */
   | { t: 'walkMembers'; id: string; space: string; query: string; limit: number; recent?: boolean; after?: string }
+  | { t: 'mentionables'; id: string; conversation: string; query: string; limit: number }
   /**
    * A page of a channel's threads, newest activity first (capability 'listThreads'): the active ones, or with `archived`
    * the archived ones. Discord's user route is DiscordChatExporter's: /channels/{id}/threads/search. Conversation

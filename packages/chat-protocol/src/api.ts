@@ -110,7 +110,7 @@ export interface ChatRoute {
 /**
  * A chat as one thing (docs/chats.md): `person:<id>`, every direct conversation with someone, or a conversation id on
  * its own. `route` is where a message goes when the sender does not say: the route you last chose, while it still
- * exists, else the one of the latest message.
+ * exists and no message has come on another route since (`at`, when it was chosen), else the one of the latest message.
  */
 export interface ChatView {
   id: string;
@@ -120,7 +120,7 @@ export interface ChatView {
   name: string;
   nameSource: NameSource | null;
   routes: ChatRoute[];
-  route: { conversationId: string; accountId: string; why: 'chosen' | 'latest' } | null;
+  route: { conversationId: string; accountId: string; why: 'chosen' | 'latest'; at?: number } | null;
 }
 
 /** One of your accounts observing a space or conversation, with its read state. */

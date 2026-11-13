@@ -576,6 +576,23 @@ describe('signed in', () => {
     expect(h.since(n).filter((e): e is Extract<Ev, { t: 'message' }> => e.t === 'message').map((e) => e.message.conversation)).toEqual([`${FORUM}/4`, `${FORUM}/1`]);
   });
 
+  test("mentionables: a group's people, a supergroup's from Telegram's member search for letters typed, nobody in a broadcast channel; no identity goes out", async () => {
+    expect(h.of('hello').at(-1)!.capabilities).toContain('mentionables');
+    const n = h.events.length;
+    const ask = (conversation: string, query: string) => h.cmd({ t: 'mentionables', conversation, query, limit: 20 }) as Promise<P.Mentionables>;
+    const group = await ask(GROUP, '');
+    expect(group.people.map((p) => p.nativeId)).toEqual([String(FAKE_IDS.alice), String(FAKE_IDS.bob)]);
+    expect(group.people[0]).toMatchObject({ handle: '@alice', avatar: `tg://avatar/u${FAKE_IDS.alice}/9101?dc=2` });
+    expect(group.everyone).toBe(false);
+    expect((await ask(GROUP, '@bo')).people.map((p) => p.handle)).toEqual(['@bob']);
+    // A supergroup: no member search with nothing typed (the hub knows who wrote there); with letters, Telegram's own.
+    expect(await ask(DEVS, '')).toEqual({ people: [], everyone: false });
+    expect((await ask(DEVS, 'car')).people.map((p) => p.handle)).toEqual(['@carol_c']);
+    expect(await ask(NEWS, 'a')).toEqual({ people: [], everyone: false });
+    expect((await ask(DM_ALICE, '')).people.map((p) => p.nativeId)).toEqual([String(FAKE_IDS.alice)]);
+    expect(h.since(n).filter((e) => e.t === 'identity')).toEqual([]);
+  });
+
   test('errors: what does not belong to this account, FLOOD_WAIT in words and in the status', async () => {
     expect(await h.cmd({ t: 'send', conversation: 'dm:1:2', body: 'x' }).catch((e) => e.message)).toBe('that conversation belongs to another Telegram account');
     expect(await h.cmd({ t: 'send', conversation: 'nonsense', body: 'x' }).catch((e) => e.message)).toBe('not a Telegram conversation: nonsense');

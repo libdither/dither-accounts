@@ -17,6 +17,7 @@ import { createGroupProblem } from '@dither-chat/protocol';
 import type { BridgeUp, HookCommand, PageState, RawAbout, RawAddRecipients, RawCreateGroupDM, RawChannel, RawEmoji, RawFriend, RawGuild, RawInvite, RawJoin, RawPerson, RawProfile, RawUser } from './discord-types.ts';
 import { addCapabilities, addCommand, answerCommand, answerOutcome, friendOutcome, invitePreview, isRelationshipEvent, isRequestEvent, joinOutcome, personPreview, RELATIONSHIP_EVENTS, relationshipEvents, relationshipsEvent, removeCommand, removeOutcome, requestsEvent, resolveCommand, snapshotRelationships, snapshotRequests } from './add.ts';
 import { aboutSeenMembers, aboutUsers, addPlan, configurePlan, mapAbout, NOT_GROUP, withChange, withRecipients } from './about.ts';
+import { mapMentionables, mentionablesCommand, mentionCapabilities, type RawMentionables } from './mentionables.ts';
 import { checkBio, mapProfile, profileUsers } from './profile.ts';
 import { addedFacts, changedFacts, messageEvents, newState, openedDirect, routeChannel, seenMembers, translateDispatch, translateSnapshot, userFacts } from './ingest.ts';
 import { duePins, PIN_HOLD_MS } from './changes.ts';
@@ -422,6 +423,12 @@ async function onCommand(cmd: P.AdapterCommand): Promise<unknown> {
       for (const ev of events) hub.emit(ev);
       return result;
     }
+    case 'mentionables': {
+      // From the client's stores, and for letters typed in a server the member search its own @ list makes: not paced,
+      // as typing is not (the hub keeps answers a minute). Nothing is emitted (mentionables.ts).
+      const raw = await bridge.request<RawMentionables>(mentionablesCommand(cmd), 10_000);
+      return mapMentionables(raw, cmd.query, cmd.limit);
+    }
     case 'markRead':
       return pace.run('markRead', () => bridge.request({ kind: 'markRead', channelId: cmd.conversation, messageId: cmd.upTo }, 20_000));
     case 'typing':
@@ -528,7 +535,7 @@ function needCapability(cap: P.Capability, what: string) {
 
 /** hello again when the modules found change what this account can do; the request and relationship lists once they come in. */
 function updateAddCapabilities() {
-  const next = addCapabilities(lastFinders);
+  const next = [...addCapabilities(lastFinders), ...mentionCapabilities(lastFinders)];
   if (next.join() === addCaps.join()) return;
   const gained = next.filter((c) => !addCaps.includes(c));
   addCaps = next;

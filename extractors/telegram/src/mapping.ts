@@ -15,6 +15,8 @@ export interface MapCtx {
   isForum(channelId: number): boolean;
   /** What to call a user or chat in a service message. */
   nameOf(peer: PeerRef): string | undefined;
+  /** The user with this @username (without the @), when this account knows them: an @username in a message names them. */
+  userByName?(username: string): number | undefined;
 }
 
 export const TYPING_TTL = 6000;
@@ -311,7 +313,13 @@ export function messageFact(ctx: MapCtx, m: tl.TypeMessage): P.MessageFact | nul
     return f;
   }
   let mentioned = false;
-  f.body = fromTelegram(m.message, m.entities, { onMention: (id) => (mentioned ||= id === String(ctx.self)) });
+  f.body = fromTelegram(m.message, m.entities, {
+    onMention: (id) => (mentioned ||= id === String(ctx.self)),
+    userByName: (name) => {
+      const id = ctx.userByName?.(name);
+      return id === undefined ? null : userId(id);
+    },
+  });
   if (mentioned && !m.out) f.mentionsSelf = true;
   if (m.editDate && !m.editHide) f.editedTs = m.editDate * 1000;
   const media = attachmentsOf(base, m);

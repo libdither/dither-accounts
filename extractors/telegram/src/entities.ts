@@ -5,7 +5,8 @@
  * Telegram's entities count UTF-16 code units, as JS strings do, and may overlap freely; Markdown needs nesting. So
  * fromTelegram() normalises the way the Signal extractor does: same-style spans merged, emphasis split at newlines
  * and trimmed of edge whitespace, nothing starting or ending inside an atomic piece (code, a link, a mention).
- * Links, plain @usernames, hashtags and the like are text already and stay as they are.
+ * Links, hashtags and the like are text already and stay as they are; a plain @username stays too, unless it names a
+ * user this account knows (`userByName`): then it is that user's mention, <@id>, as a mention by name is.
  */
 
 /** The fields of a tl.TypeMessageEntity this reads. */
@@ -44,8 +45,10 @@ const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, M
 const isWs = (c: string) => c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === ' ';
 
 export interface FromOptions {
-  /** Each user mentioned by name (messageEntityMentionName). */
+  /** Each user mentioned by name (messageEntityMentionName), or by a username `userByName` knows. */
   onMention?: (userId: string) => void;
+  /** The id of the user with this @username (without the @), when this account knows them. */
+  userByName?: (username: string) => string | null | undefined;
 }
 
 /** Telegram text + entities -> canonical Markdown. */
@@ -67,6 +70,12 @@ export function fromTelegram(text: string | null | undefined, entities?: readonl
       const id = e.userId.toString();
       opts.onMention?.(id);
       out = `<@${id}>`;
+    } else if (e._ === 'messageEntityMention' && opts.userByName) {
+      const id = /^@\w{1,32}$/.test(body) ? opts.userByName(body.slice(1)) : null;
+      if (id) {
+        opts.onMention?.(id);
+        out = `<@${id}>`;
+      }
     }
     if (out === null) continue;
     if (atoms.length && e.s < atoms[atoms.length - 1].e) continue;

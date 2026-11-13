@@ -1534,7 +1534,13 @@ export class FakeTelegram implements TgBackend {
         const c = this.chat(idOf(p));
         if (c.broadcast && !c.admins.includes(self) && c.creator !== self) throw new FakeRpcError(400, 'CHAT_ADMIN_REQUIRED');
         const admins = req.filter?._ === 'channelParticipantsAdmins';
-        const who = c.members.filter((u) => !admins || u === c.creator || c.admins.includes(u));
+        // A member search (channelParticipantsSearch), as an @ list asks: names and usernames holding the letters.
+        const q = req.filter?._ === 'channelParticipantsSearch' ? String(req.filter.q ?? '').toLowerCase() : '';
+        const named = (u: number) => {
+          const x = this.user(u);
+          return [x.first, x.last, x.username].some((n) => typeof n === 'string' && n.toLowerCase().includes(q));
+        };
+        const who = c.members.filter((u) => (!admins || u === c.creator || c.admins.includes(u)) && (!q || named(u))).slice(0, Number(req.limit) || 200);
         const participants = who.map((u) => (u === c.creator ? { _: 'channelParticipantCreator', userId: u, adminRights: { _: 'chatAdminRights' } } : c.admins.includes(u) ? { _: 'channelParticipantAdmin', userId: u, promotedBy: c.creator, date: T0(), adminRights: { _: 'chatAdminRights' } } : { _: 'channelParticipant', userId: u, date: T0() }));
         return { _: 'channels.channelParticipants', count: participants.length, participants, chats: [], users: who.map((u) => this.tlUser(this.user(u))) };
       }

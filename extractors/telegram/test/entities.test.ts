@@ -18,6 +18,18 @@ test('links, mentions by name and quotes', () => {
   expect(fromTelegram('said:\nfirst line\nsecond\nme', [e('messageEntityBlockquote', 6, 18)])).toBe('said:\n> first line\n> second\nme');
 });
 
+test('a plain @username of someone this account knows is their mention; anyone else stays text', () => {
+  const known: Record<string, string> = { bob: '5000003' };
+  const seen: string[] = [];
+  const opts = { userByName: (n: string) => known[n.toLowerCase()] ?? null, onMention: (id: string) => seen.push(id) };
+  expect(fromTelegram('ask @Bob or @nobody_here', [e('messageEntityMention', 4, 4), e('messageEntityMention', 12, 12)], opts)).toBe('ask <@5000003> or @nobody_here');
+  expect(seen).toEqual(['5000003']);
+  // Without a way to look names up, as before: text.
+  expect(fromTelegram('ask @bob', [e('messageEntityMention', 4, 4)])).toBe('ask @bob');
+  // Inside code it is code.
+  expect(fromTelegram('@bob', [e('messageEntityCode', 0, 4), e('messageEntityMention', 0, 4)], opts)).toBe('`@bob`');
+});
+
 test('overlapping and messy entities still nest', () => {
   // bold over "hello wor", italic over "world": italic closes and reopens around bold's end
   expect(fromTelegram('hello world', [e('messageEntityBold', 0, 9), e('messageEntityItalic', 6, 5)])).toBe('**hello *wor****ld*');

@@ -66,9 +66,10 @@ import { FloodError, Pacer, type PacerOptions } from './pacer.ts';
 import { type ApprovedSession, approvedSession, approveRefusal, bySessionOrder, HASH_UNKNOWN, isTooFresh, NOT_ENDED, NOT_SIGNED_IN, parseLoginLink, parseSessionHash, SessionError, type SessionInfo, sessionInfo, tooFreshMessage } from './sessions.ts';
 import { inDates, SEARCH_PAGE, SEARCH_REQUESTS, type SearchCommand, searchDates, searchFilter, searchWords } from './search.ts';
 import { State } from './state.ts';
+import { mentionablesOf, mentionQuery } from './mentions.ts';
 
 export const ADAPTER_VERSION = '0.1.0';
-export const CAPABILITIES: P.Capability[] = ['send', 'history', 'react', 'edit', 'redact', 'markRead', 'typing', 'threads', 'media', 'sendMedia', 'openDirect', 'forward', 'about', 'configure', 'profile', 'resolve', 'join', 'connect', 'requests', 'relationships', 'disconnect', 'addMembers', 'createGroup', 'search'];
+export const CAPABILITIES: P.Capability[] = ['send', 'history', 'react', 'edit', 'redact', 'markRead', 'typing', 'threads', 'media', 'sendMedia', 'openDirect', 'forward', 'about', 'configure', 'profile', 'resolve', 'join', 'connect', 'requests', 'relationships', 'disconnect', 'addMembers', 'createGroup', 'search', 'mentionables'];
 export const QR_MESSAGE = 'Scan this QR code in Telegram on your phone: Settings → Devices → Link Desktop Device';
 
 export interface Host {
@@ -264,7 +265,17 @@ export class TelegramAdapter {
         const c = this.chats.get(p.id);
         return c && 'title' in c ? c.title : undefined;
       })()),
+      userByName: (name) => this.userByName(name),
     };
+  }
+
+  /** The user this account knows by an @username (any of their usernames), for a plain @mention in a message. */
+  private userByName(name: string): number | undefined {
+    const want = name.toLowerCase();
+    for (const [id, u] of this.users) {
+      if (u.username?.toLowerCase() === want || u.usernames?.some((x) => x.username.toLowerCase() === want)) return id;
+    }
+    return undefined;
   }
 
   private get selfId(): number {
@@ -1805,6 +1816,8 @@ export class TelegramAdapter {
         return this.react(cmd.message, cmd.key, !!cmd.remove, cmd.style === 'super');
       case 'reactionContext':
         return this.reactionContext(cmd.conversation);
+      case 'mentionables':
+        return this.mentionables(cmd);
       case 'reactors':
         return this.reactors(cmd.message, cmd.key);
       case 'markRead':
@@ -1994,6 +2007,58 @@ export class TelegramAdapter {
     const res = await this.call({ _: 'messages.sendReaction', peer: this.inputPeer(m.ref.peer), msgId: m.id, reaction: keys.map((k) => this.reaction(k)), ...(big ? { big: true } : {}) });
     this.applyResult(res);
     return {};
+  }
+
+  /**
+   * Who a chat can ping, for dither-chat's @ list (mentions.ts): a DM's other person; a basic group's members; in a
+   * supergroup, for letters typed, those Telegram's own member search finds (channels.getParticipants with
+   * channelParticipantsSearch, as its @ list asks), at most the limit. A broadcast channel: nobody. They are remembered
+   * so a mention of them can be sent, and no identity goes to the hub. Telegram has no @all.
+   */
+  private async mentionables(cmd: Extract<P.AdapterCommand, { t: 'mentionables' }>): Promise<P.Mentionables> {
+    const ref = this.conv(baseConv(cmd.conversation));
+    const q = mentionQuery(cmd.query);
+    const limit = Math.max(1, Math.min(50, Number(cmd.limit) || 20));
+    let users: tl.TypeUser[] = [];
+    if (ref.peer.kind === 'user') {
+      const u = this.users.get(ref.peer.id);
+      users = u ? [u] : [];
+    } else if (ref.peer.kind === 'chat') {
+      const full = await this.call({ _: 'messages.getFullChat', chatId: ref.peer.id });
+      const f = full.fullChat;
+      const inIt = new Set(f._ === 'chatFull' && f.participants._ === 'chatParticipants' ? f.participants.participants.map((p) => Number(p.userId)) : []);
+      users = full.users.filter((u) => inIt.has(Number(u.id)));
+      this.rememberUsers(users);
+    } else {
+      const c = this.chats.get(ref.peer.id);
+      if ((c?._ === 'channel' && c.broadcast) || !q) return { people: [], everyone: false };
+      const res = await this.call({ _: 'channels.getParticipants', channel: this.inputChannel(ref.peer.id), filter: { _: 'channelParticipantsSearch', q }, offset: 0, limit, hash: ZERO });
+      if (res._ === 'channels.channelParticipants') {
+        users = res.users;
+        this.rememberUsers(users);
+      }
+    }
+    return mentionablesOf(users, this.selfId, q, limit);
+  }
+
+  /** Users a lookup showed, kept for sending to them (their access hash and name), without telling the hub. */
+  private rememberUsers(users: readonly tl.TypeUser[]) {
+    let changed = false;
+    for (const u of users) {
+      if (u._ !== 'user' || u.min) continue;
+      const id = Number(u.id);
+      if (!this.users.has(id)) this.users.set(id, u);
+      if (u.accessHash && this.state.users.get(id) !== u.accessHash.toString()) {
+        this.state.users.set(id, u.accessHash.toString());
+        changed = true;
+      }
+      const name = displayName(u);
+      if (this.state.names.get(id) !== name) {
+        this.state.names.set(id, name);
+        changed = true;
+      }
+    }
+    if (changed) this.state.save();
   }
 
   private async reactionContext(conversation: string): Promise<P.ReactionContext> {

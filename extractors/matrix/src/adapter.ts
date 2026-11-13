@@ -30,12 +30,13 @@ import { pinChanges, presenceOf, receiptEvents, roleChanges, statusOf } from './
 import { enc, MatrixClient, MatrixError } from './http.ts';
 import { encryptedFileOf, FORWARD_KEY, forwardableContent, forwardOf, isRedacted, mentionsUser, MESSAGE_TYPES, plainTextOf, relationOf, renderContent, replyTarget, type Relation } from './messages.ts';
 import { Directory, Room, STRUCTURAL, type MxEvent } from './rooms.ts';
+import { bodyMentionsRoom, contentMentionsRoom, mayMentionRoom, RoomMentions } from './mentions.ts';
 import { searchBody, searchKey, SearchPages, type SearchCommand } from './search.ts';
 
 export const VERSION = '0.1.0';
 // Adding (add.ts): resolve, join (and knock), requests. Not 'connect': Matrix has no friends, follows or contacts to add.
 // addMembers (about.ts): invites to a room. createGroup (about.ts): a new room, then those invites.
-const CAPABILITIES: P.Capability[] = ['send', 'history', 'react', 'edit', 'redact', 'markRead', 'threads', 'media', 'sendMedia', 'openDirect', 'forward', 'about', 'configure', 'profile', 'resolve', 'join', 'requests', 'addMembers', 'createGroup', 'search'];
+const CAPABILITIES: P.Capability[] = ['send', 'history', 'react', 'edit', 'redact', 'markRead', 'threads', 'media', 'sendMedia', 'openDirect', 'forward', 'about', 'configure', 'profile', 'resolve', 'join', 'requests', 'addMembers', 'createGroup', 'search', 'mentionables'];
 
 const SYNC_TIMEOUT = 30_000;
 /**
@@ -198,6 +199,12 @@ export class MatrixAdapter {
   private retrying = false;
   /** Who a room's key goes to, per room. Dropped when a membership changes. */
   private encryptionMembers = new Map<string, string[]>();
+  /** Who a room can ping, for dither-chat's @ list (mentions.ts). */
+  private mentions = new RoomMentions({
+    selfId: () => this.selfId,
+    room: (roomId) => this.joinedRoom(roomId),
+    joinedMembers: async (roomId) => (await this.api().request<{ joined?: Record<string, { display_name?: string; avatar_url?: string }> }>('GET', `/_matrix/client/v3/rooms/${enc(roomId)}/joined_members`)).joined ?? {},
+  });
   /** Who each room's last m.typing listed, and a timer saying so again while the list stands (the server only sends changes). */
   private typers = new Map<string, { users: Set<string>; at: number }>();
   private typingTimer: ReturnType<typeof setInterval> | undefined;
@@ -1021,6 +1028,11 @@ export class MatrixAdapter {
     // A server can write plaintext events in anyone's name, so in an encrypted room they do not pass as normal.
     if (room.encrypted && ev.type === 'm.room.message' && !ev.e2ee) f.extra = { ...f.extra, encryptionWarning: 'Not encrypted, in an encrypted room. The server could have written this.' };
     if (ev.sender !== this.selfId && (mentionsUser(ev.content, this.selfId) || (edit && mentionsUser(edit.content, this.selfId)))) f.mentionsSelf = true;
+    // @room from someone the room lets notify everyone: it reaches you too, as @everyone does on Discord.
+    else if (ev.sender !== this.selfId && contentMentionsRoom(edit ? edit.content : ev.content) && mayMentionRoom(room, ev.sender)) {
+      f.mentionsSelf = true;
+      f.mentionsAll = true;
+    }
     const thread = threadId(room.id, ev.event_id);
     if (conv === room.id && this.db.thread(thread)) f.threadRoot = thread;
     // Backfill: reactions seen earlier (in newer events) would otherwise have been dropped by the hub.
@@ -1385,6 +1397,8 @@ export class MatrixAdapter {
         return this.react(cmd.conversation, cmd.message, cmd.key, !!cmd.remove, cmd.emoji);
       case 'reactionContext':
         return this.reactionContext(cmd.conversation);
+      case 'mentionables':
+        return this.mentions.answer(splitConversation(cmd.conversation).roomId, cmd.query, cmd.limit);
       case 'reactors':
         return { authors: [] }; // reaction events name their senders
       case 'about':
@@ -1582,6 +1596,9 @@ export class MatrixAdapter {
       if (target && target.sender !== this.selfId) mentions.add(target.sender);
     }
     content['m.mentions'] = mentions.size ? { user_ids: [...mentions] } : {};
+    // @room, where this account may notify everyone (mentions.ts); otherwise it stays text.
+    const room = this.dir.rooms.get(roomId);
+    if (room && bodyMentionsRoom(body) && mayMentionRoom(room, this.selfId)) content['m.mentions'].room = true;
     if (root) {
       const latest = this.db.thread(threadId(roomId, root))?.latest ?? root;
       content['m.relates_to'] = { rel_type: 'm.thread', event_id: root, is_falling_back: !replyTo, 'm.in_reply_to': { event_id: replyTo ?? latest } };
@@ -1921,6 +1938,7 @@ export class MatrixAdapter {
     switch (action) {
       case 'resync':
         this.packCache.clear();
+        this.mentions.forget();
         return this.resync();
       case 'relogin':
         return this.relogin(args);

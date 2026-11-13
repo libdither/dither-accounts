@@ -12,7 +12,15 @@
  *     normalizes to (`id_str`, `screen_name`, `profile_image_url_https`, `following`, `followed_by`);
  *   - posts (`Tweet`, or `TweetWithVisibilityResults` around one in `tweet`): `legacy.full_text` with its links expanded,
  *     a long post's `note_tweet`, reposts, quotes, replies, counts, media;
- *   - a profile's Posts tab (UserTweets): its pinned post (TimelinePinEntry) and posts, threads (modules) included.
+ *   - a profile's Posts tab (UserTweets): its pinned post (TimelinePinEntry) and posts, threads (modules) included;
+ *   - a post's page (TweetDetail, `threaded_conversation_with_injections_v2`): `tweet-<id>` items (what it answers,
+ *     then the post), `conversationthread-<id>` modules (a reply and the answers under it), cursors as items (Bottom,
+ *     ShowMoreThreads, ShowMoreThreadsPrompt; ShowMore inside a module), promoted and "Discover more" entries (left
+ *     out), and on a page of more replies `TimelineAddToModule` (moduleEntryId, moduleItems);
+ *   - what the account did to a post: `legacy.favorited` and `legacy.retweeted` on every post (PostFact.viewer);
+ *   - a post just made: sendTweet's normalized answer (`{ entities: { tweets: { <id>: flat post } }, result: <id> }`) and
+ *     the post read back alone (TweetResultByRestId: `{ result: Tweet }`);
+ *   - who liked or reposted a post (Favoriters, Retweeters): `TimelineUser` items (`user_results.result`) and cursors.
  *
  * Anything without what the mapping needs is dropped and counted by kind and reason (`feed.no-time 2`), as the DMs are.
  */
@@ -272,8 +280,11 @@ export function parsePost(v: unknown, ctx: PostCtx, depth = 0): P.PostFact | nul
   }
 
   const replyId = xid(legacy.in_reply_to_status_id_str);
+  const root = xid(legacy.conversation_id_str);
   const replyAuthor = xid(legacy.in_reply_to_user_id_str);
   const views = isObj(v.views) ? num(v.views.count) : null;
+  const liked = bool(legacy.favorited);
+  const reposted = bool(legacy.retweeted);
   const counts: NonNullable<P.PostFact['counts']> = {
     ...(num(legacy.reply_count) !== null ? { replies: num(legacy.reply_count)! } : {}),
     ...(num(legacy.retweet_count) !== null ? { reposts: num(legacy.retweet_count)! } : {}),
@@ -292,6 +303,8 @@ export function parsePost(v: unknown, ctx: PostCtx, depth = 0): P.PostFact | nul
     ...(quoteOf ? { quoteOf } : {}),
     ...(Object.keys(counts).length ? { counts } : {}),
     ...(media.length ? { media } : {}),
+    ...(root ? { root } : {}),
+    ...(liked !== null || reposted !== null ? { viewer: { ...(liked !== null ? { liked } : {}), ...(reposted !== null ? { reposted } : {}) } } : {}),
   };
 }
 
@@ -302,9 +315,25 @@ interface Entry {
   /** The entry's sort index (on the notifications timeline, its time in ms). */
   sortIndex?: string;
 }
+/** A cursor: as an entry's content, or an item's itemContent (as on a post's page and inside modules). */
+function cursorOf(content: Record<string, any>): { type: string; value: string | null } | null {
+  const c = content.entryType === 'TimelineTimelineCursor' || content.__typename === 'TimelineTimelineCursor' || content.itemType === 'TimelineTimelineCursor' ? content : isObj(content.itemContent) && (content.itemContent.__typename === 'TimelineTimelineCursor' || content.itemContent.itemType === 'TimelineTimelineCursor') ? content.itemContent : null;
+  if (!c) return null;
+  return { type: typeof c.cursorType === 'string' ? c.cursorType : '', value: typeof c.value === 'string' && c.value.length <= 2000 ? c.value : null };
+}
+interface Timeline {
+  entries: Entry[];
+  pinned: Entry[];
+  top: string | null;
+  bottom: string | null;
+  /** Every other entry-level cursor by its type (ShowMoreThreads, ShowMoreThreadsPrompt, …). */
+  cursors: Record<string, string>;
+  /** What TimelineAddToModule instructions add to a module already shown (a page of a thread's more replies). */
+  added: Entry[];
+}
 /** The entries of a URT timeline, in order, from the instructions that add them; and its cursors. */
-function entriesOf(timeline: unknown, drops: Drops, kind: string): { entries: Entry[]; pinned: Entry[]; top: string | null; bottom: string | null } {
-  const out = { entries: [] as Entry[], pinned: [] as Entry[], top: null as string | null, bottom: null as string | null };
+function entriesOf(timeline: unknown, drops: Drops, kind: string): Timeline {
+  const out: Timeline = { entries: [], pinned: [], top: null, bottom: null, cursors: {}, added: [] };
   const t = isObj(timeline) && isObj(timeline.timeline) && !Array.isArray(timeline.instructions) ? timeline.timeline : timeline;
   if (!isObj(t) || !Array.isArray(t.instructions)) {
     drops.add(kind, 'no-instructions');
@@ -313,12 +342,11 @@ function entriesOf(timeline: unknown, drops: Drops, kind: string): { entries: En
   const take = (e: unknown, into: Entry[]) => {
     if (!isObj(e) || !isObj(e.content)) return drops.add(kind, 'bad-entry');
     const content = e.content;
-    const type = content.entryType ?? content.__typename;
-    if (type === 'TimelineTimelineCursor' || (isObj(content.itemContent) && content.itemContent.__typename === 'TimelineTimelineCursor')) {
-      const c = content.entryType === 'TimelineTimelineCursor' || content.__typename === 'TimelineTimelineCursor' ? content : content.itemContent;
-      const value = typeof c.value === 'string' && c.value.length <= 2000 ? c.value : null;
-      if (value && c.cursorType === 'Top') out.top = value;
-      if (value && c.cursorType === 'Bottom') out.bottom = value;
+    const c = cursorOf(content);
+    if (c) {
+      if (c.value && c.type === 'Top') out.top = c.value;
+      else if (c.value && c.type === 'Bottom') out.bottom = c.value;
+      else if (c.value && /^\w{1,40}$/.test(c.type) && !(c.type in out.cursors)) out.cursors[c.type] = c.value;
       return;
     }
     into.push({ entryId: typeof e.entryId === 'string' ? e.entryId : '', content, ...(typeof e.sortIndex === 'string' && e.sortIndex.length <= 40 ? { sortIndex: e.sortIndex } : {}) });
@@ -328,18 +356,30 @@ function entriesOf(timeline: unknown, drops: Drops, kind: string): { entries: En
     if (ins.type === 'TimelineAddEntries' || Array.isArray(ins.entries)) for (const e of arr(ins.entries).slice(0, 500)) take(e, out.entries);
     else if (ins.type === 'TimelinePinEntry') take(ins.entry, out.pinned);
     else if (ins.type === 'TimelineReplaceEntry') take(ins.entry, out.entries);
+    else if (ins.type === 'TimelineAddToModule' && Array.isArray(ins.moduleItems)) {
+      // The items as a module's: `{ entryId, item: { itemContent, clientEventInfo } }` each.
+      out.added.push({ entryId: typeof ins.moduleEntryId === 'string' ? ins.moduleEntryId : '', content: { entryType: 'TimelineTimelineModule', items: ins.moduleItems.slice(0, 500) } });
+    }
   }
   return out;
 }
-/** The item contents of an entry: one for an item, each of a module's. */
-function itemsOf(e: Entry): { item: Record<string, any>; element: string }[] {
+/**
+ * The item contents of an entry: one for an item, each of a module's. Cursors inside a module (a thread's "Show
+ * replies", ShowMore) are no item: they are left out (`cursors` counts them).
+ */
+function itemsOf(e: Entry, cursors?: { n: number }): { item: Record<string, any>; element: string }[] {
   const c = e.content;
   const element = isObj(c.clientEventInfo) && typeof c.clientEventInfo.element === 'string' ? c.clientEventInfo.element : '';
-  if (isObj(c.itemContent)) return [{ item: c.itemContent, element }];
+  if (isObj(c.itemContent)) return cursorOf(c) ? [] : [{ item: c.itemContent, element }];
   const out: { item: Record<string, any>; element: string }[] = [];
   for (const it of arr(c.items).slice(0, 50)) {
     const inner = isObj(it) && isObj(it.item) ? it.item : null;
-    if (inner && isObj(inner.itemContent)) out.push({ item: inner.itemContent, element: isObj(inner.clientEventInfo) && typeof inner.clientEventInfo.element === 'string' ? inner.clientEventInfo.element : element });
+    if (!inner || !isObj(inner.itemContent)) continue;
+    if (cursorOf(inner)) {
+      if (cursors) cursors.n++;
+      continue;
+    }
+    out.push({ item: inner.itemContent, element: isObj(inner.clientEventInfo) && typeof inner.clientEventInfo.element === 'string' ? inner.clientEventInfo.element : element });
   }
   return out;
 }
@@ -522,6 +562,141 @@ export function parseUserTweets(timeline: unknown, drops: Drops, testOrigin?: st
   rest.push(...out.splice(before));
   rest.sort((a, b) => b.ts - a.ts);
   return { posts: [...out, ...rest].slice(0, PROFILE_POSTS), users };
+}
+
+// ------------------------------------------------------------------ threads
+/** At most this many reply chains, and posts in one chain, from one page of a post's thread. */
+export const THREAD_CHAINS = 100;
+export const CHAIN_POSTS = 20;
+const isTweetItem = (item: Record<string, any>) => item.__typename === 'TimelineTweet' || item.itemType === 'TimelineTweet';
+/** Entries that are no part of the conversation: ads, and "Discover more" (posts X picked, not replies). */
+const AWAY = /^(promoted-|tweetdetailrelatedtweets-|who-to-follow-|label-|pivot-)/;
+
+/**
+ * A post's page (TweetDetail) as the thread it shows (feed.ts PostThread): the posts before `focalId` (the
+ * `tweet-<id>` items above it) are what it answers, oldest first; each conversation module after it is one reply
+ * chain, in X's order, the focal post's author continuing first. On a page of more replies (`paged`: a cursor was
+ * given) the focal post may be absent and every chain is a reply; without one, a page without it is an error. Posts
+ * that are gone (tombstones, unavailable) are dropped and counted.
+ */
+export function parseTweetDetail(timeline: unknown, focalId: string, drops: Drops, testOrigin?: string | null, paged = false): { thread: P.PostThread; users: Map<string, XUser> } {
+  const users = new Map<string, XUser>();
+  const ctx: PostCtx = { users, drops, testOrigin };
+  let t = timeline;
+  // The page's call gives the timeline; a raw answer has it under data.threaded_conversation_with_injections_v2.
+  if (isObj(t) && isObj(t.data)) t = t.data;
+  if (isObj(t) && isObj(t.threaded_conversation_with_injections_v2)) t = t.threaded_conversation_with_injections_v2;
+  const tl = entriesOf(t, drops, 'thread');
+  const ids = new Set<string>();
+  const inner = { n: 0 };
+  /** The posts of an entry, each once. */
+  const postsOf = (e: Entry): P.PostFact[] => {
+    const out: P.PostFact[] = [];
+    for (const { item } of itemsOf(e, inner)) {
+      if (isObj(item.promotedMetadata)) continue;
+      if (item.itemType === 'TimelineTombstone' || item.__typename === 'TimelineTombstone') {
+        drops.add('thread', 'tombstone');
+        continue;
+      }
+      if (!isTweetItem(item)) {
+        drops.add('thread', `item-${reason(String(item.__typename ?? item.itemType ?? 'none'))}`);
+        continue;
+      }
+      const r = isObj(item.tweet_results) ? item.tweet_results.result : null;
+      const p = r ? parsePost(r, ctx) : (drops.add('thread', 'no-tweet'), null);
+      if (!p || ids.has(p.id)) continue;
+      ids.add(p.id);
+      out.push(p);
+    }
+    return out;
+  };
+  const isModule = (e: Entry) => e.content.entryType === 'TimelineTimelineModule' || e.content.__typename === 'TimelineTimelineModule' || Array.isArray(e.content.items);
+
+  const kept = [...tl.pinned, ...tl.entries].filter((e) => !AWAY.test(e.entryId) && !isObj(e.content.promotedMetadata));
+  const parsed = kept.map((e) => ({ module: isModule(e), posts: postsOf(e) }));
+  const focalAt = parsed.findIndex((x) => !x.module && x.posts.some((p) => p.id === focalId));
+  const focal = focalAt >= 0 ? parsed[focalAt]!.posts.find((p) => p.id === focalId) : undefined;
+  if (!focal && !paged) throw new Error('X did not give this post');
+  const ancestors: P.PostFact[] = [];
+  const replies: P.PostFact[][] = [];
+  parsed.forEach((x, i) => {
+    if (!x.posts.length || i === focalAt) return;
+    if (!x.module && focalAt >= 0 && i < focalAt) ancestors.push(...x.posts);
+    else replies.push(x.posts.slice(0, CHAIN_POSTS));
+  });
+  for (const e of tl.added) {
+    const chain = postsOf(e);
+    if (chain.length) replies.push(chain.slice(0, CHAIN_POSTS));
+  }
+  // The focal post's author going on with their own thread first, as X shows it (X sends it first too).
+  const own = (c: P.PostFact[]) => !!focal?.author && c[0]!.author === focal.author && c[0]!.replyTo?.id === focal.id;
+  const ordered = [...replies.filter(own), ...replies.filter((c) => !own(c))].slice(0, THREAD_CHAINS);
+  const more = tl.bottom ?? tl.cursors.ShowMoreThreads ?? tl.cursors.ShowMoreThreadsPrompt ?? null;
+  return { thread: { ...(focal ? { focal } : {}), ancestors, replies: ordered, more }, users };
+}
+
+// -------------------------------------------------------- answering on X
+/**
+ * The post `publish` made, from what the page answered (raw.ts PublishReply): the post read back alone when that
+ * worked, else sendTweet's own normalized post (flat: the post's legacy fields at the top, its author as an id), else
+ * the least that is known (its id, your text, now). Never null: once X made the post, the answer is that post.
+ */
+export function parsePublished(reply: unknown, text: string, self: { id: string | null; handle: string | null }, drops: Drops, testOrigin?: string | null): { post: P.PostFact; users: Map<string, XUser> } | null {
+  const users = new Map<string, XUser>();
+  const ctx: PostCtx = { users, drops, testOrigin };
+  if (!isObj(reply)) return null;
+  const id = xid(reply.id);
+  if (!id) return null;
+  const withUrl = (p: P.PostFact): P.PostFact => (p.url.includes('/i/web/') && self.handle && (!p.author || p.author === self.id) ? { ...p, url: `https://x.com/${self.handle}/status/${id}` } : p);
+  const back = isObj(reply.tweet) ? reply.tweet.result : null;
+  const read = back ? parsePost(back, ctx) : null;
+  if (read && read.id === id) return { post: withUrl(read), users };
+  if (back) drops.add('published', read ? 'other-post' : 'unread');
+  const made = isObj(reply.created) && isObj(reply.created.entities) && isObj(reply.created.entities.tweets) ? reply.created.entities.tweets[id] : null;
+  if (isObj(made)) {
+    const legacy = { ...made, user_id_str: xid(made.user_id_str) ?? xid(made.user) ?? undefined };
+    const p = parsePost({ __typename: 'Tweet', rest_id: id, legacy }, ctx);
+    if (p) return { post: withUrl(p), users };
+  }
+  drops.add('published', 'bare');
+  return { post: withUrl({ id, url: `https://x.com/i/web/status/${id}`, ts: Date.now(), ...(self.id ? { author: self.id } : {}), text }), users };
+}
+
+/**
+ * Who liked or reposted a post, one page (the Favoriters or Retweeters timeline): the people in X's order (ranked:
+ * the page asks with `enableRanking`), with their followers, whether you follow them and they you, and a check mark
+ * (blue or legacy); `more` the Bottom cursor. A page with nobody on it ends the list (`more` null): X gives a Bottom
+ * cursor even on its last, empty page, and an empty timeline for a post that is not yours (only its author sees likes).
+ */
+export function parseReactors(timeline: unknown, drops: Drops, testOrigin?: string | null): { page: P.ReactorsPage; users: Map<string, XUser> } {
+  const users = new Map<string, XUser>();
+  let t = timeline;
+  if (isObj(t) && isObj(t.data)) t = t.data;
+  for (const k of ['favoriters_timeline', 'retweeters_timeline']) if (isObj(t) && isObj(t[k])) t = t[k].timeline;
+  const tl = entriesOf(t, drops, 'reactors');
+  const who: P.ReactorsPage['who'] = [];
+  for (const e of [...tl.pinned, ...tl.entries]) {
+    for (const { item } of itemsOf(e)) {
+      if (item.itemType !== 'TimelineUser' && item.__typename !== 'TimelineUser') {
+        drops.add('reactors', `item-${reason(String(item.__typename ?? item.itemType ?? 'none'))}`);
+        continue;
+      }
+      const raw = isObj(item.user_results) ? item.user_results.result : null;
+      const u = raw ? parseUser(raw, drops, testOrigin) : (drops.add('reactors', 'no-user'), null);
+      if (!u || users.has(u.id)) continue;
+      users.set(u.id, u);
+      const r = raw as Record<string, any>;
+      const verified = r.is_blue_verified === true || (isObj(r.verification) && r.verification.verified === true) || (isObj(r.legacy) && r.legacy.verified === true);
+      who.push({
+        id: u.id,
+        ...(u.followers !== null ? { followers: u.followers } : {}),
+        ...(u.followedByMe !== null ? { following: u.followedByMe } : {}),
+        ...(u.followsYou !== null ? { followsYou: u.followsYou } : {}),
+        ...(verified ? { verified: true } : {}),
+      });
+    }
+  }
+  return { page: { who, more: who.length ? tl.bottom : null }, users };
 }
 
 // ------------------------------------------------------------ what was said

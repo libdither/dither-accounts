@@ -111,7 +111,7 @@ export interface FakeX {
   msgs: FakeMsg[];
   media: Map<string, { mime: string; data: Uint8Array }>;
   /** What the page's client asked for, in order. */
-  calls: { op: string; conv?: string; id?: string; text?: string; emoji?: string; remove?: boolean; seq?: number; replyToSeq?: number | null; media?: string[]; name?: string; variables?: Record<string, unknown>; q?: string; members?: string[]; title?: string | null; description?: string | null; to?: string[]; note?: string | null }[];
+  calls: { op: string; conv?: string; id?: string; text?: string; emoji?: string; remove?: boolean; seq?: number; replyToSeq?: number | null; media?: string[]; name?: string; variables?: Record<string, unknown>; method?: string; q?: string; members?: string[]; title?: string | null; description?: string | null; to?: string[]; note?: string | null }[];
   /** The notifications and profiles behind the signed-in client (fake-x-feed.ts). */
   feed: FeedFake;
   /** Someone else writes in a conversation (as X's servers would push it). */

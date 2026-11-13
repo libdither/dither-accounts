@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./ids": "./src/ids.ts",
+    "./compose": "./src/compose.ts",
     "./mail-iface": "./src/mail-iface.ts",
     "./client": "./src/adapter-client.ts",
     "./secret-file": "./src/secret-file.ts"

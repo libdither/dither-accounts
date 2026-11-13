@@ -118,9 +118,9 @@ test('past the conversation: each capability only where its hook was found', () 
 test('the feed: its own layer and details, never the account status; profile only with its hooks', () => {
   const feedHooks = (missing: string[] = [], pending: string[] = []) => {
     const t = selfTest();
-    t.feed = { webpack: { ok: true, via: 'chunk' }, store: { ok: true, via: 'provider' }, endpoints: { ok: true, via: 'thunk.api' }, notifications: { ok: true, via: 'loader' }, profiles: { ok: true, via: 'module' } };
-    for (const n of missing) t.feed[n as 'store'] = { ok: false, via: null };
-    for (const n of pending) t.feed[n as 'store'] = { ok: false, via: 'pending' };
+    t.feed = { webpack: { ok: true, via: 'chunk' }, store: { ok: true, via: 'provider' }, endpoints: { ok: true, via: 'thunk.api' }, notifications: { ok: true, via: 'loader' }, profiles: { ok: true, via: 'module' }, posts: { ok: true, via: 'module' }, actions: { ok: true, via: 'module' }, reactors: { ok: false, via: 'pending' } };
+    for (const n of missing) t.feed![n as 'store'] = { ok: false, via: null };
+    for (const n of pending) t.feed![n as 'store'] = { ok: false, via: 'pending' };
     return t;
   };
   const fd = { items: 0, people: 0, lastFetch: null, lastError: null, nextAt: NOW + 40_000, dropped: null };
@@ -129,6 +129,7 @@ test('the feed: its own layer and details, never the account status; profile onl
   expect(waiting.layers.at(-1)).toEqual({ name: 'feed', state: 'waiting', note: `first read at ${new Date(NOW + 40_000).toISOString().slice(11, 19)}` });
   expect(waiting.details).toMatchObject({ 'hook.webpack': 'found (chunk)', 'hook.store': 'found (provider)', 'hook.endpoints': 'found (thunk.api)', 'hook.notifications': 'pending', 'hook.profiles': 'found (module)', 'feed.items': 0 });
   expect(waiting.capabilities).toContain('profile');
+  expect(waiting.capabilities).toContain('posts');
   const read = compute(facts({ selfTest: feedHooks(), feed: { ...fd, items: 9, people: 4, lastFetch: NOW - 1000, dropped: 'post.TweetTombstone 1' } }));
   expect(read.layers.at(-1)).toEqual({ name: 'feed', state: 'ok', note: `9 items, 4 profiles; read ${new Date(NOW - 1000).toISOString().slice(11, 19)}; dropped post.TweetTombstone 1` });
   expect(read.details).toMatchObject({ 'feed.items': 9, 'feed.people': 4, 'feed.lastFetch': new Date(NOW - 1000).toISOString(), 'feed.dropped': 'post.TweetTombstone 1' });
@@ -136,6 +137,21 @@ test('the feed: its own layer and details, never the account status; profile onl
   expect(broken.status).toBe('online');
   expect(broken.layers.at(-1)).toEqual({ name: 'feed', state: 'failed', note: 'X changed: store, endpoints, profiles not found, so notifications cannot be read' });
   expect(broken.capabilities).not.toContain('profile');
+  expect(broken.capabilities).not.toContain('posts');
+  // Each of profile and posts follows its own hook.
+  expect(compute(facts({ selfTest: feedHooks(['profiles']), feed: fd })).capabilities).toContain('posts');
+  expect(compute(facts({ selfTest: feedHooks(['posts']), feed: fd })).capabilities).toEqual([...waiting.capabilities.filter((c) => c !== 'posts')]);
+  // Answering on X: like/repost and posting with the actions factory; who liked while its lazy chunk is pending or found.
+  expect(waiting.capabilities).toEqual(expect.arrayContaining(['postActions', 'publish', 'postReactors']));
+  expect(waiting.details).toMatchObject({ 'hook.actions': 'found (module)', 'hook.reactors': 'pending' });
+  const noActions = compute(facts({ selfTest: feedHooks(['actions']), feed: fd })).capabilities;
+  expect(noActions).not.toContain('postActions');
+  expect(noActions).not.toContain('publish');
+  expect(noActions).toContain('postReactors');
+  expect(compute(facts({ selfTest: feedHooks(['reactors']), feed: fd })).capabilities).not.toContain('postReactors');
+  const loaded = feedHooks();
+  loaded.feed!.reactors = { ok: true, via: 'loader' };
+  expect(compute(facts({ selfTest: loaded, feed: fd })).capabilities).toContain('postReactors');
   const failed = compute(facts({ selfTest: feedHooks(), feed: { ...fd, lastFetch: NOW - 60_000, lastError: 'timed out' } }));
   expect(failed.layers.at(-1)).toEqual({ name: 'feed', state: 'failed', note: 'last read failed: timed out' });
 });

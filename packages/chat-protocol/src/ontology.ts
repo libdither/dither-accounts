@@ -37,9 +37,11 @@ export type Shape =
 /**
  * Network-flavoured presentation of a conversation. Purely cosmetic for routing, except `feed`: a network's
  * notifications about you (X's likes, reposts, replies, mentions, quotes and follows; feed.ts), read-only, shape
- * 'channel' with no space. Nothing is sent there: no message, read mark or typing.
+ * 'channel' with no space. Nothing is sent there: no message, read mark or typing. And `posts`: the public posts the hub
+ * logged as they were read (X: a thread or a profile opened; docs/feed.md "Threads"), one conversation per account,
+ * read-only and quiet as a feed is, kept out of the inbox and every unread count.
  */
-export type Variant = 'text' | 'announcement' | 'forum' | 'voice' | 'stage' | 'media' | 'rules' | 'feed';
+export type Variant = 'text' | 'announcement' | 'forum' | 'voice' | 'stage' | 'media' | 'rules' | 'feed' | 'posts';
 
 /**
  * community: something you join and that has its own membership and moderation

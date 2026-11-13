@@ -149,6 +149,9 @@ it(
       'hook.endpoints': 'found (thunk.api)',
       'hook.notifications': 'found (loader)',
       'hook.profiles': 'found (module)',
+      'hook.posts': 'found (module)',
+      'hook.actions': 'found (module)',
+      'hook.reactors': 'pending',
       'hook.requests': 'found (graph)',
       'hook.answer': 'found (list:module)',
       'hook.openDirect': 'found (search)',
@@ -158,7 +161,7 @@ it(
       'hook.typing': 'found (composer)',
       'hook.forward': 'found (action)',
     });
-    expect(helloOf(acc)).toMatchObject({ network: 'x', capabilities: ['liveView', 'media', 'history', 'markRead', 'send', 'sendMedia', 'edit', 'redact', 'react', 'typing', 'forward', 'openDirect', 'requests', 'about', 'configure', 'addMembers', 'createGroup', 'profile'] });
+    expect(helloOf(acc)).toMatchObject({ network: 'x', capabilities: ['liveView', 'media', 'history', 'markRead', 'send', 'sendMedia', 'edit', 'redact', 'react', 'typing', 'forward', 'openDirect', 'requests', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'posts', 'postActions', 'publish', 'postReactors'] });
     const lv = m!.router.liveView(acc)!;
     expect(lv).toEqual({ vncSocket: join(m!.store.account(acc)!.dir, 'vnc.sock'), width: 1280, height: 800 });
     expect(await rfbBanner(lv.vncSocket)).toMatch(/^RFB \d{3}\.\d{3}/);
@@ -298,6 +301,154 @@ it(
 );
 
 it(
+  "a post's thread on request: what it answers, the post, reply chains; then more replies, page by page; nothing marked",
+  async () => {
+    const g = fake.feed.thread;
+    const ids = (ps: any[]) => ps.map((p: any) => p.id);
+    const one = await call('post', { post: g.focal.rest_id });
+    expect(one.focal).toMatchObject({ id: g.focal.rest_id, author: CARA.id, root: g.root.rest_id, text: 'San Marzano, mostly https://cara.example/san-marzano', replyTo: { id: g.answer.rest_id, author: FINN.id } });
+    expect(ids(one.ancestors)).toEqual([g.root.rest_id, g.answer.rest_id]);
+    expect(one.replies.map(ids)).toEqual([[g.self1.rest_id, g.self2.rest_id], [g.emi1.rest_id, g.emi2.rest_id], [g.dev1.tweet.rest_id]]);
+    expect(one.more).toBe(g.cursors.page2);
+    // Everyone who wrote them is known to the hub (announced now, or already with the notifications).
+    const named = new Set(evs(acc).filter((e) => e.t === 'identity').map((e) => e.identity.nativeId));
+    for (const p of [one.focal, ...one.ancestors, ...one.replies.flat()]) expect(named.has(p.author)).toBe(true);
+    const two = await call('post', { post: g.focal.rest_id, cursor: one.more });
+    expect(two.focal).toBeUndefined();
+    expect(two.replies.map(ids)).toEqual([[g.finn1.rest_id], [g.emi3.rest_id, g.emi4.rest_id]]);
+    expect(two.more).toBe(g.cursors.page3);
+    const three = await call('post', { post: g.focal.rest_id, cursor: two.more });
+    expect(three).toMatchObject({ ancestors: [], replies: [[{ id: g.dev2.rest_id, author: DEV.id }]], more: null });
+    // Asked as opening the post asks: the page's own TweetDetail call, ranked by relevance, ads included as X asks.
+    const asked = fake.calls.filter((c) => c.op === 'graphql' && c.name === 'TweetDetail');
+    expect(asked.map((c) => c.variables!.cursor ?? null)).toEqual([null, g.cursors.page2, g.cursors.page3]);
+    expect(asked[0]!.variables).toMatchObject({ focalTweetId: g.focal.rest_id, referrer: 'tweet', rankingMode: 'Relevance', includePromotedContent: true });
+    await expect(call('post', { post: '1856000000000009999' })).rejects.toThrow('X did not give this post');
+    await expect(call('post', { post: 'not-an-id' })).rejects.toThrow('not an X post id');
+    expect(fake.calls.filter((c) => c.op === 'notifications.seen')).toEqual([]);
+  },
+  60_000,
+);
+
+it(
+  'answering on X: like and repost and back, as the buttons do, once each; what you did shows on the post',
+  async () => {
+    const g = fake.feed.thread;
+    const focal = g.focal.rest_id;
+    const writes = () => fake.calls.filter((c) => c.op === 'graphql' && c.method === 'POST');
+    const before = writes().length;
+    expect(await call('postAct', { post: focal, act: 'like' })).toEqual({ liked: true });
+    expect(await call('postAct', { post: focal, act: 'repost' })).toEqual({ reposted: true });
+    // Each the one mutation the button sends, POSTed, with the post's id as X names it.
+    expect(writes().slice(before).map((c) => [c.name, c.variables])).toEqual([
+      ['FavoriteTweet', { tweet_id: focal }],
+      ['CreateRetweet', { tweet_id: focal }],
+    ]);
+    // The post read again says so.
+    const read = await call('post', { post: focal });
+    expect(read.focal.viewer).toEqual({ liked: true, reposted: true });
+    expect(read.focal.counts.likes).toBe(5);
+    expect(read.ancestors[0].viewer).toEqual({ liked: false, reposted: false });
+    // Already liked: X says so (139), and the post stands as asked.
+    expect(await call('postAct', { post: focal, act: 'like' })).toEqual({ liked: true });
+    expect(await call('postAct', { post: focal, act: 'unlike' })).toEqual({ liked: false });
+    expect(await call('postAct', { post: focal, act: 'unrepost' })).toEqual({ reposted: false });
+    expect(writes().slice(before).map((c) => c.name)).toEqual(['FavoriteTweet', 'CreateRetweet', 'FavoriteTweet', 'UnfavoriteTweet', 'DeleteRetweet']);
+    expect(writes().at(-1)!.variables).toEqual({ source_tweet_id: focal });
+    expect((await call('post', { post: focal })).focal.viewer).toEqual({ liked: false, reposted: false });
+    // A failure is X's plain words, sent once.
+    await expect(call('postAct', { post: '1856000000000009999', act: 'like' })).rejects.toThrow('No status found with that ID.');
+    expect(writes().filter((c) => c.variables!.tweet_id === '1856000000000009999').length).toBe(1);
+    await expect(call('postAct', { post: focal, act: 'bookmark' })).rejects.toThrow('not a post action');
+    await expect(call('postAct', { post: 'nope', act: 'like' })).rejects.toThrow('not an X post id');
+  },
+  90_000,
+);
+
+it(
+  'answering on X: a post, a reply and a quote through the composer, each the post X made; a duplicate fails once',
+  async () => {
+    const g = fake.feed.thread;
+    const first = fake.feed.posts.first.rest_id;
+    const creates = () => fake.calls.filter((c) => c.op === 'graphql' && c.name === 'CreateTweet');
+    const n0 = creates().length;
+    const own = await call('publish', { text: 'first frost tonight' });
+    expect(own).toMatchObject({ author: SELF.id, text: 'first frost tonight', url: `https://x.com/${SELF.screenName}/status/${own.id}`, viewer: { liked: false, reposted: false } });
+    expect(fake.feed.made.has(own.id)).toBe(true);
+    expect(own.replyTo).toBeUndefined();
+    // A reply: to the post, its author named.
+    const reply = await call('publish', { text: 'Black Krim are worth it', replyTo: g.focal.rest_id });
+    expect(reply).toMatchObject({ author: SELF.id, text: 'Black Krim are worth it', replyTo: { id: g.focal.rest_id, author: CARA.id }, root: g.root.rest_id });
+    // A quote: the quoted post's link, with its author's handle, as the composer attaches it.
+    const quote = await call('publish', { text: 'still true', quote: first });
+    expect(quote).toMatchObject({ text: 'still true', quoteOf: { id: first, author: SELF.id } });
+    const sent = creates().slice(n0);
+    expect(sent.map((c) => c.method)).toEqual(['POST', 'POST', 'POST']);
+    expect(sent[0]!.variables).toMatchObject({ tweet_text: 'first frost tonight', media: { media_entities: [] } });
+    expect(sent[0]!.variables!.reply).toBeUndefined();
+    expect(sent[1]!.variables).toMatchObject({ tweet_text: 'Black Krim are worth it', reply: { in_reply_to_tweet_id: g.focal.rest_id, exclude_reply_user_ids: [] } });
+    expect(sent[2]!.variables).toMatchObject({ tweet_text: 'still true', attachment_url: `https://x.com/${SELF.screenName}/status/${first}` });
+    // Each read back alone after it was made; the quoted one read before.
+    const reads = fake.calls.filter((c) => c.op === 'graphql' && c.name === 'TweetResultByRestId').map((c) => c.variables!.tweetId);
+    expect(reads).toEqual(expect.arrayContaining([own.id, reply.id, first, quote.id]));
+    // The people in them are known to the hub.
+    const named = new Set(evs(acc).filter((e) => e.t === 'identity').map((e) => e.identity.nativeId));
+    expect(named.has(SELF.id)).toBe(true);
+    // A duplicate: X's words, and one CreateTweet only (never retried).
+    await expect(call('publish', { text: 'first frost tonight' })).rejects.toThrow('Status is a duplicate.');
+    expect(creates().length).toBe(n0 + 4);
+    // Too long for X, or nothing: refused before the page is asked.
+    await expect(call('publish', { text: 'a'.repeat(281) })).rejects.toThrow('too long for X: 281 of 280');
+    await expect(call('publish', { text: '   ' })).rejects.toThrow('nothing to post');
+    await expect(call('publish', { text: 'hi', replyTo: 'x' })).rejects.toThrow('not an X post id to reply to');
+    expect(creates().length).toBe(n0 + 4);
+    expect(fake.calls.filter((c) => c.op === 'notifications.seen')).toEqual([]);
+  },
+  90_000,
+);
+
+it(
+  "answering on X: who liked or reposted your post, ranked, page by page, from the activity route's chunk; nobody on someone else's",
+  async () => {
+    const first = fake.feed.posts.first.rest_id;
+    const chunks = () => fake.calls.filter((c) => c.op === 'chunk' && /Activity/.test(c.name!)).map((c) => c.name);
+    expect(chunks()).toEqual([]);
+    const one = await call('postReactors', { post: first, kind: 'like' });
+    expect(one).toEqual({
+      who: [
+        { id: CARA.id, followers: 120, following: true, followsYou: true },
+        { id: DEV.id, followers: 3400, following: false, followsYou: true, verified: true },
+      ],
+      more: 'DAAHlikes-2',
+    });
+    // Loaded as opening the likes would: the route's chunks, once.
+    expect(chunks().sort()).toEqual(['bundle.TweetActivity', 'shared~bundle.QuoteTweetActivity~bundle.TweetActivity']);
+    await until(() => statusOf(acc)?.details?.['hook.reactors'] === 'found (loader)', 20_000, 'the reactors hook');
+    const named = new Set(evs(acc).filter((e) => e.t === 'identity').map((e) => e.identity.nativeId));
+    for (const p of one.who) expect(named.has(p.id)).toBe(true);
+    const two = await call('postReactors', { post: first, kind: 'like', cursor: one.more });
+    expect(two).toEqual({ who: [{ id: EMI.id, followers: 12, following: false, followsYou: false }], more: 'DAAHlikes-3' });
+    // The last page: nobody, though X still gives a cursor.
+    expect(await call('postReactors', { post: first, kind: 'like', cursor: two.more })).toEqual({ who: [], more: null });
+    expect(await call('postReactors', { post: first, kind: 'repost' })).toEqual({ who: [{ id: FINN.id, followers: 800, following: true, followsYou: false, verified: true }], more: 'DAAHreposts-2' });
+    // Someone else's post: X shows its likes only to its author. An empty page, not an error.
+    expect(await call('postReactors', { post: fake.feed.thread.focal.rest_id, kind: 'like' })).toEqual({ who: [], more: null });
+    const asked = fake.calls.filter((c) => c.op === 'graphql' && (c.name === 'Favoriters' || c.name === 'Retweeters'));
+    expect(asked.map((c) => [c.name, c.variables!.cursor ?? null])).toEqual([
+      ['Favoriters', null],
+      ['Favoriters', 'DAAHlikes-2'],
+      ['Favoriters', 'DAAHlikes-3'],
+      ['Retweeters', null],
+      ['Favoriters', null],
+    ]);
+    expect(asked[0]!.variables).toMatchObject({ tweetId: first, count: 20, enableRanking: true });
+    expect(chunks().length).toBe(2);
+    await expect(call('postReactors', { post: first, kind: 'quote' })).rejects.toThrow('not likes or reposts');
+  },
+  90_000,
+);
+
+it(
   'a message arriving is live, with its sender; someone typing is relayed',
   async () => {
     fake.typing(GROUP, BOB.id);
@@ -350,6 +501,16 @@ it(
     expect(read).toEqual([{ op: 'read', conv: GROUP, seq: fake.msgs.filter((x) => x.conv === GROUP).at(-1)!.seq }]);
   },
   180_000,
+);
+
+it(
+  'history of the feed or the posts the hub logs is no chat: answered at once, the page never asked',
+  async () => {
+    const before = fake.calls.length;
+    for (const conversation of ['feed:1', 'posts:1', 'posts']) expect(await call('history', { conversation, limit: 40 })).toEqual({ count: 0, done: true });
+    expect(fake.calls.length).toBe(before);
+  },
+  60_000,
 );
 
 it(
@@ -411,7 +572,11 @@ it(
     const text = readFileSync(file, 'utf8');
     for (const secret of ['legacy line', 'saturday', 'pizza', 'hello', 'Weekend plans', ALICE.displayName, ALICE.screenName, BOB.screenName, 'fake-session', SELF.displayName, CARA.name, CARA.handle, FINN.handle, 'tomatoes', 'love this', 'garden', 'Lisbon']) expect(text).not.toContain(secret);
     // The feed's part: what was found and the shapes of what X answered.
-    expect(d.page.feed).toMatchObject({ hooks: { webpack: { ok: true }, store: { ok: true }, endpoints: { ok: true }, notifications: { ok: true }, profiles: { ok: true } }, endpoints: { via: 'thunk.api' }, notifications: { chunk: 'bundle.Notifications' } });
+    expect(d.page.feed).toMatchObject({ hooks: { webpack: { ok: true }, store: { ok: true }, endpoints: { ok: true }, notifications: { ok: true }, profiles: { ok: true }, posts: { ok: true }, actions: { ok: true }, reactors: { ok: true, via: 'loader' } }, endpoints: { via: 'thunk.api' }, notifications: { chunk: 'bundle.Notifications' }, reactors: { chunk: 'shared~bundle.QuoteTweetActivity~bundle.TweetActivity' } });
+    expect(d.page.feed.actions.keys).toEqual(expect.arrayContaining(['like', 'unlike', 'retweet', 'unretweet', 'sendTweet']));
+    expect(d.page.feed.responses.created).toMatchObject({ entities: { tweets: { '<id>': { full_text: 'string' } } }, result: 'string' });
+    // The last reactors read was of someone else's post: a timeline with nothing in it.
+    expect(d.page.feed.responses.reactors).toEqual({ instructions: { array: 0, first: null } });
     expect(d.page.feed.store.state).toContain('notifications');
     expect(d.page.feed.responses.notifications.instructions.array).toBeGreaterThan(0);
     expect(d.page.feed.responses.user).toMatchObject({ entities: { users: { '<id>': { screen_name: 'string' } } }, result: 'string' });
@@ -638,7 +803,7 @@ it(
     expect(st.attention.message).toMatch(/only reads/);
     expect(st.layers.find((l: any) => l.name === 'sending')).toMatchObject({ state: 'failed', note: 'read-only: the composer events were not found' });
     expect(st.details).toMatchObject({ 'hook.send': 'missing', 'hook.edit': 'missing', 'hook.history': 'found (event)', 'hook.classes': 'found (module)' });
-    expect(helloOf(id).capabilities).toEqual(['liveView', 'media', 'history', 'markRead', 'redact', 'react', 'forward', 'openDirect', 'requests', 'about', 'configure', 'addMembers', 'createGroup', 'profile']);
+    expect(helloOf(id).capabilities).toEqual(['liveView', 'media', 'history', 'markRead', 'redact', 'react', 'forward', 'openDirect', 'requests', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'posts', 'postActions', 'publish', 'postReactors']);
     // It still reads.
     await until(() => evs(id).some((e) => e.t === 'message' && e.message.conversation === GROUP), 60_000, 'messages while read-only');
     const d = await call('action', { action: 'diagnose' }, id);

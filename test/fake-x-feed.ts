@@ -3,11 +3,17 @@
  * x extractor's feed hooks reach it, and the GraphQL server behind it, with made-up people.
  *
  *   - Scripts: the webpack runtime and main chunk (`/responsive-web/client-web/…`, classic scripts in the page's head),
- *     and the Notifications tab's lazy chunks, loaded only by the route's loader (`req.e`): extractors/x/test/fake-page
- *     rw-*.js.
+ *     and the lazy chunks of the Notifications tab and of a post's activity (Likes, Reposts), loaded only by their
+ *     routes' loaders (`req.e`): extractors/x/test/fake-page rw-*.js.
  *   - GraphQL (`/i/api/graphql/<queryId>/<operation>`): NotificationsTimeline (newest first, four entries a page, Top and
- *     Bottom cursors: Top gives what is newer, Bottom what is older), UserTweets and UserByRestId, in X's shapes
- *     (extractors/x/test/feed-fixtures.ts).
+ *     Bottom cursors: Top gives what is newer, Bottom what is older), UserTweets, UserByRestId and TweetDetail (Cara's
+ *     garden thread, three pages: gardenThread), TweetResultByRestId, Favoriters and Retweeters (your first post's
+ *     likers, ranked, two pages and an empty last one; nobody for anyone else's post, which only its author may see),
+ *     in X's shapes (extractors/x/test/feed-fixtures.ts).
+ *   - GraphQL mutations (POSTed as JSON): FavoriteTweet, UnfavoriteTweet, CreateRetweet, DeleteRetweet and CreateTweet,
+ *     on the posts it knows (yours, the garden thread's, the ones made here), kept in each post (`legacy.favorited`,
+ *     `retweeted`, counts), with X's errors: already liked (139), already reposted (327), no such post (144), a
+ *     duplicate post (187).
  *   - `POST /i/api/2/notifications/all/last_seen_cursor.json`: marking notifications seen, recorded so a test can say
  *     it never happened.
  *
@@ -15,7 +21,7 @@
  * `{ op: 'notifications.seen' }`).
  */
 import { join } from 'node:path';
-import { CARA, cursorEntry, DEV, EMI, FINN, ME, notificationEntry, notificationsResponse, notificationsTimeline, type Person, tweet, tweetEntry, userByRestIdResponse, userNew, userOld, userTweetsResponse, userTweetsTimeline, withVisibility } from '../extractors/x/test/feed-fixtures.ts';
+import { CARA, createRetweetResponse, createTweetResponse, cursorEntry, deleteRetweetResponse, DEV, EMI, favoriteResponse, favoritersResponse, FINN, gardenThread, ME, notificationEntry, reactorsTimeline, retweetersResponse, tweetResultResponse, unfavoriteResponse, xErrorResponse, notificationsResponse, notificationsTimeline, type Person, tweet, tweetDetailResponse, tweetEntry, userByRestIdResponse, userNew, userOld, userTweetsResponse, userTweetsTimeline, withVisibility } from '../extractors/x/test/feed-fixtures.ts';
 
 export { CARA, DEV, EMI, FINN };
 const PAGE = join(import.meta.dir, '../extractors/x/test/fake-page');
@@ -26,6 +32,8 @@ export interface FeedCall {
   op: string;
   name?: string;
   variables?: Record<string, unknown>;
+  /** A mutation (POSTed). */
+  method?: string;
 }
 interface Note {
   ts: number;
@@ -34,6 +42,10 @@ interface Note {
 export interface FeedFake {
   /** Your posts the notifications are about. */
   posts: { first: any; long: any };
+  /** The thread TweetDetail answers for (its focal post and pages). */
+  thread: ReturnType<typeof gardenThread>;
+  /** The posts made through CreateTweet, by id. */
+  made: Map<string, any>;
   notes: Note[];
   /** A new like of your first post, by `who`, now (as X's servers would add it). */
   like(who: Person): void;
@@ -85,6 +97,30 @@ export async function startFeedFake(self: Person = ME): Promise<FeedFake> {
         ]
       : [tweet({ id: `18560000000000006${p.id.slice(-2)}`, by: p, layout: p.id === DEV.id || p.id === FINN.id ? 'old' : 'new', text: `hello from ${p.handle}`, ts: now - 7 * H })];
 
+  const thread = gardenThread(now);
+  // Every post a write may name, by id: kept up to date by the writes (what you did to it, its counts).
+  const known = new Map<string, any>();
+  const know = (t: any) => {
+    if (!t) return;
+    const inner = t.__typename === 'TweetWithVisibilityResults' ? t.tweet : t;
+    if (inner?.rest_id) known.set(inner.rest_id, inner);
+  };
+  for (const t of [first, long, thread.root, thread.answer, thread.focal, thread.self1, thread.self2, thread.emi1, thread.emi2, thread.emi3, thread.emi4, thread.dev1, thread.finn1, thread.dev2]) know(t);
+  const made = new Map<string, any>();
+  let madeN = 0;
+  const personOf = (t: any): Person => {
+    const u = t.core.user_results.result;
+    return { id: u.rest_id, handle: u.core?.screen_name ?? u.legacy?.screen_name, name: u.core?.name ?? u.legacy?.name };
+  };
+  // Who liked and reposted your first post: X ranks them; two pages, then a last one with nobody.
+  const likers = [[userNew(CARA), userOld(DEV)], [userNew(EMI)], []];
+  const reposters = [[userOld(FINN)], []];
+  function reactorsPage(pages: any[][], cursor: string | undefined, name: string) {
+    const at = cursor ? Number(/^DAAH\w+-(\d+)$/.exec(cursor)?.[1] ?? NaN) - 1 : 0;
+    const list = pages[at];
+    return list ? reactorsTimeline(list, `DAAH${name}-${at + 2}`) : null;
+  }
+
   const sorted = () => [...notes].sort((a, b) => b.ts - a.ts);
   function timeline(cursor: string | undefined) {
     const all = sorted();
@@ -100,8 +136,8 @@ export async function startFeedFake(self: Person = ME): Promise<FeedFake> {
 
   const files = new Map<string, () => Promise<string>>();
   const read = (f: string) => () => Bun.file(join(PAGE, f)).text();
-  const chunk = (n: string) => async () => {
-    const all = await Bun.file(join(PAGE, 'rw-notifications.js')).text();
+  const chunk = (n: string, file = 'rw-notifications.js') => async () => {
+    const all = await Bun.file(join(PAGE, file)).text();
     const part = all.split(/^\/\/@chunk /m).find((p) => p.startsWith(`${n}\n`));
     return part ? part.slice(part.indexOf('\n') + 1) : '';
   };
@@ -109,10 +145,14 @@ export async function startFeedFake(self: Person = ME): Promise<FeedFake> {
   files.set(RW_SCRIPTS[1]!, read('rw-main.js'));
   files.set(`${RW}/bundle.Notifications.f4ke9001c0ffee12a.js`, chunk('9001'));
   files.set(`${RW}/shared~bundle.Notifications~bundle.NotificationDetail.f4ke9002c0ffee34a.js`, chunk('9002'));
+  files.set(`${RW}/shared~bundle.QuoteTweetActivity~bundle.TweetActivity.f4ke9004c0ffee78a.js`, chunk('9004', 'rw-activity.js'));
+  files.set(`${RW}/bundle.TweetActivity.f4ke9005c0ffee9aa.js`, chunk('9005', 'rw-activity.js'));
 
   const json = (v: unknown, status = 200) => Response.json(v, { status });
   return {
     posts: { first, long },
+    thread,
+    made,
     notes,
     like(who) {
       const ts = Date.now();
@@ -134,9 +174,10 @@ export async function startFeedFake(self: Person = ME): Promise<FeedFake> {
       if (!/(?:^|;\s*)auth_token=fake-session/.test(req.headers.get('cookie') ?? '')) return json({ errors: [{ message: 'Could not authenticate you', code: 32 }] }, 401);
       let variables: Record<string, any> = {};
       try {
-        variables = JSON.parse(url.searchParams.get('variables') ?? '{}');
+        // A mutation is POSTed as JSON ({ variables, features, queryId }), a query a GET with its variables in the URL.
+        variables = req.method === 'POST' ? ((await req.json()) as any).variables ?? {} : JSON.parse(url.searchParams.get('variables') ?? '{}');
       } catch {}
-      calls.push({ op: 'graphql', name: m[2], variables });
+      calls.push({ op: 'graphql', name: m[2], variables, ...(req.method === 'POST' ? { method: 'POST' } : {}) });
       switch (m[2]) {
         case 'NotificationsTimeline':
           if (variables.timeline_type !== 'All') return json({ errors: [{ message: 'only All here' }] }, 400);
@@ -150,6 +191,66 @@ export async function startFeedFake(self: Person = ME): Promise<FeedFake> {
           if (!who) return json({ data: { user: {} } });
           const posts = profilePosts(who);
           return json(userTweetsResponse(userTweetsTimeline(who.id === CARA.id ? caraPinned : null, posts, now)));
+        }
+        case 'TweetDetail': {
+          // Only the garden thread's posts have a page here; any of its cursors gives that page.
+          if (variables.focalTweetId !== thread.focal.rest_id) return json({ data: {}, errors: [{ message: '_Missing: No status found with that ID.', code: 144 }] });
+          const page = !variables.cursor ? thread.page1 : variables.cursor === thread.cursors.page2 ? thread.page2 : variables.cursor === thread.cursors.page3 ? thread.page3 : null;
+          return json(page ? tweetDetailResponse(page) : { errors: [{ message: 'bad cursor' }] }, page ? 200 : 400);
+        }
+        case 'TweetResultByRestId':
+          return json(tweetResultResponse(known.get(String(variables.tweetId)) ?? null));
+        case 'FavoriteTweet':
+        case 'UnfavoriteTweet':
+        case 'CreateRetweet':
+        case 'DeleteRetweet': {
+          const id = String(variables.tweet_id ?? variables.source_tweet_id);
+          const t = known.get(id);
+          if (!t) return json(xErrorResponse('NotFound: No status found with that ID.', 144));
+          const l = t.legacy;
+          if (m[2] === 'FavoriteTweet') {
+            if (l.favorited) return json(xErrorResponse('Authorization: You have already favorited this post.', 139));
+            l.favorited = true;
+            l.favorite_count++;
+            return json(favoriteResponse());
+          }
+          if (m[2] === 'UnfavoriteTweet') {
+            if (l.favorited) l.favorite_count--;
+            l.favorited = false;
+            return json(unfavoriteResponse());
+          }
+          if (m[2] === 'CreateRetweet') {
+            if (l.retweeted) return json(xErrorResponse('Authorization: You have already reposted this post.', 327));
+            l.retweeted = true;
+            l.retweet_count++;
+            return json(createRetweetResponse(id, `18560000000000008${String(++madeN).padStart(2, '0')}`));
+          }
+          if (l.retweeted) l.retweet_count--;
+          l.retweeted = false;
+          return json(deleteRetweetResponse(id));
+        }
+        case 'CreateTweet': {
+          const text = String(variables.tweet_text ?? '');
+          if ([...made.values()].some((t) => t.legacy.full_text.endsWith(text))) return json(xErrorResponse('Duplicate: Status is a duplicate.', 187));
+          const replyTo = variables.reply?.in_reply_to_tweet_id ? known.get(String(variables.reply.in_reply_to_tweet_id)) : undefined;
+          if (variables.reply && !replyTo) return json(xErrorResponse('NotFound: No status found with that ID.', 144));
+          const quoteId = typeof variables.attachment_url === 'string' ? /\/status\/(\d+)$/.exec(variables.attachment_url)?.[1] : undefined;
+          const quote = quoteId ? known.get(quoteId) : undefined;
+          const id = `18560000000000009${String(++madeN).padStart(2, '0')}`;
+          const t = tweet({ id, by: self, text, ts: Date.now(), ...(replyTo ? { replyTo: { id: replyTo.rest_id, by: personOf(replyTo) }, root: replyTo.legacy.conversation_id_str } : {}), ...(quote ? { quote } : {}) });
+          made.set(id, t);
+          know(t);
+          return json(createTweetResponse(t));
+        }
+        case 'Favoriters':
+        case 'Retweeters': {
+          const likes = m[2] === 'Favoriters';
+          const name = likes ? 'likes' : 'reposts';
+          // Only your own post's likers are shown to you (X since 2024); reposters only of your first post here.
+          if (String(variables.tweetId) !== first.rest_id) return json(likes ? favoritersResponse({ instructions: [] }) : retweetersResponse({ instructions: [] }));
+          const page = reactorsPage(likes ? likers : reposters, variables.cursor, name);
+          if (!page) return json({ errors: [{ message: 'bad cursor' }] }, 400);
+          return json(likes ? favoritersResponse(page) : retweetersResponse(page));
         }
         default:
           return json({ errors: [{ message: `no such query ${m[2]}` }] }, 404);

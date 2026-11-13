@@ -32,6 +32,7 @@ import type { CallEffect, CallFact, CallInput, CallMode, CallState, StageAction,
 import type { GateAnswer, ScheduledEventFact, SpaceGate } from './servers.ts';
 import type { MessageModeration, ModAction, ReactionClear } from './moderation.ts';
 import type { LinkPreviewOut } from './extra.ts';
+import type { PostAct } from './feed.ts';
 import type { AccountStatus, AttachmentKind, Attention, MessageKind, Network, ReactionStyle, Shape, SpaceKind, Variant } from './ontology.ts';
 import type { SelfCapability, SelfCommand, SelfEvent } from './self.ts';
 import type { VoiceFact } from './rich.ts';
@@ -88,6 +89,14 @@ export type Capability =
   | 'configure'
   /** Reads what the network says about one person: bio, mutual spaces and friends (the `profile` command, about.ts PersonAbout). */
   | 'profile'
+  /** Reads a post's thread: what it answers and its replies (the `post` command, feed.ts PostThread). */
+  | 'posts'
+  /** Likes and reposts a post, and takes it back (the `postAct` command). */
+  | 'postActions'
+  /** Writes a post: a reply, a quote, a new one (the `publish` command, compose.ts POST_RULES). */
+  | 'publish'
+  /** Says who liked or reposted a post (the `postReactors` command, feed.ts ReactorsPage). */
+  | 'postReactors'
   /** Changes the account's own profile: its bio/About (the `setProfile` command). */
   | 'editProfile'
   /**
@@ -740,6 +749,29 @@ export type AdapterCommand =
    * reply.result: PersonAbout
    */
   | { t: 'profile'; id: string; who: string }
+  /**
+   * One post's thread (capability 'posts', docs/feed.md "Threads"): `post` is the network's id for the post. `cursor`,
+   * from an earlier answer's `more`, asks for more replies. Asked only when someone opens the post; the network is
+   * told nothing else (nothing is liked, viewed or marked). Identity facts for every author first, then
+   * reply.result: PostThread
+   */
+  | { t: 'post'; id: string; post: string; cursor?: string }
+  /**
+   * Like, repost, or take either back (capability 'postActions'): what the network's own buttons do, nothing else.
+   * Sent only when you press one. reply.result: PostViewer, how the post stands after.
+   */
+  | { t: 'postAct'; id: string; post: string; act: PostAct }
+  /**
+   * Write a post (capability 'publish'): `replyTo` a post's id for a reply, `quote` a post's id to quote it (X: the
+   * post's link as its attachment), neither for a new post. `text` has been checked against POST_RULES on the hub.
+   * Sent only when you press Post. Identity facts first, then reply.result: PostFact, the post as the network made it.
+   */
+  | { t: 'publish'; id: string; text: string; replyTo?: string; quote?: string }
+  /**
+   * Who liked (`kind` 'like') or reposted ('repost') a post, a page (capability 'postReactors'). X shows who liked a post
+   * only to its author. Identity facts first, then reply.result: ReactorsPage.
+   */
+  | { t: 'postReactors'; id: string; post: string; kind: 'like' | 'repost'; cursor?: string }
   /**
    * Change the account's own profile (capability 'editProfile'). Only the fields given change. `bio`: the bio or
    * About text ('' clears it). The adapter checks the network's limit (about.ts BIO_LIMIT) and fails with a plain

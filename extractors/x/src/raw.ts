@@ -185,9 +185,11 @@ export interface OutFile {
  * webpack: the runtime's require, from a chunk pushed onto `webpackChunk_twitter_responsive_web`. store: the Redux store
  * (react-redux's context value in the fiber trees, or a value of its shape). endpoints: the thunk's extra argument with
  * `withEndpoint`. notifications: the Notifications tab's timeline module (its lazy chunk loaded as the tab loads it).
- * profiles: the endpoint factories with `fetchOneUser` and `fetchUserTweets`.
+ * profiles: the endpoint factories with `fetchOneUser` and `fetchUserTweets`. posts: the one with `fetchTweetDetail`.
+ * actions: the tweet actions factory (`sendTweet`, like, unlike, retweet, unretweet). reactors: the one with
+ * `fetchLikedBy` and `fetchRetweetedBy` (its lazy chunk loaded as a post's likes load it; pending until then).
  */
-export const FEED_HOOK_NAMES = ['webpack', 'store', 'endpoints', 'notifications', 'profiles'] as const;
+export const FEED_HOOK_NAMES = ['webpack', 'store', 'endpoints', 'notifications', 'profiles', 'posts', 'actions', 'reactors'] as const;
 export type FeedHookName = (typeof FEED_HOOK_NAMES)[number];
 
 /** A feed read's answer: the notifications timeline as X's GraphQL gives it, whitelisted (unknown until feed.ts checks it). */
@@ -199,10 +201,36 @@ export interface ProfileReply {
   user: unknown;
   tweets: unknown;
 }
+/** A post read's answer: the post page's (TweetDetail) conversation timeline, whitelisted. */
+export interface PostReply {
+  detail: unknown;
+}
+/** A like, unlike, repost or unrepost done: how the post stands after, as asked. */
+export interface PostActReply {
+  liked?: boolean;
+  reposted?: boolean;
+}
+/**
+ * A post made: its id (null when X's answer did not say), what sendTweet gave (normalized: `{ entities: { tweets },
+ * result }`) and the post read back alone (TweetResultByRestId's `{ result }`, null when that read failed), whitelisted.
+ */
+export interface PublishReply {
+  id: string | null;
+  created: unknown;
+  tweet?: unknown;
+}
+/** Who liked or reposted a post: the Favoriters or Retweeters timeline, whitelisted. */
+export interface ReactorsReply {
+  timeline: unknown;
+}
 
 export type Down =
   | { kind: 'feed'; count: number; cursor?: string }
   | { kind: 'profile'; user: string }
+  | { kind: 'post'; post: string; cursor?: string }
+  | { kind: 'postAct'; post: string; act: 'like' | 'unlike' | 'repost' | 'unrepost' }
+  | { kind: 'publish'; text: string; replyTo?: string; quote?: string }
+  | { kind: 'reactors'; post: string; of: 'like' | 'repost'; cursor?: string }
   | { kind: 'selftest' }
   | { kind: 'diagnose' }
   | { kind: 'inbox' }

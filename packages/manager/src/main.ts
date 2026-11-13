@@ -3,7 +3,7 @@
  * session; apps (dither-chat, dither-calendar) ask for interfaces on accounts, you approve, and the manager routes
  * their calls and the accounts' events between them, keeping none of it.
  *
- *   bun packages/manager/src/main.ts [--data .data] [--port 8486] [--host 127.0.0.1] [--public-url http://localhost:8486] [--web-dist dir] [--trace 1]
+ *   bun packages/manager/src/main.ts [--data .data] [--port 8486] [--host 127.0.0.1] [--public-url http://localhost:8486] [--web-dist dir] [--trace 1] [--errors 1]
  *
  * Each setting comes from its flag, else DITHER_ACCOUNTS_<FLAG>, else the [manager] table of <data>/config.toml
  * (config.example.toml lists every key), else the default above. The data directory itself comes only from the flag,
@@ -11,6 +11,7 @@
  */
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { installProcessHandlers } from './errors.ts';
 import { createManager } from './index.ts';
 
 const args = process.argv.slice(2);
@@ -39,8 +40,11 @@ const port = Number(opt('port', '8486'));
 const host = opt('host', '127.0.0.1');
 const publicUrl = opt('public-url', `http://localhost:${port}`);
 const webDist = opt('web-dist', '');
-// trace = 0 (DITHER_ACCOUNTS_TRACE=0) turns the trace files off (trace.ts).
-const m = await createManager({ dataDir, port, hostname: host, publicUrl, ...(webDist ? { webDist: resolve(webDist) } : {}), trace: !['0', 'false'].includes(opt('trace', '1')) });
+const on = (n: string) => !['0', 'false'].includes(opt(n, '1'));
+// trace = 0 (DITHER_ACCOUNTS_TRACE=0) turns the trace files off (trace.ts); errors = 0 the error file (errors.ts).
+const m = await createManager({ dataDir, port, hostname: host, publicUrl, ...(webDist ? { webDist: resolve(webDist) } : {}), trace: on('trace'), errors: on('errors') });
+// Its own uncaught exceptions and rejections into <data>/traces/errors.ndjson; it still ends as the crash would have.
+if (m.errors) installProcessHandlers(m.errors);
 console.log(`dither-accounts on ${m.url.replace('127.0.0.1', host)}  page=${publicUrl}  kinds=${[...m.kinds.keys()].join(',')}  data=${dataDir}`);
 
 const shutdown = async () => {

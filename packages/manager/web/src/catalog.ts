@@ -56,6 +56,7 @@ const KIND_MARK: Record<string, Mark> = {
   schwab: { glyph: 'bank' },
   haveno: { glyph: 'exchange' },
   github: { brand: 'github' },
+  bugwatch: { glyph: 'bell' },
   njalla: { glyph: 'server' },
   fake: { glyph: 'flask' },
   'chat-fake': { glyph: 'flask' },
@@ -267,6 +268,7 @@ const SERVICES: Service[] = [
 
   // other
   { id: 'github', name: 'GitHub', mark: { brand: 'github' }, category: 'other', line: 'Notifications, with a classic token', ways: [{ id: 'token', label: 'Token', glyph: 'key', kind: 'github', tip: 'A classic personal access token with the notifications scope (fine-grained tokens cannot read notifications).' }] },
+  { id: 'bugwatch', name: 'Bug watch', mark: { glyph: 'bell' }, category: 'other', line: "Your own services' errors, as notices and T3 threads", ways: [{ id: 'config', label: 'Config file', glyph: 'bell', kind: 'bugwatch', tip: 'Reads the error files and logs a JSON config names; each new bug is a notice, and a T3 coding thread looks into it (docs/bugwatch.md).' }] },
   { id: 'njalla', name: 'Njalla', mark: { glyph: 'server' }, category: 'other', line: 'DNS records of your domains, with an API token', ways: [{ id: 'token', label: 'API token', glyph: 'key', kind: 'njalla', tip: 'njal.la → Settings → API → Add token. You can restrict it to some domains there.' }] },
 ];
 

@@ -10,6 +10,8 @@ public_url = "http://localhost:8486" # the page as a browser opens it (behind yo
                                     # redirects are bound to it
 web_dist = ""                       # where the built page is; empty: packages/manager/web/dist
 trace = 1                           # 0: don't write the trace files under <data>/traces
+errors = 1                          # 0: don't write <data>/traces/errors.ndjson (the manager's crashes and its
+                                    # extractors', which the bugwatch extractor reads: docs/bugwatch.md)
 
 # Extractors take their own settings from each account's config (on the page: Add account → More options), not here.
 # A few environment variables change how the sandboxes run, for machines that need it:

@@ -33,6 +33,14 @@
         "@dither-accounts/statements-common": "workspace:*",
       },
     },
+    "extractors/bugwatch": {
+      "name": "@dither-accounts/extractor-bugwatch",
+      "dependencies": {
+        "@dither-accounts/interfaces": "workspace:*",
+        "@dither-accounts/link": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+      },
+    },
     "extractors/chat-fake": {
       "name": "@dither-accounts/extractor-chat-fake",
       "dependencies": {
@@ -394,6 +402,8 @@
     "@dither-accounts/client": ["@dither-accounts/client@workspace:packages/client"],
 
     "@dither-accounts/extractor-amazon": ["@dither-accounts/extractor-amazon@workspace:extractors/amazon"],
+
+    "@dither-accounts/extractor-bugwatch": ["@dither-accounts/extractor-bugwatch@workspace:extractors/bugwatch"],
 
     "@dither-accounts/extractor-chat-fake": ["@dither-accounts/extractor-chat-fake@workspace:extractors/chat-fake"],
 

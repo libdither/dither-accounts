@@ -202,7 +202,10 @@ export class Router {
     try {
       return await this.callIn(appId, accountId, op, input, span);
     } catch (e) {
-      span.set({ outcome: e instanceof CallFailure ? e.error.code : 'failed' }).fail(e);
+      // The upstream status an extractor gave its refusal (410: a stale sync token), so a reader of the trace (bugwatch)
+      // can tell an expected refusal from a failure.
+      const status = e instanceof CallFailure ? e.error.status : undefined;
+      span.set({ outcome: e instanceof CallFailure ? e.error.code : 'failed', ...(typeof status === 'number' ? { status } : {}) }).fail(e);
       throw e;
     } finally {
       span.end();

@@ -1,11 +1,12 @@
 # Notifications (interface `notifications`)
 
 What a service tells you about, as a list apps can read and clear, and events as it changes
-(packages/interfaces/src/notifications.ts). Three sources speak it today:
+(packages/interfaces/src/notifications.ts). Four sources speak it today:
 
 - **GitHub** (kind `github`, [github.md](github.md)): your GitHub notifications, polled.
 - **Telegram Desktop** (kind `telegram` signed in through the desktop app, [telegram.md](telegram.md)): the
   notifications it shows.
+- **Bug watch** (kind `bugwatch`, [bugwatch.md](bugwatch.md)): new bugs in your own services' error files and logs.
 - **The manager itself** (the built-in account `notices`, below): when one of your accounts needs you.
 
 dither-chat's hub is the app meant to read them: it ranks them with your chats and sends the ones worth it to your
@@ -14,6 +15,7 @@ phone (its `docs/notices.md`). The manager only routes; it decides nothing about
 ```
  GitHub API ─▶ extractors/github ─┐ notify.new {notification (+urgency)}
  Telegram Desktop ─▶ extractors/telegram ─┤
+ your error files ─▶ extractors/bugwatch ─┤
  the manager itself (account health) ─────┤  the built-in "notices" account
                                           ▼
                          dither-accounts manager (grant: notifications, write, accounts '*')

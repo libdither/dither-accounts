@@ -3,5 +3,5 @@ node_modules
 *.log
 packages/manager/web/dist
 # Local notes and agent state: never published.
-CLAUDE.local.md
+AGENTS.local.md
 .claude/

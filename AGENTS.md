@@ -19,7 +19,7 @@ Nothing in the repo may identify the owner or describe their accounts, money, pe
     config.example.toml lists every key with a neutral default). `<data>` is `--data` / `DITHER_ACCOUNTS_DATA`.
   - `<data>/accounts/<id>/` for each account's config, `secret.json` and browser profile. The manager writes these;
     never copy anything from them into the repo.
-  - `CLAUDE.local.md` (untracked) for notes about this machine and the owner's accounts.
+  - `AGENTS.local.md` (untracked) for notes about this machine and the owner's accounts.
 - **New code:**
   - A new manager setting gets a flag, a localhost or neutral default in main.ts, and a line in config.example.toml.
   - A kind's per-account settings go in its manifest's add form (config or secret fields), never as defaults that fit

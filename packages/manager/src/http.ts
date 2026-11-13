@@ -27,6 +27,7 @@ import { Auth, CLI_HEADER, cookieOf, fromOwnPage, loginPage, safeNext, sessionCo
 import { hashToken, newId, newToken, type Row, type Store } from './db.ts';
 import { listDir, LOG, logTail, ownDir } from './files.ts';
 import type { Kind } from './kinds.ts';
+import { localNotice, type Notices } from './notices.ts';
 import type { Provider } from './providers/index.ts';
 import { CallFailure, type ConsumerSocketData, type Router } from './router.ts';
 import { accountDir, type ExtractorSocketData, LOCK, type Supervisor, writeSecret } from './supervisor.ts';
@@ -174,6 +175,9 @@ export class Http {
   server!: Server<WsData>;
   readonly auth: Auth;
 
+  /** The manager's own notices (notices.ts), for POST /api/notices/local: set by createManager. */
+  notices: Notices | null = null;
+
   constructor(
     private store: Store,
     private kinds: Map<string, Kind>,
@@ -272,11 +276,20 @@ export class Http {
     let m: RegExpMatchArray | null;
 
     // From this machine only.
-    if (path === '/extractor' || path === '/consumer' || path.startsWith('/consumer/') || path === '/api/apps/register' || path === '/api/accounts/import' || path === '/api/accounts/forget' || /^\/api\/apps\/[\w-]+\/(requests|self)$/.test(path)) {
+    if (path === '/extractor' || path === '/consumer' || path.startsWith('/consumer/') || path === '/api/apps/register' || path === '/api/accounts/import' || path === '/api/accounts/forget' || path === '/api/notices/local' || /^\/api\/apps\/[\w-]+\/(requests|self)$/.test(path)) {
       if (!isLoopback(ip)) return new Response('this machine only', { status: 403 });
       if (req.headers.get('origin')) return new Response('not from a browser', { status: 403 });
       // Adding or dropping accounts skips the page's approval, so it takes the CLI's token: not any process here.
-      if ((path === '/api/accounts/import' || path === '/api/accounts/forget') && !this.auth.isCli(req.headers.get(CLI_HEADER))) return new Response('this needs the CLI token (cli.ts sends it)', { status: 401 });
+      if ((path === '/api/accounts/import' || path === '/api/accounts/forget' || path === '/api/notices/local') && !this.auth.isCli(req.headers.get(CLI_HEADER))) return new Response('this needs the CLI token (cli.ts sends it)', { status: 401 });
+      // A service on this machine says something through the manager's notices (notices.ts local): the deployer.
+      if (path === '/api/notices/local') {
+        if (req.method !== 'POST') return bad('POST a notice', 405);
+        const n = localNotice(await body(req));
+        if (typeof n === 'string') return bad(n);
+        if (!this.notices) return bad("the manager's notices are off", 409);
+        const out = this.notices.local(n);
+        return json({ notice: out?.id ?? null });
+      }
       if (path === '/extractor') {
         const id = this.sup.authorize(url.searchParams.get('account'), url.searchParams.get('token'));
         if (!id) return new Response('bad extractor token', { status: 401 });

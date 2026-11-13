@@ -116,6 +116,23 @@ What it says, each under an id stable per account and condition, so a repeat rep
 - An approver request waiting for a paired device is not a notice: the approver's own wake-up (docs/approver.md)
   reaches the phone without the hub.
 
+### From a service on this machine
+
+A service here can say something through the same account: `POST /api/notices/local` from this machine, never from
+a browser, with the CLI token (`<data>/cli.token`, sent as `x-dither-accounts-cli`). The deployer that ships
+dither-chat and this manager uses it to say what it deployed or rolled back.
+
+```json
+{ "id": "chat", "source": "deployer", "title": "Deployed dither-chat a14daa9", "body": "#162, #163",
+  "url": null, "urgency": "low", "context": "dither-chat" }
+```
+
+The notice's id is `local:<source>:<id>`, so the same id again replaces it and makes it unread. It is announced at
+once every time (the debounce is for flapping accounts, so the service decides how often), with `reason: "local"` and
+`subject.kind: "service"`. The sweep never reads it: only an app (or you) marks it read. `notify.mute` on one mutes
+that source for a day. The answer is `{ notice: id }`, or `{ notice: null }` while the notices are off or the source is
+muted. Its words are the service's own, so a service must keep secrets and account data out of them.
+
 ## Tests
 
 `test/notices.test.ts` runs a fresh manager (temp data, port 0, short hold times) with fake accounts that gain and lose

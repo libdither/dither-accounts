@@ -101,6 +101,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     startedAt: Date.now(),
     openPage: o.openPage === true,
   }, approvers);
+  http.notices = notices;
   http.start();
   if (o.startAccounts !== false) sup.startAll();
   return {

@@ -92,7 +92,10 @@ itself before each pull". To revoke: delete the passkey in Schwab's security set
 ### Signing in by itself
 
 Before each pull (and once at start, config `signInOnStart`, default on), when the account's tab is not settled on the
-app, it loads the accounts summary there (which goes to the sign-in page when signed out), finds the frame whose
+app, it loads the accounts summary there (which goes to the sign-in page when signed out), on every try and even when
+the tab already shows a sign-in page: the one Schwab leaves after logging an idle session out ("we've logged you out
+… due to inactivity", "There was a problem logging you in") shows the passkey option, but clicking it asks for
+nothing until the page is loaded again. Then it finds the frame whose
 control's **accessible name says "passkey"** (page.js `passkey`: buttons and links, by aria-labelledby, aria-label,
 text, value, title, images' alt; "sign in / log in / use / continue with a passkey" first; links to learn about, add or
 manage passkeys never), waits until the page's frames have been up 3 s (a widget may show its button before its script
@@ -141,7 +144,8 @@ cross-origin frame, and so does the hook). `lastRefusal`, `page` and the log sho
   export and a PDF go over, a text file stays). Then the passkey, every ceremony in a same-site frame from another
   origin of the fake (as sws-gateway's): the three attentions in turn, a passkey (ES256, all the fake offers) made in
   the settings frame and checked by the relying party (origin, crossOrigin, topOrigin, counter), log out and in with
-  it; a pull that finds the session gone signs itself in, clicking a button that ignores clicks until hydrated; a code
+  it; a pull that finds the session gone signs itself in, clicking a button that ignores clicks until hydrated; after
+  an idle logout that leaves a sign-in page whose passkey option asks for nothing, a pull loads a fresh one; a code
   after the passkey holds (nothing typed, pulls refused) until you are in, then the held pull runs; no key, credential
   id or user handle to the manager.
 - What a refusal from a paired phone does to the sign-in (one request, nothing more until a pull you start, one per

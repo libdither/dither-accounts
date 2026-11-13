@@ -70,6 +70,8 @@ export interface AccountInfo {
   seenAs: { name: string | null; detail: string | null; avatar: string | null } | null;
   /** Its extractor offers a live view (a sandboxed browser you can see and use). */
   liveView: boolean;
+  /** Part of the manager itself (its own notices, docs/notifications.md): no process to restart, disable or remove. */
+  builtin: boolean;
   /** What it rests on, from its last status (null when its extractor does not say). */
   layers: StatusLayer[] | null;
   interfaces: string[];

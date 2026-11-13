@@ -132,6 +132,8 @@ export class Supervisor {
   /** What a stop forgets but the account pane still shows: how often it started, how it last ended. */
   private history = new Map<string, Pick<Running, 'starts' | 'lastExit'>>();
   private pending = new Map<string, Pending>();
+  /** Accounts the manager answers itself (the built-in `notices`): never started, always online. */
+  readonly inProcess = new Set<string>();
 
   constructor(
     private store: Store,
@@ -146,12 +148,15 @@ export class Supervisor {
       onChange: (accountId: string) => void;
       /** An extractor process ended: what it last said of itself (its status) no longer holds. */
       onExit?: (accountId: string) => void;
+      /** An extractor's process ended on its own and is being started again. */
+      onCrash?: (accountId: string) => void;
       /** A question from an account's extractor to the manager (`what`, its input); throw to refuse. */
       onAsk?: (accountId: string, what: string, input: Record<string, unknown>) => Promise<unknown>;
     },
   ) {}
 
   state(id: string) {
+    if (this.inProcess.has(id)) return { running: true, online: true, error: null };
     const r = this.running.get(id);
     return { running: !!r?.proc, online: !!r?.ws, error: r?.error ?? null };
   }
@@ -174,6 +179,7 @@ export class Supervisor {
   }
 
   start(id: string) {
+    if (this.inProcess.has(id)) return;
     const acc = this.store.account(id);
     if (!acc || !acc.enabled) return;
     const cur = this.running.get(id);
@@ -252,7 +258,9 @@ export class Supervisor {
     if (Date.now() - r.lastStart > 120_000) r.restarts = 0;
     const delay = BACKOFF[Math.min(r.restarts, BACKOFF.length - 1)];
     r.restarts++;
-    setTimeout(() => this.start(id), delay * 1000);
+    // Kept in retry, so a stop (or the manager stopping) cancels it; set before onCrash, which must not keep it from it.
+    r.retry = setTimeout(() => this.start(id), delay * 1000);
+    this.opts.onCrash?.(id);
   }
 
   async stop(id: string) {
@@ -292,7 +300,7 @@ export class Supervisor {
   // ---------------------------------------------------------- socket
 
   authorize(accountId: string | null, token: string | null): string | null {
-    if (!accountId || !token) return null;
+    if (!accountId || !token || this.inProcess.has(accountId)) return null;
     const acc = this.store.account(accountId);
     return acc && acc.token === token ? acc.id : null;
   }

@@ -1,6 +1,10 @@
 /**
- * `notifications`: what a service tells you about, as a list you can read and clear: GitHub's notifications today, a
- * phone's notifications later. Ids are the extractor's own and stable; `at` is milliseconds since the epoch.
+ * `notifications`: what a service tells you about, as a list you can read and clear: GitHub's notifications, Telegram
+ * Desktop's, and the manager's own about its accounts (the built-in `notices` account, docs/notifications.md). Ids are
+ * the source's own and stable; `at` is milliseconds since the epoch.
+ *
+ * `urgency` was added to version 1 as an optional field: a consumer that does not know it reads every notification as
+ * `normal`, which is what its absence means.
  */
 import { ev, iface, op, s } from '@dither-accounts/spec';
 
@@ -10,9 +14,17 @@ export interface NotificationActor {
   avatar: string | null;
 }
 
+/**
+ * How soon the source thinks you should look, a hint and never a decision (an app ranks it its own way):
+ * - `high`: act soon (a security alert, an account that stopped and needs you, an approval nobody can answer);
+ * - `normal`: addressed to you (a mention, a review request, an assignment);
+ * - `low`: ambient (activity on something you only watch, CI, state changes).
+ */
+export type Urgency = 'high' | 'normal' | 'low';
+
 export interface Notification {
   id: string;
-  /** What raised it: 'github', or a phone app's name. */
+  /** What raised it: 'github', 'Telegram Desktop', 'dither-accounts' (the manager's own), or a phone app's name. */
   source: string;
   title: string;
   body: string | null;
@@ -27,6 +39,8 @@ export interface Notification {
   actors: NotificationActor[];
   at: number;
   unread: boolean;
+  /** The source's hint (Urgency); absent means `normal`. */
+  urgency?: Urgency;
 }
 
 export const notifications = iface({

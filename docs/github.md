@@ -67,6 +67,31 @@ token → GET /user (who, X-OAuth-Scopes) → poll GET /notifications → notify
   `last_read_at` (without `before`, GitHub's own now, so this machine's clock does not matter). `notify.mute` →
   `PUT /notifications/threads/{id}/subscription` with `ignored: true` (it does not mark it read).
 
+### Urgency
+
+Each notification carries `urgency` (the interface's hint, docs/notifications.md) from GitHub's `reason`, which says
+why you are subscribed to the thread, not what just happened in it:
+
+| reason | urgency | why |
+| --- | --- | --- |
+| `security_alert` | high | a vulnerability alert on one of your repositories |
+| `review_requested` | normal | a review is asked of you or your team |
+| `mention`, `team_mention` | normal | you or your team were @mentioned |
+| `assign` | normal | you were assigned |
+| `invitation` | normal | an invitation to a repository |
+| `approval_requested` | normal | a deployment waits for your approval |
+| `member_feature_requested` | normal | an organization member asks for a feature for you to decide |
+| `author` | normal | activity on what you opened: a review or a reply on your own pull request or issue is meant for you |
+| `comment` | low | a thread you commented in, without being addressed again |
+| `subscribed`, `manual` | low | what you watch, or subscribed to by hand |
+| `state_change` | low | you changed its state (closed, merged) |
+| `ci_activity` | low | a workflow run you started finished |
+| `your_activity` | low | your own activity |
+| `security_advisory_credit` | low | you were credited in an advisory |
+
+A reason not in the table (one GitHub adds later) has no `urgency`, which apps read as `normal`. Telling a mention
+inside a `comment` or `author` thread apart is left to the app (it has the text).
+
 ### notify.mute and `id`
 
 The manager sends an op's input to the extractor with its own call id as `id` on top, so an input field called `id`

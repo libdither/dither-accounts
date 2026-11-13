@@ -629,7 +629,7 @@
    "notify.read": "{ ids: string[] }"
   },
   "defs": {
-   "Notification": "type Notification = {\n  id: string;\n  /** What raised it: 'github', or a phone app's name. */\n  source: string;\n  title: string;\n  body: null | string;\n  /** Where it leads, on the web. */\n  url: null | string;\n  /** Why you got it, in the service's words: mention, review_requested, assign, comment… */\n  reason: null | string;\n  /** Where it belongs: a repository, an app, a conversation. */\n  context: null | string;\n  /** The thing it is about, when there is one: an issue, a pull request, a release. */\n  subject: null | { kind: string; title: string; url: null | string; state: null | string };\n  actors: NotificationActor[];\n  at: number;\n  unread: boolean;\n};",
+   "Notification": "type Notification = {\n  id: string;\n  /** What raised it: 'github', 'Telegram Desktop', 'dither-accounts' (the manager's own), or a phone app's name. */\n  source: string;\n  title: string;\n  body: null | string;\n  /** Where it leads, on the web. */\n  url: null | string;\n  /** Why you got it, in the service's words: mention, review_requested, assign, comment… */\n  reason: null | string;\n  /** Where it belongs: a repository, an app, a conversation. */\n  context: null | string;\n  /** The thing it is about, when there is one: an issue, a pull request, a release. */\n  subject: null | { kind: string; title: string; url: null | string; state: null | string };\n  actors: NotificationActor[];\n  at: number;\n  unread: boolean;\n  /** The source's hint (Urgency); absent means `normal`. */\n  urgency?: \"normal\" | \"high\" | \"low\";\n};",
    "NotificationActor": "type NotificationActor = { name: string; url: null | string; avatar: null | string };"
   }
  },

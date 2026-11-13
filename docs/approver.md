@@ -164,7 +164,9 @@ The counter for that credential + 1, saved before signing. The signature is ECDS
 `NotAllowedError` a cancelled prompt gives; the extractor sees the reason (below). A reason it does not know counts as
 `error`. The manager has one of its own: `no-device` (the device is not paired here, or was removed while the request
 waited). The manager adds `deviceName` (the device's name as paired) to every refusal it passes on for a device it
-knows, so the account can say where it was refused.
+knows, so the account can say where it was refused. A request for a device that is not paired here also becomes one of the manager's own
+notices (`no-device:<account>`, urgency high, [notifications.md](notifications.md)); one refused because you removed
+the device while it waited does not.
 
 ### What a refusal does
 

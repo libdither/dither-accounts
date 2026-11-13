@@ -308,7 +308,7 @@ export class Http {
         const out: { id: string; started: boolean }[] = [];
         for (const a of Array.isArray(b.accounts) ? b.accounts : []) {
           if (!a || typeof a.id !== 'string' || !/^[\w-]{4,64}$/.test(a.id)) return bad('each account needs an id');
-          if (!this.kinds.has(a.kind)) return bad(`no extractor for kind "${a.kind}"`);
+          if (!this.kinds.has(a.kind) || this.kinds.get(a.kind)!.builtin) return bad(`no extractor for kind "${a.kind}"`);
           if (s.account(a.id)) return bad(`account ${a.id} is already here`, 409);
           if (typeof a.dir !== 'string' || !a.dir.startsWith('/') || !existsSync(a.dir)) return bad(`${a.id}: its directory ${a.dir} does not exist`);
         }
@@ -339,6 +339,7 @@ export class Http {
         const b = await body<{ id?: string }>(req);
         const a = b.id ? s.account(b.id) : null;
         if (!a) return bad('no such account', 404);
+        if (this.router.inProcess.has(a.id)) return bad(`${a.label} is part of the manager`, 409);
         await this.router.remove(a, false);
         return json({ forgotten: a.id, dir: a.dir });
       }
@@ -562,6 +563,8 @@ export class Http {
     if ((m = path.match(/^\/api\/accounts\/([\w-]+)(?:\/(restart|log|files|call|secret))?$/))) {
       const a = s.account(m[1]);
       if (!a) return bad('no such account', 404);
+      // The manager's own notices (notices.ts) are not a process: nothing to restart, disable, sign in or remove.
+      if (this.router.inProcess.has(a.id) && (m[2] === 'secret' || m[2] === 'restart' || (!m[2] && req.method === 'DELETE'))) return bad(`${a.label} is part of the manager`, 409);
       // Replace a sign-in (a token, an app password): the kind's secret add-form fields, merged over secret.json (the
       // session's other keys stay), then the extractor restarts on it. Nothing secret is answered back.
       if (m[2] === 'secret' && req.method === 'POST') {
@@ -615,6 +618,7 @@ export class Http {
       }
       if (req.method === 'PATCH') {
         const b = await body<{ enabled?: boolean; label?: string; passkeyDevice?: string | null }>(req);
+        if (this.router.inProcess.has(a.id) && b.enabled !== undefined) return bad(`${a.label} is part of the manager`, 409);
         // Where new passkeys are made (docs/approver.md): a paired device, or null for here (secret.json). The running
         // extractor gets the new config at once (its link's config is live), so it need not restart.
         if (b.passkeyDevice !== undefined) {
@@ -715,6 +719,7 @@ export class Http {
       self: selfOf(this.router.lastEvent(a.id, 'status')?.self),
       seenAs: selfOf(parse<unknown>(a.seen_as, null)),
       liveView: !!this.router.liveView(a.id),
+      builtin: this.router.inProcess.has(a.id),
       layers: layersOf(this.router.lastEvent(a.id, 'status')?.layers),
       interfaces: this.kinds.get(a.kind)?.interfaces ?? [],
       dir: a.dir,
@@ -733,7 +738,8 @@ export class Http {
     for (const app of s.all('SELECT * FROM app ORDER BY created_at')) {
       for (const g of s.grants(app.id)) {
         if (g.interface === 'accounts') {
-          if (g.level === 'manage' && (!g.kinds || g.kinds.includes(a.kind))) access.push({ grant: g.id, app: app.id, appName: app.name, interface: 'accounts', level: g.level, dryRun: g.dry_run });
+          // The manager's own accounts are managed by no app (router.ts accountsFor, admin).
+          if (g.level === 'manage' && (!g.kinds || g.kinds.includes(a.kind)) && !this.router.inProcess.has(a.id)) access.push({ grant: g.id, app: app.id, appName: app.name, interface: 'accounts', level: g.level, dryRun: g.dry_run });
           continue;
         }
         if (!(this.kinds.get(a.kind)?.interfaces ?? []).includes(g.interface)) continue;
@@ -813,7 +819,7 @@ export class Http {
           per[i] = g.level;
           dryRun ||= g.dryRun;
         }
-        const manages = this.router.manages(app.id, a.kind, grants);
+        const manages = !this.router.inProcess.has(a.id) && this.router.manages(app.id, a.kind, grants);
         const series = calls.get(`${app.id}|${a.id}`);
         if (!Object.keys(per).length && !manages && !series) continue;
         cells.push({ app: app.id, account: a.id, grants: per, manages, dryRun, calls: series ?? dayList.map(() => ({ n: 0, bad: 0 })) });

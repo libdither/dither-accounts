@@ -36,6 +36,7 @@ export interface Mentionables {
 
 /** Which people the picker offers in a conversation (the place pref `mentionScope`, docs/mentions.md). */
 export type MentionScope = 'here' | 'friends' | 'everyone';
+export const MENTION_SCOPES: readonly MentionScope[] = ['here', 'friends', 'everyone'];
 
 /** One row of the composer's @ picker, worked out by the hub. */
 export interface MentionRow {
@@ -58,9 +59,22 @@ export interface MentionRow {
   accounts?: MentionRow[];
 }
 
-/** GET /api/conversations/:id/mentionables?q=&scope=&only= */
+/** GET /api/conversations/:id/mentionables?q=&account=&scope=&same= */
 export interface MentionablesView {
   rows: MentionRow[];
   /** The network was not asked or did not answer in time: the rows are what the hub knows. */
   partial?: boolean;
+  /** The sections asked for: `scope` if given, else the place's setting. */
+  scope?: MentionScope;
+  /** Friends and everyone only on this chat's network. */
+  sameNetwork?: boolean;
 }
+
+/**
+ * A hub person or one of their accounts named in a body (docs/mentions.md, "References"). The hub lowers them on send
+ * to the network's own mention, or to plain @Name, unless the account sending has capability 'personRefs'.
+ */
+export const PERSON_REF = /<@person:(per_[\w-]{1,64})>/g;
+export const IDENTITY_REF = /<@identity:(idn_[\w-]{1,64})>/g;
+export const personRef = (personId: string) => `<@person:${personId}>`;
+export const identityRef = (identityId: string) => `<@identity:${identityId}>`;

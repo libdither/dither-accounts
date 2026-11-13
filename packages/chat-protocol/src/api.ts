@@ -6,6 +6,7 @@
 import type { About, AboutFields, AddWho, GroupRule, PersonAbout, PersonRelationship } from './about.ts';
 import type { AddAction, AddCheck, AddPreview, AddRef, LinkRelationship, RequestAnswer, RequestFact } from './add.ts';
 import type { Capability, NativeMute, ReceiptState } from './adapter.ts';
+import type { MentionScope } from './mentions.ts';
 import type {
   AccountStatus,
   AttachmentKind,
@@ -682,8 +683,16 @@ export interface PlacePrefView {
   open: boolean;
   /** Conversations: has its own sidebar entry, as communities do by default. */
   railed: boolean;
+  /** Whom the @ picker offers here (docs/mentions.md). Absent: as the place it is in says, else the default. */
+  mentionScope?: MentionScope;
+  /** The @ picker's friends and everyone only on this chat's network. Absent: inherited, else false. */
+  mentionSameNetwork?: boolean;
 }
-export type PlacePrefPatch = { kind: PlaceKind; id: string } & Partial<Omit<PlacePrefView, 'kind' | 'id'>>;
+/** The fields present change; null takes a mention setting away, so the place inherits it again. */
+export type PlacePrefPatch = { kind: PlaceKind; id: string } & Partial<Omit<PlacePrefView, 'kind' | 'id' | 'mentionScope' | 'mentionSameNetwork'>> & {
+  mentionScope?: MentionScope | null;
+  mentionSameNetwork?: boolean | null;
+};
 
 /** A category is a yes/no question asked of each place (hub categorize.ts). */
 export interface CategoryView {

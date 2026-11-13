@@ -264,6 +264,13 @@
         "@dither-accounts/link": "workspace:*",
       },
     },
+    "extractors/t3": {
+      "name": "@dither-accounts/extractor-t3",
+      "dependencies": {
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+    },
     "extractors/telegram": {
       "name": "@dither-accounts/extractor-telegram",
       "dependencies": {
@@ -448,6 +455,8 @@
     "@dither-accounts/extractor-signal": ["@dither-accounts/extractor-signal@workspace:extractors/signal"],
 
     "@dither-accounts/extractor-simplefin": ["@dither-accounts/extractor-simplefin@workspace:extractors/simplefin"],
+
+    "@dither-accounts/extractor-t3": ["@dither-accounts/extractor-t3@workspace:extractors/t3"],
 
     "@dither-accounts/extractor-telegram": ["@dither-accounts/extractor-telegram@workspace:extractors/telegram"],
 

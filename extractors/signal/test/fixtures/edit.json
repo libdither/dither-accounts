@@ -1,0 +1,41 @@
+{
+  "account": "+15550100",
+  "envelope": {
+    "source": "+15550137",
+    "sourceNumber": "+15550137",
+    "sourceUuid": "a11ce000-2222-4ccc-9ddd-000000000002",
+    "sourceName": "Alice Chen",
+    "sourceDevice": 1,
+    "timestamp": 1793330007000,
+    "serverReceivedTimestamp": 1793330007180,
+    "serverDeliveredTimestamp": 1793330007240,
+    "editMessage": {
+      "targetSentTimestamp": 1793330002000,
+      "dataMessage": {
+        "timestamp": 1793330007000,
+        "message": "perfect, I'll bring TWO chalk bags",
+        "expiresInSeconds": 0,
+        "isExpirationUpdate": false,
+        "viewOnce": false,
+        "isEndSession": false,
+        "isProfileKeyUpdate": false,
+        "hasProfileKey": true,
+        "textStyles": [
+          {
+            "style": "BOLD",
+            "start": 20,
+            "length": 3
+          }
+        ],
+        "quote": {
+          "id": 1793329940000,
+          "author": "+15550100",
+          "authorNumber": "+15550100",
+          "authorUuid": "5f2c7a8e-1111-4aaa-8bbb-000000000001",
+          "text": "yes! 7pm at Mesa?",
+          "attachments": []
+        }
+      }
+    }
+  }
+}

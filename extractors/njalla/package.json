@@ -1,0 +1,11 @@
+{
+  "name": "@dither-accounts/extractor-njalla",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@dither-accounts/interfaces": "workspace:*",
+    "@dither-accounts/link": "workspace:*",
+    "@dither-accounts/manager": "workspace:*"
+  }
+}

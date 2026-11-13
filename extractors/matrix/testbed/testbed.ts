@@ -1,0 +1,663 @@
+/**
+ * Local Matrix testbed for the dither-chat Matrix adapter.
+ *
+ * A continuwuity homeserver on 127.0.0.1:6167 (server name "dither.test",
+ * federation off, registration by token) with four users and sample traffic.
+ * Everything lives in .data/matrix-testbed/ (gitignored), including the
+ * credentials in testbed.json. Every command is idempotent.
+ *
+ *   bun extractors/matrix/testbed/testbed.ts up        start the homeserver if needed, then seed it
+ *   bun extractors/matrix/testbed/testbed.ts start     start the homeserver only
+ *   bun extractors/matrix/testbed/testbed.ts stop      stop it
+ *   bun extractors/matrix/testbed/testbed.ts status    pid, users, rooms, the hub "add" command
+ *   bun extractors/matrix/testbed/testbed.ts seed      (re)run the seeding steps that haven't completed
+ *   bun extractors/matrix/testbed/testbed.ts chatter [--every 15] [--count N] [--room general]
+ *   bun extractors/matrix/testbed/testbed.ts say <alice|bob|carol|quinn> <room> <text...>
+ *   bun extractors/matrix/testbed/testbed.ts tail <room> [n]     last messages as quinn sees them
+ *   bun extractors/matrix/testbed/testbed.ts reset --yes          stop and delete all testbed data
+ *
+ * Environment: CONTINUWUITY_BIN (homeserver binary), DITHER_TESTBED_DIR (data dir), DITHER_TESTBED_PORT.
+ */
+
+import { spawn } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { enc, MatrixClient, MatrixError } from '../src/http.ts';
+import { avatarImage, testbedImage } from './png.ts';
+
+const REPO = resolve(import.meta.dir, '../../..');
+const DIR = resolve(process.env.DITHER_TESTBED_DIR ?? join(REPO, '.data/matrix-testbed'));
+const STATE_FILE = join(DIR, 'testbed.json');
+const CONFIG_FILE = join(DIR, 'continuwuity.toml');
+const DB_DIR = join(DIR, 'db');
+const LOG_FILE = join(DIR, 'server.log');
+const PID_FILE = join(DIR, 'server.pid');
+const HOST = '127.0.0.1';
+const PORT = Number(process.env.DITHER_TESTBED_PORT ?? 6167);
+const SERVER_NAME = 'dither.test';
+const BASE = `http://${HOST}:${PORT}`;
+
+const USERS = ['quinn', 'alice', 'bob', 'carol'] as const;
+type UserKey = (typeof USERS)[number];
+const DISPLAY: Record<UserKey, string> = { quinn: 'Quinn', alice: 'Alice Chen', bob: 'Bob Okafor', carol: 'Carol Reyes' };
+const mxid = (u: UserKey) => `@${u}:${SERVER_NAME}`;
+
+interface UserCreds {
+  userId: string;
+  password: string;
+  accessToken?: string;
+  deviceId?: string;
+}
+
+interface State {
+  serverName: string;
+  baseUrl: string;
+  registrationToken: string;
+  binary?: string;
+  users: Record<UserKey, UserCreds>;
+  rooms: Record<string, string>;
+  events: Record<string, string>;
+  steps: Record<string, boolean>;
+}
+
+const secret = (n = 18) => Buffer.from(crypto.getRandomValues(new Uint8Array(n))).toString('base64url');
+
+function loadState(): State {
+  if (existsSync(STATE_FILE)) return JSON.parse(readFileSync(STATE_FILE, 'utf8'));
+  const users = Object.fromEntries(USERS.map((u) => [u, { userId: mxid(u), password: `${u}-${secret(9)}` }])) as Record<UserKey, UserCreds>;
+  return { serverName: SERVER_NAME, baseUrl: BASE, registrationToken: secret(), users, rooms: {}, events: {}, steps: {} };
+}
+
+function saveState(s: State) {
+  mkdirSync(DIR, { recursive: true, mode: 0o700 });
+  writeFileSync(STATE_FILE, JSON.stringify(s, null, 2), { mode: 0o600 });
+  chmodSync(STATE_FILE, 0o600);
+}
+
+// ------------------------------------------------------------------ homeserver process
+
+function readPid(): number | null {
+  if (!existsSync(PID_FILE)) return null;
+  const pid = Number(readFileSync(PID_FILE, 'utf8').trim());
+  if (!pid) return null;
+  try {
+    process.kill(pid, 0);
+    return readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes('conduwuit') ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+async function ping(): Promise<boolean> {
+  try {
+    const r = await fetch(`${BASE}/_matrix/client/versions`, { signal: AbortSignal.timeout(2000) });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
+function binary(state: State): string {
+  const fromEnv = process.env.CONTINUWUITY_BIN;
+  if (fromEnv && existsSync(fromEnv)) return fromEnv;
+  if (state.binary && existsSync(state.binary)) return state.binary;
+  const onPath = Bun.which('conduwuit');
+  if (onPath) return onPath;
+  console.log('fetching matrix-continuwuity from nixpkgs (once)...');
+  const p = Bun.spawnSync(['nix', 'build', 'nixpkgs#matrix-continuwuity', '--no-link', '--print-out-paths'], { stdout: 'pipe', stderr: 'inherit' });
+  if (p.exitCode !== 0) throw new Error('nix build nixpkgs#matrix-continuwuity failed; set CONTINUWUITY_BIN');
+  const out = p.stdout.toString().trim().split('\n').pop()!;
+  state.binary = join(out, 'bin', 'conduwuit');
+  saveState(state);
+  return state.binary;
+}
+
+function config(state: State): string {
+  return `# Generated by extractors/matrix/testbed/testbed.ts; rewritten on every start.
+[global]
+server_name = "${SERVER_NAME}"
+database_path = "${DB_DIR}"
+address = ["${HOST}"]
+port = ${PORT}
+allow_federation = false
+allow_registration = true
+registration_token = "${state.registrationToken}"
+# No first-run admin flow: no admin room in the test users' sidebars.
+force_disable_first_run_mode = true
+allow_encryption = true
+trusted_servers = []
+allow_announcements_check = false
+new_user_displayname_suffix = ""
+log = "info"
+`;
+}
+
+async function start(state: State) {
+  const running = readPid();
+  if (running && (await ping())) {
+    console.log(`homeserver already running (pid ${running}) on ${BASE}`);
+    return;
+  }
+  if (running) {
+    console.log(`pid ${running} is not answering; restarting it`);
+    await stop();
+  }
+  mkdirSync(DIR, { recursive: true, mode: 0o700 });
+  saveState(state);
+  writeFileSync(CONFIG_FILE, config(state), { mode: 0o600 });
+  const bin = binary(state);
+  const log = openSync(LOG_FILE, 'a');
+  const child = spawn(bin, ['-c', CONFIG_FILE], { cwd: DIR, detached: true, stdio: ['ignore', log, log] });
+  child.unref();
+  writeFileSync(PID_FILE, String(child.pid));
+  for (let i = 0; i < 240; i++) {
+    if (await ping()) {
+      console.log(`homeserver up: pid ${child.pid}, ${BASE}, server name ${SERVER_NAME}, log ${LOG_FILE}`);
+      return;
+    }
+    if (!readPid()) throw new Error(`homeserver exited during startup; see ${LOG_FILE}`);
+    await Bun.sleep(250);
+  }
+  throw new Error(`homeserver did not answer within 60s; see ${LOG_FILE}`);
+}
+
+async function stop() {
+  const pid = readPid();
+  if (!pid) {
+    console.log('homeserver is not running');
+    rmSync(PID_FILE, { force: true });
+    return;
+  }
+  process.kill(pid, 'SIGTERM');
+  for (let i = 0; i < 60 && readPid(); i++) await Bun.sleep(250);
+  if (readPid()) process.kill(pid, 'SIGKILL');
+  rmSync(PID_FILE, { force: true });
+  console.log(`homeserver stopped (pid ${pid})`);
+}
+
+// ------------------------------------------------------------------ users
+
+async function user(state: State, key: UserKey): Promise<MatrixClient> {
+  const u = state.users[key];
+  const c = new MatrixClient(BASE);
+  if (u.accessToken) {
+    c.accessToken = u.accessToken;
+    try {
+      await c.request('GET', '/_matrix/client/v3/account/whoami', { retries: 0 });
+      return c;
+    } catch (e) {
+      if (!(e instanceof MatrixError && e.isAuth)) throw e;
+      c.accessToken = null;
+    }
+  }
+  const remember = (res: any, how: string) => {
+    u.accessToken = res.access_token;
+    u.deviceId = res.device_id;
+    saveState(state);
+    c.accessToken = res.access_token;
+    console.log(`${how} ${res.user_id}`);
+    return c;
+  };
+  const body = { username: key, password: u.password, initial_device_display_name: 'testbed' };
+  try {
+    let session: string | undefined;
+    try {
+      await c.request('POST', '/_matrix/client/v3/register', { auth: false, retries: 0, body });
+    } catch (e) {
+      if (!(e instanceof MatrixError) || e.status !== 401) throw e;
+      session = e.data.session;
+    }
+    const res = await c.request('POST', '/_matrix/client/v3/register', {
+      auth: false,
+      retries: 0,
+      body: { ...body, auth: { type: 'm.login.registration_token', token: state.registrationToken, session } },
+    });
+    return remember(res, 'registered');
+  } catch (e) {
+    if (!(e instanceof MatrixError && e.errcode === 'M_USER_IN_USE')) throw e;
+    const res = await c.request('POST', '/_matrix/client/v3/login', {
+      auth: false,
+      body: { type: 'm.login.password', identifier: { type: 'm.id.user', user: key }, password: u.password, initial_device_display_name: 'testbed' },
+    });
+    return remember(res, 'logged in');
+  }
+}
+
+async function users(state: State): Promise<Record<UserKey, MatrixClient>> {
+  const out = {} as Record<UserKey, MatrixClient>;
+  for (const u of USERS) out[u] = await user(state, u);
+  return out;
+}
+
+// ------------------------------------------------------------------ helpers
+
+const text = (body: string, extra: Record<string, unknown> = {}) => ({ msgtype: 'm.text', body, ...extra });
+const pill = (u: UserKey) => `<a href="https://matrix.to/#/${mxid(u)}">${DISPLAY[u]}</a>`;
+
+async function send(c: MatrixClient, roomId: string, content: unknown, type = 'm.room.message'): Promise<string> {
+  const res = await c.request('PUT', `/_matrix/client/v3/rooms/${enc(roomId)}/send/${enc(type)}/${enc(c.txnId())}`, { body: content });
+  await Bun.sleep(15); // distinct, ordered timestamps
+  return res.event_id;
+}
+
+async function setState(c: MatrixClient, roomId: string, type: string, key: string, content: unknown) {
+  await c.request('PUT', `/_matrix/client/v3/rooms/${enc(roomId)}/state/${enc(type)}/${enc(key)}`, { body: content });
+}
+
+async function upload(c: MatrixClient, bytes: Uint8Array, mime: string, filename: string): Promise<string> {
+  const res = await c.request('POST', '/_matrix/media/v3/upload', { query: { filename }, body: bytes, contentType: mime });
+  return res.content_uri;
+}
+
+async function room(state: State, key: string, c: MatrixClient, body: Record<string, unknown>): Promise<string> {
+  if (state.rooms[key]) return state.rooms[key];
+  const res = await c.request('POST', '/_matrix/client/v3/createRoom', { body });
+  state.rooms[key] = res.room_id;
+  saveState(state);
+  console.log(`created ${key}: ${res.room_id}`);
+  return res.room_id;
+}
+
+async function joinRoom(c: MatrixClient, roomId: string) {
+  await c.request('POST', `/_matrix/client/v3/join/${enc(roomId)}`, { body: {} });
+}
+
+async function inviteAndJoin(owner: MatrixClient, roomId: string, members: [UserKey, MatrixClient][]) {
+  for (const [key, c] of members) {
+    try {
+      await owner.request('POST', `/_matrix/client/v3/rooms/${enc(roomId)}/invite`, { body: { user_id: mxid(key) } });
+    } catch (e) {
+      // already invited or joined (a re-run after a partial seed)
+      if (!(e instanceof MatrixError && (e.status === 400 || e.status === 403))) throw e;
+    }
+    await joinRoom(c, roomId);
+  }
+}
+
+async function step(state: State, name: string, fn: () => Promise<void>) {
+  if (state.steps[name]) return;
+  console.log(`seeding: ${name}`);
+  await fn();
+  state.steps[name] = true;
+  saveState(state);
+}
+
+function ev(state: State, key: string, id: string) {
+  state.events[key] = id;
+  saveState(state);
+  return id;
+}
+
+// ------------------------------------------------------------------ seeding
+
+async function seed(state: State) {
+  const C = await users(state);
+  const { quinn, alice, bob, carol } = C;
+  const all: [UserKey, MatrixClient][] = [
+    ['alice', alice],
+    ['bob', bob],
+    ['carol', carol],
+  ];
+
+  await step(state, 'profiles', async () => {
+    for (const u of USERS) await C[u].request('PUT', `/_matrix/client/v3/profile/${enc(mxid(u))}/displayname`, { body: { displayname: DISPLAY[u] } });
+    const avatar = await upload(alice, avatarImage([242, 165, 65]), 'image/png', 'alice.png');
+    await alice.request('PUT', `/_matrix/client/v3/profile/${enc(mxid('alice'))}/avatar_url`, { body: { avatar_url: avatar } });
+  });
+
+  await step(state, 'rooms', async () => {
+    const R = state.rooms;
+    // Spaces: "Dither Testbed" > { #general, #dev, #announcements, "Off-topic" > { #memes, #crossposts } }, "Rust Friends" > { #crossposts }
+    const space = await room(state, 'space', quinn, {
+      name: 'Dither Testbed',
+      topic: 'Local Matrix testbed for the dither-chat adapter',
+      preset: 'public_chat',
+      room_alias_name: 'testbed',
+      creation_content: { type: 'm.space' },
+      power_level_content_override: { events_default: 100 },
+    });
+    const offtopic = await room(state, 'offtopic', quinn, {
+      name: 'Off-topic',
+      topic: 'A subspace for everything else',
+      preset: 'public_chat',
+      creation_content: { type: 'm.space' },
+      power_level_content_override: { events_default: 100 },
+    });
+    const rust = await room(state, 'rustfriends', quinn, {
+      name: 'Rust Friends',
+      topic: 'A second top-level space that shares #crossposts',
+      preset: 'public_chat',
+      creation_content: { type: 'm.space' },
+      power_level_content_override: { events_default: 100 },
+    });
+    if (!R.spaceIcon) {
+      const icon = await upload(quinn, avatarImage([13, 189, 139]), 'image/png', 'space.png');
+      await setState(quinn, space, 'm.room.avatar', '', { url: icon });
+      R.spaceIcon = icon;
+      saveState(state);
+    }
+    const priv = (name: string, topic?: string, extra: Record<string, unknown> = {}) => ({ name, ...(topic ? { topic } : {}), preset: 'private_chat', ...extra });
+    const general = await room(state, 'general', quinn, priv('general', 'General chatter', { room_alias_name: 'general' }));
+    const dev = await room(state, 'dev', quinn, priv('dev', 'Building dither-chat'));
+    const ann = await room(state, 'announcements', quinn, priv('announcements', 'Only moderators post here', { power_level_content_override: { events_default: 50 } }));
+    const memes = await room(state, 'memes', quinn, priv('memes'));
+    const cross = await room(state, 'crossposts', quinn, priv('crossposts', 'This room sits in two spaces'));
+    const dm = await room(state, 'dm', quinn, { preset: 'trusted_private_chat', is_direct: true, invite: [mxid('alice')] });
+    const weekend = await room(state, 'weekend', quinn, priv('Weekend plans'));
+    const notes = await room(state, 'notes', quinn, priv('Notes to self'));
+    const lobby = await room(state, 'lobby', quinn, { name: 'Lobby', topic: 'A public room outside any space', preset: 'public_chat', room_alias_name: 'lobby' });
+    const secretRoom = await room(state, 'secret', quinn, priv('Secret plans', 'An encrypted room', { initial_state: [{ type: 'm.room.encryption', state_key: '', content: { algorithm: 'm.megolm.v1.aes-sha2' } }] }));
+
+    const via = { via: [SERVER_NAME] };
+    const child = (parent: string, kid: string, order: string) => setState(quinn, parent, 'm.space.child', kid, { ...via, order });
+    const parentOf = (kid: string, parent: string, canonical = false) => setState(quinn, kid, 'm.space.parent', parent, { ...via, ...(canonical ? { canonical: true } : {}) });
+    await child(space, general, '0010');
+    await child(space, dev, '0020');
+    await child(space, ann, '0030');
+    await child(space, offtopic, '0090');
+    await child(offtopic, memes, '0010');
+    await child(offtopic, cross, '0020');
+    await child(rust, cross, '0010');
+    await parentOf(general, space, true);
+    await parentOf(dev, space, true);
+    await parentOf(offtopic, space, true);
+    await parentOf(cross, offtopic, true);
+    await parentOf(cross, rust);
+
+    for (const [, c] of all) {
+      await joinRoom(c, space);
+      await joinRoom(c, offtopic);
+    }
+    await joinRoom(alice, rust);
+    await joinRoom(carol, rust);
+    await inviteAndJoin(quinn, general, all);
+    await inviteAndJoin(quinn, dev, [all[0], all[1]]);
+    await inviteAndJoin(quinn, ann, all);
+    await inviteAndJoin(quinn, memes, [all[1], all[2]]);
+    await inviteAndJoin(quinn, cross, [all[0], all[2]]);
+    await joinRoom(alice, dm);
+    await inviteAndJoin(quinn, weekend, [all[1], all[2]]);
+    await joinRoom(alice, lobby);
+    await joinRoom(bob, lobby);
+    await inviteAndJoin(quinn, secretRoom, [all[0]]);
+
+    await quinn.request('PUT', `/_matrix/client/v3/user/${enc(mxid('quinn'))}/account_data/m.direct`, { body: { [mxid('alice')]: [dm] } });
+    await alice.request('PUT', `/_matrix/client/v3/user/${enc(mxid('alice'))}/account_data/m.direct`, { body: { [mxid('quinn')]: [dm] } });
+  });
+
+  await step(state, 'traffic', async () => {
+    const R = state.rooms;
+    const E = state.events;
+
+    // #general: replies (one with a legacy fallback), an edit, reactions, a redacted reaction,
+    // a redacted message, formatting, an emote, an image, and a mention of quinn.
+    const welcomeText = 'Welcome to the Dither testbed! 👋 This room is for general chatter.';
+    const welcome = E.welcome ?? ev(state, 'welcome', await send(alice, R.general, text(welcomeText)));
+    await send(bob, R.general, text('hi everyone'));
+    const carolReply =
+      E.carolReply ??
+      ev(
+        state,
+        'carolReply',
+        await send(
+          carol,
+          R.general,
+          text(`> <${mxid('alice')}> ${welcomeText}\n\nthanks for setting this up!`, {
+            format: 'org.matrix.custom.html',
+            formatted_body: `<mx-reply><blockquote><a href="https://matrix.to/#/${R.general}/${welcome}?via=${SERVER_NAME}">In reply to</a> <a href="https://matrix.to/#/${mxid('alice')}">${mxid('alice')}</a><br>${welcomeText}</blockquote></mx-reply>thanks for setting this up!`,
+            'm.relates_to': { 'm.in_reply_to': { event_id: welcome } },
+            'm.mentions': { user_ids: [mxid('alice')] },
+          }),
+        ),
+      );
+    const editedText = 'Welcome to the Dither testbed! 👋 Say hi, and read #announcements first.';
+    ev(
+      state,
+      'welcomeEdit',
+      await send(alice, R.general, {
+        msgtype: 'm.text',
+        body: `* ${editedText}`,
+        'm.new_content': text(editedText),
+        'm.relates_to': { rel_type: 'm.replace', event_id: welcome },
+      }),
+    );
+    const react = (c: MatrixClient, roomId: string, target: string, key: string) =>
+      send(c, roomId, { 'm.relates_to': { rel_type: 'm.annotation', event_id: target, key } }, 'm.reaction');
+    await react(bob, R.general, welcome, '👍');
+    await react(carol, R.general, welcome, '🎉');
+    await react(quinn, R.general, carolReply, '❤️');
+    const laugh = ev(state, 'bobLaugh', await react(bob, R.general, welcome, '😂'));
+    await bob.request('PUT', `/_matrix/client/v3/rooms/${enc(R.general)}/redact/${enc(laugh)}/${enc(bob.txnId())}`, { body: {} });
+    const oops = ev(state, 'oops', await send(bob, R.general, text('oops, wrong room')));
+    await bob.request('PUT', `/_matrix/client/v3/rooms/${enc(R.general)}/redact/${enc(oops)}/${enc(bob.txnId())}`, { body: { reason: 'wrong room' } });
+    ev(
+      state,
+      'formatted',
+      await send(
+        carol,
+        R.general,
+        text('**Reminder:** standup is at `10:00`, ||bring snacks||', {
+          format: 'org.matrix.custom.html',
+          formatted_body: '<strong>Reminder:</strong> standup is at <code>10:00</code>, <span data-mx-spoiler>bring snacks</span>',
+        }),
+      ),
+    );
+    await send(carol, R.general, { msgtype: 'm.emote', body: 'waves at everyone' });
+    const img = testbedImage();
+    const imgUrl = await upload(alice, img, 'image/png', 'testbed.png');
+    ev(state, 'image', await send(alice, R.general, { msgtype: 'm.image', body: 'testbed.png', url: imgUrl, info: { mimetype: 'image/png', size: img.length, w: 96, h: 64 } }));
+    const glad = ev(state, 'glad', await send(quinn, R.general, text('glad to be here')));
+    await quinn.request('POST', `/_matrix/client/v3/rooms/${enc(R.general)}/read_markers`, { body: { 'm.fully_read': glad, 'm.read': glad } });
+    ev(
+      state,
+      'mention',
+      await send(
+        alice,
+        R.general,
+        text(`${DISPLAY.quinn}: can you review the Matrix adapter PR today?`, {
+          format: 'org.matrix.custom.html',
+          formatted_body: `${pill('quinn')}: can you review the Matrix adapter PR today?`,
+          'm.mentions': { user_ids: [mxid('quinn')] },
+        }),
+      ),
+    );
+
+    // #dev: a thread, a notice, a reaction.
+    const root = ev(state, 'threadRoot', await send(bob, R.dev, text('CI is red on main 🔴 starting a thread for the fix')));
+    const inThread = (c: MatrixClient, body: string, replyTo: string, fallingBack = true) =>
+      send(c, R.dev, text(body, { 'm.relates_to': { rel_type: 'm.thread', event_id: root, is_falling_back: fallingBack, 'm.in_reply_to': { event_id: replyTo } } }));
+    const t1 = await inThread(alice, 'looking now', root);
+    const t2 = ev(state, 'threadBob', await inThread(bob, "it's the flaky network test again", t1));
+    await inThread(quinn, "I'll pin the seed in the test harness", t2);
+    ev(state, 'threadReply', await inThread(alice, 'can we quarantine it instead?', t2, false));
+    const pr = ev(state, 'pr', await send(alice, R.dev, text('PR for the hub API is up for review')));
+    await react(bob, R.dev, pr, '👀');
+    await send(bob, R.dev, { msgtype: 'm.notice', body: 'build #42 passed on main' });
+
+    await send(quinn, R.announcements, text('Testbed is up. Rooms: #general, #dev, and the Off-topic subspace.'));
+    await send(carol, R.memes, text('obligatory cat picture incoming'));
+    await send(bob, R.memes, text('🐈'));
+    await send(alice, R.crossposts, text('this room lives in two spaces: Off-topic and Rust Friends'));
+    await send(carol, R.crossposts, text('graph containment ftw'));
+
+    // DM with alice (m.direct on both sides), with a file.
+    await send(alice, R.dm, text('hey! are you around later?'));
+    await send(quinn, R.dm, text('yep, after 5'));
+    const notes = new TextEncoder().encode('dither-chat testbed notes\n- spaces\n- threads\n- media\n');
+    const notesUrl = await upload(alice, notes, 'text/plain', 'notes.txt');
+    await send(alice, R.dm, { msgtype: 'm.file', body: 'notes.txt', filename: 'notes.txt', url: notesUrl, info: { mimetype: 'text/plain', size: notes.length } });
+    await send(alice, R.dm, text('ping me when the adapter is live'));
+
+    // A private, unencrypted group.
+    await send(bob, R.weekend, text('saturday hike?'));
+    await send(carol, R.weekend, text("I'm in, weather looks good"));
+    await send(quinn, R.weekend, text('count me in'));
+    await send(bob, R.weekend, text('meet at the trailhead at 9'));
+
+    await send(quinn, R.notes, text('remember to test the redaction path'));
+    await send(alice, R.lobby, text('welcome to the public lobby'));
+    await send(bob, R.lobby, text('this room is public and not in any space'));
+
+    // Without E2EE support this arrives as an undecryptable event.
+    await send(
+      alice,
+      R.secret,
+      { algorithm: 'm.megolm.v1.aes-sha2', ciphertext: 'AwgAEpABtestbedNotRealCiphertext', sender_key: 'testbedFakeCurveKey', session_id: 'testbedFakeSession', device_id: state.users.alice.deviceId },
+      'm.room.encrypted',
+    );
+  });
+
+  // #archive: more history than one sync window (50 events), with relations near the end that point
+  // at old messages: a reaction, an edit and a thread. Exercises backfill, fetch-on-edit and thread roots.
+  await step(state, 'archive', async () => {
+    const R = state.rooms;
+    const archive = await room(state, 'archive', quinn, { name: 'archive', topic: 'Lots of old messages for scrollback tests', preset: 'private_chat' });
+    await setState(quinn, R.space, 'm.space.child', archive, { via: [SERVER_NAME], order: '0040' });
+    await inviteAndJoin(quinn, archive, [all[0], all[1]]);
+    const ids: string[] = [];
+    for (let n = 1; n <= 120; n++) {
+      ids[n] = await send(n % 2 ? alice : bob, archive, text(`archive message #${n}`));
+      if (n === 115) await send(bob, archive, { 'm.relates_to': { rel_type: 'm.annotation', event_id: ids[5], key: '👍' } }, 'm.reaction');
+      if (n === 116)
+        await send(alice, archive, {
+          msgtype: 'm.text',
+          body: '* archive message #9 (edited much later)',
+          'm.new_content': text('archive message #9 (edited much later)'),
+          'm.relates_to': { rel_type: 'm.replace', event_id: ids[9] },
+        });
+      if (n === 117)
+        await send(bob, archive, text('a late thread reply on an old message', { 'm.relates_to': { rel_type: 'm.thread', event_id: ids[3], is_falling_back: true, 'm.in_reply_to': { event_id: ids[3] } } }));
+    }
+    ev(state, 'archiveFirst', ids[1]);
+  });
+  console.log('seeded');
+}
+
+// ------------------------------------------------------------------ live traffic
+
+const CHATTER: [UserKey, string, string][] = [
+  ['alice', 'general', 'anyone else seeing the new sync code land?'],
+  ['bob', 'general', 'the testbed is surprisingly fast'],
+  ['alice', 'dm', 'quick question about the hub API when you have a sec'],
+  ['bob', 'weekend', 'bringing snacks on saturday'],
+  ['alice', 'general', '@quinn: ping, live message test'],
+  ['bob', 'dev', 'rebased the PR on main'],
+  ['alice', 'dev', 'reviewing now'],
+  ['bob', 'general', "lunch? I'm thinking ramen"],
+];
+
+async function chatter(state: State, every: number, count: number, only?: string) {
+  const C = { alice: await user(state, 'alice'), bob: await user(state, 'bob') };
+  console.log(`chatter: one message every ${every}s${count ? `, ${count} total` : ' (Ctrl-C to stop)'}`);
+  for (let i = 0; !count || i < count; i++) {
+    const [who, roomKey, line] = CHATTER[i % CHATTER.length];
+    const target = only ?? roomKey;
+    const roomId = state.rooms[target];
+    if (!roomId) throw new Error(`unknown room ${target}`);
+    // Only alice is in the DM; with --room the two take turns.
+    const name: 'alice' | 'bob' = target === 'dm' ? 'alice' : only ? (i % 2 ? 'bob' : 'alice') : (who as 'alice' | 'bob');
+    const mention = line.includes('@quinn');
+    const body = mention ? line.replace('@quinn', DISPLAY.quinn) : line;
+    const content = mention
+      ? text(body, { format: 'org.matrix.custom.html', formatted_body: line.replace('@quinn', pill('quinn')), 'm.mentions': { user_ids: [mxid('quinn')] } })
+      : text(`${body} (${new Date().toLocaleTimeString()})`);
+    const id = await send(C[name], roomId, content);
+    console.log(`${new Date().toISOString()} ${name} -> ${target}: ${content.body}  ${id}`);
+    if (!count || i < count - 1) await Bun.sleep(every * 1000);
+  }
+}
+
+async function tail(state: State, roomKey: string, n: number) {
+  const quinn = await user(state, 'quinn');
+  const roomId = state.rooms[roomKey] ?? roomKey;
+  const res = await quinn.request('GET', `/_matrix/client/v3/rooms/${enc(roomId)}/messages`, { query: { dir: 'b', limit: n } });
+  for (const e of [...res.chunk].reverse()) {
+    const c = e.content ?? {};
+    const rel = c['m.relates_to'];
+    const extra = rel?.rel_type ? ` [${rel.rel_type}${rel.key ? ' ' + rel.key : ''} -> ${rel.event_id}]` : rel?.['m.in_reply_to'] ? ` [reply -> ${rel['m.in_reply_to'].event_id}]` : '';
+    const what = e.type === 'm.room.message' ? JSON.stringify(c.body) : e.type === 'm.room.redaction' ? `redacts ${e.redacts ?? c.redacts}` : e.state_key !== undefined ? `${e.type} ${e.state_key}` : e.type;
+    console.log(`${new Date(e.origin_server_ts).toISOString()} ${e.sender} ${e.type === 'm.room.message' ? '' : e.type + ' '}${what}${extra}  ${e.event_id}`);
+  }
+}
+
+function addCommand(state: State, hub = 'http://127.0.0.1:8481') {
+  const z = state.users.quinn;
+  return `bun packages/hub/src/cli.ts --hub ${hub} add matrix --label testbed --config '{"homeserver":"${BASE}"}' --secret '{"userId":"${z.userId}","password":"${z.password}"}'`;
+}
+
+async function status(state: State) {
+  const pid = readPid();
+  console.log(`homeserver: ${pid ? `running, pid ${pid}` : 'stopped'} ${BASE} (${(await ping()) ? 'answering' : 'not answering'}), server name ${SERVER_NAME}`);
+  console.log(`data: ${DIR}`);
+  console.log(`users: ${USERS.map((u) => state.users[u].userId).join(', ')} (passwords in ${STATE_FILE})`);
+  console.log('rooms:');
+  for (const [k, v] of Object.entries(state.rooms)) if (v.startsWith('!')) console.log(`  ${k.padEnd(14)} ${v}`);
+  console.log(`seeded steps: ${Object.keys(state.steps).join(', ') || 'none'}`);
+  console.log(`\nadd quinn to a hub:\n  ${addCommand(state)}`);
+}
+
+// ------------------------------------------------------------------ cli
+
+const argv = process.argv.slice(2);
+const flag = (name: string, fallback?: string) => {
+  const i = argv.indexOf(`--${name}`);
+  if (i < 0) return fallback;
+  const v = argv[i + 1];
+  argv.splice(i, 2);
+  return v;
+};
+const every = Number(flag('every', '15'));
+const count = Number(flag('count', '0'));
+const onlyRoom = flag('room');
+const yes = argv.includes('--yes');
+const [cmd = 'up', ...rest] = argv.filter((a) => a !== '--yes');
+const state = loadState();
+
+try {
+  switch (cmd) {
+    case 'up':
+      await start(state);
+      await seed(state);
+      await status(state);
+      break;
+    case 'start':
+      await start(state);
+      break;
+    case 'stop':
+      await stop();
+      break;
+    case 'status':
+      await status(state);
+      break;
+    case 'seed':
+      await seed(state);
+      break;
+    case 'chatter':
+      await chatter(state, every, count, onlyRoom);
+      break;
+    case 'say': {
+      const [who, roomKey, ...words] = rest;
+      if (!USERS.includes(who as UserKey) || !roomKey || !words.length) throw new Error('usage: say <quinn|alice|bob|carol> <room> <text...>');
+      const c = await user(state, who as UserKey);
+      console.log(await send(c, state.rooms[roomKey] ?? roomKey, text(words.join(' '))));
+      break;
+    }
+    case 'tail':
+      await tail(state, rest[0] ?? 'general', Number(rest[1] ?? 20));
+      break;
+    case 'add-command':
+      console.log(addCommand(state, rest[0]));
+      break;
+    case 'reset':
+      if (!yes) throw new Error('reset deletes all testbed data; pass --yes');
+      await stop();
+      rmSync(DIR, { recursive: true, force: true });
+      console.log(`deleted ${DIR}`);
+      break;
+    default:
+      console.log('usage: testbed.ts up | start | stop | status | seed | chatter [--every s] [--count n] [--room r] | say <user> <room> <text> | tail <room> [n] | add-command [hubUrl] | reset --yes');
+  }
+} catch (e) {
+  console.error(`testbed: ${e instanceof MatrixError ? `${e.errcode}: ${e.error}` : ((e as Error)?.message ?? e)}`);
+  process.exit(1);
+}

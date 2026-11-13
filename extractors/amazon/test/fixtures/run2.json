@@ -1,0 +1,714 @@
+{
+ "source": "amazon-orders",
+ "pulled_at": "STAMP",
+ "orders": [
+  {
+   "id": "113-2026901-1234568",
+   "placed": "2026-11-08",
+   "total": "1049.99",
+   "ship_to": "Test User",
+   "status": "Arriving tomorrow",
+   "items": [
+    {
+     "title": "New thing \ud83c\udf81",
+     "asin": "B0304C7TK7",
+     "price": "1049.99",
+     "qty": 1,
+     "seller": "Amazon.com"
+    }
+   ],
+   "digital": false,
+   "summary": {
+    "item_s_subtotal": "1049.99",
+    "shipping_handling": "0.00",
+    "total_before_tax": "1049.99",
+    "estimated_tax_to_be_collected": "1.07",
+    "promotion_applied": "-2.00",
+    "grand_total": "1049.99"
+   },
+   "payment": "Visa 1234"
+  },
+  {
+   "id": "111-2026001-0007919",
+   "placed": "2026-11-08",
+   "total": "1050.28",
+   "ship_to": "Ann Lee",
+   "status": "Arriving November 8",
+   "items": [
+    {
+     "title": "USB-C cable (2 pack) \u2014 braided",
+     "asin": "B0XC6ZTPEY"
+    },
+    {
+     "title": "\u00dcn\u00efc\u00f8d\u00e9 \ud83d\udcda Book: \"Quotes\" & More",
+     "asin": "B0XDEW7H5N"
+    }
+   ],
+   "digital": false
+  },
+  {
+   "id": "110-2026000-0000000",
+   "placed": "2026-11-01",
+   "total": "2.99",
+   "ship_to": "Test User",
+   "status": "Delivered November 1",
+   "items": [
+    {
+     "title": "Caf\u00e9 \u2615 Mug, 12 oz",
+     "asin": "B0XXXXXXX0"
+    }
+   ],
+   "digital": false
+  },
+  {
+   "id": "112-2026002-0015838",
+   "placed": "2026-10-15",
+   "total": "2097.57",
+   "ship_to": "Jos\u00e9 N\u00fa\u00f1ez",
+   "status": "Return complete",
+   "items": [
+    {
+     "title": "\u00dcn\u00efc\u00f8d\u00e9 \ud83d\udcda Book: \"Quotes\" & More",
+     "asin": "B0XODZNETW"
+    },
+    {
+     "title": "Wool socks",
+     "asin": "B0XPLW16KL"
+    },
+    {
+     "title": "Kindle Edition: The <Long> Title",
+     "asin": "B0XQTSEYBA"
+    }
+   ],
+   "digital": false
+  },
+  {
+   "id": "113-2026003-0023757",
+   "placed": "2026-09-22",
+   "total": "644.86",
+   "ship_to": "Bo Chen",
+   "status": "Cancelled",
+   "items": [
+    {
+     "title": "Wool socks",
+     "asin": "B010KZH48U"
+    }
+   ],
+   "digital": false
+  },
+  {
+   "id": "114-2026004-0031676",
+   "placed": "2026-09-02",
+   "total": "1692.15",
+   "ship_to": "Test User",
+   "status": "Now arriving today",
+   "items": [
+    {
+     "title": "Kindle Edition: The <Long> Title",
+     "asin": "B01CRZATNS"
+    },
+    {
+     "title": "\uff26\uff55\uff4c\uff4c\uff57\uff49\uff44\uff54\uff48 \uff54\uff45\uff41",
+     "asin": "B01DZVOLEH"
+    }
+   ],
+   "digital": false
+  },
+  {
+   "id": "115-2026005-0039595",
+   "placed": "2026-08-09",
+   "total": "239.44",
+   "ship_to": "Ann Lee",
+   "status": "Delivered August 9",
+   "items": [
+    {
+     "title": "\uff26\uff55\uff4c\uff4c\uff57\uff49\uff44\uff54\uff48 \uff54\uff45\uff41",
+     "asin": "B01OYZ4J2Q"
+    },
+    {
+     "title": "Batteries AA \u00d724",
+     "asin": "B01Q6VIATF"
+    },
+    {
+     "title": "Caf\u00e9 \u2615 Mug, 12 oz",
+     "asin": "B01RERW2K4"
+    }
+   ],
+   "digital": false
+  },
+  {
+   "id": "116-2026006-0047514",
+   "placed": "2026-07-16",
+   "total": "1286.73",
+   "ship_to": "Jos\u00e9 N\u00fa\u00f1ez",
+   "status": "Arriving July 16",
+   "items": [
+    {
+     "title": "Batteries AA \u00d724",
+     "asin": "B0215YY8HO"
+    }
+   ],
+   "digital": false
+  },
+  {
+   "id": "117-2026007-0055433",
+   "placed": "2026-06-23",
+   "total": "2334.02",
+   "ship_to": "Bo Chen",
+   "status": "Return complete",
+   "items": [
+    {
+     "title": "Caf\u00e9 \u2615 Mug, 12 oz",
+     "asin": "B02DCYRXWM"
+    },
+    {
+     "title": "USB-C cable (2 pack) \u2014 braided",
+     "asin": "B02EKV5PNB"
+    }
+   ],
+   "digital": false
+  },
+  {
+   "id": "118-2026008-0063352",
+   "placed": "2026-06-03",
+   "total": "881.31",
+   "ship_to": "Test User",
+   "status": "Cancelled",
+   "items": [
+    {
+     "title": "USB-C cable (2 pack) \u2014 braided",
+     "asin": "B02PJYLNBK"
+    },
+    {
+     "title": "\u00dcn\u00efc\u00f8d\u00e9 \ud83d\udcda Book: \"Quotes\" & More",
+     "asin": "B02QRUZF29"
+    },
+    {
+     "title": "Wool socks",
+     "asin": "B02RZRD6SY"
+    }
+   ],
+   "digital": false
+  },
+  {
+   "id": "119-2026009-0071271",
+   "placed": "2026-05-10",
+   "total": "1928.60",
+   "ship_to": "Ann Lee",
+   "status": "Now arriving today",
+   "items": [
+    {
+     "title": "\u00dcn\u00efc\u00f8d\u00e9 \ud83d\udcda Book: \"Quotes\" & More",
+     "asin": "B031QYFCQI"
+    }
+   ],
+   "digital": false
+  },
+  {
+   "id": "121-2026011-0087109",
+   "placed": "2026-04-24",
+   "total": "1523.18",
+   "ship_to": "Bo Chen",
+   "status": "Arriving April 24",
+   "items": [
+    {
+     "title": "Kindle Edition: The <Long> Title",
+     "asin": "B03Q4Y2RKE"
+    },
+    {
+     "title": "\uff26\uff55\uff4c\uff4c\uff57\uff49\uff44\uff54\uff48 \uff54\uff45\uff41",
+     "asin": "B03RCUGJB3"
+    },
+    {
+     "title": "Batteries AA \u00d724",
+     "asin": "B03SKQUB1S"
+    }
+   ],
+   "digital": false
+  },
+  {
+   "id": "120-2026010-0079190",
+   "placed": "2026-04-17",
+   "total": "475.89",
+   "ship_to": "Jos\u00e9 N\u00fa\u00f1ez",
+   "status": "Delivered April 17",
+   "items": [
+    {
+     "title": "Wool socks",
+     "asin": "B03DXY925G"
+    },
+    {
+     "title": "Kindle Edition: The <Long> Title",
+     "asin": "B03F5UMTW5"
+    }
+   ],
+   "digital": false
+  },
+  {
+   "id": "122-2026012-0095028",
+   "placed": "2026-03-04",
+   "total": "70.47",
+   "ship_to": "Test User",
+   "status": "Return complete",
+   "items": [
+    {
+     "title": "\uff26\uff55\uff4c\uff4c\uff57\uff49\uff44\uff54\uff48 \uff54\uff45\uff41",
+     "asin": "B042BXWGZC"
+    }
+   ],
+   "digital": false
+  },
+  {
+   "id": "123-2026013-0102947",
+   "placed": "2026-02-11",
+   "total": "1117.76",
+   "ship_to": "Ann Lee",
+   "status": "Cancelled",
+   "items": [
+    {
+     "title": "Batteries AA \u00d724",
+     "asin": "B04EIXQ6EA"
+    },
+    {
+     "title": "Caf\u00e9 \u2615 Mug, 12 oz",
+     "asin": "B04FQU3Y4Z"
+    }
+   ],
+   "digital": false
+  },
+  {
+   "id": "137-2025013-0213813",
+   "digital": false,
+   "ship_to": "Bo Chen",
+   "items": [
+    {
+     "title": "Batteries AA \u00d724",
+     "asin": "B0958VA27I",
+     "price": "848.98",
+     "qty": 1,
+     "seller": "Seller B LLC"
+    }
+   ],
+   "summary": {
+    "item_s_subtotal": "779.82",
+    "shipping_handling": "0.00",
+    "total_before_tax": "779.82",
+    "estimated_tax_to_be_collected": "1.07",
+    "promotion_applied": "-2.00",
+    "grand_total": "779.82"
+   },
+   "payment": "Mastercard 9876"
+  },
+  {
+   "id": "136-2025012-0205894",
+   "digital": false,
+   "ship_to": "Jos\u00e9 N\u00fa\u00f1ez",
+   "items": [
+    {
+     "title": "\uff26\uff55\uff4c\uff4c\uff57\uff49\uff44\uff54\uff48 \uff54\uff45\uff41",
+     "asin": "B08T1VGCSK",
+     "price": "817.61",
+     "qty": 3,
+     "seller": "Seller A LLC"
+    },
+    {
+     "title": "Batteries AA \u00d724",
+     "asin": "B08U9RU4J9",
+     "price": "826.72",
+     "qty": 1,
+     "seller": "Seller B LLC"
+    }
+   ],
+   "summary": {
+    "item_s_subtotal": "2232.53",
+    "shipping_handling": "0.00",
+    "total_before_tax": "2232.53",
+    "estimated_tax_to_be_collected": "1.07",
+    "promotion_applied": "-2.00",
+    "grand_total": "2232.53"
+   },
+   "payment": "Visa 1234"
+  },
+  {
+   "id": "138-2025014-0221732",
+   "digital": false,
+   "ship_to": "Test User",
+   "items": [
+    {
+     "title": "Caf\u00e9 \u2615 Mug, 12 oz",
+     "asin": "B09HFV3RMG",
+     "price": "880.35",
+     "qty": 1,
+     "seller": "Seller C LLC"
+    },
+    {
+     "title": "USB-C cable (2 pack) \u2014 braided",
+     "asin": "B09INRHJD5",
+     "price": "889.46",
+     "qty": 3,
+     "seller": "Seller D LLC"
+    }
+   ],
+   "summary": {
+    "item_s_subtotal": "1827.11",
+    "shipping_handling": "0.00",
+    "total_before_tax": "1827.11",
+    "estimated_tax_to_be_collected": "1.07",
+    "promotion_applied": "-2.00",
+    "grand_total": "1827.11"
+   },
+   "payment": "Visa 1234"
+  },
+  {
+   "id": "140-2025016-0237570",
+   "digital": false,
+   "ship_to": "Jos\u00e9 N\u00fa\u00f1ez",
+   "items": [
+    {
+     "title": "\u00dcn\u00efc\u00f8d\u00e9 \ud83d\udcda Book: \"Quotes\" & More",
+     "asin": "B0A5TUR6GC",
+     "price": "943.09",
+     "qty": 1,
+     "seller": null
+    }
+   ],
+   "summary": {
+    "item_s_subtotal": "1421.69",
+    "shipping_handling": "0.00",
+    "total_before_tax": "1421.69",
+    "estimated_tax_to_be_collected": "1.07",
+    "promotion_applied": "-2.00",
+    "grand_total": "1421.69"
+   },
+   "payment": "Visa 1234"
+  },
+  {
+   "id": "142-2025018-0253408",
+   "digital": false,
+   "ship_to": "Test User",
+   "items": [
+    {
+     "title": "Kindle Edition: The <Long> Title",
+     "asin": "B0AU7UELA8",
+     "price": "1005.83",
+     "qty": 1,
+     "seller": "Seller G LLC"
+    },
+    {
+     "title": "\uff26\uff55\uff4c\uff4c\uff57\uff49\uff44\uff54\uff48 \uff54\uff45\uff41",
+     "asin": "B0AVFQSD0X",
+     "price": "1014.94",
+     "qty": 1,
+     "seller": "Seller H LLC"
+    }
+   ],
+   "summary": {
+    "item_s_subtotal": "1016.27",
+    "shipping_handling": "0.00",
+    "total_before_tax": "1016.27",
+    "estimated_tax_to_be_collected": "1.07",
+    "promotion_applied": "-2.00",
+    "grand_total": "1016.27"
+   },
+   "payment": "Visa 1234"
+  },
+  {
+   "id": "141-2025017-0245489",
+   "digital": false,
+   "items": [
+    {
+     "title": "Wool socks",
+     "asin": "B0AI0UKVVA",
+     "price": "974.46",
+     "qty": 2,
+     "seller": "Seller F LLC"
+    },
+    {
+     "title": "Kindle Edition: The <Long> Title",
+     "asin": "B0AJ8QYNLZ",
+     "price": "983.57",
+     "qty": 1,
+     "seller": "Seller G LLC"
+    }
+   ],
+   "summary": {
+    "item_s_subtotal": "2468.98",
+    "shipping_handling": "0.00",
+    "total_before_tax": "2468.98",
+    "estimated_tax_to_be_collected": "1.07",
+    "promotion_applied": "-2.00",
+    "grand_total": "2468.98"
+   },
+   "payment": "Mastercard 9876"
+  },
+  {
+   "id": "143-2025019-0261327",
+   "digital": false,
+   "ship_to": "Ann Lee",
+   "items": [
+    {
+     "title": "\uff26\uff55\uff4c\uff4c\uff57\uff49\uff44\uff54\uff48 \uff54\uff45\uff41",
+     "asin": "B0B6EU8AP6",
+     "price": "1037.20",
+     "qty": 1,
+     "seller": "Seller H LLC"
+    }
+   ],
+   "summary": {
+    "item_s_subtotal": "2063.56",
+    "shipping_handling": "0.00",
+    "total_before_tax": "2063.56",
+    "estimated_tax_to_be_collected": "1.07",
+    "promotion_applied": "-2.00",
+    "grand_total": "2063.56"
+   },
+   "payment": "Mastercard 9876"
+  },
+  {
+   "id": "144-2025020-0269246",
+   "digital": false,
+   "ship_to": "Jos\u00e9 N\u00fa\u00f1ez",
+   "items": [
+    {
+     "title": "Batteries AA \u00d724",
+     "asin": "B0BILU2044",
+     "price": "1068.57",
+     "qty": 2,
+     "seller": "Seller I LLC"
+    },
+    {
+     "title": "Caf\u00e9 \u2615 Mug, 12 oz",
+     "asin": "B0BJTQFRUT",
+     "price": "1077.68",
+     "qty": 3,
+     "seller": null
+    }
+   ],
+   "summary": {
+    "item_s_subtotal": "610.85",
+    "shipping_handling": "0.00",
+    "total_before_tax": "610.85",
+    "estimated_tax_to_be_collected": "1.07",
+    "promotion_applied": "-2.00",
+    "grand_total": "610.85"
+   },
+   "payment": "Visa 1234"
+  },
+  {
+   "id": "146-2025022-0285084",
+   "digital": false,
+   "ship_to": "Test User",
+   "items": [
+    {
+     "title": "USB-C cable (2 pack) \u2014 braided",
+     "asin": "B0C6ZTPEY0",
+     "price": "1131.31",
+     "qty": 1,
+     "seller": "Seller K LLC"
+    }
+   ],
+   "summary": {
+    "item_s_subtotal": "205.43",
+    "shipping_handling": "0.00",
+    "total_before_tax": "205.43",
+    "estimated_tax_to_be_collected": "1.07",
+    "promotion_applied": "-2.00",
+    "grand_total": "205.43"
+   },
+   "payment": "Visa 1234"
+  },
+  {
+   "id": "145-2025021-0277165",
+   "digital": false,
+   "ship_to": "Bo Chen",
+   "items": [
+    {
+     "title": "Caf\u00e9 \u2615 Mug, 12 oz",
+     "asin": "B0BUSTVPJ2",
+     "price": "1099.94",
+     "qty": 3,
+     "seller": null
+    },
+    {
+     "title": "USB-C cable (2 pack) \u2014 braided",
+     "asin": "B0BW0Q9H9R",
+     "price": "1109.05",
+     "qty": 1,
+     "seller": "Seller K LLC"
+    }
+   ],
+   "summary": {
+    "item_s_subtotal": "1658.14",
+    "shipping_handling": "0.00",
+    "total_before_tax": "1658.14",
+    "estimated_tax_to_be_collected": "1.07",
+    "promotion_applied": "-2.00",
+    "grand_total": "1658.14"
+   }
+  },
+  {
+   "id": "147-2024000-0293003",
+   "digital": false,
+   "ship_to": "Ann Lee",
+   "items": [
+    {
+     "title": "\u00dcn\u00efc\u00f8d\u00e9 \ud83d\udcda Book: \"Quotes\" & More",
+     "asin": "B0CJ6TJ4CY",
+     "price": "1162.68",
+     "qty": 2,
+     "seller": "Seller L LLC"
+    },
+    {
+     "title": "Wool socks",
+     "asin": "B0CKEPWW3N",
+     "price": "1171.79",
+     "qty": 3,
+     "seller": "Seller M LLC"
+    }
+   ],
+   "summary": {
+    "item_s_subtotal": "1252.72",
+    "shipping_handling": "0.00",
+    "total_before_tax": "1252.72",
+    "estimated_tax_to_be_collected": "1.07",
+    "promotion_applied": "-2.00",
+    "grand_total": "1252.72"
+   },
+   "payment": "Mastercard 9876"
+  },
+  {
+   "id": "148-2024001-0300922",
+   "digital": false,
+   "ship_to": "Jos\u00e9 N\u00fa\u00f1ez",
+   "items": [
+    {
+     "title": "Wool socks",
+     "asin": "B0CVDTCTRW",
+     "price": "1194.05",
+     "qty": 3,
+     "seller": "Seller M LLC"
+    },
+    {
+     "title": "Kindle Edition: The <Long> Title",
+     "asin": "B0CWLPQLIL",
+     "price": "1203.16",
+     "qty": 1,
+     "seller": "Seller N LLC"
+    }
+   ],
+   "summary": {
+    "item_s_subtotal": "2300.01",
+    "shipping_handling": "0.00",
+    "total_before_tax": "2300.01",
+    "estimated_tax_to_be_collected": "1.07",
+    "promotion_applied": "-2.00",
+    "grand_total": "2300.01"
+   },
+   "payment": "Visa 1234"
+  },
+  {
+   "id": "149-2024002-0308841",
+   "digital": false,
+   "ship_to": "Bo Chen",
+   "items": [
+    {
+     "title": "Kindle Edition: The <Long> Title",
+     "asin": "B0D7KT6J6U",
+     "price": "1225.42",
+     "qty": 1,
+     "seller": "Seller N LLC"
+    }
+   ],
+   "summary": {
+    "item_s_subtotal": "847.30",
+    "shipping_handling": "0.00",
+    "total_before_tax": "847.30",
+    "estimated_tax_to_be_collected": "1.07",
+    "promotion_applied": "-2.00",
+    "grand_total": "847.30"
+   },
+   "payment": "Mastercard 9876"
+  },
+  {
+   "id": "150-2024003-0316760",
+   "digital": false,
+   "items": [
+    {
+     "title": "\uff26\uff55\uff4c\uff4c\uff57\uff49\uff44\uff54\uff48 \uff54\uff45\uff41",
+     "asin": "B0DJRT08LS",
+     "price": "1256.79",
+     "qty": 1,
+     "seller": null
+    },
+    {
+     "title": "Batteries AA \u00d724",
+     "asin": "B0DKZPE0CH",
+     "price": "1265.90",
+     "qty": 3,
+     "seller": "Seller P LLC"
+    }
+   ],
+   "summary": {
+    "item_s_subtotal": "1894.59",
+    "shipping_handling": "0.00",
+    "total_before_tax": "1894.59",
+    "estimated_tax_to_be_collected": "1.07",
+    "promotion_applied": "-2.00",
+    "grand_total": "1894.59"
+   },
+   "payment": "Visa 1234"
+  },
+  {
+   "id": "151-2024004-0324679",
+   "digital": false,
+   "ship_to": "Ann Lee",
+   "items": [
+    {
+     "title": "Batteries AA \u00d724",
+     "asin": "B0DVYSTY0Q",
+     "price": "1288.16",
+     "qty": 3,
+     "seller": "Seller P LLC"
+    },
+    {
+     "title": "Caf\u00e9 \u2615 Mug, 12 oz",
+     "asin": "B0DX6P7PRF",
+     "price": "1297.27",
+     "qty": 1,
+     "seller": "Seller Q LLC"
+    }
+   ],
+   "summary": {
+    "item_s_subtotal": "441.88",
+    "shipping_handling": "0.00",
+    "total_before_tax": "441.88",
+    "estimated_tax_to_be_collected": "1.07",
+    "promotion_applied": "-2.00",
+    "grand_total": "441.88"
+   }
+  },
+  {
+   "id": "152-2024005-0332598",
+   "digital": false,
+   "ship_to": "Jos\u00e9 N\u00fa\u00f1ez",
+   "items": [
+    {
+     "title": "Caf\u00e9 \u2615 Mug, 12 oz",
+     "asin": "B0E85SNNFO",
+     "price": "1319.53",
+     "qty": 1,
+     "seller": "Seller Q LLC"
+    }
+   ],
+   "summary": {
+    "item_s_subtotal": "1489.17",
+    "shipping_handling": "0.00",
+    "total_before_tax": "1489.17",
+    "estimated_tax_to_be_collected": "1.07",
+    "promotion_applied": "-2.00",
+    "grand_total": "1489.17"
+   },
+   "payment": "Visa 1234"
+  }
+ ]
+}

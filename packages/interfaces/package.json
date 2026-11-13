@@ -1,0 +1,14 @@
+{
+  "name": "@dither-accounts/interfaces",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./types": "./src/types.generated.json"
+  },
+  "dependencies": {
+    "@dither-accounts/spec": "workspace:*",
+    "@dither-chat/protocol": "workspace:*"
+  }
+}

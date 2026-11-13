@@ -1,0 +1,33 @@
+{
+  "account": "+15550100",
+  "envelope": {
+    "source": "+15550161",
+    "sourceNumber": "+15550161",
+    "sourceUuid": "5a3e0000-3333-4eee-afff-000000000003",
+    "sourceName": "Sam Rivera",
+    "sourceDevice": 1,
+    "timestamp": 1793330014000,
+    "serverReceivedTimestamp": 1793330014180,
+    "serverDeliveredTimestamp": 1793330014240,
+    "dataMessage": {
+      "timestamp": 1793330014000,
+      "message": null,
+      "expiresInSeconds": 0,
+      "isExpirationUpdate": false,
+      "viewOnce": false,
+      "isEndSession": false,
+      "isProfileKeyUpdate": false,
+      "hasProfileKey": true,
+      "sticker": {
+        "packId": "9acc9e8aba563d26a4994e69263e3b25",
+        "stickerId": 7
+      },
+      "groupInfo": {
+        "groupId": "Cl1mb1ngCrew+Gr0up0000000000000000000000000=",
+        "groupName": "Climbing crew 🧗",
+        "revision": 12,
+        "type": "DELIVER"
+      }
+    }
+  }
+}

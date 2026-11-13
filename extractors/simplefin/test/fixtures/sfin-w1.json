@@ -1,0 +1,36 @@
+{
+  "errors": [
+    "a warning"
+  ],
+  "errlist": [],
+  "connections": [
+    {
+      "conn_id": "CON-1",
+      "name": "Example Bank",
+      "org_id": "ORG-1"
+    }
+  ],
+  "accounts": [
+    {
+      "id": "ACT-1",
+      "name": "Checking",
+      "conn_id": "CON-1",
+      "currency": "USD",
+      "balance": "100.25",
+      "available-balance": "100.25",
+      "balance-date": 1762675200,
+      "transactions": [
+        {
+          "id": "TRN-0",
+          "posted": 1759000000,
+          "amount": "-3.00",
+          "description": "older / slash",
+          "payee": "Caf\u00e9 \u2603",
+          "memo": "",
+          "transacted_at": 1758999940
+        }
+      ],
+      "holdings": []
+    }
+  ]
+}

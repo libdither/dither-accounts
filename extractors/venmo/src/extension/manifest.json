@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Venmo statements",
+  "version": "0.1.1",
+  "description": "Reads your Venmo statements the way Venmo's own Statements page downloads them, for a local extractor. Read only. Personal use.",
+  "minimum_chrome_version": "111",
+  "background": { "service_worker": "sw.js" },
+  "permissions": ["tabs", "scripting", "webNavigation", "alarms"],
+  "host_permissions": ["https://venmo.com/*", "https://*.venmo.com/*"]
+}

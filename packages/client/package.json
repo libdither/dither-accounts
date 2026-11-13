@@ -1,0 +1,13 @@
+{
+  "name": "@dither-accounts/client",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@dither-accounts/spec": "workspace:*",
+    "@dither-accounts/manager": "workspace:*"
+  }
+}

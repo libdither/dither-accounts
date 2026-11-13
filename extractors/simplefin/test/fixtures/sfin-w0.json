@@ -1,0 +1,78 @@
+{
+  "errors": [],
+  "errlist": [
+    {
+      "code": "gen.auth",
+      "msg": "Re-authenticate \"Bank\"",
+      "conn_id": "CON-1"
+    }
+  ],
+  "connections": [
+    {
+      "conn_id": "CON-1",
+      "name": "Example Bank",
+      "org_id": "ORG-1",
+      "org_url": "https://bank.example/",
+      "sfin_url": "https://bridge.example/simplefin"
+    }
+  ],
+  "accounts": [
+    {
+      "id": "ACT-1",
+      "name": "Checking \u2014 \ud83d\udcb3",
+      "conn_id": "CON-1",
+      "currency": "USD",
+      "balance": "100.25",
+      "available-balance": "100.25",
+      "balance-date": 1762675200,
+      "transactions": [
+        {
+          "id": "TRN-1",
+          "posted": 1762588800,
+          "amount": "-12.50",
+          "description": "COFFEE\tSHOP\n#12",
+          "payee": "Caf\u00e9 \u2603",
+          "memo": "",
+          "transacted_at": 1762588740
+        },
+        {
+          "id": "TRN-2",
+          "posted": 1762502400,
+          "amount": "1000.00",
+          "description": "PAYROLL \u00fcber",
+          "payee": "Caf\u00e9 \u2603",
+          "memo": "",
+          "transacted_at": 1762502340,
+          "pending": true,
+          "extra": {
+            "10": "ten",
+            "2": "two",
+            "a": [
+              1.1,
+              100000.0,
+              0,
+              12345678901234567890,
+              1e-05,
+              1e+16,
+              0.0025,
+              [],
+              {}
+            ]
+          }
+        }
+      ],
+      "holdings": []
+    },
+    {
+      "id": "ACT-2",
+      "name": "Card",
+      "conn_id": "CON-1",
+      "currency": "USD",
+      "balance": "-5.00",
+      "available-balance": "995.00",
+      "balance-date": 1762675200,
+      "transactions": [],
+      "holdings": []
+    }
+  ]
+}

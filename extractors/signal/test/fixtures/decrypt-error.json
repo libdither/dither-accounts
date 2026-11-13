@@ -1,0 +1,17 @@
+{
+  "account": "+15550100",
+  "exception": {
+    "message": "org.signal.libsignal.protocol.InvalidMessageException: invalid PreKey message",
+    "type": "ProtocolInvalidMessageException"
+  },
+  "envelope": {
+    "source": "+15550161",
+    "sourceNumber": "+15550161",
+    "sourceUuid": "5a3e0000-3333-4eee-afff-000000000003",
+    "sourceName": "Sam Rivera",
+    "sourceDevice": 3,
+    "timestamp": 1793330021000,
+    "serverReceivedTimestamp": 1793330021100,
+    "serverDeliveredTimestamp": 1793330021200
+  }
+}

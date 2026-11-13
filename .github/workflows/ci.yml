@@ -1,0 +1,34 @@
+# Typecheck (the services and the page), the page's build, and tests on each push to master and each pull request.
+# Everything runs against fakes and stand-ins. Tests that need what only a Nix machine has skip here: the sandboxed
+# browsers (Xvfb, Chromium, x11vnc), the native-app sandbox, and Radicale and Dovecot from nixpkgs (test/needs.ts).
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      # The Google Messages bridge test builds the real bridge offline (GOPROXY=off), from the module cache filled here.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: extractors/gmessages/bridge/go.mod
+          cache-dependency-path: extractors/gmessages/bridge/go.sum
+      - run: go mod download
+        working-directory: extractors/gmessages/bridge
+      - run: bun run typecheck
+      - run: bun run web:build
+      - run: bun run test

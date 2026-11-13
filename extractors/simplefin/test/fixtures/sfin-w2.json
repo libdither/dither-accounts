@@ -1,0 +1,18 @@
+{
+  "errors": [],
+  "errlist": [],
+  "connections": [],
+  "accounts": [
+    {
+      "id": "ACT-1",
+      "name": "Checking",
+      "conn_id": "CON-1",
+      "currency": "USD",
+      "balance": "100.25",
+      "available-balance": "100.25",
+      "balance-date": 1762675200,
+      "transactions": [],
+      "holdings": []
+    }
+  ]
+}

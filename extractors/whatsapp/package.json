@@ -1,0 +1,14 @@
+{
+  "name": "@dither-accounts/extractor-whatsapp",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun src/main.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@dither-chat/protocol": "workspace:*",
+    "@dither-accounts/manager": "workspace:*"
+  }
+}

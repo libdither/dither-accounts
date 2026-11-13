@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Amazon orders",
+  "version": "0.1.1",
+  "description": "Reads your Amazon order history from Your Orders and order details pages, at a person's pace, for a local extractor. Read only. Personal use.",
+  "minimum_chrome_version": "111",
+  "background": { "service_worker": "sw.js" },
+  "permissions": ["tabs", "scripting", "webNavigation", "alarms"],
+  "host_permissions": ["https://www.amazon.com/*", "https://amazon.com/*"]
+}

@@ -1,0 +1,26 @@
+{
+  "account": "+15550100",
+  "envelope": {
+    "source": "+15550137",
+    "sourceNumber": "+15550137",
+    "sourceUuid": "a11ce000-2222-4ccc-9ddd-000000000002",
+    "sourceName": "Alice Chen",
+    "sourceDevice": 1,
+    "timestamp": 1793330006000,
+    "serverReceivedTimestamp": 1793330006180,
+    "serverDeliveredTimestamp": 1793330006240,
+    "dataMessage": {
+      "timestamp": 1793330006000,
+      "message": null,
+      "expiresInSeconds": 0,
+      "isExpirationUpdate": false,
+      "viewOnce": false,
+      "isEndSession": false,
+      "isProfileKeyUpdate": false,
+      "hasProfileKey": true,
+      "remoteDelete": {
+        "timestamp": 1793330002000
+      }
+    }
+  }
+}

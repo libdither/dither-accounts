@@ -1,0 +1,7 @@
+node_modules
+.data
+*.log
+packages/manager/web/dist
+# Local notes and agent state: never published.
+CLAUDE.local.md
+.claude/

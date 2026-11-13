@@ -1,0 +1,21 @@
+{
+  "name": "@dither-accounts/extractor-imap",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@dither-accounts/interfaces": "workspace:*",
+    "@dither-accounts/link": "workspace:*",
+    "@dither-accounts/manager": "workspace:*",
+    "html-to-text": "^10.0.1",
+    "imapflow": "^2.11.0",
+    "nodemailer": "^10.3.1"
+  },
+  "devDependencies": {
+    "@dither-accounts/client": "workspace:*",
+    "@types/html-to-text": "^9.0.4",
+    "@types/mailparser": "^3.9.0",
+    "mailparser": "^3.14.2",
+    "smtp-server": "^3.21.3"
+  }
+}

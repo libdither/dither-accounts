@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Schwab exports",
+  "version": "0.2.0",
+  "description": "Presses Export on your Schwab History and Realized Gain/Loss pages, as you would, for a local extractor, and holds its own passkey for schwab.com. Read only. Personal use.",
+  "minimum_chrome_version": "111",
+  "background": { "service_worker": "sw.js" },
+  "permissions": ["tabs", "scripting", "webNavigation", "alarms"],
+  "host_permissions": ["https://schwab.com/*", "https://*.schwab.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://schwab.com/*", "https://*.schwab.com/*"],
+      "js": ["hook.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://schwab.com/*", "https://*.schwab.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "ISOLATED"
+    }
+  ]
+}

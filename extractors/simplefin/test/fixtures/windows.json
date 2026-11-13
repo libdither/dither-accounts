@@ -1,0 +1,40 @@
+{
+ "days": 100,
+ "names": [
+  "simplefin-STAMP-w0.json",
+  "simplefin-STAMP-w1.json",
+  "simplefin-STAMP-w2.json"
+ ],
+ "windows": [
+  {
+   "keys": [
+    "version",
+    "start-date",
+    "end-date",
+    "pending"
+   ],
+   "start": -3801600,
+   "end": 86400
+  },
+  {
+   "keys": [
+    "version",
+    "start-date",
+    "end-date",
+    "pending"
+   ],
+   "start": -7257600,
+   "end": -3369600
+  },
+  {
+   "keys": [
+    "version",
+    "start-date",
+    "end-date",
+    "pending"
+   ],
+   "start": -8640000,
+   "end": -6825600
+  }
+ ]
+}

@@ -1,0 +1,12 @@
+Account Statement - (@Test-User) ,,,,,,,,,,,,,,,,,,,,,
+Account Activity,,,,,,,,,,,,,,,,,,,,,
+,ID,Datetime,Type,Status,Note,From,To,Amount (total),Amount (tip),Amount (tax),Amount (fee),Tax Rate,Tax Exempt,Funding Source,Destination,Beginning Balance,Ending Balance,Statement Period Venmo Fees,Terminal Location,Year to Date Venmo Fees,Disclaimer
+,,,,,,,,,,,,,,,,$10.00,,,,,
+,42026100300001,2026-10-03T18:22:01,Payment,Complete,"Tacos 🌮, crème brûlée ""again""",Test User,Ann Lee,- $12.50,,0,,0,,Venmo balance,,,,,Venmo,,
+,42026100300002,2026-10-03T19:02:44,Payment,Complete,"rent
+split",Bo Chen,Test User,+ $400.00,,0,,0,,,Venmo balance,,,,Venmo,,
+,42026110300001,2026-11-03T18:22:01,Payment,Complete,"Tacos 🌮, crème brûlée ""again""",Test User,Ann Lee,- $12.50,,0,,0,,Venmo balance,,,,,Venmo,,
+,42026110300002,2026-11-03T19:02:44,Payment,Complete,"rent
+split",Bo Chen,Test User,+ $400.00,,0,,0,,,Venmo balance,,,,Venmo,,
+,,,,,,,,,,,,,,,,,$22.00,,,,
+In case of errors or questions about your electronic transfers: ☎ 855-812-4430,,,,,,,,,,,,,,,,,,,,,

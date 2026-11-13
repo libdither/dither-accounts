@@ -1,0 +1,7 @@
+{
+  "name": "@dither-accounts/browser",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts", "./markers": "./src/markers.ts" }
+}

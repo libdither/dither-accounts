@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "X bridge",
+  "version": "0.1.1",
+  "description": "Relays X direct messages from the signed-in x.com page to a local extractor, and runs its commands through the page's own chat client. Personal use.",
+  "minimum_chrome_version": "111",
+  "background": { "service_worker": "sw.js" },
+  "permissions": ["tabs", "alarms"],
+  "host_permissions": ["https://x.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*"],
+      "js": ["hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://x.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ]
+}

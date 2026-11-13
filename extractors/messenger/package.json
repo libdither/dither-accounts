@@ -1,0 +1,10 @@
+{
+  "name": "@dither-accounts/extractor-messenger",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@dither-accounts/extractor-meta": "workspace:*",
+    "@dither-accounts/manager": "workspace:*"
+  }
+}

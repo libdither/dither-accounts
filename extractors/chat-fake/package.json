@@ -1,0 +1,10 @@
+{
+  "name": "@dither-accounts/extractor-chat-fake",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@dither-chat/protocol": "workspace:*",
+    "@dither-accounts/manager": "workspace:*"
+  }
+}

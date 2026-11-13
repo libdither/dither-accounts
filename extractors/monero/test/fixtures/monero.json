@@ -1,0 +1,71 @@
+{
+ "source": "monero-wallet-rpc",
+ "pulled_at": "2026-11-09T14:14:03Z",
+ "wallet": "4AAAAAAA",
+ "height": 3500000,
+ "key_images": true,
+ "balance": 18446744073709551615,
+ "unlocked_balance": 9007199254740993,
+ "transfers": [
+  {
+   "txid": "aa11",
+   "amount": 123456789012345678,
+   "fee": 30660000,
+   "height": 3400000,
+   "timestamp": 1762000000,
+   "confirmations": 100000,
+   "subaddr_index": {
+    "major": 0,
+    "minor": 2
+   },
+   "unlock_time": 0,
+   "double_spend_seen": false,
+   "type": "in"
+  },
+  {
+   "txid": "bb22",
+   "amount": 5,
+   "fee": 1,
+   "height": 3400100,
+   "timestamp": 1762010000,
+   "confirmations": 99900,
+   "subaddr_index": {
+    "minor": 0,
+    "major": 1
+   },
+   "unlock_time": 0,
+   "double_spend_seen": false,
+   "type": "in"
+  },
+  {
+   "txid": "cc33",
+   "amount": 100000000000,
+   "fee": 30000000,
+   "height": 3450000,
+   "timestamp": 1762500000,
+   "confirmations": 50000,
+   "subaddr_index": {
+    "major": 0,
+    "minor": 0
+   },
+   "unlock_time": 0,
+   "double_spend_seen": false,
+   "type": "out"
+  },
+  {
+   "txid": "dd44",
+   "amount": 7,
+   "fee": 2,
+   "height": 0,
+   "timestamp": 1762600000,
+   "confirmations": 0,
+   "subaddr_index": {
+    "major": 0,
+    "minor": 0
+   },
+   "unlock_time": 10,
+   "double_spend_seen": true,
+   "type": "pool"
+  }
+ ]
+}

@@ -1,0 +1,33 @@
+{
+  "account": "+15550100",
+  "envelope": {
+    "source": "+15550100",
+    "sourceNumber": "+15550100",
+    "sourceUuid": "5f2c7a8e-1111-4aaa-8bbb-000000000001",
+    "sourceName": null,
+    "sourceDevice": 2,
+    "timestamp": 1793330018000,
+    "serverReceivedTimestamp": 1793330018180,
+    "serverDeliveredTimestamp": 1793330018240,
+    "syncMessage": {
+      "sentMessage": {
+        "destination": "+15550137",
+        "destinationNumber": "+15550137",
+        "destinationUuid": "a11ce000-2222-4ccc-9ddd-000000000002",
+        "editMessage": {
+          "targetSentTimestamp": 1793330009000,
+          "dataMessage": {
+            "timestamp": 1793330018000,
+            "message": "on my way 🚲 (5 min)",
+            "expiresInSeconds": 0,
+            "isExpirationUpdate": false,
+            "viewOnce": false,
+            "isEndSession": false,
+            "isProfileKeyUpdate": false,
+            "hasProfileKey": true
+          }
+        }
+      }
+    }
+  }
+}

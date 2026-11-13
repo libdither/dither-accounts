@@ -1,0 +1,18 @@
+{
+  "name": "@dither-accounts/extractor-haveno",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun src/main.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@dither-accounts/interfaces": "workspace:*",
+    "@dither-accounts/link": "workspace:*",
+    "@dither-accounts/manager": "workspace:*",
+    "@dither-accounts/sandbox": "workspace:*",
+    "@grpc/grpc-js": "1.14.7",
+    "@grpc/proto-loader": "0.8.1"
+  }
+}

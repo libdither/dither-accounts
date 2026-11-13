@@ -1,0 +1,36 @@
+{
+  "account": "+15550100",
+  "envelope": {
+    "source": "+15550137",
+    "sourceNumber": "+15550137",
+    "sourceUuid": "a11ce000-2222-4ccc-9ddd-000000000002",
+    "sourceName": "Alice Chen",
+    "sourceDevice": 1,
+    "timestamp": 1793330017000,
+    "serverReceivedTimestamp": 1793330017180,
+    "serverDeliveredTimestamp": 1793330017240,
+    "dataMessage": {
+      "timestamp": 1793330017000,
+      "message": null,
+      "expiresInSeconds": 0,
+      "isExpirationUpdate": false,
+      "viewOnce": true,
+      "isEndSession": false,
+      "isProfileKeyUpdate": false,
+      "hasProfileKey": true,
+      "attachments": [
+        {
+          "contentType": "image/jpeg",
+          "filename": null,
+          "id": "V1ew0nce2jpg3aaa4bbb.jpg",
+          "size": 99000,
+          "width": 1080,
+          "height": 1920,
+          "caption": null,
+          "uploadTimestamp": 1793330016900,
+          "isVoiceNote": false
+        }
+      ]
+    }
+  }
+}

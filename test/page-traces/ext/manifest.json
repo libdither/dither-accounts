@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Probe",
+  "version": "0.0.1",
+  "description": "test/page-traces.test.ts: a hook made of what every hook shares, for a probe page to look at.",
+  "minimum_chrome_version": "111",
+  "background": { "service_worker": "sw.js" },
+  "permissions": ["storage", "alarms"],
+  "content_scripts": [
+    { "matches": ["http://127.0.0.1/shared/*"], "js": ["hook.js"], "run_at": "document_start", "world": "MAIN" },
+    { "matches": ["http://127.0.0.1/shared/*"], "js": ["content.js"], "run_at": "document_start", "world": "ISOLATED" }
+  ]
+}

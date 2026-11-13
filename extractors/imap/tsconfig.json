@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.json",
+  "include": [
+    "src",
+    "test",
+    "manifest*.ts",
+    "../../test/imap*.test.ts",
+    "../../scripts/verify-imap.ts"
+  ]
+}

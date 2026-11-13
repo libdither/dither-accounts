@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Discord bridge",
+  "version": "0.1.1",
+  "description": "Relays normalized facts from the Discord web client to a local chat adapter. Personal use.",
+  "minimum_chrome_version": "111",
+  "background": { "service_worker": "sw.js" },
+  "permissions": ["storage", "alarms"],
+  "host_permissions": ["https://discord.com/*", "https://*.discord.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://discord.com/*"],
+      "js": ["hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://discord.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ]
+}

@@ -1,0 +1,107 @@
+#!/usr/bin/env bun
+/**
+ * A stand-in for monero-wallet-rpc in tests (no chain, no keys): the same flags, digest auth answered as epee does
+ * (two challenges, MD5-sess and MD5, one nonce per connection is not enforced), and the JSON-RPC methods a pull uses.
+ * Answers are hand-written JSON text: amounts past 2^53, keys in the wallet's own order, a row without "type".
+ * The chain tip is $FAKE_MONERO_TIP (default 3500000). Outgoing transfers show only after key images were imported
+ * (monero-wallet-cli writes fake-ki in the wallet dir).
+ */
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const arg = (k: string) => {
+  const i = process.argv.indexOf(k);
+  return i > 0 ? process.argv[i + 1] : '';
+};
+const port = Number(arg('--rpc-bind-port'));
+// The login from --config-file (rpc-login=user:pass, as monero's config files have it), never the command line; only
+// dither-finance's own monero.py (make-fixtures.ts, FAKE_MONERO_ARGV=1) still gives --rpc-login.
+const legacy = process.env.FAKE_MONERO_ARGV === '1';
+if (process.argv.includes('--rpc-login') && !legacy) throw new Error('the login must not be on the command line');
+const conf = legacy ? { 'rpc-login': arg('--rpc-login') } : Object.fromEntries(readFileSync(arg('--config-file'), 'utf8').split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim()]));
+const [user, pw] = String(conf['rpc-login'] ?? '').split(':');
+const dir = arg('--wallet-dir');
+const log = arg('--log-file');
+const TIP = Number(process.env.FAKE_MONERO_TIP || 3500000);
+const md5 = (s: string) => createHash('md5').update(s).digest('hex');
+const nonces = new Set<string>();
+let open: string | null = null;
+appendFileSync(log, `start port=${port}\n`);
+
+const ok = (result: string) => new Response(`{\n  "id": "0",\n  "jsonrpc": "2.0",\n  "result": ${result}\n}`, { headers: { 'content-type': 'application/json' } });
+const err = (message: string) => new Response(JSON.stringify({ id: '0', jsonrpc: '2.0', error: { code: -1, message } }), { headers: { 'content-type': 'application/json' } });
+
+function authed(h: string | null) {
+  if (!h?.startsWith('Digest ')) return false;
+  const f: Record<string, string> = {};
+  for (const m of h.matchAll(/(\w+)="?([^",]*)"?/g)) f[m[1]] = m[2];
+  if (f.username !== user || !nonces.has(f.nonce) || f.algorithm !== 'MD5') return false;
+  const ha1 = md5(`${user}:${f.realm}:${pw}`);
+  const ha2 = md5(`POST:${f.uri}`);
+  return f.response === md5(`${ha1}:${f.nonce}:${f.nc}:${f.cnonce}:${f.qop}:${ha2}`);
+}
+const walletFile = () => join(dir, 'view');
+const state = () => JSON.parse(readFileSync(walletFile(), 'utf8')) as { height: number };
+
+const server = Bun.serve({
+  port,
+  hostname: '127.0.0.1',
+  async fetch(req) {
+    if (!authed(req.headers.get('authorization'))) {
+      const nonce = Math.random().toString(36).slice(2);
+      nonces.add(nonce);
+      const h = new Headers();
+      h.append('WWW-Authenticate', `Digest qop="auth",algorithm=MD5-sess,realm="monero-rpc",nonce="${nonce}",stale=false`);
+      h.append('WWW-Authenticate', `Digest qop="auth",algorithm=MD5,realm="monero-rpc",nonce="${nonce}",stale=false`);
+      return new Response('', { status: 401, headers: h });
+    }
+    const { method, params } = (await req.json()) as { method: string; params: any };
+    appendFileSync(log, `${method}\n`);
+    switch (method) {
+      case 'get_version':
+        return ok('{"release": true, "version": 196625}');
+      case 'generate_from_keys':
+        if (existsSync(walletFile())) return err('Wallet already exists.');
+        writeFileSync(walletFile(), JSON.stringify({ height: Number(params.restore_height) || 0 }));
+        writeFileSync(join(dir, 'view.keys'), JSON.stringify({ password: params.password }));
+        open = 'view';
+        return ok('{"address": "' + params.address + '", "info": "Wallet has been generated successfully."}');
+      case 'open_wallet': {
+        if (!existsSync(join(dir, params.filename))) return err('Failed to open wallet');
+        if (JSON.parse(readFileSync(join(dir, 'view.keys'), 'utf8')).password !== params.password) return err('invalid password');
+        open = params.filename;
+        return ok('{}');
+      }
+      case 'refresh': {
+        if (!open) return err('No wallet file');
+        const n = TIP - state().height;
+        writeFileSync(walletFile(), JSON.stringify({ height: TIP }));
+        return ok(`{"blocks_fetched": ${n}, "received_money": ${n > 0}}`);
+      }
+      case 'store':
+        return ok('{}');
+      case 'stop_wallet':
+        setTimeout(() => process.exit(0), 50);
+        return ok('{}');
+      case 'get_height':
+        return ok(`{"height": ${state().height}}`);
+      case 'get_balance':
+        return ok('{"balance": 18446744073709551615, "blocks_to_unlock": 0, "multisig_import_needed": false, "per_subaddress": [], "time_to_unlock": 0, "unlocked_balance": 9007199254740993}');
+      case 'get_transfers': {
+        const h = state().height;
+        const ins = `[{"address": "4AAA", "amount": 123456789012345678, "amounts": [123456789012345678], "confirmations": ${h - 3400000}, "double_spend_seen": false, "fee": 30660000, "height": 3400000, "locked": false, "note": "", "payment_id": "0000000000000000", "subaddr_index": {"major": 0, "minor": 2}, "subaddr_indices": [{"major": 0, "minor": 2}], "suggested_confirmations_threshold": 1, "timestamp": 1762000000, "txid": "aa11", "type": "in", "unlock_time": 0}, {"amount": 5, "txid": "bb22", "height": 3400100, "timestamp": 1762010000, "confirmations": ${h - 3400100}, "subaddr_index": {"minor": 0, "major": 1}, "unlock_time": 0, "double_spend_seen": false, "fee": 1, "type": "in"}]`;
+        const outs = `[{"amount": 100000000000, "confirmations": ${h - 3450000}, "destinations": [{"address": "8BBB", "amount": 100000000000}], "double_spend_seen": false, "fee": 30000000, "height": 3450000, "subaddr_index": {"major": 0, "minor": 0}, "timestamp": 1762500000, "txid": "cc33", "type": "out", "unlock_time": 0}]`;
+        const pool = `[{"amount": 7, "confirmations": 0, "double_spend_seen": true, "fee": 2, "height": 0, "subaddr_index": {"major": 0, "minor": 0}, "timestamp": 1762600000, "txid": "dd44", "unlock_time": 10}]`;
+        const ki = existsSync(join(dir, 'fake-ki'));
+        return ok(`{"in": ${ins}, ${ki ? `"out": ${outs}, ` : ''}"pool": ${pool}, "pending": []}`);
+      }
+      default:
+        return err(`Method not found: ${method}`);
+    }
+  },
+});
+process.on('SIGTERM', () => {
+  server.stop(true);
+  process.exit(0);
+});

@@ -1,0 +1,18 @@
+{
+  "name": "@dither-accounts/extractor-privacy",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@dither-accounts/browser": "workspace:*",
+    "@dither-accounts/interfaces": "workspace:*",
+    "@dither-accounts/link": "workspace:*",
+    "@dither-accounts/manager": "workspace:*",
+    "@dither-accounts/passkey": "workspace:*",
+    "@dither-accounts/statements-common": "workspace:*",
+    "@dither-chat/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@dither-accounts/client": "workspace:*"
+  }
+}

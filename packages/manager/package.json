@@ -1,0 +1,17 @@
+{
+  "name": "@dither-accounts/manager",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./kinds": "./src/kinds.ts",
+    "./api-types": "./src/api-types.ts"
+  },
+  "dependencies": {
+    "@dither-accounts/spec": "workspace:*",
+    "@dither-accounts/interfaces": "workspace:*",
+    "@dither-accounts/passkey": "workspace:*",
+    "@dither-chat/protocol": "workspace:*"
+  }
+}

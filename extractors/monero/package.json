@@ -1,0 +1,12 @@
+{
+  "name": "@dither-accounts/extractor-monero",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@dither-accounts/interfaces": "workspace:*",
+    "@dither-accounts/link": "workspace:*",
+    "@dither-accounts/manager": "workspace:*",
+    "@dither-accounts/statements-common": "workspace:*"
+  }
+}

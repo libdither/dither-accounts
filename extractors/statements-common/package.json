@@ -1,0 +1,18 @@
+{
+  "name": "@dither-accounts/statements-common",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./pyjson": "./src/pyjson.ts",
+    "./spool": "./src/spool.ts",
+    "./tabs": "./src/tabs.ts",
+    "./pystr": "./src/pystr.ts"
+  },
+  "dependencies": {
+    "@dither-accounts/interfaces": "workspace:*",
+    "@dither-accounts/link": "workspace:*",
+    "@dither-accounts/browser": "workspace:*"
+  }
+}

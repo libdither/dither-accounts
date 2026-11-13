@@ -1,0 +1,41 @@
+{
+  "account": "+15550100",
+  "envelope": {
+    "source": "+15550100",
+    "sourceNumber": "+15550100",
+    "sourceUuid": "5f2c7a8e-1111-4aaa-8bbb-000000000001",
+    "sourceName": null,
+    "sourceDevice": 2,
+    "timestamp": 1793330011000,
+    "serverReceivedTimestamp": 1793330011180,
+    "serverDeliveredTimestamp": 1793330011240,
+    "syncMessage": {
+      "sentMessage": {
+        "destination": "+15550100",
+        "destinationNumber": "+15550100",
+        "destinationUuid": "5f2c7a8e-1111-4aaa-8bbb-000000000001",
+        "timestamp": 1793330011000,
+        "message": "whiteboard from today",
+        "expiresInSeconds": 0,
+        "isExpirationUpdate": false,
+        "viewOnce": false,
+        "isEndSession": false,
+        "isProfileKeyUpdate": false,
+        "hasProfileKey": true,
+        "attachments": [
+          {
+            "contentType": "image/png",
+            "filename": "whiteboard.png",
+            "id": "Wb0aRd1pNg2xx3yy4zz5.png",
+            "size": 52011,
+            "width": 640,
+            "height": 400,
+            "caption": null,
+            "uploadTimestamp": 1793330010900,
+            "isVoiceNote": false
+          }
+        ]
+      }
+    }
+  }
+}

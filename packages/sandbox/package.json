@@ -1,0 +1,10 @@
+{
+  "name": "@dither-accounts/sandbox",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@dither-accounts/browser": "workspace:*"
+  }
+}

@@ -1,0 +1,17 @@
+# Copy to <data>/config.toml (the manager's data directory: --data, DITHER_ACCOUNTS_DATA, default the repo's .data)
+# and edit. Every key is optional; the values shown are the defaults. A flag (--public-url) or its environment
+# variable (DITHER_ACCOUNTS_PUBLIC_URL) wins over the file.
+
+[manager]
+host = "127.0.0.1"                  # the address the manager listens on; "0.0.0.0" if a proxy reaches it at a LAN or VPN address
+port = 8486                         # apps, extractors and the page all reach the manager here
+public_url = "http://localhost:8486" # the page as a browser opens it (behind your proxy, e.g. "https://accounts.example.net"):
+                                    # its origin is the only one the page accepts writes from, and passkeys and OAuth
+                                    # redirects are bound to it
+web_dist = ""                       # where the built page is; empty: packages/manager/web/dist
+trace = 1                           # 0: don't write the trace files under <data>/traces
+
+# Extractors take their own settings from each account's config (on the page: Add account → More options), not here.
+# A few environment variables change how the sandboxes run, for machines that need it:
+#   DITHER_CHROMIUM_NO_SANDBOX=1     run Chromium without its own sandbox (inside containers that forbid it)
+#   DITHER_TELEGRAM_DESKTOP=1        offer Telegram sign-in through Telegram Desktop in a sandbox (docs/telegram.md)

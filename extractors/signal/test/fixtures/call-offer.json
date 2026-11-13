@@ -1,0 +1,20 @@
+{
+  "account": "+15550100",
+  "envelope": {
+    "source": "+15550137",
+    "sourceNumber": "+15550137",
+    "sourceUuid": "a11ce000-2222-4ccc-9ddd-000000000002",
+    "sourceName": "Alice Chen",
+    "sourceDevice": 1,
+    "timestamp": 1793330016000,
+    "serverReceivedTimestamp": 1793330016180,
+    "serverDeliveredTimestamp": 1793330016240,
+    "callMessage": {
+      "offerMessage": {
+        "id": 1234567890123,
+        "type": "VIDEO_CALL",
+        "opaque": "CgQIARAB"
+      }
+    }
+  }
+}

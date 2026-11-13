@@ -1,0 +1,8 @@
+{
+  "name": "@dither-accounts/link",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@dither-chat/protocol": "workspace:*" }
+}

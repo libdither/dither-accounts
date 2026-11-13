@@ -1,0 +1,16 @@
+{
+  "name": "@dither-accounts/extractor-x",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@dither-accounts/browser": "workspace:*",
+    "@dither-accounts/manager": "workspace:*",
+    "@dither-chat/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@dither-accounts/client": "workspace:*",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "account": "+15550100",
+  "envelope": {
+    "source": "+15550137",
+    "sourceNumber": "+15550137",
+    "sourceUuid": "a11ce000-2222-4ccc-9ddd-000000000002",
+    "sourceName": "Alice Chen",
+    "sourceDevice": 1,
+    "timestamp": 1793330003000,
+    "serverReceivedTimestamp": 1793330003180,
+    "serverDeliveredTimestamp": 1793330003240,
+    "dataMessage": {
+      "timestamp": 1793330003000,
+      "message": "here is the purple V4",
+      "expiresInSeconds": 0,
+      "isExpirationUpdate": false,
+      "viewOnce": false,
+      "isEndSession": false,
+      "isProfileKeyUpdate": false,
+      "hasProfileKey": true,
+      "attachments": [
+        {
+          "contentType": "image/jpeg",
+          "filename": "v4.jpg",
+          "id": "Xq3vM8kTt0aQ1bC2dE4f.jpg",
+          "size": 183424,
+          "width": 1600,
+          "height": 1200,
+          "caption": null,
+          "uploadTimestamp": 1793330002500,
+          "isVoiceNote": false
+        },
+        {
+          "contentType": "text/x-signal-plain",
+          "filename": null,
+          "id": "Zz9yX8wV7uT6sR5qP4oN.txt",
+          "size": 2100,
+          "width": null,
+          "height": null,
+          "caption": null,
+          "uploadTimestamp": 1793330002500,
+          "isVoiceNote": false
+        },
+        {
+          "contentType": "audio/aac",
+          "filename": null,
+          "id": "Vn0te1aac2bbb3ccc4dd.aac",
+          "size": 9001,
+          "width": null,
+          "height": null,
+          "caption": null,
+          "uploadTimestamp": 1793330002500,
+          "isVoiceNote": true
+        }
+      ]
+    }
+  }
+}

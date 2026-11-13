@@ -1,0 +1,142 @@
+# dither-approver, the Android app (apps/android, docs/approver.md). Every push to master and pull request that
+# touches it runs its unit tests and builds a debug APK (job `apk`). A tag `approver-v<version>` builds a release
+# signed with the release key from the repository's secrets and publishes it as a GitHub release.
+name: Android
+
+on:
+  push:
+    branches: [master]
+    paths: ['apps/android/**', '.github/workflows/android.yml']
+    tags: ['approver-v*']
+  pull_request:
+    paths: ['apps/android/**', '.github/workflows/android.yml']
+  workflow_dispatch:
+
+# Read-only by default: only the release job, on a tag, may write (create the GitHub release).
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its older build; pushes to master and tags never cancel each other.
+concurrency:
+  group: android-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gradle/actions/wrapper-validation@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-36.1 build-tools;36.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Unit tests and debug build
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: approver-test-results
+          path: apps/android/app/build/test-results/testDebugUnitTest
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dither-approver-debug
+          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
+
+  release-apk:
+    if: startsWith(github.ref, 'refs/tags/approver-v')
+    needs: apk
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.name }}
+    defaults:
+      run:
+        working-directory: apps/android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gradle/actions/wrapper-validation@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-36.1 build-tools;36.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Version
+        id: version
+        run: |
+          v="${GITHUB_REF#refs/tags/approver-v}"
+          echo "APPROVER_VERSION_NAME=$v" >> "$GITHUB_ENV"
+          echo "name=$v" >> "$GITHUB_OUTPUT"
+          # Above any local build's code, and rising with every run.
+          echo "APPROVER_VERSION_CODE=$((100 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+
+      # Without the release key a release would be signed with a throwaway debug key and could never be updated: stop.
+      - name: Release key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=""
+          for s in KEYSTORE_B64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            test -n "${!s}" || missing="$missing ANDROID_$s"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Repository secrets not set:$missing. A release must be signed with the release key (apps/android/README.md, Releases)."
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "APPROVER_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+
+      - name: Build
+        env:
+          APPROVER_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          APPROVER_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          APPROVER_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          ./gradlew --no-daemon assembleRelease
+          # The release key, not the debug one, or stop.
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs app/build/outputs/apk/release/app-release.apk | tee "$RUNNER_TEMP/certs.txt"
+          if grep -q "CN=Android Debug" "$RUNNER_TEMP/certs.txt"; then echo "::error::the release APK is signed with the debug key"; exit 1; fi
+          cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/dither-approver-$APPROVER_VERSION_NAME.apk"
+          rm -f "$RUNNER_TEMP/release.jks"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dither-approver-${{ steps.version.outputs.name }}
+          path: ${{ runner.temp }}/dither-approver-${{ steps.version.outputs.name }}.apk
+
+  release:
+    needs: release-apk
+    if: startsWith(github.ref, 'refs/tags/approver-v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dither-approver-${{ needs.release-apk.outputs.version }}
+          path: dist
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.release-apk.outputs.version }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "dist/dither-approver-$VERSION.apk" --repo "$GITHUB_REPOSITORY" \
+            --title "dither-approver $VERSION" \
+            --notes "dither-approver, the Android app that holds your site passkeys and approves sign-ins. See apps/android/README.md."

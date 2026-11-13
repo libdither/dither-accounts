@@ -1,0 +1,18 @@
+{
+  "name": "@dither-accounts/extractor-google",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@dither-accounts/browser": "workspace:*",
+    "@dither-accounts/interfaces": "workspace:*",
+    "@dither-accounts/link": "workspace:*",
+    "@dither-accounts/manager": "workspace:*",
+    "html-to-text": "^10.0.1",
+    "mailparser": "^3.14.2"
+  },
+  "devDependencies": {
+    "@types/html-to-text": "^9.0.4",
+    "@types/mailparser": "^3.9.0"
+  }
+}

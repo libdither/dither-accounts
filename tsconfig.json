@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "verbatimModuleSyntax": true,
+    "lib": [
+      "ESNext",
+      "ESNext.Temporal",
+      "DOM"
+    ],
+    "types": [
+      "bun"
+    ]
+  },
+  "include": [
+    "packages/*/src",
+    "packages/*/test",
+    "extractors/*/src",
+    "extractors/*/test",
+    "extractors/*/testbed",
+    "extractors/*/manifest.ts",
+    "test",
+    "scripts",
+    "apps/*/tools"
+  ]
+}

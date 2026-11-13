@@ -1,0 +1,12 @@
+{
+  "name": "@dither-accounts/extractor-matrix",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@dither-chat/protocol": "workspace:*",
+    "@matrix-org/matrix-sdk-crypto-wasm": "18.9.0",
+    "fake-indexeddb": "6.2.7",
+    "@dither-accounts/manager": "workspace:*"
+  }
+}

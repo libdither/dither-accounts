@@ -1,0 +1,36 @@
+{
+  "account": "+15550100",
+  "envelope": {
+    "source": "+15550137",
+    "sourceNumber": "+15550137",
+    "sourceUuid": "a11ce000-2222-4ccc-9ddd-000000000002",
+    "sourceName": "Alice Chen",
+    "sourceDevice": 1,
+    "timestamp": 1793330020000,
+    "serverReceivedTimestamp": 1793330020180,
+    "serverDeliveredTimestamp": 1793330020240,
+    "dataMessage": {
+      "timestamp": 1793330020000,
+      "message": "door code is 4711",
+      "expiresInSeconds": 3600,
+      "isExpirationUpdate": false,
+      "viewOnce": false,
+      "isEndSession": false,
+      "isProfileKeyUpdate": false,
+      "hasProfileKey": true,
+      "attachments": [
+        {
+          "contentType": "image/jpeg",
+          "filename": "door.jpg",
+          "id": "D00rC0de1jpg2aaa3bbb.jpg",
+          "size": 1000,
+          "width": 10,
+          "height": 10,
+          "caption": null,
+          "uploadTimestamp": 1793330019900,
+          "isVoiceNote": false
+        }
+      ]
+    }
+  }
+}

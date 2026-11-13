@@ -1,0 +1,24 @@
+#!/usr/bin/env bun
+/** A stand-in for monero-wallet-cli in tests: `import_key_images FILE` marks the wallet dir (fake-ki) and says so. */
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
+const a = process.argv;
+const wallet = a[a.indexOf('--wallet-file') + 1];
+const i = a.indexOf('import_key_images');
+const file = a[i + 1];
+const keys = JSON.parse(readFileSync(wallet + '.keys', 'utf8'));
+// The password from --password-file, never the command line; only dither-finance's monero.py (FAKE_MONERO_ARGV=1).
+const legacy = process.env.FAKE_MONERO_ARGV === '1';
+if (a.includes('--password') && !legacy) throw new Error('the password must not be on the command line');
+const given = legacy ? a[a.indexOf('--password') + 1] : readFileSync(a[a.indexOf('--password-file') + 1], 'utf8');
+if (keys.password !== given) {
+  console.log('Error: wrong password');
+  process.exit(1);
+}
+if (i < 0 || !existsSync(file) || !readFileSync(file, 'latin1').startsWith('Monero key image export')) {
+  console.log('Error: failed to import key images');
+  process.exit(1);
+}
+writeFileSync(join(dirname(wallet), 'fake-ki'), '1');
+console.log('Signed key images imported to height 3450000, 0.000100000000 spent, 0.123456789012 unspent');

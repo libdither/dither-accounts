@@ -1,0 +1,20 @@
+{
+  "account": "+15550100",
+  "envelope": {
+    "source": "+15550161",
+    "sourceNumber": "+15550161",
+    "sourceUuid": "5a3e0000-3333-4eee-afff-000000000003",
+    "sourceName": "Sam Rivera",
+    "sourceDevice": 1,
+    "timestamp": 1793330010500,
+    "serverReceivedTimestamp": 1793330010680,
+    "serverDeliveredTimestamp": 1793330010740,
+    "receiptMessage": {
+      "when": 1793330010500,
+      "isDelivery": true,
+      "isRead": false,
+      "isViewed": false,
+      "timestamps": [1793330010000]
+    }
+  }
+}

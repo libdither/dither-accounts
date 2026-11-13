@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Meta bridge",
+  "version": "0.1.1",
+  "description": "Lets a local extractor read and act in the signed-in Messenger or Instagram web app, through the app's own code. Personal use.",
+  "minimum_chrome_version": "111",
+  "background": { "service_worker": "sw.js" },
+  "permissions": ["tabs", "alarms"],
+  "host_permissions": ["https://www.messenger.com/*", "https://www.facebook.com/*", "https://www.instagram.com/*", "https://*.fbcdn.net/*", "https://*.cdninstagram.com/*", "https://*.fbsbx.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://www.messenger.com/*", "https://www.facebook.com/*", "https://www.instagram.com/*"],
+      "js": ["hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://www.messenger.com/*", "https://www.facebook.com/*", "https://www.instagram.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ]
+}

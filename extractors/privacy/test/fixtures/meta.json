@@ -1,0 +1,77 @@
+{
+ "name": "privacy-STAMP.json",
+ "pulledAt": 1794254209,
+ "requests": [
+  [
+   "limit=25&fullInfo=true&transactionFilter=ALL",
+   true
+  ],
+  [
+   "limit=100&fullInfo=true&transactionFilter=ALL&offset=0",
+   true
+  ],
+  [
+   "limit=100&fullInfo=true&transactionFilter=ALL&offset=100",
+   true
+  ],
+  [
+   "limit=100&fullInfo=true&transactionFilter=ALL&offset=200",
+   true
+  ],
+  [
+   "limit=100&fullInfo=true&transactionFilter=ALL&offset=231",
+   true
+  ],
+  [
+   "limit=100&fullInfo=true&transactionFilter=ALL&offset=0",
+   true
+  ],
+  [
+   "limit=100&fullInfo=true&transactionFilter=ALL&offset=100",
+   true
+  ],
+  [
+   "limit=100&fullInfo=true&transactionFilter=ALL&offset=200",
+   true
+  ],
+  [
+   "limit=100&fullInfo=true&transactionFilter=ALL&offset=231",
+   true
+  ],
+  [
+   "limit=100&fullInfo=true&transactionFilter=ALL&offset=0",
+   true
+  ],
+  [
+   "limit=100&fullInfo=true&transactionFilter=ALL&offset=100",
+   true
+  ],
+  [
+   "limit=100&fullInfo=true&transactionFilter=ALL&offset=200",
+   true
+  ],
+  [
+   "limit=100&fullInfo=true&transactionFilter=ALL&offset=231",
+   true
+  ],
+  [
+   "limit=100&fullInfo=true&transactionFilter=ALL&offset=0",
+   true
+  ],
+  [
+   "limit=100&fullInfo=true&transactionFilter=ALL&offset=100",
+   true
+  ],
+  [
+   "limit=100&fullInfo=true&transactionFilter=ALL&offset=200",
+   true
+  ],
+  [
+   "limit=100&fullInfo=true&transactionFilter=ALL&offset=231",
+   true
+  ]
+ ],
+ "signIns": [
+  "passkey:1"
+ ]
+}

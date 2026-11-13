@@ -1,0 +1,36 @@
+{
+  "name": "dither-accounts",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "extractors/*"
+  ],
+  "scripts": {
+    "start": "bun packages/manager/src/main.ts",
+    "typecheck": "bunx tsc -p . --noEmit && bunx tsc -p packages/manager/web --noEmit",
+    "test": "bun test",
+    "web:build": "cd packages/manager/web && bunx --bun vite build",
+    "web:dev": "cd packages/manager/web && bunx --bun vite",
+    "types": "bun scripts/gen-types.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.5",
+    "@preact/preset-vite": "^2.10.6"
+  },
+  "dependencies": {
+    "@dither-accounts/spec": "workspace:*",
+    "@dither-accounts/interfaces": "workspace:*",
+    "@dither-accounts/link": "workspace:*",
+    "@dither-accounts/client": "workspace:*",
+    "@dither-accounts/manager": "workspace:*",
+    "preact": "^11.1.0",
+    "@preact/signals": "^2.11.4",
+    "@dither-chat/protocol": "workspace:*",
+    "@novnc/novnc": "^1.7.0",
+    "uqr": "^0.1.3"
+  }
+}

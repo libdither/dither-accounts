@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { FeedTracker, feedConvId, LIVE_MS, parseNotifications, parsePost, parseProfileUser, parseUser, parseUserTweets, personAbout, X_ACTOR, xDate } from '../src/feed.ts';
+import { FeedTracker, feedConvId, LIVE_MS, parseNotifications, parsePost, parseProfileUser, parsePublished, parseReactors, parseTweetDetail, parseUser, parseUserTweets, personAbout, X_ACTOR, xDate } from '../src/feed.ts';
 import { Drops } from '../src/validate.ts';
-import { CARA, cursorEntry, DEV, EMI, FINN, ME, notificationEntry, notificationsResponse, notificationsTimeline, tweet, tweetEntry, userByRestIdResponse, userFlat, userNew, userOld, userTweetsResponse, userTweetsTimeline, withVisibility, xDateStr } from './feed-fixtures.ts';
+import { CARA, favoritersResponse, normalizedTweet, reactorsTimeline, retweetersResponse, tweetResultResponse, conversationModule, cursorEntry, DEV, detailCursorEntry, detailTweetEntry, EMI, FINN, gardenThread, ME, notificationEntry, notificationsResponse, notificationsTimeline, tweet, tweetDetailResponse, tweetDetailTimeline, tweetEntry, userByRestIdResponse, userFlat, userNew, userOld, userTweetsResponse, userTweetsTimeline, withVisibility, xDateStr } from './feed-fixtures.ts';
 
 const NOW = Date.now();
 const MIN = 60_000;
@@ -92,7 +92,7 @@ describe('posts', () => {
   test('a reply: its leading @name not shown, entities unescaped, replyTo with the author; the author noted', () => {
     const c = ctx();
     const p = parsePost(tweet({ id: '1800000000000000101', by: CARA, text: 'love this & want some', ts: NOW - MIN, replyTo: { id: '1800000000000000001', by: ME }, counts: { likes: 2, views: 40 } }), c)!;
-    expect(p).toEqual({ id: '1800000000000000101', url: 'https://x.com/cara_c/status/1800000000000000101', ts: Math.floor((NOW - MIN) / 1000) * 1000, author: CARA.id, text: 'love this & want some', replyTo: { id: '1800000000000000001', author: ME.id }, counts: { replies: 0, reposts: 0, likes: 2, quotes: 0, views: 40 } });
+    expect(p).toEqual({ id: '1800000000000000101', url: 'https://x.com/cara_c/status/1800000000000000101', ts: Math.floor((NOW - MIN) / 1000) * 1000, author: CARA.id, text: 'love this & want some', replyTo: { id: '1800000000000000001', author: ME.id }, root: '1800000000000000001', counts: { replies: 0, reposts: 0, likes: 2, quotes: 0, views: 40 }, viewer: { liked: false, reposted: false } });
     expect(c.users.get(CARA.id)).toMatchObject({ handle: 'cara_c' });
   });
   test('TweetWithVisibilityResults is the post inside; a long post is its note text; links and media urls', () => {
@@ -209,6 +209,131 @@ describe('a profile', () => {
     expect([...r.users.keys()].sort()).toEqual([ME.id, CARA.id, DEV.id].sort());
     const many = userTweetsTimeline(null, Array.from({ length: 30 }, (_, i) => tweet({ id: `18000000000000006${String(i).padStart(2, '0')}`, by: CARA, text: `n${i}`, ts: NOW - i * MIN })), NOW);
     expect(parseUserTweets(many, new Drops()).posts.length).toBe(20);
+  });
+});
+
+describe("a post's thread", () => {
+  const g = gardenThread(NOW);
+  const ids = (ps: { id: string }[]) => ps.map((p) => p.id);
+
+  test('what it answers, the post, its replies as chains (its author going on first); ads, Discover more and gone posts left out', () => {
+    const d = new Drops();
+    const { thread, users } = parseTweetDetail(g.page1, g.focal.rest_id, d);
+    expect(thread.focal).toMatchObject({ id: g.focal.rest_id, author: CARA.id, text: 'San Marzano, mostly https://cara.example/san-marzano', root: g.root.rest_id, replyTo: { id: g.answer.rest_id, author: FINN.id }, counts: { likes: 4, replies: 5 }, url: `https://x.com/${CARA.handle}/status/${g.focal.rest_id}` });
+    expect(ids(thread.ancestors)).toEqual([g.root.rest_id, g.answer.rest_id]);
+    expect(thread.ancestors[0]).toMatchObject({ root: g.root.rest_id, text: 'Planting day: forty tomato seedlings' });
+    expect(thread.ancestors[0]!.replyTo).toBeUndefined();
+    expect(thread.replies.map(ids)).toEqual([[g.self1.rest_id, g.self2.rest_id], [g.emi1.rest_id, g.emi2.rest_id], [g.dev1.tweet.rest_id]]);
+    expect(thread.replies[2]![0]).toMatchObject({ author: DEV.id, text: 'good luck & post pictures', replyTo: { id: g.focal.rest_id, author: CARA.id } });
+    // Every post names its thread.
+    expect([...thread.ancestors, ...thread.replies.flat()].every((p) => p.root === g.root.rest_id)).toBe(true);
+    expect(thread.more).toBe(g.cursors.page2);
+    expect([...users.keys()].sort()).toEqual([CARA.id, DEV.id, EMI.id, FINN.id].sort());
+    // The gone post is counted; the module's "Show replies" cursor, the ad and Discover more are no drop.
+    expect(Object.fromEntries(d.counts)).toEqual({ 'post.TweetTombstone': 1 });
+    // A raw answer (data.threaded_conversation_with_injections_v2) reads the same.
+    expect(parseTweetDetail(tweetDetailResponse(g.page1), g.focal.rest_id, new Drops()).thread).toEqual(thread);
+  });
+
+  test('pages of more replies: new chains, more of a chain shown (TimelineAddToModule), ShowMoreThreads, then the end', () => {
+    const two = parseTweetDetail(g.page2, g.focal.rest_id, new Drops(), null, true).thread;
+    expect(two.focal).toBeUndefined();
+    expect(two.ancestors).toEqual([]);
+    expect(two.replies.map(ids)).toEqual([[g.finn1.rest_id], [g.emi3.rest_id, g.emi4.rest_id]]);
+    expect(two.more).toBe(g.cursors.page3);
+    const three = parseTweetDetail(g.page3, g.focal.rest_id, new Drops(), null, true).thread;
+    expect(three).toEqual({ ancestors: [], replies: [[expect.objectContaining({ id: g.dev2.rest_id, author: DEV.id })]], more: null });
+  });
+
+  test("the author's own chain first even when X sends it later; a Bottom cursor before ShowMoreThreads; a post with nothing around it", () => {
+    const tl = tweetDetailTimeline([detailTweetEntry(g.focal), conversationModule([g.emi1]), detailCursorEntry('ShowMoreThreads', 'later'), conversationModule([g.self1, g.self2]), detailCursorEntry('Bottom', 'first')]);
+    const t = parseTweetDetail(tl, g.focal.rest_id, new Drops()).thread;
+    expect(t.replies.map(ids)).toEqual([[g.self1.rest_id, g.self2.rest_id], [g.emi1.rest_id]]);
+    expect(t.more).toBe('first');
+    const prompt = parseTweetDetail(tweetDetailTimeline([detailTweetEntry(g.focal), detailCursorEntry('ShowMoreThreadsPrompt', 'spam')]), g.focal.rest_id, new Drops()).thread;
+    expect(prompt).toEqual({ focal: expect.objectContaining({ id: g.focal.rest_id }), ancestors: [], replies: [], more: 'spam' });
+    expect(parseTweetDetail(tweetDetailTimeline([detailTweetEntry(g.root)]), g.root.rest_id, new Drops()).thread).toEqual({ focal: expect.objectContaining({ id: g.root.rest_id, root: g.root.rest_id }), ancestors: [], replies: [], more: null });
+  });
+
+  test('without the post asked for, or nothing like a timeline: a plain error, unless it is a page of more replies', () => {
+    expect(() => parseTweetDetail(g.page1, '1856000000000009999', new Drops())).toThrow('X did not give this post');
+    const d = new Drops();
+    expect(() => parseTweetDetail({ nothing: true }, g.focal.rest_id, d)).toThrow('X did not give this post');
+    expect(Object.fromEntries(d.counts)).toEqual({ 'thread.no-instructions': 1 });
+    expect(parseTweetDetail({ instructions: [] }, g.focal.rest_id, new Drops(), null, true).thread).toEqual({ ancestors: [], replies: [], more: null });
+    // The focal post itself gone.
+    const gone = tweetDetailTimeline([{ ...detailTweetEntry({ __typename: 'TweetTombstone', tombstone: {} }), entryId: `tweet-${g.focal.rest_id}` }]);
+    expect(() => parseTweetDetail(gone, g.focal.rest_id, new Drops())).toThrow('X did not give this post');
+  });
+
+  test("a profile's posts and a notification's name their thread too", () => {
+    const p = parsePost(g.answer, { users: new Map(), drops: new Drops() })!;
+    expect(p.root).toBe(g.root.rest_id);
+    expect(parsePost(myPost, { users: new Map(), drops: new Drops() })!.root).toBe(myPost.rest_id);
+  });
+});
+
+describe('answering on X', () => {
+  const ctx = () => ({ users: new Map(), drops: new Drops() });
+  test('what you did to a post, wherever a post is read: liked and reposted from legacy.favorited and legacy.retweeted', () => {
+    const liked = tweet({ id: '1800000000000000201', by: CARA, text: 'yes', ts: NOW - H, viewer: { liked: true } });
+    const both = withVisibility(tweet({ id: '1800000000000000202', by: DEV, layout: 'old', text: 'both', ts: NOW - H, viewer: { liked: true, reposted: true }, quote: liked }));
+    const c = ctx();
+    const p = parsePost(both, c)!;
+    expect(p.viewer).toEqual({ liked: true, reposted: true });
+    expect(p.quoteOf!.viewer).toEqual({ liked: true, reposted: false });
+    // Without the fields (an older answer), nothing is said.
+    const bare = tweet({ id: '1800000000000000203', by: CARA, text: 'old', ts: NOW - H });
+    delete bare.legacy.favorited;
+    delete bare.legacy.retweeted;
+    expect(parsePost(bare, ctx())!.viewer).toBeUndefined();
+    // In a profile, a thread and the notifications alike.
+    expect(parseUserTweets(userTweetsResponse(userTweetsTimeline(null, [liked], NOW)), new Drops()).posts[0]!.viewer).toEqual({ liked: true, reposted: false });
+    const g = gardenThread(NOW);
+    g.focal.legacy.retweeted = true;
+    expect(parseTweetDetail(tweetDetailResponse(g.page1), g.focal.rest_id, new Drops()).thread.focal!.viewer).toEqual({ liked: false, reposted: true });
+  });
+
+  test('a made post: read back alone when it could be; else sendTweet\'s normalized post; else the least known', () => {
+    const made = tweet({ id: '1800000000000000301', by: ME, text: 'and six Black Krim', ts: NOW - 1000, replyTo: { id: '1800000000000000300', by: CARA }, root: '1800000000000000299' });
+    const self = { id: ME.id, handle: ME.handle };
+    const back = parsePublished({ id: made.rest_id, created: normalizedTweet(made), tweet: tweetResultResponse(made).data.tweetResult }, 'and six Black Krim', self, new Drops())!;
+    expect(back.post).toMatchObject({ id: made.rest_id, url: `https://x.com/${ME.handle}/status/${made.rest_id}`, author: ME.id, text: 'and six Black Krim', replyTo: { id: '1800000000000000300', author: CARA.id }, root: '1800000000000000299', viewer: { liked: false, reposted: false } });
+    expect([...back.users.keys()]).toEqual([ME.id]);
+    // The read back failed: the normalized post (flat, its author an id), its link made with your handle.
+    const drops = new Drops();
+    const flat = parsePublished({ id: made.rest_id, created: normalizedTweet(made), tweet: null }, 'and six Black Krim', self, drops)!;
+    expect(flat.post).toMatchObject({ id: made.rest_id, url: `https://x.com/${ME.handle}/status/${made.rest_id}`, author: ME.id, text: 'and six Black Krim', replyTo: { id: '1800000000000000300' }, root: '1800000000000000299' });
+    expect(flat.post.ts).toBe(Math.floor((NOW - 1000) / 1000) * 1000);
+    // Neither: the id, your text, now.
+    const bare = parsePublished({ id: made.rest_id, created: {}, tweet: { result: { __typename: 'TweetUnavailable' } } }, 'hello', self, drops)!;
+    expect(bare.post).toMatchObject({ id: made.rest_id, url: `https://x.com/${ME.handle}/status/${made.rest_id}`, author: ME.id, text: 'hello' });
+    expect(drops.summary()).toMatch(/published\.bare 1/);
+    // No id at all: nothing to answer with (main says X did not say which post it made).
+    expect(parsePublished({ id: null, created: {} }, 'x', self, new Drops())).toBeNull();
+  });
+
+  test('who liked: people in X\'s order with followers, follows and checks; more by the Bottom cursor; an empty page ends it', () => {
+    const tl = reactorsTimeline([userNew(CARA), userOld(DEV), userNew({ ...EMI, followsYou: true })], 'DAAHlikes-2');
+    const { page: p, users } = parseReactors(favoritersResponse(tl), new Drops());
+    expect(p).toEqual({
+      who: [
+        { id: CARA.id, followers: 120, following: true, followsYou: true },
+        { id: DEV.id, followers: 3400, following: false, followsYou: true, verified: true },
+        { id: EMI.id, followers: 12, following: false, followsYou: true },
+      ],
+      more: 'DAAHlikes-2',
+    });
+    expect([...users.keys()]).toEqual([CARA.id, DEV.id, EMI.id]);
+    // The page's own call gives the timeline itself; reposts read the same.
+    expect(parseReactors(tl, new Drops()).page.who.length).toBe(3);
+    expect(parseReactors(retweetersResponse(reactorsTimeline([userOld(FINN)], 'c')), new Drops()).page).toEqual({ who: [{ id: FINN.id, followers: 800, following: true, followsYou: false, verified: true }], more: 'c' });
+    // The last page (a Bottom cursor, nobody), someone else's post (nothing at all): no more.
+    expect(parseReactors(reactorsTimeline([], 'DAAHlikes-3'), new Drops()).page).toEqual({ who: [], more: null });
+    expect(parseReactors({ instructions: [] }, new Drops()).page).toEqual({ who: [], more: null });
+    const drops = new Drops();
+    expect(parseReactors(reactorsTimeline([{ __typename: 'UserUnavailable', rest_id: '9' }], 'x'), drops).page.who).toEqual([]);
+    expect(drops.summary()).toMatch(/user\.UserUnavailable 1/);
   });
 });
 

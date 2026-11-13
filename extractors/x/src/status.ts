@@ -101,6 +101,11 @@ export function capabilitiesOf(st: SelfTest | null): P.Capability[] {
   if (ok('addMembers')) caps.push('addMembers');
   if (ok('createGroup')) caps.push('createGroup');
   if (feedOk(st, 'store') && feedOk(st, 'endpoints') && feedOk(st, 'profiles')) caps.push('profile');
+  if (feedOk(st, 'store') && feedOk(st, 'endpoints') && feedOk(st, 'posts')) caps.push('posts');
+  // Answering on X: the post actions factory (like, repost, sendTweet); who liked or reposted, whose chunk is loaded at
+  // the first ask (pending until then, and offered: it fails with "not found" and is withdrawn if it is not there).
+  if (feedOk(st, 'store') && feedOk(st, 'endpoints') && feedOk(st, 'actions')) caps.push('postActions', 'publish');
+  if (feedOk(st, 'store') && feedOk(st, 'endpoints') && (feedOk(st, 'reactors') || st?.feed?.reactors?.via === 'pending')) caps.push('postReactors');
   return caps;
 }
 

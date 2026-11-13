@@ -218,9 +218,25 @@ export interface PersonLinkView {
   relationship: LinkRelationship;
   /** ms epoch, when the network said. */
   since: number | null;
+  /**
+   * They follow this account back, as its last profile of them said (X). With `relationship: 'following'`, you follow
+   * each other: People's Friends has them (docs/profile.md "Connections").
+   */
+  followsYou?: true;
+  /**
+   * Not from the account's list but from what its last profile of them said (an account with no list, such as X):
+   * as of then, not kept up to date. `since` is null; `seenAt` says when the profile said it.
+   */
+  from?: 'profile';
+  /** ms epoch, with `from: 'profile'`. */
+  seenAt?: number;
 }
 
-/** GET /api/people?relationship=friend&account=acc_…: who is on your accounts' lists, newest first. */
+/**
+ * GET /api/people?relationship=friend&account=acc_…: who is on your accounts' lists, newest first. Follows come from
+ * the accounts' lists and also from their kept profiles (`from: 'profile'`), and `friend` includes accounts that
+ * follow each other (`relationship: 'following'`, `followsYou`).
+ */
 export interface PeopleLinksView {
   links: PersonLinkView[];
   identities: IdentityView[];
@@ -621,6 +637,66 @@ export interface MessageView {
    * with each post's `author` a hub identity id and its pictures the hub's signed media paths.
    */
   feed?: FeedItem;
+  /**
+   * A logged post's message (variant 'posts', docs/feed.md "Threads"): the post as the network last showed it, with
+   * each `author` a hub identity id and its pictures signed media paths.
+   */
+  post?: PostFact;
+}
+
+/** A post with the hub message it was logged as (docs/feed.md "Threads"). */
+export type PostView = PostFact & { messageId: string | null };
+
+/**
+ * GET /api/posts/:network/:post/thread: a post's thread (PostThread in hub ids), each post logged as a message as it
+ * is read. `stored`: the network was not asked (no account could, or it failed), so this is what the hub logged.
+ */
+export interface PostThreadView {
+  network: Network;
+  /** The post's id on its network. */
+  post: string;
+  focal: PostView | null;
+  ancestors: PostView[];
+  replies: PostView[][];
+  more: string | null;
+  /**
+   * Posts the hub logged under it before, at any depth (to 10) and through any account, that `replies` does not hold:
+   * the branches opened earlier, so the comment tree keeps them (docs/feed.md "Threads").
+   */
+  logged?: PostView[];
+  /** The conversation the posts were logged in (variant 'posts'), when there is one. */
+  conversationId: string | null;
+  stored?: string;
+  /** Everyone the posts name, for rendering. */
+  identities: IdentityView[];
+}
+
+/** Someone who liked or reposted a post, and why they are where they are in the list (GET /api/posts/:network/:id/reactors). */
+export interface ReactorView {
+  identityId: string;
+  /** 0 to 1: how much they are likely to matter to you (docs/feed.md "Who reacted"). The list is sorted by it. */
+  score: number;
+  /** What put them there, in words: "You talk often", "Follows you", "12K followers", "Liked 4 of your posts". */
+  why: string[];
+  followers?: number;
+  followsYou?: boolean;
+  following?: boolean;
+  /** When they did it, where known (from your notifications). */
+  ts?: number;
+}
+
+export interface ReactorsView {
+  network: Network;
+  post: string;
+  kind: 'like' | 'repost';
+  people: ReactorView[];
+  /** More from the network with this cursor. */
+  more: string | null;
+  /** 'network': asked (X ranks them too); 'notifications': the people your notifications named, when it could not be asked. */
+  from: 'network' | 'notifications';
+  /** Why the list is what it is, when it is not the network's whole list. */
+  note?: string;
+  identities: IdentityView[];
 }
 
 /** A forward, shown as a card with where it came from. */

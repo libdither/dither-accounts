@@ -1,7 +1,8 @@
 /**
  * X's GraphQL as the signed-in client gets it, built for the tests and the fake x.com (test/fake-x-feed.ts): users in
  * 2025's layout and the older one, posts, notification and tweet entries, cursors, and the NotificationsTimeline,
- * UserTweets and UserByRestId answers around them. Everyone in them is made up.
+ * UserTweets, UserByRestId and TweetDetail answers around them; the answers of liking, reposting and posting, a post
+ * read alone (TweetResultByRestId), and who liked or reposted one (Favoriters, Retweeters). Everyone in them is made up.
  */
 
 export interface Person {
@@ -149,6 +150,8 @@ export interface PostOpts {
   text: string;
   ts: number;
   replyTo?: { id: string; by: Person };
+  /** The thread's first post (`conversation_id_str`); by default the post replied to, or the post itself. */
+  root?: string;
   quote?: any;
   repost?: any;
   /** A long post's whole text (`note_tweet`); `text` is then its first 275 characters. */
@@ -156,6 +159,8 @@ export interface PostOpts {
   urls?: { url: string; expanded: string; display: string }[];
   media?: { url: string; type: 'photo' | 'video' | 'animated_gif'; img: string; w: number; h: number; alt?: string }[];
   counts?: { replies?: number; reposts?: number; likes?: number; quotes?: number; views?: number };
+  /** What the signed-in account did to it (`legacy.favorited`, `legacy.retweeted`). */
+  viewer?: { liked?: boolean; reposted?: boolean };
 }
 
 /** A post (`Tweet`), as the timelines carry it. */
@@ -194,7 +199,7 @@ export function tweet(o: PostOpts): any {
       bookmark_count: 0,
       bookmarked: false,
       created_at: xDateStr(o.ts),
-      conversation_id_str: o.replyTo?.id ?? o.id,
+      conversation_id_str: o.root ?? o.replyTo?.id ?? o.id,
       display_text_range: [Array.from(lead).length, len - Array.from(mediaTail).length],
       entities: {
         hashtags: [],
@@ -206,14 +211,14 @@ export function tweet(o: PostOpts): any {
       },
       ...(media.length ? { extended_entities: { media } } : {}),
       favorite_count: o.counts?.likes ?? 0,
-      favorited: false,
+      favorited: !!o.viewer?.liked,
       full_text: full,
       is_quote_status: !!o.quote,
       lang: 'en',
       quote_count: o.counts?.quotes ?? 0,
       reply_count: o.counts?.replies ?? 0,
       retweet_count: o.counts?.reposts ?? 0,
-      retweeted: false,
+      retweeted: !!o.viewer?.reposted,
       user_id_str: o.by.id,
       id_str: o.id,
       ...(o.replyTo ? { in_reply_to_screen_name: o.replyTo.by.handle, in_reply_to_status_id_str: o.replyTo.id, in_reply_to_user_id_str: o.replyTo.by.id } : {}),
@@ -311,3 +316,137 @@ export function userTweetsResponse(timeline: any) {
 export function userByRestIdResponse(user: any) {
   return { data: { user: { result: user } } };
 }
+
+// ------------------------------------------------------------- a post's page
+// TweetDetail's timeline (`threaded_conversation_with_injections_v2`), as x.com's post page gets it: the posts above
+// the focal one as `tweet-<id>` items, the focal one, then a `conversationthread-<id>` module per reply chain (its
+// items `conversationthread-<id>-tweet-<id>`, and a `…-cursor-showmore-<n>` item when the chain goes on), ads,
+// "Discover more", and cursors as items (Bottom, ShowMoreThreads). A page of more replies may add to a module shown
+// already (TimelineAddToModule).
+const tweetItemContent = (t: any) => ({ itemType: 'TimelineTweet', __typename: 'TimelineTweet', tweet_results: { result: t }, tweetDisplayType: 'Tweet', hasModeratedReplies: false });
+const idOf = (t: any): string => t.rest_id ?? t.tweet?.rest_id ?? 'gone';
+/** A post as its own entry (an ancestor, or the focal post). */
+export function detailTweetEntry(t: any, sortIndex = '7300000000000000000') {
+  return { entryId: `tweet-${idOf(t)}`, sortIndex, content: { entryType: 'TimelineTimelineItem', __typename: 'TimelineTimelineItem', itemContent: tweetItemContent(t), clientEventInfo: { component: 'tweet', element: 'tweet' } } };
+}
+const showMoreItem = (moduleId: string, value: string) => ({
+  entryId: `${moduleId}-cursor-showmore-${value.length}`,
+  item: { itemContent: { itemType: 'TimelineTimelineCursor', __typename: 'TimelineTimelineCursor', value, cursorType: 'ShowMore', displayTreatment: { actionText: 'Show replies' } }, clientEventInfo: { component: 'tweet', element: 'show_more_replies' } },
+});
+const moduleItems = (moduleId: string, posts: any[]) =>
+  posts.map((t) => ({ entryId: `${moduleId}-tweet-${idOf(t)}`, item: { itemContent: tweetItemContent(t), clientEventInfo: { component: 'tweet', element: 'tweet', details: { conversationDetails: { conversationSection: 'HighQuality' } } } } }));
+/** A reply chain: a conversation module (`showMore`: its "Show replies" cursor item). */
+export function conversationModule(posts: any[], opts: { showMore?: string; sortIndex?: string; id?: string } = {}) {
+  const id = `conversationthread-${opts.id ?? idOf(posts[0])}`;
+  return {
+    entryId: id,
+    sortIndex: opts.sortIndex ?? '7299999999999999999',
+    content: {
+      entryType: 'TimelineTimelineModule',
+      __typename: 'TimelineTimelineModule',
+      items: [...moduleItems(id, posts), ...(opts.showMore ? [showMoreItem(id, opts.showMore)] : [])],
+      displayType: 'VerticalConversation',
+      metadata: { conversationMetadata: { allTweetIds: posts.map(idOf), enableDeduplication: true } },
+      clientEventInfo: { component: 'tweet', element: 'tweet' },
+    },
+  };
+}
+/** More of a module shown already (the answer to its ShowMore cursor, or part of a page of more replies). */
+export function addToModule(moduleEntryId: string, posts: any[]) {
+  return { type: 'TimelineAddToModule', moduleEntryId, moduleItemEntryId: `${moduleEntryId}-tweet-${idOf(posts[0])}`, prepend: false, moduleItems: moduleItems(moduleEntryId, posts) };
+}
+/** A cursor as a post's page has it: an item (Bottom: "Show more replies"; ShowMoreThreads; ShowMoreThreadsPrompt). */
+export function detailCursorEntry(type: 'Bottom' | 'ShowMoreThreads' | 'ShowMoreThreadsPrompt', value: string) {
+  const name = type === 'Bottom' ? `cursor-bottom-${value.length}` : type === 'ShowMoreThreads' ? `cursor-showmorethreads-${value.length}` : 'cursor-showmorethreadsprompt';
+  return { entryId: name, sortIndex: '1', content: { entryType: 'TimelineTimelineItem', __typename: 'TimelineTimelineItem', itemContent: { itemType: 'TimelineTimelineCursor', __typename: 'TimelineTimelineCursor', value, cursorType: type, displayTreatment: { actionText: type === 'Bottom' ? 'Show more replies' : 'Show probable spam' } } } };
+}
+export function promotedDetailEntry(t: any) {
+  return { entryId: `promoted-tweet-${idOf(t)}-1a2b3c`, sortIndex: '7299999999999999000', content: { entryType: 'TimelineTimelineItem', __typename: 'TimelineTimelineItem', itemContent: { ...tweetItemContent(t), promotedMetadata: { advertiser_results: { result: { __typename: 'User' } }, impressionId: 'imp', clickTrackingInfo: {} } } } };
+}
+/** "Discover more": posts X picked, not replies. */
+export function relatedEntry(posts: any[]) {
+  return { entryId: 'tweetdetailrelatedtweets-7299999999999998000', sortIndex: '7299999999999998000', content: { entryType: 'TimelineTimelineModule', __typename: 'TimelineTimelineModule', items: moduleItems('tweetdetailrelatedtweets-7299999999999998000', posts), displayType: 'Vertical', header: { text: 'Discover more' } } };
+}
+/** A post that is gone: X's tombstone. */
+export function tombstone(text = 'This Post is unavailable.') {
+  return { __typename: 'TweetTombstone', tombstone: { __typename: 'TextTombstone', text: { rtl: false, text, entities: [] } } };
+}
+export function tweetDetailTimeline(entries: any[], more: any[] = []) {
+  return { instructions: [...more, { type: 'TimelineAddEntries', entries }, { type: 'TimelineTerminateTimeline', direction: 'Top' }] };
+}
+export function tweetDetailResponse(timeline: any) {
+  return { data: { threaded_conversation_with_injections_v2: timeline } };
+}
+
+/**
+ * One thread for the tests and the fake x.com: Cara's garden thread. Above the focal post: Cara's first post and
+ * Finn's answer. Below it: Cara going on (a chain of two, and more behind "Show replies"), Emi and Cara, a gone post,
+ * an ad, Dev, "Discover more", and a Bottom cursor. Its second page (the Bottom cursor): Finn's chain, two more of
+ * Emi's chain (TimelineAddToModule) and a ShowMoreThreads cursor; its third (that cursor): Dev again, and the end.
+ */
+export function gardenThread(now: number) {
+  const H = 3600_000;
+  const root = tweet({ id: '1856000000000000700', by: CARA, text: 'Planting day: forty tomato seedlings', ts: now - 10 * H, counts: { replies: 3 } });
+  const answer = tweet({ id: '1856000000000000701', by: FINN, layout: 'old', text: 'which kind?', ts: now - 9 * H, replyTo: { id: root.rest_id, by: CARA }, root: root.rest_id });
+  const focal = tweet({ id: '1856000000000000702', by: CARA, text: 'San Marzano, mostly https://t.co/s4nM', ts: now - 8 * H, replyTo: { id: answer.rest_id, by: FINN }, root: root.rest_id, urls: [{ url: 'https://t.co/s4nM', expanded: 'https://cara.example/san-marzano', display: 'cara.example/san-marzano' }], counts: { likes: 4, replies: 5 } });
+  /** A reply to the focal post. */
+  const r = (id: string, by: Person, text: string, hours: number, layout?: 'old' | 'new') => tweet({ id, by, text, ts: now - hours * H, replyTo: { id: focal.rest_id, by: CARA }, root: root.rest_id, ...(layout ? { layout } : {}) });
+  const self1 = r('1856000000000000710', CARA, 'and six Black Krim', 7.9);
+  const self2 = tweet({ id: '1856000000000000711', by: CARA, text: 'plus basil between them', ts: now - 7.8 * H, replyTo: { id: self1.rest_id, by: CARA }, root: root.rest_id });
+  const emi1 = r('1856000000000000720', EMI, 'how far apart?', 7);
+  const emi2 = tweet({ id: '1856000000000000721', by: CARA, text: 'about 60 cm', ts: now - 6.5 * H, replyTo: { id: emi1.rest_id, by: EMI }, root: root.rest_id });
+  const dev1 = withVisibility(r('1856000000000000730', DEV, 'good luck & post pictures', 6, 'old'));
+  const ad = tweet({ id: '1856000000000000799', by: DEV, text: 'Buy our seeds', ts: now - H });
+  const elsewhere = tweet({ id: '1856000000000000798', by: EMI, text: 'something else entirely', ts: now - 2 * H });
+  // Page two: Finn's chain, and two more under Emi's (added to her module).
+  const finn1 = r('1856000000000000740', FINN, 'nice', 5, 'old');
+  const emi3 = tweet({ id: '1856000000000000722', by: EMI, text: 'thanks!', ts: now - 6 * H, replyTo: { id: emi2.rest_id, by: CARA }, root: root.rest_id });
+  const emi4 = tweet({ id: '1856000000000000723', by: CARA, text: 'any time', ts: now - 5.9 * H, replyTo: { id: emi3.rest_id, by: EMI }, root: root.rest_id });
+  // Page three: Dev's second.
+  const dev2 = r('1856000000000000750', DEV, 'checking back in', 4, 'old');
+  const page1 = tweetDetailTimeline([
+    detailTweetEntry(root),
+    detailTweetEntry(answer),
+    detailTweetEntry(focal),
+    conversationModule([self1, self2], { showMore: 'DAABself-more' }),
+    conversationModule([emi1, emi2]),
+    conversationModule([tombstone()], { id: '1856000000000000725' }),
+    promotedDetailEntry(ad),
+    conversationModule([dev1]),
+    relatedEntry([elsewhere]),
+    detailCursorEntry('Bottom', 'DAABthread-page2'),
+  ]);
+  const page2 = tweetDetailTimeline([conversationModule([finn1]), detailCursorEntry('ShowMoreThreads', 'DAABthread-page3')], [addToModule(`conversationthread-${emi1.rest_id}`, [emi3, emi4])]);
+  const page3 = tweetDetailTimeline([conversationModule([dev2])]);
+  return { root, answer, focal, self1, self2, emi1, emi2, emi3, emi4, dev1, finn1, dev2, ad, elsewhere, page1, page2, page3, cursors: { page2: 'DAABthread-page2', page3: 'DAABthread-page3' } };
+}
+
+// ---------------------------------------------------------- answering on X
+/** The answers of X's write calls, as its GraphQL gives them. */
+export const favoriteResponse = () => ({ data: { favorite_tweet: 'Done' } });
+export const unfavoriteResponse = () => ({ data: { unfavorite_tweet: 'Done' } });
+export const createRetweetResponse = (sourceId: string, retweetId: string) => ({ data: { create_retweet: { retweet_results: { result: { rest_id: retweetId, legacy: { full_text: 'RT', id_str: retweetId, retweeted_status_id_str: sourceId } } } } } });
+export const deleteRetweetResponse = (sourceId: string) => ({ data: { unretweet: { source_tweet_results: { result: { rest_id: sourceId, legacy: { full_text: '' } } } } } });
+export const createTweetResponse = (t: any) => ({ data: { create_tweet: { tweet_results: { result: t } } } });
+/** An X error answer: `{ errors: [{ message, code }], data: {} }`. */
+export const xErrorResponse = (message: string, code: number) => ({ errors: [{ message, code, kind: 'Permissions', name: 'AuthorizationError', source: 'Client', tracing: { trace_id: 'f4ke' } }], data: {} });
+/** A post read alone (TweetResultByRestId). */
+export const tweetResultResponse = (t: any) => ({ data: { tweetResult: t ? { result: t } : {} } });
+/**
+ * sendTweet's own answer once the page has normalized it (normalizr): the post flat (its legacy fields at the top, its
+ * author as an id), by id, and the id.
+ */
+export function normalizedTweet(t: any) {
+  return { entities: { tweets: { [t.rest_id]: { ...t.legacy, id_str: t.rest_id, user: t.core.user_results.result.rest_id } }, users: {} }, result: t.rest_id };
+}
+/** Who liked or reposted a post (Favoriters, Retweeters): TimelineUser items, then Top and Bottom cursors. */
+export function reactorsTimeline(users: any[], bottom: string | null) {
+  const entries = users.map((u, i) => ({
+    entryId: `user-${u.rest_id}`,
+    sortIndex: String(1_900_000_000_000_000_000n - BigInt(i)),
+    content: { entryType: 'TimelineTimelineItem', __typename: 'TimelineTimelineItem', itemContent: { itemType: 'TimelineUser', __typename: 'TimelineUser', user_results: { result: u }, userDisplayType: 'User' }, clientEventInfo: { component: 'FavoritersTimeline', element: 'user' } },
+  }));
+  return { instructions: [{ type: 'TimelineAddEntries', entries: [...entries, ...(bottom ? [cursorEntry('Bottom', bottom, 1)] : []), cursorEntry('Top', 'DAAHreactors-top', 2)] }, { type: 'TimelineTerminateTimeline', direction: 'Top' }] };
+}
+export const favoritersResponse = (timeline: any) => ({ data: { favoriters_timeline: { timeline } } });
+export const retweetersResponse = (timeline: any) => ({ data: { retweeters_timeline: { timeline } } });

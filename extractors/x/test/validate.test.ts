@@ -67,8 +67,10 @@ test('the inbox and a conversation: duplicates dropped, typing kept by id', () =
 });
 
 test('the self-test: unknown hooks ignored, missing ones missing', () => {
-  const t = V.selfTest({ version: 1, hooks: { graph: { ok: true, via: 'shape' }, bogus: { ok: true } }, counts: { renderers: 2, dropped: { message: 3 } } })!;
+  const t = V.selfTest({ version: 1, hooks: { graph: { ok: true, via: 'shape' }, bogus: { ok: true }, posts: { ok: true, via: 'module' } }, counts: { renderers: 2, dropped: { message: 3 } } })!;
   expect(t.hooks.graph).toEqual({ ok: true, via: 'shape' });
+  // The feed's hooks, the post page's among them, in their own part.
+  expect(t.feed).toMatchObject({ posts: { ok: true, via: 'module' }, profiles: { ok: false, via: null } });
   expect(t.hooks.send).toEqual({ ok: false, via: null });
   expect('bogus' in t.hooks).toBe(false);
   expect(t.counts).toMatchObject({ renderers: 2, roots: 0, dropped: { message: 3 } });

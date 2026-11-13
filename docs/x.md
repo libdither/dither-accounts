@@ -2,8 +2,8 @@
 
 `extractors/x` holds one X account's direct messages, legacy DMs and encrypted XChat conversations alike, its
 notifications (who liked, reposted, replied to, quoted or mentioned your posts, who followed you) as one read-only
-conversation, the profiles of the people in them, and anyone's profile with their recent posts on request, from the
-real x.com web app signed in in a sandboxed browser on this machine, and answers the `chat` interface
+conversation, the profiles of the people in them, anyone's profile with their recent posts and any post's thread on
+request, and, when asked, likes, reposts, posts, replies and quotes and who liked or reposted a post, from the real x.com web app signed in in a sandboxed browser on this machine, and answers the `chat` interface
 (docs/chat.md) from it. Like the Discord kind, it hooks into the client from inside the page: it reads what the
 client holds in plaintext and runs commands as the client's own UI events. It never decrypts anything itself and
 never makes a request the page would not make for the same click.
@@ -213,6 +213,10 @@ toast they raise is the refusal.
 | `history` | scrolls to the top (`ScrolledToTop`) until it has enough or X has no more; messages arrive as backfill |
 | `fetchMedia` (`x-media://<conversation>/<message>/<n>`) | the attachment as the page shows it: its blob, or after `ResolveMediaImmediately` (the client loading it), or its twimg URL fetched with the page's cookies as an `<img>` would. At most 25 MB. |
 | `profile` | someone's profile and recent posts through responsive-web's own endpoints ("Notifications and profiles") |
+| `post` | one post's thread (what it answers, the post, its replies; `cursor` for more replies) through the post page's own endpoint ("Notifications and profiles", `post`) |
+| `postAct` | like, unlike, repost or unrepost a post, the one call its button makes ("Answering on X") |
+| `publish` | a post, a reply (`replyTo`) or a quote (`quote`) through the composer's own `sendTweet` ("Answering on X") |
+| `postReactors` | who liked or reposted a post, a page (`cursor` for more), as its Likes and Reposts tabs ask ("Answering on X") |
 | `action diagnose` | the page's shapes into `diagnostics.json` (below) |
 | `action selftest` | the self-test now |
 | `action resync` | conversations and people announced again; the 10 newest read again |
@@ -227,24 +231,27 @@ public file the page loads).
 
 ## Notifications and profiles
 
-Around the chat, the signed-in page is responsive-web, and the hook reads X's notifications and profiles through its
-own endpoint factories (`hook.js`, "the feed"; mapping in `src/feed.ts`; the protocol's shapes in
-`packages/chat-protocol/src/feed.ts`). Each request is the one the Notifications tab or a profile makes: the page's own
+Around the chat, the signed-in page is responsive-web, and the hook reads X's notifications, profiles and post threads
+through its own endpoint factories (`hook.js`, "the feed"; mapping in `src/feed.ts`; the protocol's shapes in
+`packages/chat-protocol/src/feed.ts`). Each request is the one the Notifications tab, a profile or a post's page makes: the page's own
 factory, given the page's own API client by `withEndpoint`, with the variables, features, headers and transaction id
 the page sends. Nothing here builds a query.
 
 ### The hooks
 
 Reported in the self-test with the others (`hook.<name>` in the details); none of them is needed by the DMs, and a
-missing one takes only the feed or `profile` away.
+missing one takes only the feed, `profile`, `posts` or answering on X away.
 
 | hook | how it is found | without it |
 |---|---|---|
-| `webpack` | webpack's require: a chunk pushed onto `webpackChunk_twitter_responsive_web`, whose function the runtime runs with its require; the chunk leaves the list again at once (`chunk`) | no feed, no `profile` |
-| `store` | the Redux store, from react-redux's context value `{ store, subscription }` in the fiber trees (a provider's value, or the Provider's memo: `provider`), or any value with `dispatch`, `getState`, `subscribe` and `replaceReducer` (`shape`) | no feed, no `profile` |
-| `endpoints` | the thunk's extra argument: `store.dispatch((dispatch, getState, extra) => extra)` returns it and no action reaches a reducer; `extra.api.withEndpoint` (`thunk.api`) or `extra.withEndpoint` (`thunk`) | no feed, no `profile` |
+| `webpack` | webpack's require: a chunk pushed onto `webpackChunk_twitter_responsive_web`, whose function the runtime runs with its require; the chunk leaves the list again at once (`chunk`) | no feed, no `profile`, no `posts` |
+| `store` | the Redux store, from react-redux's context value `{ store, subscription }` in the fiber trees (a provider's value, or the Provider's memo: `provider`), or any value with `dispatch`, `getState`, `subscribe` and `replaceReducer` (`shape`) | no feed, no `profile`, no `posts` |
+| `endpoints` | the thunk's extra argument: `store.dispatch((dispatch, getState, extra) => extra)` returns it and no action reaches a reducer; `extra.api.withEndpoint` (`thunk.api`) or `extra.withEndpoint` (`thunk`) | no feed, no `profile`, no `posts` |
 | `notifications` | the Notifications tab's timeline module (`getCreationOptions().network`: `getEndpoint(api)` is `api.withEndpoint(factory).fetchNotifications`, `getEndpointParams({count, cursor}, state)` its variables; the one whose `timelineType` is `All`). Its chunk is lazy: the route's own loader (a module whose source is `Promise.all([n.e(…), …]).then(() => n(<id>))`, picked because one of its chunks is named `bundle.Notifications.*` by `require.u`) loads it as opening the tab would (`loader`); if the tab was opened already the module is there (`module`). `pending` until the first read. | no feed |
 | `profiles` | the factories whose source has `fetchOneUser:(` (UserByRestId) and `fetchUserTweets:(` (UserTweets, the Posts tab), found by reading the module sources (`require.m`, each once, with the page's untouched `toString`) and taking the export that holds the words (`module`) | no `profile` capability |
+| `posts` | the factory whose source has `fetchTweetDetail:(` (TweetDetail, a post's page; in x.com's main bundle), found the same way (`module`) | no `posts` capability; no quoting (the quoted post is read through it) |
+| `actions` | the tweet actions factory: the export whose source has `sendTweet:function(` and also `unretweet(` (in x.com's main bundle, one factory with `like`, `unlike`, `retweet`, `unretweet`, `sendTweet`, `destroy`, bookmarks and more), found the same way (`module`) | no `postActions`, no `publish` |
+| `reactors` | the factory whose source has `fetchLikedBy:(` (`fetchLikedBy`: Favoriters, `fetchRetweetedBy`: Retweeters, `fetchEditHistory`). Its chunk is lazy: `shared~bundle.QuoteTweetActivity~bundle.TweetActivity` (also `bundle.TweetEditHistory`). At the first `postReactors` the route table's loader with a chunk named `bundle.TweetActivity` by `require.u` (else `bundle.TweetEditHistory`) is run as opening a post's likes would: its chunks, then its module (`loader`); found already loaded when someone opened a post's likes in the page (`module`). `pending` until then, and `postReactors` is offered while pending | no `postReactors` |
 
 The notifications module also exports `updateLastSeenCursor`, the thunk that marks notifications seen on X. It is
 never called; reading the timeline does not mark anything seen (the tab calls that thunk separately).
@@ -308,6 +315,117 @@ opening a profile does. The reply is the `PersonAbout` above plus `posts`: up to
 `repostOf` and empty text, quotes with `quoteOf`, promoted posts left out. Identity facts for every author named come
 first. An unknown or suspended user fails with "X did not give this profile".
 
+### `post`
+
+Capability `posts` when `store`, `endpoints` and `posts` are found. `{ t: 'post', post, cursor? }` reads one post's
+thread as its page on X shows it: only on request (someone opened the post), never on a timer, at the reading pace
+(2.5-6 s after the last read ended, shared with every other read: DMs, media, notifications, profiles), one request
+per call. The hook calls the page's `fetchTweetDetail({ focalTweetId, cursor, referrer: 'tweet', rankingMode:
+'Relevance' })` (TweetDetail, with the variables, features and field toggles the page adds itself,
+`includePromotedContent` among them as the page asks), which resolves to the conversation's URT timeline. Nothing else is sent: no like, no read mark, and nothing is drawn, so the
+page logs no view or impression of the post, its replies, the ads or "Discover more".
+
+The reply is a `PostThread`: `focal` (the post), `ancestors` (the `tweet-<id>` items above it: what it answers, the
+thread's first post first), `replies` (one chain per `conversationthread-<id>` module, a reply and the answers X shows
+under it, at most 20 a chain and 100 chains a page; the focal post's author going on with their own thread first, as
+X shows it) and `more`: the page's Bottom cursor ("Show more replies"), else ShowMoreThreads, else
+ShowMoreThreadsPrompt, or null. Asked again with that `cursor`, the answer is the next page: more modules, and posts
+added to a chain already shown (`TimelineAddToModule`) as one more chain; `focal` may be absent then. A module's own
+"Show replies" cursor (ShowMore) is not followed. Promoted entries (`promoted-…`, `promotedMetadata`) and "Discover
+more" (`tweetdetailrelatedtweets-…`) are left out; posts that are gone (`TweetTombstone`, unavailable) are dropped and
+counted (`post.TweetTombstone`). Every `PostFact` (here, in profiles and in the feed) carries `root`, the thread's first
+post (`legacy.conversation_id_str`). Identity facts for every author come first. A post X does not give (deleted,
+protected, unknown) fails with "X did not give this post".
+
+The copy the hook forwards of a TweetDetail answer may hold 200,000 nodes (60,000 for other answers), and its cursor
+entries are copied first, so a long thread cut short still says where more replies are (`detail.too-big` counts a
+cut). `history` for the feed or the hub's logged posts (`feed:<id>`, `posts:<id>`) is answered at once with nothing:
+they are no chat on X, and the page is never sent looking for one.
+
+## Answering on X
+
+Likes, reposts, posts and who liked: each the one call X's own button or composer makes, through the page's own
+factories (`actions`, `reactors` above), made **once, when the command comes**: nothing is sent before, nothing is
+retried after. A write goes at a person's pace (the DMs' writing pace: 1.2-2.1 s after the last write ended); a read of
+who liked goes at the reading pace (2.5-6 s, shared with every other read). Every `PostFact` the extractor gives
+(threads, profiles, the feed, a post just made) carries `viewer: { liked, reposted }`, from the post's
+`legacy.favorited` and `legacy.retweeted` as X answered them for this account (left out when X sends neither).
+
+Capabilities: `postActions` and `publish` when `store`, `endpoints` and `actions` are found; `postReactors` when
+`store` and `endpoints` are found and `reactors` is found or pending.
+
+### `postAct`
+
+`{ t: 'postAct', post, act }`: `like` calls the factory's `like({ id })` (FavoriteTweet `{ tweet_id }`), `unlike`
+`unlike({ id })` (UnfavoriteTweet), `repost` `retweet({ id })` (CreateRetweet `{ tweet_id }`), `unrepost`
+`unretweet({ id })` (DeleteRetweet `{ source_tweet_id }`). No `promotedContent` is passed (that is for ads). The
+answer is a `PostViewer` with the one flag the act sets: `{ liked: true }`, `{ liked: false }`, `{ reposted: true }`,
+`{ reposted: false }`; the other flag is not read (ask `post` for the whole post). When X answers that it is so
+already (code 139 for a like, 327 for a repost) the act counts as done. Any other failure fails the call with X's
+words: the page's API client rejects with an ApiError whose `errors` hold X's codes and messages (the message after
+its "Kind: " prefix, as the client cuts it); the first message is the error, else the error's own message.
+
+### `publish`
+
+`{ t: 'publish', text, replyTo?, quote? }`. The text is checked first against X's rules as the hub checks it
+(`composeState` with `POST_RULES.x`: 280, weighted), so a too-long post fails ("too long for X: 281 of 280") before
+the page is asked. Then the composer's own `sendTweet(options)` with `{ status: text }`, plus, for a reply,
+`in_reply_to_status_id` and `exclude_reply_user_ids: ''` (nobody left out), and, for a quote, `attachment_url:
+https://x.com/<handle>/status/<id>`. The handle is the quoted post's author's, read first through the post page's
+factory without replies (`fetchTweetDetail({ focalTweetId, withReplies: false })`: TweetResultByRestId); a quoted
+post X does not give fails the call ("X did not give the post to quote") before anything is posted. `sendTweet` sends
+CreateTweet (CreateNoteTweet for a long post on an account allowed one: its own choice) and resolves to the made post
+normalized: `{ entities: { tweets: { <id>: post, flat } }, result: <id> }`.
+
+Once X has made the post, the answer is that post and the call never fails: the hook reads it back alone
+(TweetResultByRestId, 0.4-0.9 s later) and `feed.ts parsePublished` maps it as any post (author, `replyTo`,
+`quoteOf`, `root`, `viewer`); if that read fails, the normalized post `sendTweet` gave (its legacy fields at the
+top, its author as an id); else the id, the text and now. The link is made with your handle when X's answer gave none.
+Identity facts for the people in it come first. Only when X's answer names no post at all does the call fail, with
+"X did not say which post it made: look on X before posting again" (it may have been made). A failure of the send
+itself is X's words: "Status is a duplicate." (187), "No status found with that ID." (144) and the like.
+
+### `postReactors`
+
+`{ t: 'postReactors', post, kind: 'like' | 'repost', cursor? }`: the page's `fetchLikedBy` or `fetchRetweetedBy`
+(`{ count: 20, cursor, enableRanking: true, tweetId }`: ranked, as the Likes tab's ranked timeline asks), which
+resolves to the `favoriters_timeline` / `retweeters_timeline` URT timeline. The answer is a `ReactorsPage`: `who`, in
+X's order, each `{ id, followers?, following?, followsYou?, verified? }` (followers from `legacy.followers_count`;
+`following`: you follow them, `followsYou`: they follow you, from `relationship_perspectives` or `legacy`;
+`verified` when `is_blue_verified`, `verification.verified` or `legacy.verified`), and `more`: the Bottom cursor,
+or null when the page has nobody on it. Identity facts for everyone in it come first. X shows who liked a post only to
+its author (since 2024): for someone else's post the answer is `{ who: [], more: null }` if X answers with an empty
+timeline (as the fake does), else X's error. Reposts are public.
+
+### What is a guess about the live X
+
+Read from the public bundle (2026-11-12), run only against the fake:
+
+- the actions factory's marker (`sendTweet:function(`, `unretweet(`), and that `withEndpoint` gives it the same
+  client the buttons use;
+- that X still answers "already liked" with code 139 and "already reposted" with 327, and that the ApiError's
+  `errors` carry them (`extensions.code` or `code`) with a readable message;
+- what `sendTweet` with only `status` (and the reply or quote fields) sends: `batch_compose`,
+  `semantic_annotation_ids` and `media` are filled by its own variable builder; `exclude_reply_user_ids: ''` as an
+  empty list; whether a reply needs more (X's composer may add the mentioned users);
+- that `attachment_url` with the author's handle is what quoting needs (the composer's own form), and that
+  TweetResultByRestId gives a just-made post at once;
+- whether `result` of the normalized answer is the new id (the tweet schema's `idAttribute` is `rest_id`);
+- the TweetActivity route's loader: that the route table holds a loader whose chunks include one named
+  `bundle.TweetActivity` (`shared~bundle.QuoteTweetActivity~bundle.TweetActivity` holds the factory), and that loading
+  it from /i/chat works;
+- what Favoriters answers for someone else's post (an empty timeline is assumed), whether its last page carries a
+  Bottom cursor with nobody (handled either way), and how many people a page holds with `count: 20`.
+
+**What a live check should look at**: after one like and unlike of a post of your own, one repost and unrepost, one
+reply to your own post (then delete it on X), and `postReactors` on a post of yours with likes: `hook.actions` should
+say `found (module)` and `hook.reactors` `found (loader)` (or `module`). `action diagnose` writes
+`diagnostics.json`, whose `page.feed` has `actions.keys` (the factory's method names: `like`, `unlike`,
+`retweet`, `unretweet`, `sendTweet` must be among them), `reactors.chunk` (the chunk it loaded) or
+`reactors.chunks` (the loaders' activity chunks, when none worked), and the shapes of the last answers:
+`responses.act` (`{ favorite_tweet }`, `{ create_retweet: … }`…), `responses.created` (the normalized post),
+`responses.reactors` (the timeline). The log names each failed act (`postAct.like failed {error}`) with X's words.
+
 ### Users in both layouts
 
 2025's (`core.name/screen_name/created_at`, `avatar.image_url`, `location.location`, `relationship_perspectives
@@ -330,14 +448,15 @@ never changes the account's status: the DMs go on whatever it says.
 | layer *inbox* "…; 12 objects dropped" | the shapes moved | `dropped` in the details names the kind and reason |
 | `lastCommand` "send failed" | a command | the log line `send failed {error}` |
 | layer *feed* waiting "first read at 12:34:56" | the feed has not read yet (30-60 s after online) | wait |
-| layer *feed* failed "X changed: store, endpoints not found, so notifications cannot be read" | a feed hook, past the grace period | `hook.webpack`, `hook.store`, `hook.endpoints`, `hook.notifications`, `hook.profiles`; `feed` in `diagnostics.json` |
+| layer *feed* failed "X changed: store, endpoints not found, so notifications cannot be read" | a feed hook, past the grace period | `hook.webpack`, `hook.store`, `hook.endpoints`, `hook.notifications`, `hook.profiles`, `hook.posts`, `hook.actions`, `hook.reactors`; `feed` in `diagnostics.json` |
+| `lastCommand` "postAct.like failed", "publish failed", "postReactors failed" | answering on X | the log line with X's words; `feed.actions`, `feed.reactors` and `feed.responses` in `diagnostics.json` |
 | layer *feed* failed "last read failed: …" | the last read | the log line `feed read failed {error}`; it tries again 4-8 minutes later |
 
 `details` (names, ids and counts only): `display`, `page`, `pageState`, `pinMode`, `extensionAttached`, `hookVersion`,
 `hooks`, `self` (the user id and how it was found), `conversations`, `xchat`, `legacy`, `groups`, `openInPage`,
 `reactRenderers`, `fiberRoots`, `modulesLoaded`, `modulesScanned`, `readsHeld`, `dropped`, `lastCommand`,
 `diagnostics`, `hook.<name>` for each hook (the feed's too: `hook.webpack`, `hook.store`, `hook.endpoints`,
-`hook.notifications`, `hook.profiles`): `found (via)`, `pending` or `missing`, and the feed's counts: `feed.items`
+`hook.notifications`, `hook.profiles`, `hook.posts`, `hook.actions`, `hook.reactors`): `found (via)`, `pending` or `missing`, and the feed's counts: `feed.items`
 (messages announced since the start), `feed.people` (profiles announced), `feed.lastFetch`, `feed.nextFetch`,
 `feed.lastError`, `feed.dropped`.
 
@@ -351,8 +470,10 @@ used here, the inbox component's and state's keys with their value types (`bigin
 open conversation its state's, items' and composer's shapes and counts of items by class, the self-test and the drop
 counts; and `feed`: the feed hooks and how they were found, webpack's module count and which words were found, the
 store's own keys and its state's top-level keys, the endpoints object's keys, the notifications module's keys and
-creation options' shape and the chunk it loaded, and the shapes of the last notifications, user and posts answers
-(keys and types, arrays as their length and first element, ids as `<id>`). Never a value.
+creation options' shape and the chunk it loaded, the post actions factory's method names, the activity chunk loaded
+for who liked (or the loaders' activity chunks when none worked), and the shapes of the last notifications, user,
+posts, thread, act, made post and reactors answers (keys and types, arrays as their length and first element, ids as
+`<id>`). Never a value.
 
 The log (`adapter.log`) has ids, counts, hook and class names and statuses (`feed read: 3 new, 1 page(s)`). Never
 message text, a notification's words, a person's name or handle (the account's own handle is in its *signed in* layer, as for every chat kind), a cookie, a token or the PIN.
@@ -412,6 +533,17 @@ covers the parsing (both user layouts and the flat one, `TweetWithVisibilityResu
 media, aggregated likes, replies, mentions, follows, X's own notices, cursors, drops by reason) and what is announced
 (order, live, profiles once a day, the kept state).
 
+Answering on X, the same way (the fake's main chunk has the tweet actions factory with mutations POSTed as JSON and
+an API client that rejects as x.com's does; `rw-activity.js` holds the activity route's two lazy chunks; the server
+keeps each post's `favorited`, `retweeted` and counts, and answers X's errors 139, 327, 144 and 187): like, repost,
+like again (139, done), unlike, unrepost, each one POST with X's variables, and the post read again showing
+`viewer`; a like of an unknown post failing with X's words, sent once; a post, a reply (`reply.in_reply_to_tweet_id`)
+and a quote (`attachment_url` with the author's handle, the quoted post read first), each read back and answered
+with its author, `replyTo`, `quoteOf` and `root`; a duplicate failing with X's words after exactly one CreateTweet;
+a too-long or empty post refused before the page is asked; who liked your post, ranked, two pages and an empty last
+one, its chunks loaded once by the route's loader, who reposted it, and nobody for someone else's post.
+`feed.test.ts` covers `viewer` in every kind of post, `parsePublished`'s three ways and `parseReactors`.
+
 Also verified the same way: the Requests page's list (a one-to-one request and a group invitation), its
 conversation read with no read reaching the fake, Accept, Delete and Block with their confirmations (and the
 conversation bar's Accept for a group), a new request live, the Requests page itself as the fallback (`page`);
@@ -467,6 +599,7 @@ only against the fake):
 - what `fetchOneUser` normalizes a user to (the flat layout is assumed from the code: the user schema's
   `processStrategy` was not read in full), and whether UserTweets without `isPaymentsEnrolled` answers as the page's;
 - that reading the timeline never moves X's own unread count (the brief's finding: only `updateLastSeenCursor` does).
+- answering on X: see "Answering on X", "What is a guess about the live X".
 
 ## Your real-account checklist
 
@@ -486,6 +619,9 @@ only against the fake):
    follows, one per person, and **X's own bell still shows your unread notifications** (nothing marked seen). Open
    someone's profile in dither-chat: their bio, counts and recent posts. If anything is off, `diagnostics.json`'s
    `feed` has the shapes of what X answered.
+   Answering on X: like and unlike a post of your own, repost and unrepost it, reply to it once (delete the reply on
+   X after), and open who liked it; each shows on your phone as if done in the browser, and `hook.actions` and
+   `hook.reactors` say `found` ("Answering on X", "What a live check should look at").
 8. Mark a conversation read from dither-chat: it should show read on your phone.
 9. The new hooks: `hook.requests` (`graph`), `hook.answer` (`list:…`), `hook.openDirect` (`search`),
    `hook.createGroup`, `hook.addMembers`, `hook.groupInfo`, `hook.typing`, `hook.forward` should all say `found`;

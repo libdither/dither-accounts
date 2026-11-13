@@ -2248,14 +2248,24 @@
   //     export, `updateLastSeenCursor`, marks notifications seen and is never called.
   //   - profiles: the factories with `fetchOneUser:(` (UserByRestId) and `fetchUserTweets:(` (UserTweets, the Posts
   //     tab), found by those words in the module sources (read with the page's untouched toString).
+  //   - posts: the factory with `fetchTweetDetail:(` (TweetDetail, a post's page: what it answers and its replies),
+  //     found the same way and called as opening a post calls it. It resolves to the conversation's URT timeline.
+  //   - actions: the tweet actions factory (`sendTweet:function(`, with `unretweet(` in the same source): what a post's
+  //     buttons and the composer call: like/unlike (FavoriteTweet, UnfavoriteTweet), retweet/unretweet (CreateRetweet,
+  //     DeleteRetweet) and sendTweet (CreateTweet, or CreateNoteTweet for a long post). Called only when a command asks.
+  //   - reactors: the factory with `fetchLikedBy:(` (Favoriters, Retweeters: a post's Likes and Reposts tabs). Its
+  //     chunk is lazy (the TweetActivity route's, shared with QuoteTweetActivity; also TweetEditHistory's): loaded at
+  //     the first `reactors` command by the route's own loader, as opening a post's likes would (`loader`), or found
+  //     already loaded (`module`). `pending` until then.
   //
   // What comes back is forwarded as a whitelisted copy (FEED_KEYS: the fields feed.ts reads), the rest dropped.
   const CHUNKS = 'webpackChunk_twitter_responsive_web';
-  const FEED_HOOKS = ['webpack', 'store', 'endpoints', 'notifications', 'profiles'];
+  const FEED_HOOKS = ['webpack', 'store', 'endpoints', 'notifications', 'profiles', 'posts', 'actions', 'reactors'];
   for (const n of FEED_HOOKS) hooks[n] = { ok: false, via: null };
   // Found at the first read (its chunk loads then), not before.
   hooks.notifications.via = 'pending';
-  const feed = { req: null, store: null, api: null, apiVia: null, notif: null, users: null, tweets: null, lastNotifications: null, lastUser: null, lastTweets: null, loaderChunk: null, notifChunks: null };
+  hooks.reactors.via = 'pending';
+  const feed = { req: null, store: null, api: null, apiVia: null, notif: null, users: null, tweets: null, detail: null, actions: null, reactors: null, lastNotifications: null, lastUser: null, lastTweets: null, lastDetail: null, lastAct: null, lastCreated: null, lastReactors: null, loaderChunk: null, notifChunks: null, reactorsChunk: null, reactorsChunks: null };
   const srcOf = (f) => {
     try {
       return cloak.textOf(f) || '';
@@ -2333,7 +2343,7 @@
   }
 
   // Module sources are read once each (a set of the ids looked at), for the words below.
-  const MARKS = { users: 'fetchOneUser:(', tweets: 'fetchUserTweets:(', notifications: 'fetchNotifications:(' };
+  const MARKS = { users: 'fetchOneUser:(', tweets: 'fetchUserTweets:(', detail: 'fetchTweetDetail:(', actions: 'sendTweet:function(', reactors: 'fetchLikedBy:(', notifications: 'fetchNotifications:(' };
   const marked = {};
   const looked = new Set();
   const loaders = [];
@@ -2369,15 +2379,15 @@
     }
   }
   /** The first of the modules `ids` with an export whose source holds `word` (the factory), or null. */
-  function exportIn(ids, word) {
+  function exportIn(ids, word, also) {
     for (const id of ids || []) {
-      const f = exportWith(id, word);
+      const f = exportWith(id, word, also);
       if (f) return f;
     }
     return null;
   }
   /** The export of module `id` whose source holds `word` (the factory), or null. */
-  function exportWith(id, word) {
+  function exportWith(id, word, also) {
     let ex;
     try {
       ex = feed.req(id);
@@ -2388,7 +2398,11 @@
     try {
       for (const k of Object.keys(ex)) cands.push(get(ex, k));
     } catch (e) {}
-    for (const c of cands) if (fn(c) && srcOf(c).indexOf(word) >= 0) return c;
+    for (const c of cands) {
+      if (!fn(c)) continue;
+      const s = srcOf(c);
+      if (s.indexOf(word) >= 0 && (!also || s.indexOf(also) >= 0)) return c;
+    }
     return null;
   }
   /** The All timeline module among a module's exports: getCreationOptions().network fetching notifications. */
@@ -2420,7 +2434,7 @@
   let probedAt = 0;
   /** Looks for what the feed needs (not the notifications, found at the first read), at most once a minute until found. */
   function feedProbe() {
-    if (feed.req && feed.api && feed.users && feed.tweets) return;
+    if (feed.req && feed.api && feed.users && feed.tweets && feed.detail && feed.actions && feed.reactors) return;
     if (Date.now() - probedAt < 60_000) return;
     probedAt = Date.now();
     wpRequire();
@@ -2429,6 +2443,12 @@
     if (!feed.users) feed.users = exportIn(marked.users, MARKS.users);
     if (!feed.tweets) feed.tweets = exportIn(marked.tweets, MARKS.tweets);
     mark('profiles', !!(feed.users && feed.tweets), 'module');
+    if (!feed.detail) feed.detail = exportIn(marked.detail, MARKS.detail);
+    mark('posts', !!feed.detail, 'module');
+    if (!feed.actions) feed.actions = exportIn(marked.actions, MARKS.actions, 'unretweet(');
+    mark('actions', !!feed.actions, 'module');
+    // Loaded already (someone opened a post's likes): there. Else pending until the first `reactors` loads it.
+    if (!feed.reactors && (feed.reactors = exportIn(marked.reactors, MARKS.reactors))) mark('reactors', true, 'module');
     // The tab was opened already: its module is there.
     if (!feed.notif && notifIn(marked.notifications)) mark('notifications', true, 'module');
   }
@@ -2532,6 +2552,186 @@
     feed.lastTweets = t;
     return { user: copyFeed(u, 'user'), tweets: copyFeed(t, 'tweets') };
   }
+  /**
+   * One post's page, as opening it asks for it: TweetDetail for `cmd.post` (the focal post), what it answers and its
+   * replies, ranked as X ranks them by default; `cmd.cursor` (a Bottom or ShowMoreThreads cursor of an earlier page)
+   * for more replies. Nothing is liked, viewed or marked: this is only the read.
+   */
+  async function postRead(cmd) {
+    const api = feedApi();
+    if (!feed.detail) throw new Error('X changed: the post endpoint (TweetDetail) was not found');
+    if (!/^\d{1,25}$/.test(String(cmd.post))) throw new Error('not a post id');
+    if (cmd.cursor !== undefined && (typeof cmd.cursor !== 'string' || !cmd.cursor || cmd.cursor.length > 2000)) throw new Error('not a cursor');
+    const res = await api.withEndpoint(feed.detail).fetchTweetDetail({ focalTweetId: String(cmd.post), cursor: cmd.cursor || undefined, referrer: 'tweet', rankingMode: 'Relevance' });
+    feed.lastDetail = res;
+    return { detail: copyFeed(res, 'detail', DETAIL_MAX_NODES) };
+  }
+
+  // ------------------------------------------------------- answering on X
+  // Likes, reposts and posts, each the one call a post's button or the composer makes, made once when the command
+  // comes: never retried here (a write that failed is answered as failed, with X's words), never before.
+  const POST_ID = /^\d{1,25}$/;
+  /** X's own words for a failed call (its GraphQL `errors`, else the error's message), and its code when it gave one. */
+  function xError(e) {
+    const errs = get(e, 'errors');
+    const first = Array.isArray(errs) && errs.length ? errs[0] : null;
+    const msg = (first && typeof get(first, 'message') === 'string' && get(first, 'message')) || String((e && e.message) || e || 'X failed');
+    const code = first && typeof get(first, 'code') === 'number' ? get(first, 'code') : null;
+    return { message: msg.slice(0, 280), code };
+  }
+  function actionsApi() {
+    const api = feedApi();
+    if (!feed.actions) throw new Error('X changed: the post actions (sendTweet, like, retweet) were not found');
+    return api.withEndpoint(feed.actions);
+  }
+  // Already as asked: X says so with these codes (139: already liked; 327: already reposted). The post stands as asked.
+  const ALREADY = { like: 139, repost: 327 };
+  /** Like, unlike, repost or unrepost one post, as its buttons do. Answers how it stands after: `{ liked }` or `{ reposted }`. */
+  async function postAct(cmd) {
+    if (!POST_ID.test(String(cmd.post))) throw new Error('not a post id');
+    const call = { like: 'like', unlike: 'unlike', repost: 'retweet', unrepost: 'unretweet' }[cmd.act];
+    if (!call) throw new Error('not a post action');
+    const a = actionsApi();
+    if (!fn(get(a, call))) throw new Error(`X changed: the post action ${call} was not found`);
+    try {
+      feed.lastAct = await a[call]({ id: String(cmd.post) });
+    } catch (e) {
+      const x = xError(e);
+      if (x.code === null || x.code !== ALREADY[cmd.act]) throw new Error(x.message);
+    }
+    return cmd.act === 'like' || cmd.act === 'unlike' ? { liked: cmd.act === 'like' } : { reposted: cmd.act === 'repost' };
+  }
+  /** One post as TweetResultByRestId gives it (the post page's factory without replies): `{ result: Tweet }`. */
+  async function oneTweet(id) {
+    if (!feed.detail) throw new Error('X changed: the post endpoint (TweetDetail) was not found');
+    return feedApi().withEndpoint(feed.detail).fetchTweetDetail({ focalTweetId: String(id), withReplies: false });
+  }
+  /** The handle of a post's author from TweetResultByRestId's answer, or null. */
+  function authorHandle(r) {
+    let t = get(r, 'result');
+    if (get(t, '__typename') === 'TweetWithVisibilityResults') t = get(t, 'tweet');
+    const u = get(get(get(t, 'core'), 'user_results'), 'result');
+    const h = get(get(u, 'core'), 'screen_name') || get(get(u, 'legacy'), 'screen_name');
+    return typeof h === 'string' && /^\w{1,50}$/.test(h) ? h : null;
+  }
+  /**
+   * A post, a reply (`replyTo`) or a quote (`quote`: its link, https://x.com/<handle>/status/<id>, as the composer
+   * attaches it), through the composer's own sendTweet. Once X has made it, the answer is the made post: read back as
+   * one post (`tweet`), or, when that read fails, what sendTweet itself gave (`created`, normalized). Nothing after
+   * the send throws: a post that was made is never answered as failed.
+   */
+  async function publish(cmd) {
+    const text = cmd.text;
+    if (typeof text !== 'string' || !text.trim() || text.length > 25_000) throw new Error('nothing to post');
+    if (cmd.replyTo !== undefined && !POST_ID.test(String(cmd.replyTo))) throw new Error('not a post id to reply to');
+    if (cmd.quote !== undefined && !POST_ID.test(String(cmd.quote))) throw new Error('not a post id to quote');
+    const a = actionsApi();
+    if (!fn(get(a, 'sendTweet'))) throw new Error('X changed: sendTweet was not found');
+    const options = { status: text };
+    if (cmd.replyTo) {
+      options.in_reply_to_status_id = String(cmd.replyTo);
+      options.exclude_reply_user_ids = '';
+    }
+    if (cmd.quote) {
+      // The quoted post's link names its author, as the composer's does: read the post first (it may be gone).
+      let q = null;
+      try {
+        q = await oneTweet(cmd.quote);
+      } catch (e) {
+        throw new Error(`X did not give the post to quote: ${xError(e).message}`);
+      }
+      const handle = authorHandle(q);
+      if (!handle) throw new Error('X did not give the post to quote');
+      options.attachment_url = `https://x.com/${handle}/status/${cmd.quote}`;
+      await sleep(human(300, 900));
+    }
+    let res;
+    try {
+      res = await a.sendTweet(options);
+    } catch (e) {
+      throw new Error(xError(e).message);
+    }
+    feed.lastCreated = res;
+    const tweets = get(get(res, 'entities'), 'tweets');
+    let id = get(res, 'result');
+    if (typeof id !== 'string' || !POST_ID.test(id)) {
+      id = null;
+      try {
+        id = Object.keys(tweets || {}).find((k) => POST_ID.test(k)) || null;
+      } catch (e) {}
+    }
+    if (!id) return { id: null, created: copyFeed(res, 'created') };
+    const created = copyFeed({ entities: { tweets: { [id]: get(tweets, id) } }, result: id }, 'created');
+    let tweet = null;
+    try {
+      await sleep(human(400, 900));
+      tweet = copyFeed(await oneTweet(id), 'tweet');
+    } catch (e) {
+      log('warn', 'the new post could not be read back; answering with what sendTweet gave');
+    }
+    return { id, created, tweet };
+  }
+
+  /** The Favoriters/Retweeters factory, loading its chunk the way opening a post's likes does. */
+  async function reactorsFactory() {
+    if (feed.reactors) return feed.reactors;
+    const req = feed.req;
+    if (!req) throw new Error('X changed: webpack was not found, so who liked a post cannot be read');
+    readModules();
+    if ((feed.reactors = exportIn(marked.reactors, MARKS.reactors))) {
+      mark('reactors', true, 'module');
+      return feed.reactors;
+    }
+    const name = (cid) => {
+      try {
+        return String(req.u(cid));
+      } catch (e) {
+        return '';
+      }
+    };
+    // The post's activity route first (Likes, Reposts), then its edit history's: both chunks hold the factory.
+    const ROUTES = [/(^|~)bundle\.TweetActivity[.~]/, /(^|~)bundle\.TweetEditHistory[.~]/];
+    for (const re of ROUTES) {
+      for (const l of loaders) {
+        const hit = l.chunks.find((c) => re.test(name(c)));
+        if (hit === undefined) continue;
+        try {
+          await Promise.all(l.chunks.map((c) => req.e(c)));
+          req(l.module);
+        } catch (e) {
+          log('warn', 'the post activity chunk would not load');
+          continue;
+        }
+        readModules();
+        if ((feed.reactors = exportIn(marked.reactors, MARKS.reactors))) {
+          feed.reactorsChunk = name(hit).replace(/\.\w+\.js$/, '');
+          mark('reactors', true, 'loader');
+          return feed.reactors;
+        }
+      }
+    }
+    mark('reactors', false, null);
+    feed.reactorsChunks = [...new Set(loaders.flatMap((l) => l.chunks.map(name)).filter((n) => /Activity|EditHistory/.test(n)))].slice(0, 20);
+    throw new Error('X changed: the likes and reposts endpoint (fetchLikedBy) was not found');
+  }
+  /** Who liked (`of` like) or reposted (repost) a post, a page as its Likes or Reposts tab asks for it, ranked. */
+  async function reactorsRead(cmd) {
+    const api = feedApi();
+    if (!POST_ID.test(String(cmd.post))) throw new Error('not a post id');
+    if (cmd.of !== 'like' && cmd.of !== 'repost') throw new Error('not likes or reposts');
+    if (cmd.cursor !== undefined && (typeof cmd.cursor !== 'string' || !cmd.cursor || cmd.cursor.length > 2000)) throw new Error('not a cursor');
+    const f = await reactorsFactory();
+    const e = api.withEndpoint(f);
+    const params = { count: 20, cursor: cmd.cursor || undefined, enableRanking: true, tweetId: String(cmd.post) };
+    let res;
+    try {
+      res = await (cmd.of === 'like' ? e.fetchLikedBy(params) : e.fetchRetweetedBy(params));
+    } catch (err) {
+      throw new Error(xError(err).message);
+    }
+    feed.lastReactors = res;
+    return { timeline: copyFeed(res, 'reactors') };
+  }
 
   // The fields feed.ts reads (timelines, notifications, users, posts), and nothing else. Keys of digits are ids (the
   // user lookup's normalized `entities.users`).
@@ -2546,11 +2746,24 @@
       'full_text display_text_range favorite_count retweet_count reply_count quote_count in_reply_to_status_id_str ' +
       'in_reply_to_user_id_str in_reply_to_screen_name retweeted_status_result quoted_status_result quoted_status_permalink ' +
       'note_tweet note_tweet_results entity_set media extended_entities media_url_https original_info width height ' +
-      'ext_alt_text views count tweet user users timeline timeline_v2 data reason'
+      'ext_alt_text views count tweet user users timeline timeline_v2 data reason ' +
+      // A post's page (TweetDetail): the thread a post is in, conversation modules, the instructions that add to them.
+      'conversation_id_str moduleItems moduleEntryId moduleItemEntryId prepend direction displayTreatment actionText ' +
+      'threaded_conversation_with_injections_v2 ' +
+      // What you did to a post; a made post (sendTweet's normalized answer, a post read back alone); who liked or
+      // reposted (Favoriters, Retweeters: user entries).
+      'favorited retweeted tweets tweetResult user_id_str userDisplayType verification'
     ).split(' '),
   );
   const FEED_MAX_NODES = 60_000;
-  function copyFeed(v, kind) {
+  // A long thread's page is bigger than a notifications page; and its cursors, which come last, are copied first (an
+  // entry's order among the others is kept), so a page cut short still says where more replies are.
+  const DETAIL_MAX_NODES = 200_000;
+  const isCursorEntry = (e) => {
+    const id = get(e, 'entryId');
+    return typeof id === 'string' && (id.startsWith('cursor-') || id.indexOf('-cursor-') >= 0) ? 1 : 0;
+  };
+  function copyFeed(v, kind, max = FEED_MAX_NODES) {
     let nodes = 0;
     let cut = false;
     const walk = (x, depth) => {
@@ -2561,11 +2774,15 @@
       if (t === 'boolean') return x;
       if (t === 'bigint') return String(x);
       if (t !== 'object' || depth > 40) return null;
-      if (++nodes > FEED_MAX_NODES) {
+      if (++nodes > max) {
         cut = true;
         return null;
       }
-      if (Array.isArray(x)) return x.slice(0, 500).map((y) => walk(y, depth + 1));
+      if (Array.isArray(x)) {
+        const xs = x.slice(0, 500);
+        if (kind === 'detail') xs.sort((a, b) => isCursorEntry(b) - isCursorEntry(a));
+        return xs.map((y) => walk(y, depth + 1));
+      }
       const out = {};
       let keys;
       try {
@@ -2605,7 +2822,9 @@
       store: feed.store ? { keys: keysOf(feed.store), state: state && typeof state === 'object' ? Object.keys(state).slice(0, 120).sort() : typeTag(state) } : null,
       endpoints: feed.api ? { via: feed.apiVia, keys: keysOf(feed.api) } : null,
       notifications: feed.notif ? { keys: keysOf(feed.notif), options: jsonShape(feed.notif.getCreationOptions(), 2), chunk: feed.loaderChunk } : { loaders: loaders.length, chunks: feed.notifChunks || null, marked: (marked.notifications || []).length },
-      responses: { notifications: jsonShape(feed.lastNotifications, 12), user: jsonShape(feed.lastUser, 6), tweets: jsonShape(feed.lastTweets, 12) },
+      reactors: feed.reactors ? { chunk: feed.reactorsChunk } : { chunks: feed.reactorsChunks || null, marked: (marked.reactors || []).length },
+      actions: feed.actions ? { keys: (() => { try { return Object.keys(feed.api.withEndpoint(feed.actions)).slice(0, 80).sort(); } catch (e) { return null; } })() } : { marked: (marked.actions || []).length },
+      responses: { notifications: jsonShape(feed.lastNotifications, 12), user: jsonShape(feed.lastUser, 6), tweets: jsonShape(feed.lastTweets, 12), detail: jsonShape(feed.lastDetail, 12), act: jsonShape(feed.lastAct, 8), created: jsonShape(feed.lastCreated, 6), reactors: jsonShape(feed.lastReactors, 12) },
     };
   }
 
@@ -2640,6 +2859,14 @@
         return feedRead(cmd);
       case 'profile':
         return profileRead(cmd);
+      case 'post':
+        return postRead(cmd);
+      case 'postAct':
+        return postAct(cmd);
+      case 'publish':
+        return publish(cmd);
+      case 'reactors':
+        return reactorsRead(cmd);
       case 'requests':
         await lookAtRequests();
         return emitRequests(true) || { requests: [], loading: false, more: false };

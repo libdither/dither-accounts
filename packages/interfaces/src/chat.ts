@@ -6,7 +6,7 @@
  * Runtime checks stay shallow (an object): the extractors are this repo's own code and check their commands
  * themselves, and the types here keep apps honest at build time.
  */
-import type { About, AdapterCommand, AdapterEvent, AddMembersResult, AddPreview, AddResult, AppAutocompleteResult, AppCommandsResult, BansResult, CreateGroupResult, DirectVoiceSession, GateResult, HistoryResult, InteractResult, LeaveResult, NativeMute, NativeScheduledResult, NetworkSearchResult, OpenDirectResult, OwnPresence, PersonAbout, ReactionContext, SavedFact, SavedListResult, ScheduledEventFact, ScheduledEventsResult, SessionsResult, SpaceGate, ThreadsResult } from '@dither-chat/protocol';
+import type { About, AdapterCommand, AdapterEvent, AddMembersResult, AddPreview, AddResult, AppAutocompleteResult, AppCommandsResult, BansResult, CreateGroupResult, DirectVoiceSession, GateResult, HistoryResult, InteractResult, LeaveResult, NativeMute, NativeScheduledResult, NetworkSearchResult, OpenDirectResult, OwnPresence, PersonAbout, PostFact, PostThread, PostViewer, ReactionContext, ReactorsPage, SavedFact, SavedListResult, ScheduledEventFact, ScheduledEventsResult, SessionsResult, SpaceGate, ThreadsResult } from '@dither-chat/protocol';
 import type { StickerPackFact, StickerPage } from '@dither-chat/protocol';
 import type { CreateThreadResult, ThreadFact } from '@dither-chat/protocol';
 import { ev, iface, op, type Schema, s } from '@dither-accounts/spec';
@@ -27,7 +27,7 @@ export const chat = iface({
   describe: 'Messages, people, groups and communities on a chat network.',
   levels: {
     read: 'Read your chats, who is in them, and what arrives',
-    write: 'Send, forward, react, edit and delete messages as you, mark them read, and join calls',
+    write: 'Send, forward, react, edit and delete messages as you, mark them read, join calls, and post, like and repost',
     manage: "Change chats' and servers' settings, roles and membership as you, and run account actions (re-login, relink)",
   },
   ops: {
@@ -41,6 +41,8 @@ export const chat = iface({
     fetchMedia: op('read', 'An attachment or avatar the network serves', input('fetchMedia'), out<{ mime: string; base64: string }>(), 120_000),
     about: op('read', "A conversation's or space's settings and members", input('about'), out<About>(), 60_000),
     profile: op('read', 'What the network says about a person', input('profile'), out<PersonAbout>(), 60_000),
+    post: op('read', "A post's thread: what it answers and its replies", input('post'), out<PostThread>(), 120_000),
+    postReactors: op('read', 'Who liked or reposted a post', input('postReactors'), out<ReactorsPage>(), 120_000),
     resolve: op('read', 'What an invite, address, name or handle is, without acting on it', input('resolve'), out<AddPreview>(), 60_000),
     scheduledEvents: op('read', "A server's scheduled events as the network has them now, with counts and your answers", input('scheduledEvents'), out<ScheduledEventsResult>(), 60_000),
     gate: op('read', 'What a server asks of you before you are in: its rules, an application, onboarding', input('gate'), out<SpaceGate | null>(), 60_000),
@@ -49,6 +51,8 @@ export const chat = iface({
     stickers: op('read', 'A page of the stickers you may send in a conversation', input('stickers'), out<StickerPage>(), 30_000),
     send: op('write', 'Send a message', input('send'), out<{ nativeId?: string } | undefined>(), 120_000),
     forward: op('write', 'Forward a message', input('forward'), out<{ nativeId?: string; fallback?: string }>(), 60_000),
+    postAct: op('write', 'Like or repost a post, or take it back', input('postAct'), out<PostViewer>(), 60_000),
+    publish: op('write', 'Write a post: a reply, a quote or a new one', input('publish'), out<PostFact>(), 120_000),
     openDirect: op('write', 'Open or find a direct conversation', input('openDirect'), out<OpenDirectResult>()),
     markRead: op('write', 'Mark a conversation read', input('markRead'), out<unknown>()),
     markUnread: op('write', 'Mark a conversation unread from a message on', input('markUnread'), out<unknown>()),

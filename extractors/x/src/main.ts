@@ -11,7 +11,9 @@
  *
  * Around the chat, the same page is x.com's own client (responsive-web), and the feed section below reads its
  * notifications into one read-only conversation (variant 'feed'), announces the profiles of the people in them, and
- * answers `profile` with a person's recent posts, all through the page's own endpoints (feed.ts, docs/x.md).
+ * answers `profile` with a person's recent posts and `post` with one post's thread, all through the page's own
+ * endpoints (feed.ts, docs/x.md). It also answers on X when asked: `postAct` (like, repost, and back), `publish` (a
+ * post, reply or quote) and `postReactors` (who liked or reposted a post), through the same client's own calls.
  *
  * Config: { testOrigin?, noSandbox?, hookGraceMs?, feedFirstMs?, feedEveryMs? (tests) }. Keeps x-state.json (the
  * newest sequence number announced per conversation; the feed's cursor, newest time and recent message ids) and,
@@ -23,13 +25,13 @@ import { join } from 'node:path';
 import { BridgeServer, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
 import type * as P from '@dither-chat/protocol';
 import { linkHub } from '@dither-chat/protocol/client';
-import { ADD_MEMBERS_MAX, aboutChangeProblem, createGroupProblem } from '@dither-chat/protocol';
+import { ADD_MEMBERS_MAX, aboutChangeProblem, composeState, createGroupProblem, POST_ACTS, POST_RULES } from '@dither-chat/protocol';
 import { aboutOf, directFact, groupFact, ingestRequests, requestFact, Requests } from './gaps.ts';
 import { ingestInbox, ingestMessages, XState } from './ingest.ts';
-import { FeedTracker, FIRST_READ_MS, FIRST_READ_PAGES, type FeedKept, parseNotifications, parseProfileUser, parseUserTweets, personAbout } from './feed.ts';
+import { FeedTracker, FIRST_READ_MS, FIRST_READ_PAGES, type FeedKept, parseNotifications, parseProfileUser, parsePublished, parseReactors, parseTweetDetail, parseUserTweets, personAbout } from './feed.ts';
 import { conversationFact, identityFact, parseMediaRef, peerOf, shapeOf, toPlain } from './map.ts';
 import { Pace } from './pace.ts';
-import type { Down, FeedReply, HookName, OutFile, PageState, PersonRef, ProfileReply, SelfTest, Up } from './raw.ts';
+import type { Down, FeedHookName, FeedReply, HookName, OutFile, PageState, PersonRef, PostActReply, PostReply, ProfileReply, PublishReply, ReactorsReply, SelfTest, Up } from './raw.ts';
 import { FEED_HOOK_NAMES } from './raw.ts';
 import { capabilitiesOf, compute, CORE, type Facts, type FeedFacts, HOOK_GRACE_MS } from './status.ts';
 import * as V from './validate.ts';
@@ -331,6 +333,8 @@ async function onCommand(cmd: P.AdapterCommand): Promise<unknown> {
       return { nativeId: r?.nativeId ?? null };
     }
     case 'history': {
+      // The feed and the posts the hub logs (feed:<id>, posts:<id>) are no chat on X: never look for one in the page.
+      if (/^(feed|posts)(:|$)/.test(cmd.conversation)) return { count: 0, done: true };
       need('history', 'load history');
       backfilling.add(cmd.conversation);
       try {
@@ -373,6 +377,14 @@ async function onCommand(cmd: P.AdapterCommand): Promise<unknown> {
     }
     case 'profile':
       return profile(cmd.who);
+    case 'post':
+      return post(cmd.post, cmd.cursor);
+    case 'postAct':
+      return postAct(cmd.post, cmd.act);
+    case 'publish':
+      return publish(cmd.text, cmd.replyTo, cmd.quote);
+    case 'postReactors':
+      return postReactors(cmd.post, cmd.kind, cmd.cursor);
     case 'action':
       return action(cmd.action);
     default:
@@ -529,6 +541,75 @@ async function profile(who: string): Promise<P.PersonAbout> {
   users.set(u.id, u);
   for (const ev of feed.identities(users.values(), st.selfId)) hub.emit(ev);
   return { ...personAbout(u), ...(posts.length ? { posts } : {}) };
+}
+
+/**
+ * One post's thread as its page on X shows it (TweetDetail): what it answers, the post, and its replies; `cursor` for
+ * more replies. Only when asked (someone opened the post), paced as any read; nothing is liked, viewed or marked.
+ */
+async function post(id: string, cursor?: string): Promise<P.PostThread> {
+  if (typeof id !== 'string' || !/^\d{1,25}$/.test(id)) throw new Error('not an X post id');
+  if (cursor !== undefined && (typeof cursor !== 'string' || !cursor || cursor.length > 2000)) throw new Error('not an X cursor');
+  if (!bridge.connected) throw new Error('the sandbox browser is not attached yet');
+  if (page?.state === 'login') throw new Error('X is not signed in (live view)');
+  if (!selfTest?.feed?.posts?.ok) throw new Error("cannot read posts: X changed and the page's posts hook was not found");
+  const r = await run('post', () => readPace.run(() => bridge.request<PostReply>({ kind: 'post', post: id, ...(cursor ? { cursor } : {}) }, 120_000)));
+  const { thread, users } = parseTweetDetail(r?.detail, id, feedDrops, testOrigin, !!cursor);
+  for (const ev of feed.identities(users.values(), st.selfId)) hub.emit(ev);
+  return thread;
+}
+
+// ------------------------------------------------------------ answering on X
+// Like, repost, post and who liked (docs/x.md "Answering on X"): each the one call X's own button or composer makes,
+// made once, when the command comes. Writes go at a person's pace (the DMs' `pace`), are never retried (a failed one
+// fails with X's words), and a post X has made is never answered as failed.
+const POST_ID = /^\d{1,25}$/;
+function feedNeed(hook: FeedHookName, what: string) {
+  if (!bridge.connected) throw new Error('the sandbox browser is not attached yet');
+  if (page?.state === 'login') throw new Error('X is not signed in (live view)');
+  const h = selfTest?.feed?.[hook];
+  if (!h?.ok && h?.via !== 'pending') throw new Error(`cannot ${what}: X changed and the page's ${hook} hook was not found`);
+}
+
+/** Like, unlike, repost or unrepost a post. Answers how it stands after: `{ liked }` or `{ reposted }`. */
+async function postAct(id: string, act: P.PostAct): Promise<P.PostViewer> {
+  if (typeof id !== 'string' || !POST_ID.test(id)) throw new Error('not an X post id');
+  if (!POST_ACTS.includes(act)) throw new Error(`not a post action: ${String(act)}`);
+  feedNeed('actions', act);
+  const r = await run(`postAct.${act}`, () => pace.run(() => bridge.request<PostActReply>({ kind: 'postAct', post: id, act }, 60_000)));
+  return act === 'like' || act === 'unlike' ? { liked: r?.liked ?? act === 'like' } : { reposted: r?.reposted ?? act === 'repost' };
+}
+
+/**
+ * A post (neither), a reply (`replyTo`) or a quote (`quote`), as X's composer sends it. Checked against X's rules
+ * (compose.ts POST_RULES, as the hub checks it). Identity facts for the post's people first, then the post.
+ */
+async function publish(text: string, replyTo?: string, quote?: string): Promise<P.PostFact> {
+  if (typeof text !== 'string' || !text.trim()) throw new Error('nothing to post');
+  const c = composeState(text, POST_RULES.x!);
+  if (!c.sendable) throw new Error(`too long for X: ${c.length} of ${POST_RULES.x!.maxLength}`);
+  if (replyTo !== undefined && (typeof replyTo !== 'string' || !POST_ID.test(replyTo))) throw new Error('not an X post id to reply to');
+  if (quote !== undefined && (typeof quote !== 'string' || !POST_ID.test(quote))) throw new Error('not an X post id to quote');
+  feedNeed('actions', 'post');
+  if (quote) feedNeed('posts', 'quote');
+  const r = await run('publish', () => pace.run(() => bridge.request<PublishReply>({ kind: 'publish', text, ...(replyTo ? { replyTo } : {}), ...(quote ? { quote } : {}) }, 120_000)));
+  const made = parsePublished(r, text, { id: st.selfId, handle: st.selfUser?.screenName ?? null }, feedDrops, testOrigin);
+  // X answered without saying which post it made: it may have been made. Never "failed": that would invite a second.
+  if (!made) throw new Error('X did not say which post it made: look on X before posting again');
+  for (const ev of feed.identities(made.users.values(), st.selfId)) hub.emit(ev);
+  return made.post;
+}
+
+/** Who liked (`kind` like) or reposted a post, a page; identity facts for them first. Only a post's author sees its likes. */
+async function postReactors(id: string, kind: 'like' | 'repost', cursor?: string): Promise<P.ReactorsPage> {
+  if (typeof id !== 'string' || !POST_ID.test(id)) throw new Error('not an X post id');
+  if (kind !== 'like' && kind !== 'repost') throw new Error('not likes or reposts');
+  if (cursor !== undefined && (typeof cursor !== 'string' || !cursor || cursor.length > 2000)) throw new Error('not an X cursor');
+  feedNeed('reactors', kind === 'like' ? 'read who liked a post' : 'read who reposted a post');
+  const r = await run('postReactors', () => readPace.run(() => bridge.request<ReactorsReply>({ kind: 'reactors', post: id, of: kind, ...(cursor ? { cursor } : {}) }, 120_000)));
+  const { page: reactors, users } = parseReactors(r?.timeline, feedDrops, testOrigin);
+  for (const ev of feed.identities(users.values(), st.selfId)) hub.emit(ev);
+  return reactors;
 }
 
 // ------------------------------------------- requests, new chats, groups, typing, forwarding (gaps.ts)

@@ -22,6 +22,8 @@ Sample records (the error line and its frames, nothing else of the log):
 - **Read only on live systems.** Read the live logs, trace files and databases, but never re-send a command, never act
   on a real account (no sign-in, no message, no change), never restart or stop a live service, never call a running
   service's API in a way that changes something.
+- **Never read or print private content** (messages, mail, people's names) from live data: in logs and databases,
+  look only at what is about this error, and keep it out of anything you write to a public place.
 - **Reproduce it away from them:** in a test, or in a demo or test instance with its own temporary data directory.
 - **Fix it in a pull request and leave it for the owner's review:** do not merge it, do not enable auto-merge, do not
   deploy it.

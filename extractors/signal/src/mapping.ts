@@ -11,9 +11,11 @@
 
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { AdapterEvent, AttachmentFact, AttachmentKind, ConversationFact, IdentityFact, MessageFact, MessageKind, PersonAbout, ReceiptState } from '@dither-chat/protocol';
+import type { AdapterEvent, AttachmentFact, AttachmentKind, AttachmentNote, ConversationFact, IdentityFact, MessageExtra, MessageFact, MessageKind, MissingAttachmentFact, PersonAbout, PollFact, ReceiptState, SharedContactFact, StoryFact, StoryTextFact } from '@dither-chat/protocol';
 import { fromSignal, plainText } from './markdown.ts';
-import type { SigAttachment, SigContact, SigDataMessage, SigEnvelope, SigGroup, SigReceive, SigSentMessage } from './types.ts';
+import { callEvents, type CallBook } from './calls.ts';
+import { nicknameOf } from './people.ts';
+import type { SigAttachment, SigContact, SigContactValue, SigDataMessage, SigEnvelope, SigGroup, SigReceive, SigSentMessage, SigSharedContact, SigStory } from './types.ts';
 
 /** How long Signal's own clients show a start without another. */
 export const SIGNAL_TYPING_TTL = 15_000;
@@ -67,6 +69,50 @@ export interface MapContext {
   nameOf?: (aci: string) => string | undefined;
   /** First time this key is seen? Dedupes repeated group-call updates. Defaults to always true. */
   once?: (key: string) => boolean;
+  /** 1:1 calls heard so far, for how each went (calls.ts). Without it, only the offer's line. */
+  calls?: CallBook;
+  /**
+   * Whether a downloaded file is there. signal-cli downloads a message's files before it hands the message over, so one
+   * that is not there failed or was skipped (its JSON has no download state). Defaults to always there.
+   */
+  exists?: (path: string) => boolean;
+}
+
+/**
+ * What a reply to this message sends as its quote, in signal-cli's own syntax (send's quoteMessage, quoteMention,
+ * quoteTextStyle, quoteAttachment): the text as Signal has it (a mention is U+FFFC), its ranges, and its files.
+ */
+export interface QuoteSource {
+  t: string;
+  m?: string[];
+  s?: string[];
+  a?: string[];
+}
+
+/** The most of a message's text a quote of it carries. */
+export const QUOTE_TEXT_MAX = 1000;
+/** A picture at most this big goes along as a quote's thumbnail as it is; a bigger one goes without one. */
+export const QUOTE_THUMB_MAX = 256 * 1024;
+
+/** signal-cli's quote-attachment syntax: contentType[:filename[:previewFile]]. Colons would split it, so none go in. */
+export function quoteAttachment(mime: string | null | undefined, name: string | null | undefined, preview?: string | null): string {
+  const clean = (x: string) => x.replace(/:/g, '_');
+  const parts = [clean(mime || 'application/octet-stream')];
+  if (name || preview) parts.push(clean(name ?? ''));
+  if (preview && !preview.includes(':')) parts.push(preview);
+  return parts.join(':');
+}
+
+/** A message's quote material: its text cut to QUOTE_TEXT_MAX with the ranges that still fit. */
+export function quoteSource(text: string, mentions: string[] = [], styles: string[] = [], attachments: string[] = []): QuoteSource {
+  const t = text.length > QUOTE_TEXT_MAX ? text.slice(0, QUOTE_TEXT_MAX) : text;
+  const fits = (r: string) => {
+    const [start, length] = r.split(':').map(Number);
+    return Number.isFinite(start) && Number.isFinite(length) && start + length <= t.length;
+  };
+  const m = mentions.filter(fits);
+  const st = styles.filter(fits);
+  return { t, ...(m.length ? { m } : {}), ...(st.length ? { s: st } : {}), ...(attachments.length ? { a: attachments } : {}) };
 }
 
 export interface SeenMessage {
@@ -88,6 +134,8 @@ export interface SeenMessage {
   replyTo?: string;
   /** This is an edit of an earlier message, sent at this time. */
   editedTs?: number;
+  /** What a reply to it quotes. */
+  quote?: QuoteSource;
 }
 
 /** A pin with a duration: Signal's clients drop it then, and nothing is sent when they do. */
@@ -107,6 +155,10 @@ export interface MapResult {
   /** Pins that end by themselves. */
   pinTimers: PinTimer[];
   logs: { level: 'debug' | 'info' | 'warn'; msg: string; data?: unknown }[];
+  /** Files signal-cli downloaded that are not to be kept: a view-once message's (docs/signal.md "View-once"). */
+  discard?: string[];
+  /** Files of stories, with when each story ends: deleted then. */
+  storyFiles?: [path: string, until: number][];
 }
 
 const lc = (s: string | null | undefined) => (s ? s.toLowerCase() : null);
@@ -136,6 +188,11 @@ export function displayNameOf(c: SigContact): string | undefined {
   );
 }
 
+/** Their name without your nickname for them: the system contact name, else their profile name (displayNameOf's order). */
+export function ownNameOf(c: SigContact): string | undefined {
+  return joinName(c.name) ?? joinName(c.givenName, c.familyName) ?? joinName(c.profile?.givenName, c.profile?.familyName) ?? joinName(c.username);
+}
+
 /** Their number, else their username. */
 const handleOf = (c: SigContact) => c.number || (c.username ? `@${c.username}` : undefined);
 
@@ -145,11 +202,17 @@ export function contactIdentity(c: SigContact, opts: { contact: boolean; avatarU
   const f: IdentityFact = { nativeId: id };
   const handle = handleOf(c);
   if (handle) f.handle = handle;
-  const name = displayNameOf(c);
+  // Your nickname and note go as themselves (capability 'contactNotes'): the hub keeps the nickname as yours.
+  const self = !!opts.self && id === opts.self;
+  const name = self ? displayNameOf(c) : (ownNameOf(c) ?? displayNameOf(c));
   if (name) f.displayName = name;
   if (opts.avatarUrl) f.avatarUrl = opts.avatarUrl;
-  if (opts.self && id === opts.self) f.isSelf = true;
-  else if (opts.contact) f.contact = true;
+  if (self) f.isSelf = true;
+  else {
+    if (opts.contact) f.contact = true;
+    f.nickname = nicknameOf(c);
+    f.note = c.note?.trim() ?? '';
+  }
   return f;
 }
 
@@ -332,6 +395,10 @@ export function mapReceive(rcv: SigReceive, ctx: MapContext): MapResult {
   }
   const b: Build = { ctx, out };
   const fromSelf = source === ctx.self;
+  if (rcv.exception && !fromSelf && !envelopeContent(env) && undecryptable(rcv.exception.type)) {
+    undecrypted(b, env, source);
+    return out;
+  }
 
   if (!fromSelf && (env.sourceName || env.sourceNumber)) {
     const idf: IdentityFact = { nativeId: source };
@@ -347,6 +414,7 @@ export function mapReceive(rcv: SigReceive, ctx: MapContext): MapResult {
     emitMessage(b, dm, { author: source, conversation: conv, ts: env.editMessage.targetSentTimestamp, editedTs: dm.timestamp });
   }
   if (env.syncMessage) sync(b, env);
+  if (env.storyMessage && !fromSelf) story(b, env.storyMessage, source, env.timestamp);
   if (env.receiptMessage && !fromSelf) receipts(b, env, source);
   if (env.typingMessage && !fromSelf && (env.typingMessage.action === 'STARTED' || env.typingMessage.action === 'STOPPED')) {
     const g = env.typingMessage.groupId;
@@ -368,8 +436,32 @@ export function mapReceive(rcv: SigReceive, ctx: MapContext): MapResult {
     };
     out.events.push({ t: 'message', message: fact, live: true });
     out.messages.push({ nativeId: fact.nativeId, conversation, author: source, ts: fact.ts, kind: 'call', text: fact.body });
-  }
+    if (ctx.calls) out.events.push(...callEvents(env, source, ctx.self, ctx.calls, fact));
+  } else if (env.callMessage && ctx.calls) out.events.push(...callEvents(env, source, ctx.self, ctx.calls, undefined));
   return out;
+}
+
+/** The envelope carries something signal-cli could read. */
+const envelopeContent = (env: SigEnvelope) => !!(env.dataMessage || env.editMessage || env.syncMessage || env.receiptMessage || env.typingMessage || env.callMessage || env.storyMessage);
+
+/** A receive error that lost a message: not a duplicate (already shown) and not one of your own sends coming back. */
+export const undecryptable = (type: string | null | undefined) => !/Duplicate|SelfSend/i.test(type ?? '');
+
+/**
+ * Someone's message that signal-cli could not decrypt: a system line in your 1:1 with them, as Signal's own clients put
+ * it, with nothing of its content (there is none). Once per envelope; nothing is asked of anyone, and signal-cli's own
+ * retry request, when it makes one, stays its business. The line has an id of its own, so the message coming again
+ * decrypted (a retry keeps its timestamp, maybe in a group) does not land on it.
+ */
+function undecrypted(b: Build, env: SigEnvelope, source: string) {
+  if (!(b.ctx.once?.(`undecrypted:${source}:${env.timestamp}`) ?? true)) return;
+  const conversation = ensureDirect(b, source);
+  const who = b.ctx.nameOf?.(source) || env.sourceName || env.sourceNumber || 'someone';
+  const ts = env.timestamp;
+  const fact: MessageFact = { nativeId: `${msgId(source, ts)}:undecrypted`, conversation, author: source, ts, kind: 'system', body: `A message from ${who} could not be decrypted.` };
+  if (env.sourceDevice) fact.extra = { sourceDevice: env.sourceDevice } satisfies MessageExtra;
+  b.out.events.push({ t: 'message', message: fact, live: true });
+  b.out.messages.push({ nativeId: fact.nativeId, conversation, author: source, ts, kind: 'system', text: fact.body });
 }
 
 /** The conversation a data message belongs to. `peer` is the other side of a 1:1. */
@@ -409,13 +501,18 @@ function systemMessage(b: Build, author: string, conversation: string, ts: numbe
 function incomingData(b: Build, env: SigEnvelope, source: string, dm: SigDataMessage) {
   const fromSelf = source === b.ctx.self;
   const conversation = conversationFor(b, dm, source, fromSelf);
-  dataCommon(b, dm, source, conversation, env.sourceName);
+  dataCommon(b, dm, source, conversation, env.sourceName, env);
 }
 
 /** Everything a data message can carry, for incoming messages and sync transcripts alike. */
-function dataCommon(b: Build, dm: Partial<SigDataMessage>, author: string, conversation: string, authorName?: string | null) {
+function dataCommon(b: Build, dm: Partial<SigDataMessage>, author: string, conversation: string, authorName?: string | null, env?: SigEnvelope) {
   const { ctx, out } = b;
   const ts = dm.timestamp ?? 0;
+  if (dm.reaction && dm.storyContext) {
+    // A reaction to a story: shown as a line of its own (the story itself comes only with stories on, as a story event).
+    if (!dm.reaction.isRemove && ts) emitMessage(b, { ...dm, reaction: null, message: dm.reaction.emoji }, { author, conversation, ts, env, storyEmoji: dm.reaction.emoji });
+    return;
+  }
   if (dm.reaction) {
     const target = lc(dm.reaction.targetAuthorUuid);
     if (target) {
@@ -440,7 +537,13 @@ function dataCommon(b: Build, dm: Partial<SigDataMessage>, author: string, conve
     return;
   }
   if (dm.pollVote) {
-    out.logs.push({ level: 'debug', msg: 'ignoring a poll vote', data: { conversation, ts } });
+    // One voter's whole vote; the hub keeps the one with the highest number, as Signal's apps count (docs/signal.md).
+    const v = dm.pollVote;
+    const pollAuthor = lc(v.authorUuid) ?? (v.authorNumber ? (ctx.aciOfNumber?.(v.authorNumber) ?? null) : null);
+    if (pollAuthor && typeof v.targetSentTimestamp === 'number') {
+      const options = [...new Set((v.optionIndexes ?? []).filter((i) => Number.isInteger(i) && i >= 0).map(String))];
+      out.events.push({ t: 'pollUpdate', conversation, message: msgId(pollAuthor, v.targetSentTimestamp), vote: { voter: author, options, seq: v.voteCount ?? 0, ...(ts ? { ts } : {}) } });
+    }
     return;
   }
   const who = actorName(b, author, authorName);
@@ -458,7 +561,10 @@ function dataCommon(b: Build, dm: Partial<SigDataMessage>, author: string, conve
     return;
   }
   if (dm.pollTerminate) {
-    systemMessage(b, author, conversation, ts, `${who} ended the poll.`, { replyTo: msgId(author, dm.pollTerminate.targetSentTimestamp) });
+    // Only its author ends a poll, so the poll is theirs.
+    const poll = msgId(author, dm.pollTerminate.targetSentTimestamp);
+    systemMessage(b, author, conversation, ts, `${who} ended the poll.`, { replyTo: poll });
+    out.events.push({ t: 'pollUpdate', conversation, message: poll, ended: true, ...(ts ? { ts } : {}) });
     return;
   }
   if (dm.groupCallUpdate) {
@@ -490,25 +596,72 @@ function dataCommon(b: Build, dm: Partial<SigDataMessage>, author: string, conve
     out.logs.push({ level: 'debug', msg: 'ignoring a data message without content', data: { conversation, ts, keys: Object.keys(dm) } });
     return;
   }
-  emitMessage(b, dm, { author, conversation, ts });
+  emitMessage(b, dm, { author, conversation, ts, env });
 }
 
-function emitMessage(b: Build, dm: Partial<SigDataMessage>, o: { author: string; conversation: string; ts: number; editedTs?: number }) {
+const labelOf = (v: SigContactValue) => (v.type === 'CUSTOM' ? v.label?.trim() || undefined : v.type ? v.type.charAt(0) + v.type.slice(1).toLowerCase() : undefined);
+
+/** A shared contact as a card, and the one line the body keeps for it (search, previews, older clients). */
+export function sharedContact(c: SigSharedContact, signalDir: string, exists?: (path: string) => boolean): SharedContactFact {
+  const n = c.name;
+  const name = joinName(n?.prefix, n?.given, n?.middle, n?.family, n?.suffix) ?? n?.nickname ?? c.organization ?? 'Contact';
+  const values = (list: SigContactValue[] | null | undefined) =>
+    (list ?? []).filter((v) => v.value?.trim()).map((v) => ({ value: v.value!.trim(), ...(labelOf(v) ? { label: labelOf(v) } : {}) }));
+  const phones = values(c.phone);
+  const emails = values(c.email);
+  const addresses = (c.address ?? [])
+    .map((a) => {
+      const text = [a.street, a.pobox && `PO Box ${a.pobox}`, a.neighborhood, a.city, joinName(a.region, a.postcode), a.country].filter((x) => x && x.trim()).join(', ');
+      const label = a.type === 'CUSTOM' ? a.label?.trim() : a.type ? a.type.charAt(0) + a.type.slice(1).toLowerCase() : undefined;
+      return text ? { text, ...(label ? { label } : {}) } : null;
+    })
+    .filter((a): a is { text: string; label?: string } => !!a);
+  const all = [...phones, ...emails].map((v) => v.value);
+  const f: SharedContactFact = { name, line: `👤 ${name}${all.length ? ' · ' + all.join(', ') : ''}` };
+  if (phones.length) f.phones = phones;
+  if (emails.length) f.emails = emails;
+  if (c.organization?.trim() && c.organization.trim() !== name) f.organization = c.organization.trim();
+  if (addresses.length) f.addresses = addresses;
+  const pic = c.avatar?.attachment ? attachmentFact(c.avatar.attachment, signalDir) : null;
+  if (pic && (exists?.(pic.path) ?? true)) f.avatar = pic.url;
+  return f;
+}
+
+function emitMessage(b: Build, dm: Partial<SigDataMessage>, o: { author: string; conversation: string; ts: number; editedTs?: number; env?: SigEnvelope; storyEmoji?: string }) {
   const { ctx, out } = b;
   let mentionsSelf = false;
   let body = fromSignal(dm.message, dm.textStyles, dm.mentions, { onMention: (aci) => (mentionsSelf ||= aci.toLowerCase() === ctx.self) });
   let kind: MessageKind = 'text';
   let attachments: (AttachmentFact & { path?: string })[] = [];
-  const extra: Record<string, unknown> = {};
+  const extra: Record<string, unknown> & MessageExtra = {};
+  const there = (path: string) => ctx.exists?.(path) ?? true;
+  const notes: (AttachmentNote | null)[] = [];
+  const missing: MissingAttachmentFact[] = [];
 
   if (dm.viewOnce) {
-    // Respect the sender: view-once media stays on the phone.
+    // Respect the sender: view-once media stays on the phone. What signal-cli downloaded for it is deleted.
     kind = 'media';
     body = body || '📷 View-once media (open it on your phone)';
     extra.viewOnce = true;
+    for (const a of dm.attachments ?? []) {
+      const f = attachmentFact(a, ctx.signalDir);
+      if (f) (out.discard ??= []).push(f.path);
+    }
   } else {
-    attachments = (dm.attachments ?? []).map((a) => attachmentFact(a, ctx.signalDir)).filter((a): a is AttachmentFact & { path: string } => !!a);
-    if (attachments.length) kind = 'media';
+    for (const a of dm.attachments ?? []) {
+      if (a.contentType === LONG_TEXT_MIME) continue;
+      const f = attachmentFact(a, ctx.signalDir);
+      if (!f || !there(f.path)) {
+        missing.push({ ...(a.filename ? { name: a.filename } : {}), ...(a.contentType ? { mime: a.contentType } : {}), ...(a.size != null ? { size: a.size } : {}) });
+        continue;
+      }
+      attachments.push(f);
+      const caption = a.caption?.trim();
+      notes.push(caption || a.isVoiceNote ? { ...(caption ? { caption } : {}), ...(a.isVoiceNote ? { voiceNote: true as const } : {}) } : null);
+    }
+    if (attachments.length || missing.length) kind = 'media';
+    if (notes.some(Boolean)) extra.attachmentNotes = notes;
+    if (missing.length) extra.missingAttachments = missing;
   }
   if (dm.sticker) {
     kind = 'sticker';
@@ -522,14 +675,12 @@ function emitMessage(b: Build, dm: Partial<SigDataMessage>, o: { author: string;
   if (dm.pollCreate) {
     const p = dm.pollCreate;
     extraLines.push(`📊 **${p.question ?? 'Poll'}**${p.allowMultiple ? ' (multiple choice)' : ''}`, ...(p.options ?? []).map((x) => `• ${x}`));
-    extra.poll = { question: p.question, options: p.options, allowMultiple: p.allowMultiple };
+    extra.poll = pollFact(p);
   }
-  for (const c of dm.contacts ?? []) {
-    const n = c.name;
-    const name = joinName(n?.prefix, n?.given, n?.middle, n?.family, n?.suffix) ?? n?.nickname ?? c.organization ?? 'Contact';
-    const phones = (c.phone ?? []).map((p) => p.value).filter(Boolean);
-    const emails = (c.email ?? []).map((p) => p.value).filter(Boolean);
-    extraLines.push(`👤 ${name}${[...phones, ...emails].length ? ' · ' + [...phones, ...emails].join(', ') : ''}`);
+  if (dm.contacts?.length) {
+    const cards = dm.contacts.map((c) => sharedContact(c, ctx.signalDir, ctx.exists));
+    extraLines.push(...cards.map((c) => c.line!));
+    extra.contacts = cards;
   }
   if (dm.payment) extraLines.push(`💸 Payment${dm.payment.note ? `: ${dm.payment.note}` : ''}`);
   if (extraLines.length) body = [body, ...extraLines].filter(Boolean).join('\n');
@@ -547,11 +698,41 @@ function emitMessage(b: Build, dm: Partial<SigDataMessage>, o: { author: string;
       author: qa ?? q.authorNumber ?? q.author ?? null,
       ts: q.id,
       text: fromSignal(q.text, q.textStyles, q.mentions),
-      ...(q.attachments?.length ? { attachments: q.attachments.map((a) => ({ mime: a.contentType ?? null, name: a.filename ?? null })) } : {}),
+      ...(q.attachments?.length
+        ? {
+            attachments: q.attachments.map((a) => {
+              const thumb = a.thumbnail ? attachmentFact(a.thumbnail, ctx.signalDir) : null;
+              return { mime: a.contentType ?? null, name: a.filename ?? null, ...(thumb && there(thumb.path) ? { thumbnail: thumb.url } : {}) };
+            }),
+          }
+        : {}),
     };
   }
-  if (dm.storyContext) extra.storyReply = { author: lc(dm.storyContext.authorUuid), ts: dm.storyContext.sentTimestamp };
+  // Link previews, shaped as the embeds the hub already shows (Discord's): the picture only when it downloaded.
+  const previews = (dm.previews ?? []).filter((p) => p.url && /^https?:\/\//i.test(p.url));
+  if (previews.length) {
+    extra.embeds = previews.map((p) => {
+      const img = p.image ? attachmentFact(p.image, ctx.signalDir) : null;
+      let provider: string | undefined;
+      try {
+        provider = new URL(p.url!).hostname.replace(/^www\./, '');
+      } catch {}
+      return {
+        url: p.url!,
+        ...(p.title?.trim() ? { title: p.title.trim() } : {}),
+        ...(p.description?.trim() ? { description: p.description.trim() } : {}),
+        ...(provider ? { provider } : {}),
+        ...(img && there(img.path) ? { image: img.url } : {}),
+      };
+    });
+  }
+  if (dm.storyContext) extra.storyReply = { author: lc(dm.storyContext.authorUuid), ts: dm.storyContext.sentTimestamp, ...(o.storyEmoji ? { emoji: o.storyEmoji } : {}) };
   if (dm.expiresInSeconds) extra.expiresInSeconds = dm.expiresInSeconds;
+  if (o.env && !o.editedTs) {
+    if (o.env.sourceDevice) extra.sourceDevice = o.env.sourceDevice;
+    if (o.env.serverReceivedTimestamp) extra.serverReceivedTs = o.env.serverReceivedTimestamp;
+    if (o.env.serverDeliveredTimestamp) extra.serverDeliveredTs = o.env.serverDeliveredTimestamp;
+  }
   if (Object.keys(extra).length) fact.extra = extra;
 
   out.events.push({ t: 'message', message: fact, live: true });
@@ -567,6 +748,12 @@ function emitMessage(b: Build, dm: Partial<SigDataMessage>, o: { author: string;
     ...(dm.expiresInSeconds != null && !o.editedTs ? { timer: dm.expiresInSeconds } : {}),
     ...(dm.expiresInSeconds ? { expiresInSeconds: dm.expiresInSeconds } : {}),
     ...(attachments.some((a) => a.path) ? { files: attachments.map((a) => a.path).filter((p): p is string => !!p) } : {}),
+    quote: quoteSource(
+      dm.message ?? '',
+      (dm.mentions ?? []).filter((m) => m.uuid).map((m) => `${m.start}:${m.length}:${lc(m.uuid)}`),
+      (dm.textStyles ?? []).map((st) => `${st.start}:${st.length}:${st.style}`),
+      attachments.map((a) => quoteAttachment(a.mime, a.name, a.kind === 'image' && a.path && (a.size ?? Infinity) <= QUOTE_THUMB_MAX ? a.path : null)),
+    ),
   });
 }
 
@@ -596,10 +783,53 @@ function receipts(b: Build, env: SigEnvelope, source: string) {
   for (const [conversation, ids] of byConversation) out.events.push({ t: 'receipt', conversation, messages: [...ids], who: source, state, ts: r.when || env.timestamp });
 }
 
+/** Signal's "#AARRGGBB" as CSS "#RRGGBBAA"; anything else left out. */
+export function cssColor(c: string | null | undefined): string | undefined {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{6})$/i.exec(c ?? '');
+  return m ? `#${m[2]}${m[1]}`.toLowerCase() : undefined;
+}
+
+/** Signal keeps a story a day. */
+const STORY_MS = 24 * 60 * 60_000;
+
+/**
+ * A story (the daemon passes them only with the account's stories setting on): never a message, kept by the hub on its
+ * author's or group's page until it ends. Its file is deleted then (storyFiles).
+ */
+function story(b: Build, st: SigStory, author: string, ts: number) {
+  const { ctx, out } = b;
+  const fact: StoryFact = { nativeId: msgId(author, ts), author, ts, expiresAt: ts + STORY_MS, allowsReplies: st.allowsReplies !== false };
+  if (st.groupId) fact.conversation = groupConvId(st.groupId);
+  if (st.fileAttachment) {
+    const f = attachmentFact(st.fileAttachment, ctx.signalDir);
+    if (!f || !(ctx.exists?.(f.path) ?? true)) return void out.logs.push({ level: 'debug', msg: 'a story whose file signal-cli did not download', data: { ts } });
+    const { path, ...a } = f;
+    fact.attachment = a;
+    (out.storyFiles ??= []).push([path, fact.expiresAt]);
+  } else if (st.textAttachment) {
+    const t = st.textAttachment;
+    const text: StoryTextFact = { text: t.text ?? '' };
+    if (t.style) text.style = t.style;
+    const color = cssColor(t.textForegroundColor);
+    if (color) text.color = color;
+    const behind = cssColor(t.textBackgroundColor);
+    if (behind) text.textBackground = behind;
+    const bg = cssColor(t.backgroundColor);
+    if (bg) text.background = bg;
+    const g = t.backgroundGradient;
+    const colors = (g?.colors?.length ? g.colors : [g?.startColor, g?.endColor]).map(cssColor).filter((x): x is string => !!x);
+    if (colors.length) text.gradient = { colors, ...(typeof g?.angle === 'number' ? { angle: g.angle } : {}) };
+    if (t.preview?.url && /^https?:\/\//.test(t.preview.url)) text.url = t.preview.url;
+    fact.text = text;
+  } else return;
+  out.events.push({ t: 'story', story: fact });
+}
+
 function sync(b: Build, env: SigEnvelope) {
   const { ctx, out } = b;
   const s = env.syncMessage!;
   if (s.sentMessage) sentTranscript(b, s.sentMessage);
+  if (s.sentStoryMessage?.dataMessage) story(b, s.sentStoryMessage.dataMessage, ctx.self, env.timestamp);
   if (s.readMessages?.length) {
     const upTo = new Map<string, number>();
     for (const r of s.readMessages) {
@@ -635,4 +865,13 @@ function sentTranscript(b: Build, sent: SigSentMessage) {
   if (!groupOf(sent) && !peer) return void out.logs.push({ level: 'warn', msg: 'sent transcript without a resolvable recipient', data: { number: sent.destinationNumber, ts: sent.timestamp } });
   const conversation = conversationFor(b, sent, peer ?? self, true);
   dataCommon(b, sent, self, conversation);
+}
+
+/** A poll as Signal sends it, as protocol poll.ts has it: options by their position, as votes name them. */
+export function pollFact(p: { question?: string | null; allowMultiple?: boolean; options?: string[] | null }): PollFact {
+  return {
+    question: p.question || 'Poll',
+    options: (p.options ?? []).map((text, i) => ({ id: String(i), text })),
+    ...(p.allowMultiple ? { multi: true } : {}),
+  };
 }

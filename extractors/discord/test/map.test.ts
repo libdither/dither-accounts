@@ -161,7 +161,8 @@ describe('threads', () => {
     expect(f.shape).toBe('thread');
     expect(f.name).toBe('Lifetime error with async closures');
     expect(f.parentConversation).toBe('300000000000000300');
-    expect(f.archived).toBeUndefined();
+    // Said both ways, so a thread opened again shows again (threads.ts).
+    expect(f.archived).toBe(false);
   });
   test('announcement thread keeps the announcement variant; archived surfaces', () => {
     const th: RawChannel = { id: '5', type: 10, name: 't', parent_id: '9', thread_metadata: { archived: true } };
@@ -431,7 +432,7 @@ describe('read state', () => {
 
 describe('mutes', () => {
   test('explicit guild mute -> level none, with until', () => {
-    expect(mapMute({ muted: true, mute_config: { end_time: '2030-01-01T00:00:00.000Z' } })).toEqual({ level: 'none', until: Date.parse('2030-01-01T00:00:00.000Z') });
+    expect(mapMute({ muted: true, mute_config: { end_time: '2030-01-01T00:00:00.000Z' } })).toEqual({ level: 'none', until: Date.parse('2030-01-01T00:00:00.000Z'), muted: true });
   });
   test('message_notifications maps to levels', () => {
     expect(mapMute({ message_notifications: 0 })).toEqual({ level: 'all' });
@@ -444,7 +445,7 @@ describe('mutes', () => {
   });
   test('channelMute reads a per-channel override out of guild settings', () => {
     const gs = { guild_id: guild.id, channel_overrides: [{ channel_id: '300000000000000200', muted: true }] };
-    expect(channelMute(gs, '300000000000000200')).toEqual({ level: 'none' });
+    expect(channelMute(gs, '300000000000000200')).toEqual({ level: 'none', muted: true });
     expect(channelMute(gs, 'nope')).toBeUndefined();
     expect(channelMute(undefined, 'x')).toBeUndefined();
   });

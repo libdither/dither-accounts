@@ -6,12 +6,13 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { About, AddMembersResult, AdapterEvent, CreateGroupResult, PersonAbout } from '@dither-chat/protocol';
-import { type AdapterHost, CAPABILITIES, createGroupError, createGroupParams, LINK_MESSAGE, SignalAdapter, socketPathFor, untold, untoldNotes, updateGroupParams } from '../src/adapter.ts';
+import type { About, AddMembersResult, AdapterEvent, CreateGroupResult, PersonAbout, StickerPackFact, StickerPage } from '@dither-chat/protocol';
+import { type AdapterHost, CAPABILITIES, createGroupError, createGroupParams, LINK_MESSAGE, readSignalSettings, SignalAdapter, socketPathFor, untold, untoldNotes, updateGroupParams } from '../src/adapter.ts';
 
 const FAKE = join(import.meta.dir, 'fake-signal-cli.ts');
 const SELF = '5f2c7a8e-1111-4aaa-8bbb-000000000001';
@@ -91,6 +92,19 @@ const editGroup = (id: string, fn: (g: any) => void) => {
   writeFileSync(file, JSON.stringify(all));
 };
 const profile = (who: string) => cmd({ t: 'profile', who }) as Promise<PersonAbout>;
+/** The phone's synced settings as signal-cli 0.14 keeps them (its account database's key_value table); null removes it. */
+const phoneSettings = (values: Record<string, number> | null) => {
+  const d = join(signalDir, 'data', '123456.d');
+  rmSync(d, { recursive: true, force: true });
+  if (values) {
+    mkdirSync(d, { recursive: true });
+    const db = new Database(join(d, 'account.db'));
+    db.exec('CREATE TABLE key_value (_id INTEGER PRIMARY KEY, key TEXT UNIQUE NOT NULL, value ANY) STRICT');
+    for (const [k, v] of Object.entries(values)) db.query('INSERT INTO key_value (key, value) VALUES (?, ?)').run(k, v);
+    db.close();
+  }
+  return adapter.settings(true);
+};
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'dither-sig-'));
@@ -233,9 +247,71 @@ describe('signal adapter against a fake signal-cli', () => {
     expect(readFileSync(echo.attachments![0].url.slice('file://'.length), 'utf8')).toBe('png bytes');
   });
 
+  test('stickers: the installed packs a page at a time, each from signal-cli\'s copy; one sends with --sticker and shows as itself', async () => {
+    const page = (await cmd({ t: 'stickers', conversation: DM_ALICE })) as StickerPage;
+    expect(page.next).toBeNull();
+    expect(page.packs.map((p) => [p.id, p.name, p.source])).toEqual([['0123456789abcdef0123456789abcdef', 'Cats', 'installed']]);
+    expect(page.packs[0].stickers.map((x) => [x.id, x.emoji])).toEqual([
+      ['0123456789abcdef0123456789abcdef:0', '😺'],
+      ['0123456789abcdef0123456789abcdef:1', '😿'],
+    ]);
+    expect(page.packs[0].stickers[1].url).toBe(pathToFileURL(join(signalDir, 'stickers', '0123456789abcdef0123456789abcdef', '1')).href);
+    // Not downloaded yet: fetchMedia asks signal-cli for it.
+    const got = (await cmd({ t: 'fetchMedia', url: page.packs[0].stickers[1].url })) as { base64: string };
+    expect(Buffer.from(got.base64, 'base64').toString()).toBe('sticker 0123456789abcdef0123456789abcdef:1');
+    const mark = events.length;
+    const res = (await cmd({ t: 'send', conversation: DM_ALICE, body: '', sticker: '0123456789abcdef0123456789abcdef:1' })) as { nativeId: string };
+    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: '', sticker: '0123456789abcdef0123456789abcdef:1' });
+    const echo = of('message', mark).find((e) => e.message.nativeId === res.nativeId)!.message;
+    expect(echo).toMatchObject({ kind: 'sticker', attachments: [{ kind: 'image', url: page.packs[0].stickers[1].url }], extra: { sticker: { packId: '0123456789abcdef0123456789abcdef', stickerId: 1 } } });
+    await expect(cmd({ t: 'send', conversation: DM_ALICE, body: '', sticker: 'nope' })).rejects.toThrow('That is not a Signal sticker');
+  });
+
+  test('a pack installs from a signal.art link and is read back; anything else is refused before signal-cli', async () => {
+    const before = calls('addStickerPack').length;
+    await expect(cmd({ t: 'addStickerPack', uri: 'https://example.com/#pack_id=x' })).rejects.toThrow('That is not a signal.art sticker pack link');
+    expect(calls('addStickerPack')).toHaveLength(before);
+    const uri = `https://signal.art/addstickers/#pack_id=${'ab'.repeat(16)}&pack_key=${'cd'.repeat(32)}`;
+    const r = (await cmd({ t: 'addStickerPack', uri })) as { pack: StickerPackFact };
+    expect(calls('addStickerPack').at(-1).params).toEqual({ uri: [uri] });
+    expect(r.pack).toMatchObject({ id: 'ab'.repeat(16), name: 'Added', stickers: [{ id: `${'ab'.repeat(16)}:0`, emoji: '⭐' }] });
+    expect(((await cmd({ t: 'stickers', conversation: DM_ALICE })) as StickerPage).packs).toHaveLength(2);
+  });
+
+  test('a recording goes as a voice note; view-once goes with viewOnce and no copy is kept here', async () => {
+    const src = join(dir, 'spool-voice');
+    writeFileSync(src, 'ogg bytes');
+    let mark = events.length;
+    const voice = (await cmd({ t: 'send', conversation: DM_ALICE, body: '', attachments: [{ path: src, name: 'voice.ogg', mime: 'audio/ogg', size: 9, kind: 'audio', voice: { seconds: 2 } }] })) as { nativeId: string };
+    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: '', attachment: [src], voiceNote: true });
+    expect(of('message', mark).find((e) => e.message.nativeId === voice.nativeId)!.message.extra).toMatchObject({ attachmentNotes: [{ voiceNote: true }] });
+    mark = events.length;
+    const once = (await cmd({ t: 'send', conversation: DM_ALICE, body: '', viewOnce: true, attachments: [{ path: src, name: 'a.png', mime: 'image/png', size: 9, kind: 'image' }] })) as { nativeId: string };
+    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: '', attachment: [src], viewOnce: true });
+    const echo = of('message', mark).find((e) => e.message.nativeId === once.nativeId)!.message;
+    expect(echo).toMatchObject({ kind: 'media', body: '📷 View-once media', extra: { viewOnce: true } });
+    expect(echo.attachments).toBeUndefined();
+    rmSync(src);
+  });
+
+  test('an incoming view-once message stays a placeholder, and the file signal-cli downloaded for it is deleted', async () => {
+    const file = join(signalDir, 'attachments', 'once-1.jpg');
+    mkdirSync(join(signalDir, 'attachments'), { recursive: true });
+    writeFileSync(file, 'jpeg');
+    push({
+      account: '+15550100',
+      envelope: { sourceNumber: '+15550137', sourceUuid: ALICE, sourceName: 'Alice', sourceDevice: 1, timestamp: T + 90_000, dataMessage: { timestamp: T + 90_000, viewOnce: true, attachments: [{ id: 'once-1.jpg', contentType: 'image/jpeg', size: 4 }] } },
+    });
+    const m = await until('view-once', () => of('message').find((e) => e.message.nativeId === `${ALICE}:${T + 90_000}`));
+    expect(m.message).toMatchObject({ kind: 'media', body: '📷 View-once media (open it on your phone)', extra: { viewOnce: true } });
+    expect(m.message.attachments ?? []).toEqual([]);
+    expect(existsSync(file)).toBe(false);
+  });
+
   test('reaction context: nothing fancy, and leaving a group ends it', async () => {
     expect(await cmd({ t: 'reactionContext', conversation: DM_ALICE })).toEqual({ canReact: true, custom: [] });
-    expect(await cmd({ t: 'reactionContext', conversation: GROUP })).toEqual({ canReact: true, custom: [] });
+    // An admin of the group deletes others' messages there (sendAdminDelete).
+    expect(await cmd({ t: 'reactionContext', conversation: GROUP })).toEqual({ canReact: true, custom: [], moderation: { delete: true } });
   });
 
   test('react, edit, redact, markRead', async () => {
@@ -266,10 +342,136 @@ describe('signal adapter against a fake signal-cli', () => {
     expect(calls('sendReceipt').length).toBe(before);
   });
 
+  test('polls: make one, vote with a higher number each time, take it back, end your own', async () => {
+    let mark = events.length;
+    const made = (await cmd({ t: 'pollCreate', conversation: GROUP, poll: { question: 'Which night?', options: ['Tue', 'Thu'], multi: false } })) as { nativeId: string };
+    expect(calls('sendPollCreate').at(-1).params).toEqual({ groupId: GID, question: 'Which night?', option: ['Tue', 'Thu'], noMulti: true });
+    expect(of('message', mark)[0].message).toMatchObject({ nativeId: made.nativeId, author: SELF, extra: { poll: { question: 'Which night?', options: [{ id: '0', text: 'Tue' }, { id: '1', text: 'Thu' }] } } });
+    await expect(cmd({ t: 'pollCreate', conversation: GROUP, poll: { question: 'Q', options: ['a'], multi: false } })).rejects.toThrow('at least 2');
+
+    mark = events.length;
+    await cmd({ t: 'pollVote', conversation: GROUP, message: `${ALICE}:${T + 1000}`, options: ['1'], seq: 4 });
+    expect(calls('sendPollVote').at(-1).params).toEqual({ groupId: GID, pollAuthor: ALICE, pollTimestamp: T + 1000, option: [1], voteCount: 5 });
+    expect(of('pollUpdate', mark)).toEqual([{ t: 'pollUpdate', conversation: GROUP, message: `${ALICE}:${T + 1000}`, vote: { voter: SELF, options: ['1'], seq: 5, ts: expect.any(Number) } }]);
+    await cmd({ t: 'pollVote', conversation: GROUP, message: `${ALICE}:${T + 1000}`, options: [] });
+    expect(calls('sendPollVote').at(-1).params).toMatchObject({ option: [], voteCount: 6 });
+
+    await expect(cmd({ t: 'pollEnd', conversation: GROUP, message: `${ALICE}:${T + 1000}` })).rejects.toThrow('Only whoever made');
+    mark = events.length;
+    await cmd({ t: 'pollEnd', conversation: GROUP, message: made.nativeId });
+    expect(calls('sendPollTerminate').at(-1).params).toEqual({ groupId: GID, pollTimestamp: Number(made.nativeId.split(':')[1]) });
+    expect(of('pollUpdate', mark)[0]).toMatchObject({ message: made.nativeId, ended: true });
+  });
+
+  test('pins: pin for one of the durations Signal offers, or for good, and unpin', async () => {
+    const target = { kind: 'conversation' as const, nativeId: GROUP };
+    let mark = events.length;
+    await cmd({ t: 'configure', target, change: { key: 'pin', message: `${ALICE}:${T + 1000}`, seconds: 7 * 86400 } });
+    expect(calls('sendPinMessage').at(-1).params).toEqual({ groupId: GID, targetAuthor: ALICE, targetTimestamp: T + 1000, pinDuration: 7 * 86400 });
+    expect(of('pin', mark)[0]).toMatchObject({ conversation: GROUP, message: `${ALICE}:${T + 1000}`, pinned: true, by: SELF });
+    await cmd({ t: 'configure', target, change: { key: 'pin', message: `${ALICE}:${T + 1000}`, seconds: null } });
+    expect(calls('sendPinMessage').at(-1).params.pinDuration).toBe(-1);
+    // No duration: Signal's first choice, a day.
+    await cmd({ t: 'configure', target, change: { key: 'pin', message: `${ALICE}:${T + 1000}` } });
+    expect(calls('sendPinMessage').at(-1).params.pinDuration).toBe(86400);
+    await expect(cmd({ t: 'configure', target, change: { key: 'pin', message: `${ALICE}:${T + 1000}`, seconds: 60 } })).rejects.toThrow('durations');
+    mark = events.length;
+    await cmd({ t: 'configure', target, change: { key: 'pin', message: `${ALICE}:${T + 1000}`, remove: true } });
+    expect(calls('sendUnpinMessage').at(-1).params).toEqual({ groupId: GID, targetAuthor: ALICE, targetTimestamp: T + 1000 });
+    expect(of('pin', mark)[0]).toMatchObject({ pinned: false, by: SELF });
+    expect(CAPABILITIES).toEqual(expect.arrayContaining(['polls', 'pollVote', 'pollCreate', 'pollEnd', 'pin']));
+  });
+
   test('editing a reply sends the quote again', async () => {
     const sent = (await cmd({ t: 'send', conversation: GROUP, body: 'agreed', replyTo: `${ALICE}:${T + 1000}` })) as { nativeId: string };
     await cmd({ t: 'edit', conversation: GROUP, message: sent.nativeId, body: 'agreed!!' });
     expect(calls('send').at(-1).params).toMatchObject({ groupId: GID, message: 'agreed!!', editTimestamp: Number(sent.nativeId.split(':')[1]), quoteTimestamp: T + 1000, quoteAuthor: ALICE });
+  });
+
+  test('a reply quotes the message as Signal has it: its mentions, styles and files', async () => {
+    await cmd({ t: 'send', conversation: GROUP, body: 'ha', replyTo: `${ALICE}:${T + 1000}` });
+    const p = calls('send').at(-1).params;
+    expect(p.quoteMessage).toBe(fixture('text-styles-mentions').envelope.dataMessage.message);
+    expect(p.quoteMention).toEqual([`4:1:${SELF}`, `10:1:${SAM}`]);
+    expect(p.quoteTextStyle).toContain('17:9:BOLD');
+    // A small picture you sent goes along as its own thumbnail; a colon in its name would split signal-cli's syntax.
+    const src = join(dir, 'pic');
+    writeFileSync(src, 'png');
+    const pic = (await cmd({ t: 'send', conversation: DM_ALICE, body: 'look', attachments: [{ path: src, name: 'v:4.png', mime: 'image/png', size: 3, kind: 'image' }] })) as { nativeId: string };
+    await cmd({ t: 'send', conversation: DM_ALICE, body: 'this one', replyTo: pic.nativeId });
+    const ts = pic.nativeId.split(':')[1];
+    expect(calls('send').at(-1).params).toMatchObject({ quoteMessage: 'look', quoteAttachment: [`image/png:v_4.png:${join(signalDir, 'attachments', `sent-${ts}-0`)}`] });
+    expect(calls('send').at(-1).params.quoteMention).toBeUndefined();
+  });
+
+  test('a send some of a group did not get says who, on the message', async () => {
+    const mark = events.length;
+    const res = (await cmd({ t: 'send', conversation: GROUP, body: 'PARTIAL' })) as { nativeId: string };
+    const echo = of('message', mark).find((e) => e.message.nativeId === res.nativeId)!.message;
+    expect(echo.extra).toEqual({ failed: [{ who: SAM, number: '+15550161', reason: 'unregistered' }] });
+  });
+
+  test("your phone's settings: typing, viewed receipts and link previews follow them; unknown sends nothing new", async () => {
+    // Not synced (no database): typing goes as before, viewed receipts and previews do not.
+    expect(phoneSettings(null)).toEqual({});
+    expect(await cmd({ t: 'viewed', conversation: DM_ALICE, message: `${ALICE}:${T + 2000}` })).toEqual({ sent: false });
+    expect(calls('sendReceipt').filter((c) => c.params.type === 'viewed')).toHaveLength(0);
+    expect(of('hello').at(-1)!.capabilities).not.toContain('linkPreviews');
+
+    expect(phoneSettings({ 'config-read-receipts': 1, 'config-typing-indicators': 0, 'config-link-previews': 1 })).toEqual({ readReceipts: true, typingIndicators: false, linkPreviews: true });
+    const typing = calls('sendTyping').length;
+    expect(await cmd({ t: 'typing', conversation: DM_ALICE })).toEqual({ ok: false });
+    expect(calls('sendTyping')).toHaveLength(typing);
+
+    expect(await cmd({ t: 'viewed', conversation: DM_ALICE, message: `${ALICE}:${T + 2000}` })).toEqual({ sent: true });
+    expect(calls('sendReceipt').at(-1).params).toEqual({ recipient: ALICE, targetTimestamp: [T + 2000], type: 'viewed' });
+    const receipts = calls('sendReceipt').length;
+    expect(await cmd({ t: 'viewed', conversation: DM_ALICE, message: `${ALICE}:${T + 2000}` })).toEqual({ sent: false }); // once
+    expect(await cmd({ t: 'viewed', conversation: DM_ALICE, message: `${SELF}:${T + 2000}` })).toEqual({ sent: false }); // yours
+    expect(calls('sendReceipt')).toHaveLength(receipts);
+
+    // Link previews: offered to the hub once the setting says so, and sent with a link that is in the text.
+    await adapter.snapshot();
+    expect(of('hello').at(-1)!.capabilities).toContain('linkPreviews');
+    const img = join(dir, 'preview.jpg');
+    writeFileSync(img, 'jpeg');
+    const mark = events.length;
+    const res = (await cmd({ t: 'send', conversation: DM_ALICE, body: 'see https://example.com/x', preview: { url: 'https://example.com/x', title: 'X marks', description: 'the spot', image: img } })) as { nativeId: string };
+    expect(calls('send').at(-1).params).toMatchObject({ previewUrl: 'https://example.com/x', previewTitle: 'X marks', previewDescription: 'the spot', previewImage: img });
+    const echo = of('message', mark).find((e) => e.message.nativeId === res.nativeId)!.message;
+    expect(echo.extra!.embeds).toEqual([{ url: 'https://example.com/x', title: 'X marks', description: 'the spot', provider: 'example.com', image: expect.stringMatching(/^file:.*sent-\d+-preview$/) }]);
+    await cmd({ t: 'send', conversation: DM_ALICE, body: 'no link here', preview: { url: 'https://example.com/x', title: 'X' } });
+    expect(calls('send').at(-1).params.previewUrl).toBeUndefined();
+
+    // Read receipts and previews off on the phone: no viewed receipt, no preview, and the hub is told.
+    phoneSettings({ 'config-read-receipts': 0, 'config-link-previews': 0 });
+    expect(await cmd({ t: 'viewed', conversation: DM_ALICE, message: `${ALICE}:${T + 3000}` })).toEqual({ sent: false });
+    await cmd({ t: 'send', conversation: DM_ALICE, body: 'see https://example.com/x', preview: { url: 'https://example.com/x', title: 'X' } });
+    expect(calls('send').at(-1).params.previewUrl).toBeUndefined();
+    await adapter.snapshot();
+    expect(of('hello').at(-1)!.capabilities).toEqual(CAPABILITIES);
+    phoneSettings(null);
+  });
+
+  test("the phone's settings read from a database signal-cli changed: nothing, not an error", () => {
+    const p = join(dir, 'odd.db');
+    writeFileSync(p, 'not a database');
+    expect(readSignalSettings(p)).toBeNull();
+    const db = new Database(join(dir, 'other.db'));
+    db.exec('CREATE TABLE settings (k TEXT)');
+    db.close();
+    expect(readSignalSettings(join(dir, 'other.db'))).toBeNull();
+    expect(readSignalSettings(join(dir, 'missing.db'))).toBeNull();
+  });
+
+  test('reset secure session: an end-session message in a 1:1, and a line saying so', async () => {
+    const mark = events.length;
+    expect(await cmd({ t: 'resetSession', conversation: DM_ALICE })).toEqual({});
+    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], endSession: true });
+    const line = of('message', mark).at(-1)!.message;
+    expect(line).toMatchObject({ conversation: DM_ALICE, author: SELF, kind: 'system', body: 'You reset the secure session.' });
+    expect(line.nativeId).toMatch(/:endsession$/);
+    await expect(cmd({ t: 'resetSession', conversation: GROUP })).rejects.toThrow('Only a conversation with one person');
   });
 
   test('receipts: for your messages, per person, and one for an edit counts for the message it edits', async () => {
@@ -326,7 +528,7 @@ describe('signal adapter against a fake signal-cli', () => {
     expect(calls('sendTyping').at(-1).params).toEqual({ groupId: GID, stop: true });
     const lists = calls('listGroups').length;
     expect(await cmd({ t: 'action', action: 'resync' })).toEqual({ ok: true });
-    expect(calls('sendSyncRequest')).toHaveLength(1);
+    expect(calls('sendSyncRequest')).toHaveLength(2); // one by itself just after linking (people.ts), and this one
     expect(calls('listGroups').length).toBe(lists + 1);
     await expect(cmd({ t: 'action', action: 'nope' })).rejects.toThrow(/unknown action/);
     await expect(cmd({ t: 'send', conversation: '!room:matrix.org', body: 'x' })).rejects.toThrow(/not a Signal conversation/);
@@ -334,11 +536,13 @@ describe('signal adapter against a fake signal-cli', () => {
   });
 
   test('disappearing messages are deleted (with their files) once read and expired', async () => {
+    // signal-cli downloads a message's files before it hands the message over.
+    mkdirSync(join(signalDir, 'attachments'), { recursive: true });
+    const file = join(signalDir, 'attachments', 'D00rC0de1jpg2aaa3bbb.jpg');
+    writeFileSync(file, 'jpeg');
     push('disappearing');
     const id = `${ALICE}:${T + 20000}`;
     await until('disappearing message', () => of('message').find((e) => e.message.nativeId === id));
-    const file = join(signalDir, 'attachments', 'D00rC0de1jpg2aaa3bbb.jpg');
-    writeFileSync(file, 'jpeg');
     let mark = events.length;
     adapter.sweepExpired(Date.now() + 7200_000);
     // Your own "hi Sam" (Sam's chat has a 1 h timer, started at send) is gone; Alice's unread message is not.
@@ -459,7 +663,7 @@ describe('signal adapter against a fake signal-cli', () => {
     const n = calls('listContacts').length;
     const p = await profile(SELF);
     expect(calls('listContacts').slice(n).map((c) => c.params)).toEqual([{ recipient: [SELF], allRecipients: true }, null]); // null: no params, all contacts
-    expect(p).toEqual({ displayName: 'Quinn', handle: '+15550100', links: [{ label: 'Phone', value: '+15550100', url: 'tel:+15550100' }], friends: [ALICE, SAM] });
+    expect(p).toEqual({ displayName: 'Quinn', handle: '+15550100', links: [{ label: 'Phone', value: '+15550100', url: 'tel:+15550100' }], friends: [ALICE, SAM], editable: ['bio', 'name', 'emoji', 'avatar', 'username'] });
     for (const id of p.friends!) expect(of('identity').find((e) => e.identity.nativeId === id)?.identity).toMatchObject({ contact: true, displayName: expect.any(String) });
   });
 
@@ -485,12 +689,12 @@ describe('signal adapter against a fake signal-cli', () => {
     expect(a.fields).toEqual({
       name: { value: 'Climbing crew 🧗', canEdit: true },
       topic: { value: 'thursday nights', canEdit: true },
-      avatar: { value: null, canEdit: false, reason: 'Changing the picture is not supported yet.' },
+      avatar: { value: null, canEdit: true },
       disappearing: { value: 0, canEdit: true },
       announceOnly: { value: false, canEdit: true },
       editInfo: { value: 'everyone', canEdit: true },
       addMembers: { value: 'everyone', canEdit: true },
-      joinApproval: { value: null, canEdit: false, reason: 'Signal does not say whether approval is on.' },
+      joinApproval: { value: null, canEdit: false, writeOnly: true, reason: 'Turn the group link on first.' },
       encrypted: { value: true, canEdit: false, reason: 'Always on in Signal.' },
     });
     expect(a.members).toEqual({
@@ -509,7 +713,8 @@ describe('signal adapter against a fake signal-cli', () => {
     expect(a.invite).toEqual({ link: null, canCreate: true, canRevoke: false });
     expect(a.adding).toEqual({ can: true, who: 'known', mode: 'add' });
     expect(a.rules!.every((r) => r.you)).toBe(true);
-    expect(a.pinned).toBeUndefined();
+    // No list this device can read: the hub adds the pins it saw.
+    expect(a.pinned).toEqual({ messages: [], canEdit: true });
     expect(a.facts).toBeUndefined();
   });
 
@@ -570,6 +775,7 @@ describe('signal adapter against a fake signal-cli', () => {
       fields: { disappearing: { value: 3600, canEdit: true }, encrypted: { value: true, canEdit: false, reason: 'Always on in Signal.' } },
       members: { list: [{ id: SELF }, { id: SAM }], complete: true },
       rules: [{ what: 'Change disappearing messages', who: 'Either of you', you: true }],
+      pinned: { messages: [], canEdit: true },
     });
     const mark = events.length;
     const a = await configure(DM_ALICE, { key: 'disappearing', value: 86400 });
@@ -605,7 +811,7 @@ describe('signal adapter against a fake signal-cli', () => {
     ]);
     // Nothing asked of signal-cli beyond what a snapshot always reads.
     const asked = records().slice(n).filter((r) => r.t === 'rpc' && r.method !== 'version').map((r) => r.method);
-    expect(asked).toEqual(['listContacts', 'listContacts', 'listGroups']);
+    expect(asked).toEqual(['listContacts', 'listContacts', 'listGroups', 'listIdentities']); // and the keys, read locally (people.ts)
 
     mark = events.length;
     await adapter.snapshot();
@@ -719,10 +925,9 @@ describe('signal adapter against a fake signal-cli', () => {
 
   test('refuses what Signal cannot do, and never calls updateGroup without a group id', async () => {
     const n = calls('updateGroup').length;
-    await expect(configure(GROUP, { key: 'avatar', value: 'file:///tmp/x.png' })).rejects.toThrow('Changing the picture is not supported yet.');
-    await expect(configure(GROUP, { key: 'joinApproval', value: true })).rejects.toThrow('Signal does not say whether approval is on.');
+    await expect(configure(GROUP, { key: 'avatar', value: 'https://example.com/x.png' })).rejects.toThrow('which picture?');
+    await expect(configure(GROUP, { key: 'joinApproval', value: true })).rejects.toThrow('Turn the group link on first.');
     await expect(configure(GROUP, { key: 'encrypted', value: true })).rejects.toThrow('Always on in Signal.');
-    await expect(configure(GROUP, { key: 'pin', message: `${ALICE}:${T + 1000}` })).rejects.toThrow(/no list of pinned/);
     await expect(configure(GROUP, { key: 'slowMode', value: 10 })).rejects.toThrow(/not a Signal group setting/);
     await expect(cmd({ t: 'configure', target: { kind: 'space', nativeId: GID }, change: { key: 'name', value: 'x' } })).rejects.toThrow(/no spaces/);
     await expect(configure('group:', { key: 'name', value: 'x' })).rejects.toThrow(/not a Signal conversation/);
@@ -935,6 +1140,139 @@ describe('signal adapter against a fake signal-cli', () => {
     expect(of('hello')[0].capabilities).toContain('createGroup');
   });
 
+  // ------------------------------------------------------------ groups admin (src/groups.ts, docs/moderation.md)
+
+  const moderate = (nativeId: string, action: any) => cmd({ t: 'moderate', target: { kind: 'conversation', nativeId }, action }) as Promise<About>;
+
+  test('groups admin: the About says what an admin may, with the banned, labels and leaving', async () => {
+    const a = await about(GROUP);
+    expect(a.moderation).toEqual({ remove: { can: true }, ban: { can: true }, admins: { can: true }, end: { can: true }, banned: [], requesting: [] });
+    expect(a.label).toEqual({ value: null, emoji: null, canEdit: true, max: 24 });
+    // Sam is an admin too (made so above): leaving asks nothing more.
+    expect(a.leaving).toEqual({ can: true, canForget: true });
+    const locked = await about(LOCKED);
+    expect(locked.moderation!.remove).toEqual({ can: false, reason: 'Only admins can do this.' });
+    expect(locked.moderation!.requesting).toBeUndefined();
+    expect(locked.leaving).toEqual({ can: true, canForget: true });
+    expect(CAPABILITIES).toEqual(expect.arrayContaining(['leave', 'moderate', 'memberLabels', 'setPicture']));
+  });
+
+  test('groups admin: unmake and make an admin, one updateGroup each, a line saying so', async () => {
+    let mark = events.length;
+    let a = await moderate(GROUP, { op: 'admin', who: SAM, remove: true });
+    expect(calls('updateGroup').at(-1).params).toEqual({ groupId: GID, removeAdmin: [SAM] });
+    expect(a.members!.list.find((m) => m.id === SAM)).toMatchObject({ role: 'Member', rank: 0 });
+    expect(of('message', mark).map((e) => e.message.body)).toContain('You revoked admin privileges from Sam Rivera.');
+    // Now the only admin, with others in it: leaving will ask who takes over.
+    expect(a.leaving).toEqual({ can: true, needsAdmin: true, warning: expect.stringMatching(/only admin/), canForget: true });
+    // Already so: nothing sent.
+    const n = calls('updateGroup').length;
+    await moderate(GROUP, { op: 'admin', who: SAM, remove: true });
+    expect(calls('updateGroup').length).toBe(n);
+    mark = events.length;
+    a = await moderate(GROUP, { op: 'admin', who: SAM });
+    expect(calls('updateGroup').at(-1).params).toEqual({ groupId: GID, admin: [SAM] });
+    expect(a.members!.list.find((m) => m.id === SAM)).toMatchObject({ role: 'Admin', rank: 100 });
+    expect(of('message', mark).map((e) => e.message.body)).toContain('You made Sam Rivera an admin.');
+    await moderate(GROUP, { op: 'admin', who: SAM, remove: true });
+  });
+
+  test('groups admin: ban (out, and listed), unban; remove; refusals before any call', async () => {
+    let a = await moderate(GROUP, { op: 'ban', who: ALICE });
+    expect(calls('updateGroup').at(-1).params).toEqual({ groupId: GID, ban: [ALICE] });
+    expect(a.moderation!.banned).toEqual([ALICE]);
+    expect(a.members!.list.some((m) => m.id === ALICE)).toBe(false);
+    expect(await cmd({ t: 'bans', target: { kind: 'conversation', nativeId: GROUP } })).toEqual({ banned: [{ id: ALICE }] });
+    a = await moderate(GROUP, { op: 'unban', who: ALICE });
+    expect(calls('updateGroup').at(-1).params).toEqual({ groupId: GID, unban: [ALICE] });
+    expect(a.moderation!.banned).toEqual([]);
+    const n = calls('updateGroup').length;
+    await expect(moderate(GROUP, { op: 'unban', who: ALICE })).rejects.toThrow('They are not banned here.');
+    await expect(moderate(GROUP, { op: 'remove', who: ALICE })).rejects.toThrow('They are not in it now.');
+    await expect(moderate(GROUP, { op: 'remove', who: SELF })).rejects.toThrow('That is you.');
+    await expect(moderate(GROUP, { op: 'timeout', who: SAM, seconds: 60 })).rejects.toThrow(/no roles or timeouts/);
+    await expect(moderate(LOCKED, { op: 'remove', who: SAM })).rejects.toThrow('Only admins can do this.');
+    await expect(moderate(LOCKED, { op: 'end' })).rejects.toThrow('Only admins can do this.');
+    expect(calls('updateGroup').length).toBe(n);
+    expect(calls('terminateGroup').length).toBe(0);
+    // Back in, for what follows.
+    await addMembers(GROUP, [ALICE]);
+    await moderate(GROUP, { op: 'remove', who: CASEY }).catch(() => {});
+  });
+
+  test('groups admin: your own label (two calls, one field each), shown on you in the list', async () => {
+    const before = calls('updateGroup').length;
+    const a = (await cmd({ t: 'setLabel', conversation: GROUP, text: ' route setter ', emoji: '🧗' })) as About;
+    expect(calls('updateGroup').slice(before).map((c) => c.params)).toEqual([
+      { groupId: GID, memberLabel: 'route setter' },
+      { groupId: GID, memberLabelEmoji: '🧗' },
+    ]);
+    expect(a.label).toMatchObject({ value: 'route setter', emoji: '🧗' });
+    expect(a.members!.list.find((m) => m.id === SELF)!.label).toEqual({ text: 'route setter', emoji: '🧗' });
+    await expect(cmd({ t: 'setLabel', conversation: GROUP, text: 'x'.repeat(25) })).rejects.toThrow(/at most 24/);
+  });
+
+  test('groups admin: a new picture by path; approval needs the link, then is set without being read', async () => {
+    const pic = join(dir, 'pic.png');
+    writeFileSync(pic, 'png');
+    await configure(GROUP, { key: 'avatar', value: pathToFileURL(pic).href });
+    expect(calls('updateGroup').at(-1).params).toEqual({ groupId: GID, avatar: pic });
+    await configure(GROUP, { key: 'invite', op: 'create' });
+    let a = await about(GROUP);
+    expect(a.fields.joinApproval).toMatchObject({ value: null, canEdit: true, writeOnly: true });
+    a = await configure(GROUP, { key: 'joinApproval', value: true });
+    expect(calls('updateGroup').at(-1).params).toEqual({ groupId: GID, link: 'enabled-with-approval' });
+    await configure(GROUP, { key: 'joinApproval', value: false });
+    expect(calls('updateGroup').at(-1).params).toEqual({ groupId: GID, link: 'enabled' });
+  });
+
+  test('groups admin: someone asking to join is a request; accept adds them, and it is gone', async () => {
+    editGroup(GID, (g) => (g.requestingMembers = [{ number: null, uuid: ROBIN }]));
+    let mark = events.length;
+    await about(GROUP);
+    const req = of('request', mark).find((e) => e.request.kind === 'join')!.request;
+    expect(req).toMatchObject({ nativeId: `join:${GID}:${ROBIN}`, kind: 'join', from: ROBIN, target: { kind: 'conversation', nativeId: GROUP }, answers: ['accept', 'decline'] });
+    mark = events.length;
+    expect(await cmd({ t: 'answer', request: req.nativeId, answer: 'accept' })).toEqual({ conversation: GROUP });
+    expect(calls('updateGroup').at(-1).params).toEqual({ groupId: GID, member: [ROBIN] });
+    expect(of('requestGone', mark).map((e) => e.nativeId)).toContain(req.nativeId);
+    await expect(cmd({ t: 'answer', request: req.nativeId, answer: 'accept' })).rejects.toThrow(/not waiting any more/);
+  });
+
+  test("groups admin: an admin deletes someone else's message (sendAdminDelete); not where you are no admin", async () => {
+    const mark = events.length;
+    const id = `${ALICE}:${T + 1000}`;
+    expect(await cmd({ t: 'redact', conversation: GROUP, message: id, moderator: true })).toEqual({});
+    expect(calls('sendAdminDelete').at(-1).params).toEqual({ groupId: [GID], targetAuthor: ALICE, targetTimestamp: T + 1000 });
+    expect(of('delete', mark).map((e) => e.nativeId)).toEqual([id]);
+    await expect(cmd({ t: 'redact', conversation: GROUP, message: id })).rejects.toThrow(/only lets you delete your own/);
+    await expect(cmd({ t: 'redact', conversation: LOCKED, message: id, moderator: true })).rejects.toThrow('Only group admins can delete others’ messages.');
+    await expect(cmd({ t: 'clearReactions', conversation: GROUP, message: id })).rejects.toThrow(/does not let anyone remove/);
+  });
+
+  test('groups admin: leaving as its only admin names who takes over; the group stays, read-only', async () => {
+    const n = calls('quitGroup').length;
+    await expect(cmd({ t: 'leave', target: { kind: 'conversation', nativeId: GROUP } })).rejects.toThrow(/only admin: name who becomes admin/);
+    await expect(cmd({ t: 'leave', target: { kind: 'conversation', nativeId: GROUP }, admins: [STRAY] })).rejects.toThrow(/still in the group/);
+    expect(calls('quitGroup').length).toBe(n);
+    const mark = events.length;
+    expect(await cmd({ t: 'leave', target: { kind: 'conversation', nativeId: GROUP }, admins: [SAM] })).toEqual({ left: true });
+    expect(calls('quitGroup').at(-1).params).toEqual({ groupId: GID, admin: [SAM] });
+    // No leave event: the history stays, as Signal's apps keep the group.
+    expect(of('leave', mark)).toEqual([]);
+    const a = await about(GROUP);
+    expect(a.fields.name).toMatchObject({ canEdit: false, reason: 'You are no longer in this group.' });
+    expect(a.moderation!.remove).toEqual({ can: false, reason: 'You are no longer in this group.' });
+  });
+
+  test('groups admin: ending a group (terminateGroup) leaves nothing to change', async () => {
+    const id = (await createGroup('to end', [ALICE])).conversation;
+    const a = await moderate(id, { op: 'end' });
+    expect(calls('terminateGroup').at(-1).params).toEqual({ groupId: id.slice('group:'.length) });
+    expect(a.fields.name).toMatchObject({ canEdit: false, reason: 'This group has been ended.' });
+    expect(a.moderation!.end).toEqual({ can: false, reason: 'This group has been ended.' });
+  });
+
   test('daemon crash: restarted with backoff, back online', async () => {
     const mark = events.length;
     const pid = argvs('daemon').at(-1).pid;
@@ -956,6 +1294,69 @@ describe('signal adapter against a fake signal-cli', () => {
     expect(logs.filter((l) => l.startsWith('[warn] signal-cli stopped answering'))).toHaveLength(1);
     expect(calls('version').length).toBeGreaterThanOrEqual(2); // the two unanswered probes
     rmSync(join(signalDir, 'fake-hang'));
+  });
+
+  test('stories: off by default; turned on, the next daemon start passes them, and they come as story events', async () => {
+    expect(argvs('daemon').at(-1).argv).toContain('--ignore-stories');
+    expect(await cmd({ t: 'action', action: 'stories' })).toEqual({ on: false, running: false });
+    expect(await cmd({ t: 'action', action: 'stories', args: { on: true } })).toEqual({ on: true, running: false });
+    // Kept, and not applied until signal-cli starts again.
+    expect(JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8')).stories).toBe(true);
+    const mark = events.length;
+    const daemons = argvs('daemon').length;
+    const ready = logs.filter((l) => l.includes('daemon ready')).length;
+    writeFileSync(join(signalDir, 'fake-exit'), '3');
+    await until('a new daemon', () => argvs('daemon').length > daemons && logs.filter((l) => l.includes('daemon ready')).length > ready);
+    expect(argvs('daemon').at(-1).argv).not.toContain('--ignore-stories');
+    expect(await cmd({ t: 'action', action: 'stories' })).toEqual({ on: true, running: true });
+
+    const at = Date.now() - 60_000;
+    push({
+      account: '+15550100',
+      envelope: {
+        sourceNumber: '+15550137',
+        sourceUuid: ALICE,
+        sourceName: 'Alice',
+        sourceDevice: 1,
+        timestamp: at,
+        storyMessage: { allowsReplies: true, textAttachment: { text: 'hello', style: 'SERIF', textForegroundColor: '#ffffffff', backgroundGradient: { colors: ['#ff112233', '#80445566'], angle: 90 } } },
+      },
+    });
+    const text = await until('text story', () => of('story', mark).find((e) => e.story.nativeId === `${ALICE}:${at}`));
+    expect(text.story).toEqual({ nativeId: `${ALICE}:${at}`, author: ALICE, ts: at, expiresAt: at + 86_400_000, allowsReplies: true, text: { text: 'hello', style: 'SERIF', color: '#ffffffff', gradient: { colors: ['#112233ff', '#44556680'], angle: 90 } } });
+    // Never a message.
+    expect(of('message', mark).some((e) => e.message.nativeId === `${ALICE}:${at}`)).toBe(false);
+
+    const file = join(signalDir, 'attachments', 'story-1.jpg');
+    writeFileSync(file, 'jpeg');
+    push({ account: '+15550100', envelope: { sourceNumber: '+15550161', sourceUuid: SAM, sourceDevice: 1, timestamp: at + 1, storyMessage: { allowsReplies: false, groupId: GID, fileAttachment: { id: 'story-1.jpg', contentType: 'image/jpeg', size: 4 } } } });
+    const pic = await until('picture story', () => of('story', mark).find((e) => e.story.nativeId === `${SAM}:${at + 1}`));
+    expect(pic.story).toMatchObject({ conversation: GROUP, allowsReplies: false, attachment: { kind: 'image', mime: 'image/jpeg', url: pathToFileURL(file).href } });
+    // Its file goes when the story does.
+    adapter.sweepExpired(at + 86_400_000 - 1);
+    expect(existsSync(file)).toBe(true);
+    adapter.sweepExpired(at + 86_400_000 + 1);
+    expect(existsSync(file)).toBe(false);
+  }, 20_000);
+
+  test('a story opened: a viewed receipt only with read receipts on, once; a reply and a reaction go the way Signal puts them', async () => {
+    const at = of('story').at(-2)!.story.ts;
+    const story = `${ALICE}:${at}`;
+    phoneSettings({ 'config-read-receipts': 0 });
+    expect(await cmd({ t: 'storyViewed', story })).toEqual({ sent: false });
+    phoneSettings({ 'config-read-receipts': 1 });
+    expect(await cmd({ t: 'storyViewed', story })).toEqual({ sent: true });
+    expect(calls('sendReceipt').at(-1).params).toEqual({ recipient: ALICE, targetTimestamp: [at], type: 'viewed' });
+    expect(await cmd({ t: 'storyViewed', story })).toEqual({ sent: false });
+
+    const mark = events.length;
+    const r = (await cmd({ t: 'storyReply', story, body: 'nice' })) as { nativeId: string };
+    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: 'nice', storyTimestamp: at, storyAuthor: ALICE });
+    expect(of('message', mark).find((e) => e.message.nativeId === r.nativeId)!.message).toMatchObject({ conversation: DM_ALICE, body: 'nice', extra: { storyReply: { author: ALICE, ts: at } } });
+    await cmd({ t: 'storyReply', story, emoji: '❤️' });
+    expect(calls('sendReaction').at(-1).params).toEqual({ recipient: [ALICE], emoji: '❤️', targetAuthor: ALICE, targetTimestamp: at, story: true });
+    // Turned off again, for the next start.
+    expect(await cmd({ t: 'action', action: 'stories', args: { on: false } })).toEqual({ on: false, running: true });
   });
 
   test('unlinked from the phone: back to linking, data kept', async () => {

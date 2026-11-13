@@ -15,12 +15,14 @@
  * (no read receipt, no typing, no message, no profile key) until it is accepted.
  */
 
+import { Database } from 'bun:sqlite';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type * as P from '@dither-chat/protocol';
-import { ADD_MEMBERS_MAX, createGroupProblem, GROUP_RULES } from '@dither-chat/protocol';
+import { ADD_MEMBERS_MAX, createGroupProblem, GROUP_RULES, PIN_DURATIONS, pollDraftProblem, signalStickerLink, STICKER_PAGE_PACKS, STORIES_ACTION } from '@dither-chat/protocol';
 import { errorText, groupIdOfLink, isMessageRequest, joinError, lookupError, signalError, wantsCaptcha } from './add.ts';
+import { answerJoinParams, approvalParams, groupLeaving, groupModeration, isAdmin, joinRequests, labelOf, labelParams, moderateParams, ownLabel, parseJoinRequest, picturePath, quitParams } from './groups.ts';
 import { ChildRegistry, type Logger } from './cli.ts';
 import { Daemon, type DaemonExit } from './daemon.ts';
 import { LinkFlow } from './link.ts';
@@ -46,16 +48,77 @@ import {
   parseMsgId,
   pendingIds,
   personAbout,
+  QUOTE_THUMB_MAX,
+  quoteAttachment,
+  quoteSource,
   type SeenMessage,
+  pollFact,
 } from './mapping.ts';
 import { fromSignal, toSignal } from './markdown.ts';
+import { CAPTCHA_URL, challengeOf, cleanCaptcha, cleanSafetyNumber, cleanUsername, contactChange, devicesDetail, keyChanges, type SigDevice, type SigIdentity, safetyOf, splitName, usernameOf } from './people.ts';
 import { RpcError, type RpcClient } from './rpc.ts';
 import { AdapterState } from './state.ts';
-import type { SigContact, SigGroup, SigJoinResult, SigReceive, SigSendResult, SigUserStatus } from './types.ts';
+import type { SigContact, SigGroup, SigJoinResult, SigReceive, SigSendResult, SigStickerPack, SigUserStatus } from './types.ts';
+import { CallBook } from './calls.ts';
 
 export const ADAPTER_VERSION = '0.1.0';
 /** No 'connect': Signal has no friends, follows or contact requests; people are added by messaging them (openDirect). */
-export const CAPABILITIES: P.Capability[] = ['send', 'react', 'edit', 'redact', 'markRead', 'typing', 'media', 'sendMedia', 'openDirect', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'editProfile', 'resolve', 'join', 'requests'];
+export const CAPABILITIES: P.Capability[] = ['send', 'react', 'edit', 'redact', 'markRead', 'typing', 'media', 'sendMedia', 'openDirect', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'editProfile', 'resolve', 'join', 'requests', 'viewed', 'resetSession', 'callStates', 'relationships', 'disconnect', 'block', 'safetyNumbers', 'contactNotes', 'leave', 'moderate', 'memberLabels', 'setPicture', 'polls', 'pollVote', 'pollCreate', 'pollEnd', 'pin', 'sendStickers', 'installStickers', 'sendVoice', 'sendViewOnce', 'stories'];
+
+/**
+ * The settings your phone syncs to this device (Settings → Privacy, Chats), as signal-cli keeps them: read-only from its
+ * account database, since no JSON-RPC method reads them (signal-gaps e6). A setting signal-cli has not been told, or a
+ * database it can no longer be read from (another layout in a newer signal-cli), is left out, and each use says what
+ * it does without it (docs/signal.md "Your phone's settings").
+ */
+export interface SignalSettings {
+  readReceipts?: boolean;
+  typingIndicators?: boolean;
+  linkPreviews?: boolean;
+}
+
+/** Keys of signal-cli 0.14's key_value table (ConfigurationStore), by what they mean here. */
+const SETTING_KEYS: Record<keyof SignalSettings, string> = {
+  readReceipts: 'config-read-receipts',
+  typingIndicators: 'config-typing-indicators',
+  linkPreviews: 'config-link-previews',
+};
+
+/** Read the synced settings from signal-cli's account database (<data>/<path>.d/account.db), read-only. Public for tests. */
+export function readSignalSettings(dbPath: string): SignalSettings | null {
+  if (!existsSync(dbPath)) return null;
+  let db: Database | undefined;
+  try {
+    db = new Database(dbPath, { readonly: true });
+    const out: SignalSettings = {};
+    const q = db.query<{ value: unknown }, [string]>('SELECT value FROM key_value WHERE key = ?');
+    for (const [name, key] of Object.entries(SETTING_KEYS) as [keyof SignalSettings, string][]) {
+      const v = q.get(key)?.value;
+      if (v === 1 || v === 1n || v === true || v === 'true') out[name] = true;
+      else if (v === 0 || v === 0n || v === false || v === 'false') out[name] = false;
+    }
+    return out;
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}
+
+/** A sticker id from the picker ("packId:stickerId"), or null. */
+export function stickerRef(id: string): { packId: string; stickerId: number } | null {
+  const m = /^([0-9a-f]{32}):(\d{1,4})$/i.exec(id);
+  return m ? { packId: m[1].toLowerCase(), stickerId: Number(m[2]) } : null;
+}
+
+/** A send result's failures in words the hub shows (extra.ts SendFailureFact). */
+export function sendFailures(results: SigSendResult['results']): P.SendFailureFact[] {
+  const reason = (type: string): P.SendFailureReason =>
+    type === 'UNREGISTERED_FAILURE' ? 'unregistered' : type === 'IDENTITY_FAILURE' ? 'identity' : type === 'RATE_LIMIT_FAILURE' ? 'rateLimit' : type === 'NETWORK_FAILURE' ? 'network' : type === 'INVALID_PRE_KEY_FAILURE' ? 'keys' : 'other';
+  return (results ?? [])
+    .filter((r) => r.type !== 'SUCCESS')
+    .map((r) => ({ who: lc(r.recipientAddress?.uuid) ?? null, ...(r.recipientAddress?.number ? { number: r.recipientAddress.number } : {}), reason: reason(r.type) }));
+}
 const ANSWERS: P.RequestAnswer[] = ['accept', 'decline', 'block'];
 /** What a reply, reaction or edit in a message request is refused with: on Signal, writing back accepts it. */
 const ACCEPT_FIRST = 'Accept this message request first: writing back on Signal accepts it and shares your profile with them';
@@ -88,6 +151,10 @@ export interface AdapterOptions {
    * phone, a storage update), look at the open message requests again at these offsets.
    */
   requestRecheckMs?: number[];
+  /** Read the linked devices again this often (a server call; on start, then at this pace). */
+  devicesEveryMs?: number;
+  /** A daemon down longer than this asks the phone for contacts, groups and settings again when it is back (sendSyncRequest). */
+  syncAfterOutageMs?: number;
 }
 
 type Phase = 'starting' | 'linking' | 'daemon' | 'relinking' | 'stopped' | 'broken';
@@ -96,9 +163,13 @@ type Status = Extract<P.AdapterEvent, { t: 'status' }>;
 interface LinkedAccount {
   number: string;
   aci: string;
+  /** signal-cli's name for its files (accounts.json `path`). */
+  path?: string;
 }
 
-const lc = (s: string | null | undefined) => (s ? s.toLowerCase() : null);
+function lc(s: string | null | undefined) {
+  return s ? s.toLowerCase() : null;
+}
 const ACI = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class SignalAdapter {
@@ -130,6 +201,8 @@ export class SignalAdapter {
   private groupRefreshing = new Set<string>();
   private pendingGroupUpdates = new Map<string, SeenMessage>();
   private seenKeys = new Set<string>();
+  /** 1:1 calls heard, for how each went (calls.ts). */
+  private callBook = new CallBook();
   /** conversation -> newest message timestamp we sent (or saw synced) a read receipt for */
   private acked = new Map<string, number>();
   private stickerCache = new Map<string, Map<number, { emoji?: string | null; contentType?: string | null }> | null>();
@@ -151,6 +224,30 @@ export class SignalAdapter {
   private recheckTimers: Timer[] = [];
   /** Events for a group signal-cli had not listed yet, until a re-read says whether it is yours to show. */
   private heldEvents = new Map<string, P.AdapterEvent[]>();
+  /** People's links (contact, blocked) as the hub was last told, and whether it has the whole list. */
+  private links = new Map<string, P.RelationshipFact['relationship']>();
+  private linksKnown = false;
+  /** signal-cli's own version, from its `version`. */
+  private cliVersion: string | null = null;
+  /** The account's devices as listDevices last said, and when it was asked. */
+  private devices: SigDevice[] | null = null;
+  private devicesAt = 0;
+  /** A rate-limit challenge waiting for the owner's captcha (people.ts challengeOf). */
+  private challenge: string | null = null;
+  /** Just linked: ask the phone for contacts, groups and settings once the daemon is up. */
+  private syncOnReady = false;
+  /** People re-read after a profile key update, and when, so a burst of them reads each once. */
+  private reread = new Map<string, number>();
+  /** On a relink: the device the phone still lists, to name on the link screen. */
+  private staleDevice: string | null = null;
+  /** The phone's synced settings as last read, and when. */
+  private settingsRead: { at: number; value: SignalSettings | null } | null = null;
+  /** Messages a viewed receipt went out for (once each). */
+  private viewedSent = new Set<string>();
+  /** The capabilities the hub was last told. */
+  private toldCaps: string | null = null;
+  /** The daemon running now was started with stories on (no --ignore-stories). */
+  private storiesRunning = false;
 
   constructor(
     private host: AdapterHost,
@@ -174,7 +271,30 @@ export class SignalAdapter {
   // ---------------------------------------------------------------- lifecycle
 
   hello() {
-    this.host.emit({ t: 'hello', network: 'signal', version: ADAPTER_VERSION, capabilities: CAPABILITIES });
+    const capabilities = this.capabilities();
+    this.toldCaps = capabilities.join(',');
+    this.host.emit({ t: 'hello', network: 'signal', version: ADAPTER_VERSION, capabilities });
+  }
+
+  /** CAPABILITIES, and link previews while the phone's setting allows them (unknown: not). */
+  capabilities(): P.Capability[] {
+    return this.settings().linkPreviews === true ? [...CAPABILITIES, 'linkPreviews'] : CAPABILITIES;
+  }
+
+  /** The phone's synced settings (SignalSettings), read at most once a minute. Public for tests. */
+  settings(fresh = false): SignalSettings {
+    const now = Date.now();
+    if (fresh || !this.settingsRead || now - this.settingsRead.at > 60_000) {
+      const path = this.account?.path;
+      this.settingsRead = { at: now, value: path ? readSignalSettings(join(this.signalDir, 'data', `${path}.d`, 'account.db')) : null };
+    }
+    return this.settingsRead.value ?? {};
+  }
+
+  /** Tell the hub again when what it may offer changed (the link-preview setting, synced from the phone). */
+  private recheckCapabilities() {
+    this.settings(true);
+    if (this.capabilities().join(',') !== this.toldCaps) this.hello();
   }
 
   /** Every (re)connect to the hub: hello, the current status, and the requests when the list is known. */
@@ -182,6 +302,7 @@ export class SignalAdapter {
     this.hello();
     if (this.lastStatus) this.host.emit(this.lastStatus);
     if (this.requestsKnown) this.sendAllRequests();
+    if (this.linksKnown) this.host.emit({ t: 'relationships', list: [...this.links].map(([identity, relationship]) => ({ identity, relationship })) });
   }
 
   async start() {
@@ -218,6 +339,8 @@ export class SignalAdapter {
     if (attention !== undefined) ev.attention = attention;
     if (self) ev.self = self;
     ev.layers = this.layers(status, attention ?? null);
+    const details = this.details();
+    if (details) ev.details = details;
     this.lastStatus = ev;
     this.host.emit(ev);
   }
@@ -229,7 +352,7 @@ export class SignalAdapter {
   private layers(status: P.AccountStatus, attention: Status['attention'] | null): P.StatusLayer[] {
     const message = attention?.message ?? status;
     const cli: P.StatusLayer = this.argv0.length
-      ? { name: 'signal-cli', state: 'ok', note: this.argv0[0].split('/').pop() }
+      ? { name: 'signal-cli', state: 'ok', note: this.cliVersion ? `signal-cli ${this.cliVersion}` : this.argv0[0].split('/').pop() }
       : this.phase === 'broken'
         ? { name: 'signal-cli', state: 'failed', note: message }
         : { name: 'signal-cli', state: 'waiting', note: 'looking for it' };
@@ -269,7 +392,7 @@ export class SignalAdapter {
   }
 
   /** signal-cli's own account list (<config>/data/accounts.json). */
-  private readAccounts(): { number: string; uuid?: string }[] {
+  private readAccounts(): { number: string; uuid?: string; path?: string }[] {
     const p = join(this.signalDir, 'data', 'accounts.json');
     if (!existsSync(p)) return [];
     try {
@@ -285,7 +408,7 @@ export class SignalAdapter {
     if (!list.length) return null;
     const s = this.host.secret();
     const pick = list.find((a) => lc(a.uuid) === lc(s.aci)) ?? list.find((a) => a.number === s.number) ?? list[0];
-    return { number: pick.number, aci: lc(pick.uuid)! };
+    return { number: pick.number, aci: lc(pick.uuid)!, ...(pick.path ? { path: pick.path } : {}) };
   }
 
   // ---------------------------------------------------------------- linking
@@ -294,7 +417,7 @@ export class SignalAdapter {
     if (this.phase === 'stopped') return;
     this.phase = 'linking';
     this.host.log('info', `starting device linking${reason ? ` (${reason})` : ''}`);
-    const intro = reason === 'unlinked' ? 'This device was unlinked from your phone. ' : '';
+    const intro = (reason === 'unlinked' ? 'This device was unlinked from your phone. ' : '') + (this.staleDevice ? `Then remove the old ${this.staleDevice} under Linked devices on your phone: signal-cli cannot remove it itself. ` : '');
     this.link = new LinkFlow({
       argv: (name) => this.base('link', '-n', name),
       env: this.env,
@@ -324,10 +447,12 @@ export class SignalAdapter {
       this.setStatus('error', { kind: 'unknown', message: 'Linking finished but signal-cli did not record the account; relink.' });
       return;
     }
-    this.account = { number, aci: lc(acc.uuid)! };
+    this.account = { number, aci: lc(acc.uuid)!, ...(acc.path ? { path: acc.path } : {}) };
+    this.staleDevice = null;
     this.host.saveSecret({ ...this.host.secret(), number, aci: this.account.aci, linkedAt: Date.now() });
     this.host.log('info', `linked as ${redactNumber(number)}`);
     this.restarts = 0;
+    this.syncOnReady = true;
     this.startDaemon();
   }
 
@@ -337,8 +462,11 @@ export class SignalAdapter {
     if (this.phase === 'stopped' || !this.account) return;
     this.phase = 'daemon';
     if (this.lastStatus?.status !== 'error') this.setStatus('connecting', null);
+    // Stories only with the owner's setting on (docs/signal.md "Stories"): read here, so a change waits for this start.
+    const stories = this.state.stories;
+    this.storiesRunning = stories;
     const d = new Daemon({
-      argv: this.base('-a', this.account.aci, 'daemon', '--socket', this.socketPath, '--receive-mode', 'on-connection', '--no-receive-stdout', '--ignore-stories'),
+      argv: this.base('-a', this.account.aci, 'daemon', '--socket', this.socketPath, '--receive-mode', 'on-connection', '--no-receive-stdout', ...(stories ? [] : ['--ignore-stories'])),
       env: this.env,
       socketPath: this.socketPath,
       children: this.children,
@@ -367,6 +495,8 @@ export class SignalAdapter {
       acc.number = now.number;
       this.host.saveSecret({ ...this.host.secret(), number: now.number });
     }
+    if (now?.path) acc.path = now.path;
+    this.recheckCapabilities();
     let me: SigContact | undefined;
     try {
       me = (await this.rpc.call<SigContact[]>('listContacts', { recipient: [acc.aci], allRecipients: true }, 30_000))?.find((c) => lc(c.uuid) === acc.aci);
@@ -385,6 +515,7 @@ export class SignalAdapter {
     this.stopSnapshots();
     for (const at of this.opts.resnapshotMs ?? [0, 30_000, 120_000, 600_000]) this.snapshotTimers.push(setTimeout(() => void this.snapshot(), at));
     this.snapshotInterval = setInterval(() => void this.snapshot(), this.opts.resnapshotEveryMs ?? 1_800_000);
+    void this.afterReady().catch((e) => this.host.log('warn', `after the daemon came up: ${e?.message ?? e}`));
   }
 
   private stopSnapshots() {
@@ -422,9 +553,15 @@ export class SignalAdapter {
 
   /** Emit identity/conversation facts only when they add something. */
   private emitFact(ev: Extract<P.AdapterEvent, { t: 'identity' | 'conversation' }>) {
-    const fact = (ev.t === 'identity' ? ev.identity : ev.conversation) as unknown as Record<string, unknown>;
+    let fact = (ev.t === 'identity' ? ev.identity : ev.conversation) as unknown as Record<string, unknown>;
     const key = `${ev.t === 'identity' ? 'i' : 'c'}:${fact.nativeId}`;
     const prev = this.facts.get(key);
+    // An empty nickname or note says something only to a hub that was told one: it clears it.
+    if (ev.t === 'identity' && ((fact.nickname === '' && !prev?.nickname) || (fact.note === '' && !prev?.note))) {
+      const { nickname, note, ...rest } = fact;
+      fact = { ...rest, ...(nickname || prev?.nickname ? { nickname } : {}), ...(note || prev?.note ? { note } : {}) };
+      ev = { t: 'identity', identity: fact as unknown as P.IdentityFact };
+    }
     const merged = { ...(prev ?? {}) };
     for (const [k, v] of Object.entries(fact)) if (v !== undefined) merged[k] = v;
     if (prev && stableJson(prev) === stableJson(merged)) return;
@@ -502,12 +639,19 @@ export class SignalAdapter {
       }
       for (const peer of this.state.heard.keys()) this.decide(peer, all.get(peer));
       this.emitFact({ t: 'conversation', conversation: noteToSelf(self) });
-      for (const peer of this.state.dms) this.emitFact({ t: 'conversation', conversation: directConversation(self, peer) });
+      // A 1:1 archived on the phone says so (isArchived; groups' archive flag is not in signal-cli's JSON, e4).
+      for (const peer of this.state.dms) this.emitFact({ t: 'conversation', conversation: { ...directConversation(self, peer), ...(all.has(peer) ? { archived: !!all.get(peer)!.isArchived } : {}) } });
+      this.publishLinks(all, contactIds);
+      this.state.seenAt = Date.now();
       this.state.save();
       this.batching = false;
       if (this.requestsKnown) this.publishRequests();
       else this.sendAllRequests();
+      this.recheckCapabilities();
       this.host.log('debug', `snapshot: ${contacts.length} contacts, ${all.size} recipients, ${groups.length} groups, ${this.state.dms.size} 1:1s, ${this.told.size} requests`);
+      // Safety numbers (local, no server call) at the snapshot's pace; devices (a server call) more slowly.
+      await this.readKeys();
+      if (Date.now() - this.devicesAt > (this.opts.devicesEveryMs ?? 6 * 3_600_000)) await this.readDevices();
     } catch (e: any) {
       this.host.log('warn', `could not read contacts/groups: ${e?.message ?? e}`);
     } finally {
@@ -574,6 +718,8 @@ export class SignalAdapter {
     if (members && g.isMember !== false) this.emitMembers(g);
     this.applyGroup(g, cause);
     this.state.save();
+    // Someone asking to join a group you admin is a request (groups.ts); a re-read is when that shows.
+    if (this.requestsKnown) this.publishRequests();
     return g;
   }
 
@@ -634,7 +780,9 @@ export class SignalAdapter {
       aciOfNumber: (n) => this.byNumber.get(n),
       knownGroup: (g) => this.knownGroups.has(g),
       sticker: (packId, stickerId) => this.stickerInfo(packId, stickerId),
+      exists: (path) => existsSync(path),
       nameOf: (aci) => this.names.get(aci),
+      calls: this.callBook,
       once: (key) => {
         if (this.seenKeys.has(key)) return false;
         this.seenKeys.add(key);
@@ -661,6 +809,88 @@ export class SignalAdapter {
     return pack.get(stickerId);
   }
 
+  private stickerPath(packId: string, stickerId: number) {
+    return resolve(join(this.signalDir, 'stickers', packId.replace(/[^0-9a-f]/gi, ''), String(stickerId)));
+  }
+
+  /** A pack as the sticker picker shows it: its stickers from signal-cli's copy (fetchMedia gets one not there yet). */
+  private packFact(p: SigStickerPack): P.StickerPackFact {
+    const stickers = (p.stickers ?? []).map((x) => ({
+      id: `${p.packId}:${x.id}`,
+      name: x.emoji ? `${x.emoji}` : `Sticker ${x.id + 1}`,
+      ...(x.emoji ? { emoji: x.emoji } : {}),
+      url: fileUrl(this.stickerPath(p.packId, x.id)),
+      ...(x.contentType ? { mime: x.contentType } : {}),
+    }));
+    return { id: p.packId, name: p.title || 'Sticker pack', source: 'installed', ...(p.cover ? { cover: fileUrl(this.stickerPath(p.packId, p.cover.id)) } : {}), stickers };
+  }
+
+  /** One page of the installed packs (capability 'sendStickers'): signal-cli's listStickerPacks, nothing fetched. */
+  private async stickers(cursor?: string): Promise<P.StickerPage> {
+    const all = ((await this.call<SigStickerPack[]>('listStickerPacks', {})) ?? []).filter((p) => p.installed !== false && /^[0-9a-f]{32}$/i.test(p.packId) && p.stickers?.length);
+    const from = Math.max(0, Number(cursor ?? 0) || 0);
+    const page = all.slice(from, from + STICKER_PAGE_PACKS);
+    return {
+      packs: page.map((p) => this.packFact(p)),
+      next: from + STICKER_PAGE_PACKS < all.length ? String(from + STICKER_PAGE_PACKS) : null,
+      ...(all.length ? {} : { note: 'No sticker packs installed. Install one on your phone, or paste a signal.art link.' }),
+    };
+  }
+
+  /** Install a pack from a signal.art link (capability 'installStickers'), then read it back from the list. */
+  private async addStickerPack(uri: string): Promise<{ pack: P.StickerPackFact }> {
+    const link = signalStickerLink(uri);
+    if (!link) throw new Error('That is not a signal.art sticker pack link');
+    await this.call('addStickerPack', { uri: [uri.trim()] }, 60_000);
+    const pack = ((await this.call<SigStickerPack[]>('listStickerPacks', {})) ?? []).find((p) => p.packId.toLowerCase() === link.packId);
+    if (!pack) throw new Error('Signal did not install that pack');
+    return { pack: this.packFact(pack) };
+  }
+
+  /**
+   * You opened someone's story: a viewed receipt, as Signal's apps send for stories, only with read receipts on in your
+   * phone's settings (not known: none), never to someone whose message request waits, never your own, once.
+   */
+  private async storyViewed(story: string): Promise<{ sent: boolean }> {
+    const m = this.message(story);
+    if (m.author === this.self || this.viewedSent.has(story)) return { sent: false };
+    if (await this.quiet(dmId(this.self, m.author))) return { sent: false };
+    if (this.settings().readReceipts !== true) return { sent: false };
+    await this.call('sendReceipt', { recipient: m.author, targetTimestamp: [m.ts], type: 'viewed' });
+    this.viewedSent.add(story);
+    return { sent: true };
+  }
+
+  /**
+   * Reply to a story, or react to it with an emoji: in the author's 1:1, or the group of a group story, as Signal's
+   * apps put it. Shown here as the reply line incoming ones get ("Replied to …'s story").
+   */
+  private async storyReply(story: string, conversation: string | undefined, body?: string, emoji?: string): Promise<{ nativeId: string }> {
+    const self = this.self;
+    const m = this.message(story);
+    if (m.author === self) throw new Error('That is your own story');
+    const conv = conversation?.startsWith('group:') ? conversation : dmId(self, m.author);
+    await this.refuseQuiet(conv);
+    const target = this.target(conv);
+    let ts: number;
+    let text = '';
+    if (emoji) {
+      const res = await this.call('sendReaction', { ...target, emoji, targetAuthor: m.author, targetTimestamp: m.ts, story: true });
+      ts = res?.timestamp ?? Date.now();
+    } else {
+      const st = toSignal(body ?? '');
+      if (!st.text.trim()) throw new Error('Write something to reply with');
+      const res = await this.call('send', { ...target, message: st.text, storyTimestamp: m.ts, storyAuthor: m.author, ...(st.textStyles.length ? { textStyle: st.textStyles } : {}) });
+      this.logPartialFailure('story reply', res);
+      ts = res.timestamp;
+      text = fromSignal(st.text, st.styles, st.mentionRanges);
+    }
+    const nativeId = msgId(self, ts);
+    this.host.emit({ t: 'message', live: true, message: { nativeId, conversation: conv, author: self, ts, kind: 'text', body: text, extra: { storyReply: { author: m.author, ts: m.ts, ...(emoji ? { emoji } : {}) } } } });
+    if (text) this.state.remember(nativeId, conv, text);
+    return { nativeId };
+  }
+
   /** One `receive` notification. Public for tests. */
   received(rcv: SigReceive) {
     if (!this.account) return;
@@ -672,9 +902,12 @@ export class SignalAdapter {
       return;
     }
     this.apply(r);
+    // Signal pushes no profile changes, but a new profile key means theirs may have changed: read them again.
+    const pk = rcv.envelope?.dataMessage?.isProfileKeyUpdate ? lc(rcv.envelope.sourceUuid) : null;
+    if (pk && pk !== this.account.aci) void this.rereadPerson(pk);
     // A sync message from your other devices that signal-cli shows nothing of (no transcript, read sync, list or
     // blocked list): a message request answered on the phone is one, and the storage update that follows tells
-    // signal-cli. signal-cli 0.14.9 does not show which, so look at the open message requests again.
+    // signal-cli. signal-cli 0.14.8 does not show which, so look at the open message requests again.
     const env = rcv.envelope;
     const s = env?.syncMessage;
     if (s && lc(env?.sourceUuid) === this.account.aci && !s.sentMessage && !s.sentStoryMessage && !s.readMessages?.length && !s.type && !s.blockedNumbers && !s.blockedGroupIds) this.recheckRequests();
@@ -719,7 +952,7 @@ export class SignalAdapter {
       }
     }
     for (const m of r.messages) {
-      this.state.remember(m.nativeId, m.conversation, m.text, m.replyTo, m.files);
+      this.state.remember(m.nativeId, m.conversation, m.text, m.replyTo, m.files, m.quote);
       if (m.author !== self && !m.editedTs && m.kind !== 'system' && m.kind !== 'call' && m.ts > (this.acked.get(m.conversation) ?? 0)) {
         this.state.addUnread(m.conversation, m.author, m.ts);
       }
@@ -739,6 +972,23 @@ export class SignalAdapter {
     }
     for (const g of r.refreshGroups) setTimeout(() => void this.refreshGroup(g), 500);
     if (r.resync) this.scheduleSnapshot(5000);
+    // A view-once message's files: signal-cli downloaded them, and they are not kept (docs/signal.md "View-once").
+    for (const path of r.discard ?? []) this.dropFile(path);
+    if (r.storyFiles?.length) {
+      this.state.storyFiles.push(...r.storyFiles);
+      this.state.save();
+    }
+  }
+
+  /** Delete a file signal-cli downloaded, only inside its own directory. */
+  private dropFile(path: string) {
+    const p = resolve(path);
+    if (!p.startsWith(this.signalDir + sep)) return;
+    try {
+      rmSync(p, { force: true });
+    } catch (e: any) {
+      this.host.log('warn', `could not delete ${p}: ${e?.message ?? e}`);
+    }
   }
 
   // ---------------------------------------------------------------- disappearing messages
@@ -783,6 +1033,13 @@ export class SignalAdapter {
    * up (Signal's clients do so on their own; nobody sends anything). Public for tests.
    */
   sweepExpired(now = Date.now()) {
+    // Stories end after a day, and their files go with them.
+    const over = this.state.storyFiles.filter(([, until]) => until <= now);
+    if (over.length) {
+      for (const [path] of over) this.dropFile(path);
+      this.state.storyFiles = this.state.storyFiles.filter(([, until]) => until > now);
+      this.state.save();
+    }
     const ended = this.state.pins.filter((p) => p.until <= now);
     if (ended.length) {
       this.state.pins = this.state.pins.filter((p) => p.until > now);
@@ -824,7 +1081,15 @@ export class SignalAdapter {
         // Linked devices receive no history from the phone.
         return { count: 0, done: true };
       case 'send':
-        return this.send(cmd.conversation, cmd.body, cmd.replyTo, cmd.attachments);
+        return this.send(cmd.conversation, cmd.body, cmd.replyTo, cmd.attachments, cmd.preview, { sticker: cmd.sticker, viewOnce: cmd.viewOnce });
+      case 'stickers':
+        return this.stickers(cmd.cursor);
+      case 'addStickerPack':
+        return this.addStickerPack(cmd.uri);
+      case 'storyViewed':
+        return this.storyViewed(cmd.story);
+      case 'storyReply':
+        return this.storyReply(cmd.story, cmd.conversation, cmd.body, cmd.emoji);
       case 'openDirect':
         return this.openDirect(cmd.peer);
       case 'edit':
@@ -842,6 +1107,7 @@ export class SignalAdapter {
         return { authors: [] }; // Signal names every reactor up front
       case 'redact': {
         const m = this.message(cmd.message);
+        if (m.author !== this.self && cmd.moderator) return this.adminDelete(cmd.conversation, cmd.message);
         if (m.author !== this.self) throw new Error('Signal only lets you delete your own messages for everyone');
         await this.refuseQuiet(cmd.conversation);
         await this.call('remoteDelete', { ...this.target(cmd.conversation), targetTimestamp: m.ts });
@@ -853,6 +1119,10 @@ export class SignalAdapter {
         return this.markRead(cmd.conversation, cmd.upTo);
       case 'typing':
         return this.sendTyping(cmd.conversation, !!cmd.stop);
+      case 'viewed':
+        return this.viewed(cmd.conversation, cmd.message);
+      case 'resetSession':
+        return this.resetSession(cmd.conversation);
       case 'fetchMedia':
         return this.fetchMedia(cmd.url);
       case 'action':
@@ -875,9 +1145,114 @@ export class SignalAdapter {
         return this.add(cmd.ref, cmd.action);
       case 'answer':
         return this.answer(cmd.request, cmd.answer);
+      case 'verify':
+        return this.verify(cmd.who, cmd.safetyNumber, !!cmd.clear);
+      case 'block':
+        return this.block(cmd.target, !!cmd.unblock);
+      case 'setContact':
+        return this.setContact(cmd.who, { nickname: cmd.nickname, note: cmd.note });
+      case 'remove':
+        return this.remove(cmd.identity, cmd.relationship);
+      case 'pollVote':
+        return this.pollVote(cmd.conversation, cmd.message, cmd.options, cmd.seq);
+      case 'pollCreate':
+        return this.pollCreate(cmd.conversation, cmd.poll);
+      case 'pollEnd':
+        return this.pollEnd(cmd.conversation, cmd.message);
+      case 'leave':
+        return this.leave(cmd.target, cmd.admins, !!cmd.forget);
+      case 'moderate':
+        return this.moderate(cmd.target, cmd.action);
+      case 'bans':
+        return this.bans(cmd.target);
+      case 'setLabel':
+        return this.setLabel(cmd.conversation, cmd.text, cmd.emoji);
+      case 'clearReactions':
+        throw new Error('Signal does not let anyone remove others’ reactions.');
       case 'shutdown':
         return undefined;
     }
+  }
+
+  // ---------------------------------------------------------------- polls and pins (docs/signal.md "Polls and pins")
+
+  /** Your last vote's number on each poll this run: the next one is higher, as Signal's apps count. */
+  private pollSeq = new Map<string, number>();
+
+  /**
+   * Vote, or with [] take your vote back: signal-cli's sendPollVote with the options' positions and a number higher than
+   * your last on this poll (the hub's, or this run's). Not in a message request, which it would answer.
+   */
+  private async pollVote(conversation: string, message: string, options: string[], seq?: number) {
+    const m = this.message(message);
+    await this.refuseQuiet(conversation);
+    const indexes = options.map((o) => Number(o));
+    if (indexes.some((i) => !Number.isInteger(i) || i < 0)) throw new Error('Not an option of this poll');
+    const voteCount = Math.max(seq ?? 0, this.pollSeq.get(message) ?? 0) + 1;
+    await this.call('sendPollVote', { ...this.target(conversation), pollAuthor: m.author, pollTimestamp: m.ts, option: indexes, voteCount });
+    this.pollSeq.set(message, voteCount);
+    this.host.emit({ t: 'pollUpdate', conversation, message, vote: { voter: this.self, options: indexes.map(String), seq: voteCount, ts: Date.now() } });
+    return {};
+  }
+
+  /** A poll: signal-cli's sendPollCreate. Signal's polls have no timer; they stay open until their author ends them. */
+  private async pollCreate(conversation: string, draft: P.PollDraft): Promise<{ nativeId: string }> {
+    const problem = pollDraftProblem('signal', draft);
+    if (problem) throw new Error(problem);
+    await this.refuseQuiet(conversation);
+    const question = draft.question.trim();
+    const options = draft.options.map((o) => o.trim());
+    const res = await this.call('sendPollCreate', { ...this.target(conversation), question, option: options, ...(draft.multi ? {} : { noMulti: true }) });
+    this.logPartialFailure('poll', res);
+    const self = this.self;
+    const ts = res?.timestamp ?? Date.now();
+    const nativeId = msgId(self, ts);
+    const poll = pollFact({ question, options, allowMultiple: draft.multi });
+    const body = [`📊 **${question}**${draft.multi ? ' (multiple choice)' : ''}`, ...options.map((x) => `• ${x}`)].join('\n');
+    this.host.emit({ t: 'message', live: true, message: { nativeId, conversation, author: self, ts, kind: 'text', body, extra: { poll } } });
+    return { nativeId };
+  }
+
+  /** End your own poll: signal-cli's sendPollTerminate. */
+  private async pollEnd(conversation: string, message: string) {
+    const m = this.message(message);
+    if (m.author !== this.self) throw new Error('Only whoever made a poll can end it');
+    await this.refuseQuiet(conversation);
+    const res = await this.call<Partial<SigSendResult>>('sendPollTerminate', { ...this.target(conversation), pollTimestamp: m.ts });
+    const ts = res?.timestamp ?? Date.now();
+    this.systemMessage(conversation, ts, 'You ended the poll.');
+    this.host.emit({ t: 'pollUpdate', conversation, message, ended: true, ts });
+    return {};
+  }
+
+  /**
+   * Pin or unpin: signal-cli's sendPinMessage (for one of PIN_DURATIONS, -1 for good) and sendUnpinMessage. Not in a
+   * message request. A pin that runs out is unpinned here when its time comes, as an incoming one is.
+   */
+  private async pin(conversation: string, change: Extract<P.AboutChange, { key: 'pin' }>) {
+    const m = this.message(change.message);
+    await this.refuseQuiet(conversation);
+    const self = this.self;
+    if (change.remove) {
+      const res = await this.call<Partial<SigSendResult>>('sendUnpinMessage', { ...this.target(conversation), targetAuthor: m.author, targetTimestamp: m.ts });
+      const ts = res?.timestamp ?? Date.now();
+      this.host.emit({ t: 'pin', conversation, message: change.message, pinned: false, by: self, ts });
+      this.dropPinTimer(change.message);
+      this.systemMessage(conversation, ts, 'You unpinned a message.');
+      return;
+    }
+    const choices = PIN_DURATIONS.signal ?? [];
+    const seconds = change.seconds === undefined ? choices[0] : change.seconds;
+    if (!choices.includes(seconds ?? null)) throw new Error('Not one of the pin durations Signal offers');
+    const res = await this.call<Partial<SigSendResult>>('sendPinMessage', { ...this.target(conversation), targetAuthor: m.author, targetTimestamp: m.ts, pinDuration: seconds ?? -1 });
+    const ts = res?.timestamp ?? Date.now();
+    this.host.emit({ t: 'pin', conversation, message: change.message, pinned: true, by: self, ts });
+    this.dropPinTimer(change.message);
+    if (seconds) {
+      this.state.pins.push({ conversation, message: change.message, until: ts + seconds * 1000 });
+      this.state.save();
+    }
+    this.systemMessage(conversation, ts, 'You pinned a message.');
   }
 
   /**
@@ -888,6 +1263,9 @@ export class SignalAdapter {
     const t = parseConversation(conversation, this.self);
     if (!t || t.kind === 'self') return { ok: false };
     if (await this.quiet(conversation)) return { ok: false };
+    // signal-cli's sendTyping does not look at the phone's setting (its receive side does): off there, nothing goes.
+    // Not known (not synced yet, or not readable): sent, as before, and as Signal's default has it.
+    if (this.settings().typingIndicators === false) return { ok: false };
     await this.call('sendTyping', { ...(t.kind === 'group' ? { groupId: t.groupId } : { recipient: [t.peer] }), ...(stop ? { stop: true } : {}) });
     return { ok: true };
   }
@@ -895,8 +1273,11 @@ export class SignalAdapter {
   /** Signal has no custom emoji or super reactions. The one thing that stops you is having left the group. */
   private reactionContext(conversation: string): P.ReactionContext {
     const t = parseConversation(conversation, this.self);
-    const left = t?.kind === 'group' && this.state.groups.get(t.groupId)?.isMember === false;
-    return { canReact: !left, ...(left ? { reason: 'You are no longer in this group.' } : {}), custom: [] };
+    const g = t?.kind === 'group' ? this.state.groups.get(t.groupId) : undefined;
+    const left = g?.isMember === false;
+    // A group's admins delete others' messages for everyone (sendAdminDelete); nobody removes others' reactions.
+    const admin = !!g && !left && !g.isTerminated && isAdmin(g, this.self);
+    return { canReact: !left, ...(left ? { reason: 'You are no longer in this group.' } : {}), custom: [], ...(admin ? { moderation: { delete: true } } : {}) };
   }
 
   private async call<T = SigSendResult>(method: string, params: Record<string, unknown>, timeoutMs = 90_000): Promise<T> {
@@ -905,29 +1286,74 @@ export class SignalAdapter {
       if (this.lastStatus?.attention?.kind === 'rate_limited') this.setStatus('online', null);
       return r;
     } catch (e) {
-      if (e instanceof RpcError && e.code === -5) {
+      const challenge = challengeOf(e);
+      if (challenge) this.wantCaptcha(challenge);
+      else if (e instanceof RpcError && e.code === -5) {
         this.setStatus('attention', { kind: 'rate_limited', message: `Signal is rate limiting this device: ${e.message}` });
       }
       throw e;
     }
   }
 
-  private async send(conversation: string, body: string, replyTo?: string, files: P.OutgoingAttachment[] = []) {
+  /**
+   * A quote of a message, the way Signal's clients send one: its text with its mentions and styles, and its files (a
+   * small picture as its own thumbnail), when this device has seen it since quotes were kept; else its plain text.
+   */
+  private quoteParams(replyTo: string): Record<string, unknown> {
+    const q = this.message(replyTo);
+    const params: Record<string, unknown> = { quoteTimestamp: q.ts, quoteAuthor: q.author };
+    const src = this.state.quoteOf(replyTo);
+    if (src) {
+      if (src.t) params.quoteMessage = src.t;
+      if (src.m?.length) params.quoteMention = src.m;
+      if (src.s?.length) params.quoteTextStyle = src.s;
+      // A thumbnail whose file has gone (expired, deleted) goes without it.
+      const a = (src.a ?? []).map((x) => {
+        const parts = x.split(':');
+        return parts.length > 2 && !existsSync(parts.slice(2).join(':')) ? parts.slice(0, 2).join(':') : x;
+      });
+      if (a.length) params.quoteAttachment = a;
+      return params;
+    }
+    const text = this.state.textOf(replyTo);
+    if (text) params.quoteMessage = text;
+    return params;
+  }
+
+  /**
+   * A link preview for a message (the hub fetched it), sent only while your phone's setting allows link previews (not
+   * known: none), and only for a link that is in the text, as signal-cli asks.
+   */
+  private previewParams(text: string, preview?: P.LinkPreviewOut): Record<string, unknown> {
+    if (!preview?.url || !preview.title || !text.includes(preview.url)) return {};
+    if (this.settings().linkPreviews !== true) return {};
+    return {
+      previewUrl: preview.url,
+      previewTitle: preview.title,
+      ...(preview.description ? { previewDescription: preview.description } : {}),
+      ...(preview.image && existsSync(preview.image) ? { previewImage: preview.image } : {}),
+    };
+  }
+
+  private async send(conversation: string, body: string, replyTo?: string, files: P.OutgoingAttachment[] = [], preview?: P.LinkPreviewOut, o: { sticker?: string; viewOnce?: boolean } = {}) {
     const self = this.self;
     const st = toSignal(body);
     const params: Record<string, unknown> = { ...this.target(conversation), message: st.text };
     // signal-cli's send turns profile sharing on and carries your profile key: that is accepting.
     await this.refuseQuiet(conversation);
+    const sticker = o.sticker ? stickerRef(o.sticker) : null;
+    if (o.sticker && !sticker) throw new Error('That is not a Signal sticker');
+    if (sticker && files.length) throw new Error('A sticker goes on its own, without files');
     if (st.textStyles.length) params.textStyle = st.textStyles;
     if (st.mentions.length) params.mention = st.mentions;
-    if (replyTo) {
-      const q = this.message(replyTo);
-      params.quoteTimestamp = q.ts;
-      params.quoteAuthor = q.author;
-      const text = this.state.textOf(replyTo);
-      if (text) params.quoteMessage = text;
-    }
-    if (files.length) params.attachment = files.map((f) => f.path);
+    if (replyTo) Object.assign(params, this.quoteParams(replyTo));
+    if (sticker) params.sticker = `${sticker.packId}:${sticker.stickerId}`;
+    if (files.length) {
+      params.attachment = files.map((f) => f.path);
+      // Recorded in the composer: Signal's voice note (one file).
+      if (files.length === 1 && files[0].voice) params.voiceNote = true;
+      if (o.viewOnce) params.viewOnce = true;
+    } else if (!sticker) Object.assign(params, this.previewParams(st.text, preview));
     const res = await this.call('send', params, files.length ? 170_000 : undefined);
     this.logPartialFailure('send', res);
     const ts = res.timestamp;
@@ -939,8 +1365,16 @@ export class SignalAdapter {
     }
     const fact: P.MessageFact = { nativeId, conversation, author: self, ts, kind: 'text', body: fromSignal(st.text, st.styles, st.mentionRanges) };
     if (replyTo) fact.replyTo = replyTo;
+    if (sticker) {
+      // Shown as the sticker it is, from signal-cli's copy of the pack (fetchMedia asks for it when it is not on disk).
+      const info = this.stickerInfo(sticker.packId, sticker.stickerId);
+      fact.kind = 'sticker';
+      fact.attachments = [{ nativeId: `sticker:${sticker.packId}:${sticker.stickerId}`, kind: 'image', mime: info?.contentType || 'image/webp', name: 'sticker', url: fileUrl(this.stickerPath(sticker.packId, sticker.stickerId)) }];
+      if (!fact.body) fact.body = info?.emoji ?? '';
+    }
     // No echo comes back to this device. Keep our own copy, the way a received file is kept, since the hub drops its spool.
-    const kept = files.map((f, i) => {
+    // A view-once file is not kept: Signal's apps do not show you your own either.
+    const kept = (o.viewOnce ? [] : files).map((f, i) => {
       const dest = join(this.signalDir, 'attachments', `sent-${ts}-${i}`);
       mkdirSync(join(this.signalDir, 'attachments'), { recursive: true });
       copyFileSync(f.path, dest);
@@ -950,8 +1384,30 @@ export class SignalAdapter {
       fact.attachments = kept.map((k) => k.fact);
       if (!st.text) fact.kind = 'media';
     }
+    const extra: P.MessageExtra & Record<string, unknown> = {};
+    if (sticker) extra.sticker = sticker;
+    if (o.viewOnce && files.length) {
+      fact.kind = 'media';
+      if (!fact.body) fact.body = '📷 View-once media';
+      extra.viewOnce = true;
+    }
+    if (files.length === 1 && files[0].voice && kept.length) extra.attachmentNotes = [{ voiceNote: true }];
+    // Some people in a group did not get it (the others did; when nobody does, signal-cli fails the send).
+    const failed = sendFailures(res.results);
+    if (failed.length) extra.failed = failed;
+    if (params.previewUrl) {
+      // Shown here as it went out, with our own copy of the picture (the hub deletes its spool).
+      let image: string | undefined;
+      if (params.previewImage) {
+        image = join(this.signalDir, 'attachments', `sent-${ts}-preview`);
+        copyFileSync(String(params.previewImage), image);
+      }
+      extra.embeds = [{ url: params.previewUrl, title: params.previewTitle, ...(params.previewDescription ? { description: params.previewDescription } : {}), provider: hostOf(String(params.previewUrl)), ...(image ? { image: fileUrl(image) } : {}) }];
+    }
+    if (Object.keys(extra).length) fact.extra = extra;
     this.host.emit({ t: 'message', live: true, message: fact });
-    this.state.remember(nativeId, conversation, st.text, replyTo, kept.map((k) => k.file));
+    const quoteFiles = files.map((f, i) => quoteAttachment(f.mime, f.name, f.kind === 'image' && f.size <= QUOTE_THUMB_MAX ? (kept[i]?.file ?? null) : null));
+    this.state.remember(nativeId, conversation, st.text, replyTo, kept.map((k) => k.file), quoteSource(st.text, st.mentions, st.textStyles, quoteFiles));
     const timer = this.timers.get(conversation);
     if (timer) this.trackExpiry({ nativeId, conversation, ts }, timer, Date.now());
     return { nativeId };
@@ -989,13 +1445,7 @@ export class SignalAdapter {
     if (st.mentions.length) params.mention = st.mentions;
     // Clients rebuild the message from the edit, so a quote has to be sent again.
     const replyTo = this.state.replyOf(message);
-    const q = replyTo ? parseMsgId(replyTo) : null;
-    if (q) {
-      params.quoteTimestamp = q.ts;
-      params.quoteAuthor = q.author;
-      const text = this.state.textOf(replyTo!);
-      if (text) params.quoteMessage = text;
-    }
+    if (replyTo && parseMsgId(replyTo)) Object.assign(params, this.quoteParams(replyTo));
     const res = await this.call('send', params);
     this.logPartialFailure('edit', res);
     this.state.alias(msgId(self, res.timestamp), message, conversation);
@@ -1004,8 +1454,46 @@ export class SignalAdapter {
       live: true,
       message: { nativeId: message, conversation, author: self, ts: m.ts, editedTs: res.timestamp, kind: 'text', body: fromSignal(st.text, st.styles, st.mentionRanges) },
     });
-    this.state.remember(message, conversation, st.text);
+    this.state.remember(message, conversation, st.text, undefined, undefined, quoteSource(st.text, st.mentions, st.textStyles));
     return { nativeId: message };
+  }
+
+  /**
+   * You played someone's voice note or opened their video: a viewed receipt, as Signal's apps send ("played"). Only
+   * where a read receipt would go and only with read receipts on in your phone's settings (not known: none), never in a
+   * message request, never for your own, once per message.
+   */
+  private async viewed(conversation: string, message: string): Promise<{ sent: boolean }> {
+    const self = this.self;
+    const m = this.message(message);
+    if (m.author === self || this.viewedSent.has(message)) return { sent: false };
+    const t = parseConversation(conversation, self);
+    if (!t || t.kind === 'self') return { sent: false };
+    if (await this.quiet(conversation)) {
+      this.host.log('debug', 'no viewed receipt: a message request waits for your answer');
+      return { sent: false };
+    }
+    if (this.settings().readReceipts !== true) return { sent: false };
+    await this.call('sendReceipt', { recipient: m.author, targetTimestamp: [m.ts], type: 'viewed' });
+    this.viewedSent.add(message);
+    if (this.viewedSent.size > 2000) this.viewedSent.delete(this.viewedSent.values().next().value!);
+    return { sent: true };
+  }
+
+  /**
+   * Reset the encrypted session with someone (Signal's end session), for messages that will not decrypt. A 1:1 only;
+   * it tells them, so not in a message request. A line in the conversation says it was done, as Signal's apps show.
+   */
+  private async resetSession(conversation: string) {
+    const self = this.self;
+    const t = parseConversation(conversation, self);
+    if (t?.kind !== 'dm') throw new Error('Only a conversation with one person has a secure session to reset');
+    await this.refuseQuiet(conversation);
+    const res = await this.call('send', { recipient: [t.peer], endSession: true });
+    const ts = res?.timestamp ?? Date.now();
+    const fact: P.MessageFact = { nativeId: `${msgId(self, ts)}:endsession`, conversation, author: self, ts, kind: 'system', body: 'You reset the secure session.' };
+    this.host.emit({ t: 'message', live: true, message: fact });
+    return {};
   }
 
   private async markRead(conversation: string, upTo: string) {
@@ -1031,6 +1519,8 @@ export class SignalAdapter {
   }
 
   private logPartialFailure(what: string, res: SigSendResult) {
+    const challenge = challengeOf(res);
+    if (challenge) this.wantCaptcha(challenge);
     const failed = (res?.results ?? []).filter((r) => r.type !== 'SUCCESS');
     if (failed.length) this.host.log('warn', `${what}: ${failed.length} recipient(s) failed`, failed.map((f) => ({ type: f.type, uuid: f.recipientAddress?.uuid })));
   }
@@ -1038,7 +1528,17 @@ export class SignalAdapter {
   private async fetchMedia(url: string) {
     if (!url.startsWith('file://')) throw new Error(`Signal media is served from disk; cannot fetch ${url.split(':')[0]} URLs`);
     const p = resolve(fileURLToPath(url));
-    if (!p.startsWith(this.signalDir + sep) || !existsSync(p)) throw new Error('no such Signal media file');
+    if (!p.startsWith(this.signalDir + sep)) throw new Error('no such Signal media file');
+    // A sticker of an installed pack signal-cli has not downloaded yet: its getSticker fetches it.
+    const sticker = !existsSync(p) && p.startsWith(join(this.signalDir, 'stickers') + sep) ? /\/stickers\/([0-9a-f]{32})\/(\d+)$/i.exec(p) : null;
+    if (sticker) {
+      const r = await this.call<{ data?: string } | string>('getSticker', { packId: sticker[1], stickerId: Number(sticker[2]) }, 60_000);
+      const data = typeof r === 'string' ? r : r?.data;
+      if (!data) throw new Error('Signal did not give that sticker');
+      const bytes = Buffer.from(data, 'base64');
+      return { mime: this.stickerInfo(sticker[1], Number(sticker[2]))?.contentType || sniffMime(bytes, p), base64: data };
+    }
+    if (!existsSync(p)) throw new Error('no such Signal media file');
     const bytes = readFileSync(p);
     return { mime: sniffMime(bytes, p), base64: bytes.toString('base64') };
   }
@@ -1184,6 +1684,8 @@ export class SignalAdapter {
         answers: ANSWERS,
       });
     }
+    // Asking to join a group this account admins (groups.ts).
+    for (const f of joinRequests(this.state.groups.values(), self, (id) => this.joinSeen.get(id) ?? this.joinSeen.set(id, Date.now()).get(id)!, groupConvId)) out.set(f.nativeId, f);
     for (const peer of this.pendingPeers) {
       out.set(`message:${peer}`, { nativeId: `message:${peer}`, kind: 'message', from: peer, target: { kind: 'conversation', nativeId: dmId(self, peer) }, ts: this.state.heard.get(peer) ?? Date.now(), answers: ANSWERS });
     }
@@ -1235,6 +1737,7 @@ export class SignalAdapter {
       throw new Error('That request is not waiting any more');
     }
     if (!f.answers.includes(answer)) throw new Error(`This request cannot be answered with ${answer}`);
+    if (f.kind === 'join') return this.answerJoin(request, answer);
     return f.kind === 'invite' ? this.answerInvite(request.slice('invite:'.length), answer) : this.answerMessage(request.slice('message:'.length), answer);
   }
 
@@ -1535,7 +2038,8 @@ export class SignalAdapter {
       const id = lc(m.uuid)!;
       if (seen.has(id)) continue;
       seen.add(id);
-      list.push({ id, role: m.isAdmin ? 'Admin' : 'Member', rank: m.isAdmin ? 100 : 0 });
+      const label = labelOf(m);
+      list.push({ id, role: m.isAdmin ? 'Admin' : 'Member', rank: m.isAdmin ? 100 : 0, ...(label ? { label } : {}) });
     }
     const link = g.groupInviteLink || null;
     const facts: { label: string; value: string }[] = [];
@@ -1547,13 +2051,13 @@ export class SignalAdapter {
       fields: {
         name: set<'name'>(g.name ?? '', info, lockedInfo),
         topic: set<'topic'>(g.description ?? '', info, lockedInfo),
-        avatar: set<'avatar'>(this.groupAvatar(g.id) ?? null, false, info ? 'Changing the picture is not supported yet.' : lockedInfo),
+        avatar: set<'avatar'>(this.groupAvatar(g.id) ?? null, info, lockedInfo),
         disappearing: set<'disappearing'>(g.messageExpirationTime ?? 0, info, lockedInfo),
         announceOnly: set<'announceOnly'>(announce, boss, onlyAdmins),
         editInfo: set<'editInfo'>(who(g.permissionEditDetails), boss, onlyAdmins),
         addMembers: set<'addMembers'>(who(g.permissionAddMember), boss, onlyAdmins),
-        // The link is there whether or not approval is on, and listGroups says nothing else about it.
-        joinApproval: set<'joinApproval'>(null, false, 'Signal does not say whether approval is on.'),
+        // The link is there whether or not approval is on, and listGroups says nothing else about it: it can be set, not read.
+        joinApproval: { value: null, canEdit: boss && !!link, writeOnly: true, reason: boss && !link ? 'Turn the group link on first.' : boss ? 'signal-cli does not say whether approval is on now; setting it works.' : onlyAdmins },
         encrypted: set<'encrypted'>(true, false, 'Always on in Signal.'),
       },
       members: { list, complete: true },
@@ -1571,8 +2075,130 @@ export class SignalAdapter {
       ],
       you: isMember ? { role: admin ? 'Admin' : 'Member', rank: admin ? 100 : 0 } : {},
       invite: { link, canCreate: boss, canRevoke: boss && !!link, ...(boss ? {} : { reason: out ?? 'Only admins can change the invite link.' }) },
+      // Signal keeps no list this device can read: the hub adds the pins it saw (docs/signal.md "Polls and pins").
+      // Whoever may send here may pin, as Signal's apps offer it.
+      pinned: { messages: [], canEdit: !out && (admin || !announce), ...(!out && (admin || !announce) ? {} : { reason: out ?? 'Only admins can send messages here.' }) },
       ...(facts.length ? { facts } : {}),
+      blocked: !!g.isBlocked,
+      moderation: groupModeration(g, self),
+      label: ownLabel(g, self),
+      leaving: groupLeaving(g, self),
     };
+  }
+
+  // ---------------------------------------------------------------- groups admin (groups.ts, docs/moderation.md)
+
+  /** When each join request was first seen, by request id. */
+  private joinSeen = new Map<string, number>();
+
+  /** A group re-read, as the About it gives says; refused when signal-cli does not know it. */
+  private async freshGroup(target: P.AboutTarget): Promise<SigGroup> {
+    const t = this.aboutTarget(target);
+    if (t.kind !== 'group') throw new Error('Only groups have members to manage on Signal.');
+    const g = await this.readGroup(t.groupId);
+    if (!g) throw new Error('Signal does not know this group');
+    return g;
+  }
+
+  /** A change went out: a fresh read, the line saying what changed, and the About as it now stands. */
+  private async afterChange(g: SigGroup, res: Partial<SigSendResult> | undefined, fallback?: string): Promise<P.About> {
+    const after = (await this.readGroup(g.id)) ?? g;
+    const line = describeGroupChange(g, after, this.self, this.self, this.nameOf);
+    this.systemMessage(groupConvId(g.id), res?.timestamp ?? Date.now(), line === 'You updated the group.' && fallback ? fallback : line);
+    this.emitMembers(after);
+    this.publishRequests();
+    return this.groupAbout(after);
+  }
+
+  /** Leave a group (quitGroup), naming who becomes admin when you are its only one, and forgetting it here if asked. */
+  private async leave(target: P.AboutTarget, admins: string[] | undefined, forget: boolean): Promise<P.LeaveResult> {
+    const g = await this.freshGroup(target);
+    const params = quitParams(g, this.self, admins, forget);
+    try {
+      await this.call('quitGroup', params);
+    } catch (e) {
+      throw signalError(e, 'leave groups');
+    }
+    // No leave event: as Signal's apps keep a group you left (read-only), the hub keeps its history, and the re-read
+    // says you are out (About: "You are no longer in this group"). Forgotten here, signal-cli lists it no more.
+    if (forget) {
+      this.state.groups.set(g.id, { ...g, isMember: false, members: (g.members ?? []).filter((m) => m.uuid?.toLowerCase() !== this.self) });
+      this.applyGroup(this.state.groups.get(g.id)!);
+    } else await this.readGroup(g.id).catch(() => undefined);
+    this.state.save();
+    this.publishRequests();
+    return { left: true };
+  }
+
+  /** One moderating action (groups.ts moderateParams): updateGroup with one field, or terminateGroup. */
+  private async moderate(target: P.AboutTarget, action: P.ModAction): Promise<P.About> {
+    const g = await this.freshGroup(target);
+    const plan = moderateParams(g, this.self, action);
+    if (!plan) return this.groupAbout(g);
+    let res: Partial<SigSendResult> | undefined;
+    try {
+      res = await this.call<Partial<SigSendResult>>(plan.method, plan.method === 'updateGroup' ? updateGroupParams(g.id, plan.params) : plan.params);
+    } catch (e) {
+      throw signalError(e, 'change groups');
+    }
+    const who = action.op === 'end' ? '' : this.nameOf(action.who.toLowerCase());
+    return this.afterChange(g, res, action.op === 'end' ? 'You ended the group.' : action.op === 'ban' ? `You banned ${who}.` : action.op === 'unban' ? `You unbanned ${who}.` : undefined);
+  }
+
+  /** The banned, as listGroups lists them (no request of its own: the About has them too). */
+  private async bans(target: P.AboutTarget): Promise<P.BansResult> {
+    const g = await this.freshGroup(target);
+    const banned = groupModeration(g, this.self).banned ?? [];
+    for (const id of banned) this.emitIdentityOf(id);
+    return { banned: banned.map((id) => ({ id })) };
+  }
+
+  /** Your own member label (updateGroup's memberLabel, then memberLabelEmoji: one field per call). */
+  private async setLabel(conversation: string, text: string, emoji: string | undefined): Promise<P.About> {
+    const g = await this.freshGroup({ kind: 'conversation', nativeId: conversation });
+    const { memberLabelEmoji, ...label } = labelParams(g, this.self, text, emoji);
+    try {
+      await this.call('updateGroup', updateGroupParams(g.id, label));
+      if (memberLabelEmoji !== undefined) await this.call('updateGroup', updateGroupParams(g.id, { memberLabelEmoji }));
+    } catch (e) {
+      throw signalError(e, 'change groups');
+    }
+    const after = (await this.readGroup(g.id)) ?? g;
+    this.emitMembers(after);
+    return this.groupAbout(after);
+  }
+
+  /** Someone else's message deleted for everyone, as a group admin may (sendAdminDelete). */
+  private async adminDelete(conversation: string, message: string) {
+    const t = parseConversation(conversation, this.self);
+    const g = t?.kind === 'group' ? ((await this.readGroup(t.groupId).catch(() => undefined)) ?? this.state.groups.get(t.groupId)) : undefined;
+    if (!g || g.isMember === false || g.isTerminated || !isAdmin(g, this.self)) throw new Error('Only group admins can delete others’ messages.');
+    const m = this.message(message);
+    try {
+      await this.call('sendAdminDelete', { groupId: [g.id], targetAuthor: m.author, targetTimestamp: m.ts });
+    } catch (e) {
+      throw signalError(e, 'delete messages');
+    }
+    this.host.emit({ t: 'delete', conversation, nativeId: message });
+    this.purge(message);
+    return {};
+  }
+
+  /** Someone asking to join a group you admin: accept adds them, decline turns them away (updateGroup). */
+  private async answerJoin(request: string, answer: P.RequestAnswer): Promise<P.AddResult> {
+    const r = parseJoinRequest(request)!;
+    const g = await this.readGroup(r.groupId);
+    if (!g) throw new Error('Signal does not know this group');
+    const params = answerJoinParams(g, this.self, r.aci, answer);
+    let res: Partial<SigSendResult> | undefined;
+    try {
+      res = await this.call<Partial<SigSendResult>>('updateGroup', updateGroupParams(g.id, params));
+    } catch (e) {
+      throw signalError(e, 'change groups');
+    }
+    this.joinSeen.delete(request);
+    await this.afterChange(g, res, answer === 'accept' ? `You approved ${this.nameOf(r.aci)}'s request to join.` : `You turned down ${this.nameOf(r.aci)}'s request to join.`);
+    return answer === 'accept' ? { conversation: groupConvId(g.id) } : {};
   }
 
   /** A 1:1 (peer) or Note to Self (null): only the disappearing timer, which either side may set. */
@@ -1603,6 +2229,7 @@ export class SignalAdapter {
       },
       members: { list: peer ? [{ id: self }, { id: peer }] : [{ id: self }], complete: true },
       rules: [{ what: 'Change disappearing messages', who: peer ? 'Either of you' : 'You', you: true }],
+      pinned: { messages: [], canEdit: true },
     };
   }
 
@@ -1610,6 +2237,16 @@ export class SignalAdapter {
   private async configure(target: P.AboutTarget, change: P.AboutChange): Promise<P.About> {
     const self = this.self;
     const t = this.aboutTarget(target);
+    if (change.key === 'pin') {
+      if (t.kind === 'group') {
+        const g = await this.readGroup(t.groupId);
+        if (!g) throw new Error('Signal does not know this group');
+        const p = this.groupAbout(g).pinned!;
+        if (!p.canEdit) throw new Error(p.reason ?? 'You cannot pin messages here.');
+      }
+      await this.pin(target.nativeId, change);
+      return this.about(target);
+    }
     if (t.kind !== 'group') {
       if (change.key !== 'disappearing') throw new Error(`Signal chats have no ${change.key} setting to change`);
       const seconds = timerValue(change.value);
@@ -1786,7 +2423,10 @@ export class SignalAdapter {
       const f = contactIdentity(c, { contact: inContacts, avatarUrl });
       if (f) this.emitFact({ t: 'identity', identity: f });
       this.noteAbout(c, inContacts);
-      return personAbout(c, { inContacts, avatarUrl });
+      const p = personAbout(c, { inContacts, avatarUrl });
+      const safety = await this.safetyWith(id);
+      if (safety) p.safety = safety;
+      return p;
     } catch (e: any) {
       this.host.log('debug', `profile read failed: ${e?.message ?? e}`);
       return {};
@@ -1794,14 +2434,56 @@ export class SignalAdapter {
   }
 
   /**
-   * Your About, as signal-cli's updateProfile sets it: only `about`, so your name, About emoji and picture stay. Then
-   * your profile as signal-cli now has it, with the About just set ('' clears it).
+   * Your own profile, as signal-cli's updateProfile sets it: only the fields given (`about`, `aboutEmoji`, a name as
+   * Signal's given and family names, a picture or none), so the rest stay. A username goes by updateAccount, whose
+   * answer is the only place its link shows (e8): it is kept. Then your profile as signal-cli now has it.
    */
-  private async setProfile(change: { bio?: string }): Promise<P.PersonAbout> {
-    const about = checkAbout(change.bio);
-    await this.call('updateProfile', { about }, 60_000);
-    const { bio: _old, ...p } = await this.selfProfile();
-    return { ...p, ...(about.trim() ? { bio: about.trim() } : {}) };
+  private async setProfile(change: P.ProfileChange): Promise<P.PersonAbout> {
+    const params: Record<string, unknown> = {};
+    if (!change || !['bio', 'name', 'emoji', 'avatar', 'username'].some((k) => (change as Record<string, unknown>)[k] !== undefined)) throw new Error('nothing to change');
+    if (change.bio !== undefined) params.about = checkAbout(change.bio);
+    if (change.emoji !== undefined) {
+      if (typeof change.emoji !== 'string' || [...change.emoji.trim()].length > 8) throw new Error('One emoji, or none');
+      params.aboutEmoji = change.emoji.trim();
+    }
+    if (change.name !== undefined) {
+      if (typeof change.name !== 'string' || !change.name.trim()) throw new Error('Signal needs a name');
+      if ([...change.name.trim()].length > 52) throw new Error('A Signal name takes 52 characters at most');
+      const self = this.self;
+      const me = ((await this.rpc.call<SigContact[]>('listContacts', { recipient: [self], allRecipients: true }, 30_000)) ?? []).find((c) => lc(c.uuid) === self);
+      const { given, family } = splitName(change.name, { given: me?.profile?.givenName, family: me?.profile?.familyName });
+      params.givenName = given;
+      params.familyName = family;
+    }
+    if (change.avatar === null) params.removeAvatar = true;
+    else if (change.avatar !== undefined) {
+      if (!change.avatar?.path || !/^image\/(jpeg|png|webp|gif)$/.test(change.avatar.mime)) throw new Error('A picture: JPEG, PNG, WebP or GIF');
+      params.avatar = change.avatar.path;
+    }
+    if (Object.keys(params).length) await this.call('updateProfile', params, 60_000);
+    if (change.username !== undefined) await this.setUsername(change.username);
+    // The About just set, if signal-cli's read is behind it ('' cleared it).
+    const now = await this.selfProfile();
+    if (typeof params.about === 'string') {
+      const about = params.about.trim();
+      if (about) now.bio = about;
+      else delete now.bio;
+    }
+    return now;
+  }
+
+  /** Set (updateAccount username: Signal adds the number) or delete your username; its link is kept from the answer. */
+  private async setUsername(name: string | null) {
+    if (name === null) {
+      await this.call('updateAccount', { deleteUsername: true }, 60_000);
+      this.state.username = null;
+    } else {
+      const r = await this.call<{ username?: string | null; usernameLink?: string | null }>('updateAccount', { username: cleanUsername(name) }, 60_000);
+      const u = usernameOf(r);
+      if (!u) throw new Error('Signal did not say which username it gave you');
+      this.state.username = u;
+    }
+    this.state.save();
   }
 
   /** Your own profile, and your contacts as `friends`: not blocked, with a name. */
@@ -1825,6 +2507,14 @@ export class SignalAdapter {
     if (avatarUrl) p.avatar = avatarUrl;
     p.handle = number;
     p.links = [{ label: 'Phone', value: number, url: `tel:${number}` }];
+    // Your username: signal-cli lists it, but its link only as updateAccount last answered (e8).
+    const uname = me?.username || this.state.username?.name;
+    if (uname) {
+      const link = this.state.username?.name === uname ? this.state.username.link : undefined;
+      p.username = { name: uname, ...(link ? { link } : {}) };
+      p.links.push({ label: 'Username', value: uname, ...(link ? { url: link } : {}) });
+    }
+    p.editable = ['bio', 'name', 'emoji', 'avatar', 'username'];
     if (contacts) {
       const friends = new Set<string>();
       for (const c of contacts) {
@@ -1863,6 +2553,291 @@ export class SignalAdapter {
     this.host.emit({ t: 'customStatus', who: id, ...(text ? { text } : {}), ...(emoji ? { emoji } : {}), ts: p.lastUpdateTimestamp });
   }
 
+  // ---------------------------------------------------------------- people and this device (people.ts)
+
+  /**
+   * Once the daemon is up: signal-cli's version for the account page, a sync request when this device was just linked
+   * or was away long (once, paced), and the linked devices.
+   */
+  private async afterReady() {
+    try {
+      const v = await this.rpc.call<{ version?: string }>('version', undefined, 10_000);
+      if (typeof v?.version === 'string') this.cliVersion = v.version;
+    } catch (e: any) {
+      this.host.log('debug', `version: ${e?.message ?? e}`);
+    }
+    const now = Date.now();
+    const away = this.state.seenAt > 0 && now - this.state.seenAt > (this.opts.syncAfterOutageMs ?? 24 * 3_600_000);
+    if ((this.syncOnReady || away) && now - this.state.syncedAt > 3_600_000) {
+      this.syncOnReady = false;
+      this.state.syncedAt = now;
+      this.state.save();
+      this.host.log('info', `asking your phone for contacts, groups and settings (${away ? 'after a long outage' : 'just linked'})`);
+      await this.call('sendSyncRequest', {}).catch((e) => this.host.log('warn', `sendSyncRequest failed: ${e?.message ?? e}`));
+      this.scheduleSnapshot(30_000);
+    }
+    await this.readDevices();
+    this.refreshStatus();
+  }
+
+  /** The last status again, with fresh layers and details. */
+  private refreshStatus() {
+    const l = this.lastStatus;
+    if (l) this.setStatus(l.status, l.attention ?? null, l.self);
+  }
+
+  /** Facts for the account's page (status.details): signal-cli's version, this device, the account's devices. */
+  private details(): Record<string, string | number | boolean | null> | undefined {
+    const d: Record<string, string | number | boolean | null> = {};
+    if (this.cliVersion) d['signal-cli'] = this.cliVersion;
+    const id = this.account ? this.thisDeviceId() : null;
+    const me = id ? this.devices?.find((x) => x.id === id) : undefined;
+    if (this.account) d['this device'] = `${me?.name ?? String(this.host.config.deviceName ?? 'dither-chat')}${id ? ` (#${id})` : ''}`;
+    if (this.devices?.length) d['linked devices'] = devicesDetail(this.devices, id);
+    if (this.state.username?.name) d.username = this.state.username.name;
+    return Object.keys(d).length ? d : undefined;
+  }
+
+  /** This device's number on the account, from signal-cli's account file (data/<path>: deviceId). */
+  private thisDeviceId(): number | null {
+    try {
+      const acc = (JSON.parse(readFileSync(join(this.signalDir, 'data', 'accounts.json'), 'utf8')).accounts ?? []).find((a: any) => lc(a?.uuid) === this.account?.aci);
+      if (!acc?.path || /[/\\]/.test(String(acc.path))) return null;
+      const id = JSON.parse(readFileSync(join(this.signalDir, 'data', String(acc.path)), 'utf8'))?.deviceId;
+      return typeof id === 'number' ? id : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The account's devices (listDevices asks Signal's servers): at most every devicesEveryMs, unless forced. */
+  private async readDevices(force = false) {
+    if (!this.daemon?.rpc?.open) return;
+    if (!force && this.devices && Date.now() - this.devicesAt < 60_000) return;
+    this.devicesAt = Date.now();
+    try {
+      const list = await this.rpc.call<SigDevice[]>('listDevices', {}, 30_000);
+      if (Array.isArray(list)) this.devices = list.filter((d) => typeof d?.id === 'number');
+      this.refreshStatus();
+    } catch (e: any) {
+      this.host.log('debug', `listDevices: ${e?.message ?? e}`);
+    }
+  }
+
+  /** Rename this device as your phone lists it (updateAccount deviceName). */
+  private async renameDevice(name: unknown) {
+    if (typeof name !== 'string' || !name.trim()) throw new Error('A device needs a name');
+    if ([...name.trim()].length > 50) throw new Error('A device name takes 50 characters at most');
+    await this.call('updateAccount', { deviceName: name.trim() }, 30_000);
+    await this.readDevices(true);
+    return { ok: true, name: name.trim() };
+  }
+
+  /**
+   * Everyone's identity keys (listIdentities, local): a key that is not the one last seen means their safety number
+   * changed. That is a system line in your 1:1 with them, if you have one, as Signal's apps show it. signal-cli runs
+   * with --trust-new-identities always (docs/signal.md), so the new key is trusted, unverified.
+   */
+  private async readKeys() {
+    if (!this.daemon?.rpc?.open || !this.account) return;
+    let rows: SigIdentity[];
+    try {
+      rows = (await this.rpc.call<SigIdentity[]>('listIdentities', {}, 60_000)) ?? [];
+    } catch (e: any) {
+      this.host.log('debug', `listIdentities: ${e?.message ?? e}`);
+      return;
+    }
+    const self = this.account.aci;
+    const { changed, keys } = keyChanges(this.state.keys, rows.filter((r) => lc(r.uuid) !== self));
+    this.state.keys = keys;
+    this.state.save();
+    for (const { aci, at } of changed) {
+      this.host.log('info', 'a safety number changed', { aci });
+      if (this.state.dms.has(aci)) this.systemMessage(dmId(self, aci), at, `Your safety number with ${this.nameOf(aci)} has changed.`);
+    }
+  }
+
+  /** Your safety number with someone, as signal-cli has it now; undefined when it has no key for them. */
+  private async safetyWith(aci: string): Promise<P.SafetyNumber | undefined> {
+    try {
+      const rows = (await this.rpc.call<SigIdentity[]>('listIdentities', {}, 30_000)) ?? [];
+      const row = rows.find((r) => lc(r.uuid) === aci);
+      return row ? safetyOf(row, this.state.keys.get(aci)) : undefined;
+    } catch (e: any) {
+      this.host.log('debug', `listIdentities: ${e?.message ?? e}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Mark your safety number with someone verified (trust verifiedSafetyNumber), only if it is still the one the
+   * owner compared; or clear the mark (trust trustAllKnownKeys: trusted, unverified). Then their profile.
+   */
+  private async verify(who: string, safetyNumber: string | undefined, clear: boolean): Promise<P.PersonAbout> {
+    if (!ACI.test(who)) throw new Error('not a Signal person id');
+    const aci = who.toLowerCase();
+    if (aci === this.self) throw new Error('That is this account');
+    const now = await this.safetyWith(aci);
+    if (!now) throw new Error('Signal has no safety number with them yet: write to each other first');
+    if (clear) {
+      await this.call('trust', { recipient: aci, trustAllKnownKeys: true }, 30_000);
+    } else {
+      const digits = cleanSafetyNumber(safetyNumber);
+      if (digits !== now.digits) throw new Error('Their safety number changed since: look again');
+      await this.call('trust', { recipient: aci, verifiedSafetyNumber: digits }, 30_000);
+    }
+    if (this.state.dms.has(aci)) {
+      const name = this.nameOf(aci);
+      this.systemMessage(dmId(this.self, aci), Date.now(), clear ? `You cleared the verification of your safety number with ${name}.` : `You marked your safety number with ${name} verified.`);
+    }
+    return this.profile(aci);
+  }
+
+  /**
+   * Your contacts and the people you blocked, as the account's list (capability 'relationships'): the whole list once
+   * per connection, then what changed. A block on the phone arrives as a sync that makes the next read.
+   */
+  private publishLinks(all: Map<string, SigContact>, contactIds: Set<string>) {
+    const self = this.account?.aci;
+    const now = new Map<string, P.RelationshipFact['relationship']>();
+    for (const [id, c] of all) {
+      if (id === self) continue;
+      if (c.isBlocked) now.set(id, 'blocked');
+      else if (contactIds.has(id) && !c.isHidden) now.set(id, 'contact');
+    }
+    for (const id of now.keys()) if (!this.facts.has(`i:${id}`)) this.emitIdentityOf(id);
+    if (!this.linksKnown) {
+      this.links = now;
+      this.linksKnown = true;
+      this.host.emit({ t: 'relationships', list: [...now].map(([identity, relationship]) => ({ identity, relationship })) });
+      return;
+    }
+    for (const [id, rel] of now) if (this.links.get(id) !== rel) this.host.emit({ t: 'relationship', fact: { identity: id, relationship: rel } });
+    for (const id of this.links.keys()) if (!now.has(id)) this.host.emit({ t: 'relationship', fact: { identity: id, relationship: 'stranger' } });
+    this.links = now;
+  }
+
+  /** One person read again (listContacts by ACI): their facts, About and how you stand. */
+  private async readPerson(aci: string): Promise<SigContact | undefined> {
+    const both = async (params: Record<string, unknown>) => ((await this.rpc.call<SigContact[]>('listContacts', { recipient: [aci], ...params }, 30_000)) ?? []).find((c) => lc(c.uuid) === aci);
+    const contact = await both({});
+    const c = contact ?? (await both({ allRecipients: true }));
+    if (!c) return undefined;
+    this.recipients.set(aci, c);
+    const inContacts = !!contact && !c.isHidden;
+    const f = contactIdentity(c, { contact: inContacts, avatarUrl: this.avatarOf(aci, c.number) });
+    if (f) this.emitFact({ t: 'identity', identity: f });
+    this.noteAbout(c, inContacts);
+    const rel: P.RelationshipFact['relationship'] = c.isBlocked ? 'blocked' : inContacts ? 'contact' : 'stranger';
+    if (this.linksKnown && (this.links.get(aci) ?? 'stranger') !== rel) {
+      if (rel === 'stranger') this.links.delete(aci);
+      else this.links.set(aci, rel);
+      this.host.emit({ t: 'relationship', fact: { identity: aci, relationship: rel } });
+    }
+    return c;
+  }
+
+  /** After a profile key update: read them again, once in ten minutes at most. Only people you have a 1:1 with or as contacts. */
+  private async rereadPerson(aci: string) {
+    const at = this.reread.get(aci) ?? 0;
+    if (Date.now() - at < 600_000 || !(this.state.dms.has(aci) || this.links.has(aci))) return;
+    this.reread.set(aci, Date.now());
+    if (this.reread.size > 500) this.reread.delete(this.reread.keys().next().value!);
+    await this.readPerson(aci).catch((e) => this.host.log('debug', `re-read after a profile key update failed: ${e?.message ?? e}`));
+  }
+
+  /** Block or unblock a person or a group (block / unblock), on the owner's click. Then a fresh read. */
+  private async block(target: { kind: 'identity' | 'conversation'; nativeId: string }, unblock: boolean): Promise<{ blocked: boolean }> {
+    const method = unblock ? 'unblock' : 'block';
+    if (target?.kind === 'identity') {
+      if (!ACI.test(target.nativeId)) throw new Error('not a Signal person id');
+      const aci = target.nativeId.toLowerCase();
+      if (aci === this.self) throw new Error('That is this account');
+      try {
+        await this.call(method, { recipient: [aci] }, 30_000);
+      } catch (e) {
+        throw signalError(e, `${method} people`);
+      }
+      const c = await this.readPerson(aci).catch(() => undefined);
+      return { blocked: c ? !!c.isBlocked : !unblock };
+    }
+    const t = this.aboutTarget(target as P.AboutTarget);
+    if (t.kind !== 'group') throw new Error('On Signal you block the person, not the chat');
+    try {
+      await this.call(method, { groupId: [t.groupId] }, 30_000);
+    } catch (e) {
+      throw signalError(e, `${method} groups`);
+    }
+    const g = await this.readGroup(t.groupId).catch(() => undefined);
+    return { blocked: g ? !!g.isBlocked : !unblock };
+  }
+
+  /**
+   * `remove` (capability 'disconnect'): unblock someone you blocked, or take a contact off your contacts (removeContact
+   * hide, as Signal's "Remove" does: the chat and its messages stay). Only while it is still so.
+   */
+  private async remove(identity: string, relationship: P.PersonRelationship): Promise<P.AddResult> {
+    if (!ACI.test(identity)) throw new Error('not a Signal person id');
+    const aci = identity.toLowerCase();
+    const c = await this.readPerson(aci);
+    const now = this.links.get(aci) ?? (c?.isBlocked ? 'blocked' : 'stranger');
+    if (now !== relationship) throw new Error('That changed; look again');
+    try {
+      if (relationship === 'blocked') await this.call('unblock', { recipient: [aci] }, 30_000);
+      else if (relationship === 'contact') await this.call('removeContact', { recipient: aci, hide: true }, 30_000);
+      else throw new Error(`Signal has no ${relationship} to end`);
+    } catch (e) {
+      throw signalError(e, relationship === 'blocked' ? 'unblock people' : 'remove contacts');
+    }
+    const after = await this.readPerson(aci).catch(() => undefined);
+    const rel = after?.isBlocked ? 'blocked' : (this.links.get(aci) ?? 'stranger');
+    return { identity: aci, relationship: rel };
+  }
+
+  /**
+   * Your nickname or note for someone, kept on Signal too (updateContact: only the fields given; your phone gets them
+   * by storage sync). Then their identity fact as Signal now has it.
+   */
+  private async setContact(who: string, change: { nickname?: string; note?: string }) {
+    if (!ACI.test(who)) throw new Error('not a Signal person id');
+    const aci = who.toLowerCase();
+    if (aci === this.self) throw new Error('That is this account');
+    const c = (await this.readPerson(aci)) ?? this.recipients.get(aci);
+    if (!c) throw new Error('Signal does not know them yet');
+    const params = contactChange(c, change);
+    if (!params) return {};
+    await this.call('updateContact', { recipient: aci, ...params }, 30_000);
+    await this.readPerson(aci).catch(() => undefined);
+    return {};
+  }
+
+  /**
+   * Signal wants a captcha before this device sends more (a rate-limit challenge). A check card: the owner solves it
+   * at signalcaptchas.org in their own browser and pastes the link, then submitCaptcha. Nothing solves it here.
+   */
+  private wantCaptcha(challenge: string) {
+    this.challenge = challenge;
+    this.setStatus('attention', {
+      kind: 'captcha',
+      message: 'Signal wants a captcha before this device sends more. Solve it in your browser, then paste the link "Open Signal" points at.',
+      detail: { captcha: { url: CAPTCHA_URL, action: 'submitCaptcha' } satisfies P.CaptchaCheck },
+    });
+  }
+
+  private async submitCaptcha(captcha: unknown) {
+    const challenge = this.challenge;
+    if (!challenge) throw new Error('Signal is not asking for a captcha now');
+    const token = cleanCaptcha(captcha);
+    try {
+      await this.rpc.call('submitRateLimitChallenge', { challenge, captcha: token }, 60_000);
+    } catch (e) {
+      throw new Error(/rejected/i.test(errorText(e)) ? 'Signal did not take that captcha: it may be used already or old. Solve a new one.' : `Signal did not take it: ${errorText(e)}`);
+    }
+    this.challenge = null;
+    if (this.lastStatus?.attention?.kind === 'captcha') this.setStatus('online', null);
+    return { ok: true };
+  }
+
   /** What Signal's own clients show for a change you made. Nothing comes back to this device for it. */
   private systemMessage(conversation: string, ts: number, body: string) {
     const nativeId = msgId(this.self, ts);
@@ -1895,6 +2870,22 @@ export class SignalAdapter {
         return { ok: true };
       case 'typing':
         return this.sendTyping(String(args?.conversation ?? ''), !!args?.stop);
+      case 'submitCaptcha':
+        return this.submitCaptcha(args?.captcha);
+      case 'renameDevice':
+        return this.renameDevice(args?.name);
+      case STORIES_ACTION: {
+        // Off unless the owner turns it on; the daemon reads it when it next starts (docs/signal.md "Stories").
+        if (typeof args?.on === 'boolean' && args.on !== this.state.stories) {
+          this.state.stories = args.on;
+          this.state.flush();
+          this.host.log('info', `stories turned ${args.on ? 'on' : 'off'}; signal-cli picks it up when it next starts`);
+        }
+        return { on: this.state.stories, running: this.storiesRunning && !!this.daemon } satisfies P.StoriesSetting;
+      }
+      case 'devices':
+        await this.readDevices(true);
+        return { devices: this.devices ?? [], thisDevice: this.thisDeviceId() };
       case 'status':
         return {
           phase: this.phase,
@@ -1906,12 +2897,29 @@ export class SignalAdapter {
           linkUri: this.link?.currentUri ? 'present' : null,
         };
       default:
-        throw new Error(`unknown action "${action}" (relink, startLink, resync, typing, status)`);
+        throw new Error(`unknown action "${action}" (relink, startLink, resync, typing, submitCaptcha, renameDevice, devices, status, stories)`);
     }
   }
 
-  /** Forget this device's Signal identity entirely and link again. */
+  /**
+   * Forget this device's Signal identity entirely and link again. signal-cli 0.14.8 cannot take a linked device off
+   * the account (removeDevice is primary-only; unregister on a linked device only marks it unregistered here), so the
+   * phone keeps listing this one until removed there or until Signal ages it out. Before wiping, it is renamed (best
+   * effort) so the phone's list says which entry is old, and the link screen says to remove it.
+   */
   private async relink() {
+    if (this.daemon?.rpc?.open && this.account) {
+      try {
+        const id = this.thisDeviceId();
+        const name = `${String(this.host.config.deviceName ?? 'dither-chat')} (old)`.slice(0, 50);
+        await this.rpc.call('updateAccount', { deviceName: name }, 20_000);
+        this.staleDevice = `“${name}”${id ? ` (#${id})` : ''}`;
+      } catch (e: any) {
+        this.host.log('debug', `relink: could not rename the old device: ${e?.message ?? e}`);
+        const id = this.thisDeviceId();
+        this.staleDevice = `“${String(this.host.config.deviceName ?? 'dither-chat')}”${id ? ` (#${id})` : ''}`;
+      }
+    }
     this.host.log('info', 'relink: wiping signal-cli data');
     this.phase = 'relinking';
     clearTimeout(this.restartTimer);
@@ -1938,6 +2946,11 @@ export class SignalAdapter {
     this.unsure.clear();
     this.heldEvents.clear();
     this.requestsKnown = false;
+    this.links.clear();
+    this.linksKnown = false;
+    this.devices = null;
+    this.devicesAt = 0;
+    this.challenge = null;
     const { number: _n, aci: _a, linkedAt: _l, ...rest } = this.host.secret();
     this.host.saveSecret(rest);
     this.account = null;
@@ -2056,11 +3069,12 @@ function groupChange(g: SigGroup, about: P.About, change: P.AboutChange): Record
     if (!inv.canRevoke) throw new Error(inv.reason ?? 'Only admins can change the invite link.');
     return { link: 'disabled' };
   }
-  if (change.key === 'pin') throw new Error('Signal keeps no list of pinned messages to change');
+  // Pins go by message (configure, before this), not as a group setting.
+  if (change.key === 'pin') throw new Error('A pin is not a group setting');
   const field = (about.fields as Record<string, P.AboutSetting | undefined>)[change.key];
   if (!field) throw new Error(`${String(change.key)} is not a Signal group setting`);
   if (!field.canEdit) throw new Error(field.reason ?? `${change.key} cannot be changed here`);
-  if (field.value === change.value) return null;
+  if (field.value === change.value && !field.writeOnly) return null;
   const v: unknown = change.value;
   switch (change.key) {
     case 'name': {
@@ -2080,6 +3094,10 @@ function groupChange(g: SigGroup, about: P.About, change: P.AboutChange): Record
       return { setPermissionEditDetails: permission(v) };
     case 'addMembers':
       return { setPermissionAddMember: permission(v) };
+    case 'joinApproval':
+      return approvalParams(g, v);
+    case 'avatar':
+      return { avatar: picturePath(v) };
     default:
       throw new Error(`${change.key} cannot be changed from here`);
   }
@@ -2087,6 +3105,14 @@ function groupChange(g: SigGroup, about: P.About, change: P.AboutChange): Record
 
 function stableJson(o: Record<string, unknown>) {
   return JSON.stringify(Object.keys(o).sort().map((k) => [k, o[k]]));
+}
+
+function hostOf(url: string): string | undefined {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return undefined;
+  }
 }
 
 function redactNumber(n: string) {

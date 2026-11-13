@@ -252,6 +252,46 @@ export function HavenoControls({ a, onLive }: { a: AccountInfo; onLive: () => vo
   );
 }
 
+/**
+ * A captcha the owner solves in their own browser (Signal's rate-limit challenge): the page to open, and where to
+ * paste the link "Open Signal" points at afterwards. Nothing solves it for them.
+ */
+function CaptchaEntry({ a, check }: { a: AccountInfo; check: { url: string; action: string } }) {
+  const [token, setToken] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: Event) => {
+    e.preventDefault();
+    if (!token.trim()) return;
+    setBusy(true);
+    try {
+      await chatAction(a, check.action, { captcha: token.trim() });
+      setToken('');
+      toast('Sent; Signal takes it from here');
+    } catch (err) {
+      toast((err as Error).message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form class="stack" onSubmit={submit} data-captcha>
+      <p class="small">
+        Open{' '}
+        <a href={check.url} target="_blank" rel="noopener noreferrer">
+          the captcha page
+        </a>
+        , solve it, then right-click “Open Signal”, copy the link and paste it here.
+      </p>
+      <div class="row">
+        <input autocomplete="off" spellcheck={false} placeholder="signalcaptcha://…" value={token} onInput={(e) => setToken((e.target as HTMLInputElement).value)} aria-label="The captcha link" />
+        <button class="btn sm primary" disabled={busy || !token.trim()}>
+          {busy ? 'Sending…' : 'Send'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 /** Google Messages paired through a Google account: the cookies of messages.google.com, signed in. */
 function GoogleCookies({ a }: { a: AccountInfo }) {
   const [cookies, setCookies] = useState('');
@@ -295,7 +335,7 @@ export function AttentionBlock({ a, onLive }: { a: AccountInfo; onLive: () => vo
   const at = attentionOf(a);
   if (!at) return null;
   const chat = a.interfaces.includes('chat');
-  const { verification, code, emoji } = (at.detail ?? {}) as { verification?: unknown; code?: unknown; emoji?: unknown };
+  const { verification, code, emoji, captcha } = (at.detail ?? {}) as { verification?: unknown; code?: unknown; emoji?: unknown; captcha?: { url?: unknown; action?: unknown } };
   return (
     <div class="attention-block pane-banner" data-attention={at.kind ?? ''}>
       <div class="banner attention">
@@ -315,6 +355,7 @@ export function AttentionBlock({ a, onLive }: { a: AccountInfo; onLive: () => vo
           {emoji}
         </p>
       )}
+      {chat && at.kind === 'captcha' && typeof captcha?.url === 'string' && typeof captcha.action === 'string' && <CaptchaEntry a={a} check={{ url: captcha.url, action: captcha.action }} />}
       {chat && at.kind === 'login' && !at.liveView && (a.kind === 'gmessages' ? <GoogleCookies a={a} /> : <Relogin a={a} />)}
       {a.kind === 'haveno' && at.kind === 'login' && <HavenoUnlock a={a} />}
       {chat && !!verification && <p class="small muted">A device verification is waiting. Finish it in dither-chat, or with the action verifyDevice under Try it.</p>}

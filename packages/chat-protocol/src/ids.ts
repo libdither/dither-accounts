@@ -1,7 +1,7 @@
 import type { Network } from './ontology.ts';
 
 /** Hub-id prefixes. Network objects get deterministic ids so ingest is idempotent. */
-export type IdPrefix = 'idn' | 'spc' | 'cnv' | 'msg' | 'att' | 'per' | 'acc' | 'fld' | 'rul' | 'cat' | 'job' | 'nsr';
+export type IdPrefix = 'idn' | 'spc' | 'cnv' | 'msg' | 'att' | 'per' | 'acc' | 'fld' | 'rul' | 'cat' | 'job' | 'nsr' | 'evt' | 'sty';
 /** Mail's own (docs/mail-design.md §2.1): mailboxes, messages, threads, outbox items. */
 export type MailIdPrefix = 'mbx' | 'mml' | 'mth' | 'mob';
 

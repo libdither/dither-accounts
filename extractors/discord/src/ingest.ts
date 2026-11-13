@@ -11,8 +11,9 @@
 
 import type * as P from '@dither-chat/protocol';
 import type { DispatchName, RawAddRecipients, RawChannel, RawCustomStatus, RawGuild, RawGuildSettings, RawMembersSeen, RawMessage, RawPresence, RawRecipientChange, RawSeenMember, RawSnapshot, RawUser } from './discord-types.ts';
+import { manyVoteEvents, pollResultEvents, VOTE_REACTION, voteEvents } from './polls.ts';
 import { type Changes, newChanges, pinSystemMessage, pinUpdate, pinsChanged, presenceChanges, roleChanges, sawMessage, statusChanges } from './changes.ts';
-import { CHANNEL_TYPE, channelMute, customEmoji, isThread, mapCategory, mapGuild, mapGuildChannel, mapMessage, mapMute, mapPrivateChannel, mapReadState, mapThread, mapUser, reactionKey, userDisplayName, snowflakeToMs } from './map.ts';
+import { CHANNEL_TYPE, channelMute, customEmoji, isPrivate, isThread, mapCategory, mapGuild, mapGuildChannel, mapMessage, mapMute, mapPrivateChannel, mapReadState, mapThread, mapUser, reactionKey, userDisplayName, snowflakeToMs } from './map.ts';
 
 export interface AdapterState {
   selfId: string;
@@ -32,6 +33,8 @@ export interface AdapterState {
   requestsKnown: boolean;
   /** Friends, blocks and requests you sent, by user id (add.ts); whole once requestsKnown is, as they come together. */
   relationships: Map<string, P.RelationshipFact>;
+  /** Your own roles in each server, by id: a ping to one is a mention of you (rich.ts). Absent: not known yet. */
+  selfRoles?: Map<string, string[]>;
 }
 
 export function newState(): AdapterState {
@@ -51,6 +54,7 @@ export function translateSnapshot(data: RawSnapshot, st: AdapterState): Snapshot
 
   for (const r of data.relationships ?? []) if (r.type === 1) st.friends.add(r.id);
   for (const gs of data.guildSettings ?? []) st.guildSettings.set(gs.guild_id, gs);
+  if (data.selfRoles) st.selfRoles = new Map(Object.entries(data.selfRoles).filter(([, r]) => Array.isArray(r)));
 
   for (const g of data.guilds ?? []) {
     st.guilds.set(g.id, g);
@@ -140,7 +144,7 @@ export function addedFacts(channelId: string, r: RawAddRecipients, st: AdapterSt
 
 /** A message and the people it names. Guild members are not in the snapshot, so this is the only place the hub learns their names. */
 export function messageEvents(m: RawMessage, st: AdapterState, live: boolean): P.AdapterEvent[] {
-  const message = mapMessage(m, st.selfId);
+  const message = mapMessage(m, st.selfId, { selfRoles: m.guild_id ? st.selfRoles?.get(m.guild_id) : undefined });
   // Pinned already is where a change starts from, not a change.
   if (!live) sawMessage(m, st.changes, false);
   // A message fetched over REST is the whole truth, so no reactions means none are left. A gateway update may just not say.
@@ -266,8 +270,10 @@ export function translateDispatch(event: DispatchName, a: any, st: AdapterState,
     case 'MESSAGE_CREATE':
       // An optimistic one is the client echoing a send in flight under a temporary id; the real one follows from the gateway.
       if (!a.message || a.optimistic) return [];
+      // The client's own local notices (Clyde, author "1": a failed send or interaction, said only on this screen) are not messages.
+      if (a.message.author?.id === '1') return [];
       sawMessage(a.message, st.changes, true);
-      return [...messageEvents(a.message, st, true), ...pinSystemMessage(a.message, st.changes, now)];
+      return [...messageEvents(a.message, st, true), ...pinSystemMessage(a.message, st.changes, now), ...pollResultEvents(a.message)];
     case 'MESSAGE_UPDATE': {
       if (!a.message) return [];
       // A partial update without its author can still say it was pinned.
@@ -277,6 +283,7 @@ export function translateDispatch(event: DispatchName, a: any, st: AdapterState,
     case 'CHANNEL_PINS_UPDATE':
       return a.channelId ? pinsChanged(a.channelId, a.lastPinTimestamp, st.changes, now) : [];
     case 'GUILD_MEMBER_UPDATE': {
+      noteSelfRoles(a, st);
       const roles = roleChanges(a, st.changes);
       return roles.length ? [...userFacts([a.user], st), ...roles] : [];
     }
@@ -295,6 +302,8 @@ export function translateDispatch(event: DispatchName, a: any, st: AdapterState,
     case 'MESSAGE_REACTION_REMOVE':
       // An optimistic one is the client's own guess; the gateway confirms it.
       if (!a.messageId || !a.emoji || a.optimistic) return [];
+      // A poll vote rides on a reaction of its own kind (polls.ts): never a reaction.
+      if (a.reactionType === VOTE_REACTION) return voteEvents(a, event === 'MESSAGE_REACTION_REMOVE', selfId);
       return [
         ...userFacts([a.user], st),
         {
@@ -322,6 +331,7 @@ export function translateDispatch(event: DispatchName, a: any, st: AdapterState,
     case 'GUILD_CREATE':
     case 'GUILD_UPDATE':
       if (!a.guild) return [];
+      noteSelfRoles(a, st);
       // A server not seen before (joined just now, here or elsewhere): its channels too, as the snapshot would give.
       if (event === 'GUILD_CREATE' && !st.guilds.has(a.guild.id) && Array.isArray(a.channels) && a.channels.length) return guildFacts(a.guild, a.channels, st);
       st.guilds.set(a.guild.id, a.guild);
@@ -341,9 +351,10 @@ export function translateDispatch(event: DispatchName, a: any, st: AdapterState,
         return { t: 'conversation', conversation: mapThread(t) } as P.AdapterEvent;
       });
     case 'MESSAGE_ACK':
-      return a.channelId && a.messageId
-        ? [{ t: 'read', conversation: a.channelId, upToTs: snowflakeToMs(a.messageId), mentions: a.mentionCount ?? 0, unread: a.mentionCount ?? 0 }]
-        : [];
+      if (!a.channelId || !a.messageId) return [];
+      // Marked unread by hand: the read point moves back, and the hub counts what is unread after it.
+      if (a.manual) return [{ t: 'read', conversation: a.channelId, upToTs: snowflakeToMs(a.messageId), manual: true }];
+      return [{ t: 'read', conversation: a.channelId, upToTs: snowflakeToMs(a.messageId), mentions: a.mentionCount ?? 0, unread: a.mentionCount ?? 0 }];
     case 'CHANNEL_RECIPIENT_ADD':
     case 'CHANNEL_RECIPIENT_REMOVE':
       return recipientChange(event === 'CHANNEL_RECIPIENT_ADD', a, st);
@@ -354,6 +365,50 @@ export function translateDispatch(event: DispatchName, a: any, st: AdapterState,
       return [{ t: 'typing', conversation: a.channelId, author: a.userId, ...(name ? { name } : {}) }];
     }
     default:
+      return richDispatch(event, a, st);
+  }
+}
+
+// ------------------------------------------------------------ rich messages (rich.ts)
+
+/** Your own roles changed (GUILD_MEMBER_UPDATE of you), or came with a server joined (GUILD_CREATE's self_roles). */
+function noteSelfRoles(a: any, st: AdapterState) {
+  const guildId = a?.guildId ?? a?.guild_id ?? a?.guild?.id;
+  const roles = a?.user?.id === st.selfId ? a.roles : a?.self_roles;
+  if (!guildId || !Array.isArray(roles)) return;
+  (st.selfRoles ??= new Map()).set(String(guildId), roles.filter((r: unknown) => typeof r === 'string'));
+}
+
+/** A moderator's purge, and reactions added in a batch: what the hook forwards for them. */
+function richDispatch(event: DispatchName, a: any, st: AdapterState): P.AdapterEvent[] {
+  switch (event) {
+    case 'MESSAGE_DELETE_BULK':
+      if (!a?.channelId || !Array.isArray(a.ids)) return [];
+      return a.ids.filter((id: unknown) => typeof id === 'string' && id).map((id: string) => ({ t: 'delete', conversation: a.channelId, nativeId: id }) as P.AdapterEvent);
+    case 'MESSAGE_REACTION_ADD_MANY': {
+      if (!a?.channelId || !a.messageId || !Array.isArray(a.reactions)) return [];
+      // Poll votes come this way too (reactionType 2): told as votes (polls.ts), not as reactions.
+      const out: P.AdapterEvent[] = manyVoteEvents(a, st.selfId);
+      for (const r of a.reactions) {
+        if (!r?.emoji || r.reactionType === 2) continue;
+        for (const user of Array.isArray(r.users) ? r.users : []) {
+          const id = typeof user === 'string' ? user : user?.id;
+          if (!id) continue;
+          if (typeof user === 'object') out.push(...userFacts([user], st));
+          out.push({
+            t: 'reaction',
+            conversation: a.channelId,
+            message: a.messageId,
+            author: id,
+            key: reactionKey(r.emoji),
+            ...(r.reactionType === 1 ? { style: 'super' as const } : {}),
+            ...(r.emoji.id ? { emoji: customEmoji(r.emoji) } : {}),
+          });
+        }
+      }
+      return out;
+    }
+    default:
       return [];
   }
 }
@@ -361,7 +416,7 @@ export function translateDispatch(event: DispatchName, a: any, st: AdapterState,
 /** A channel, thread or DM to its fact, by its type; known from now on. */
 export function routeChannel(c: RawChannel, st: AdapterState): P.AdapterEvent[] {
   if (c.type === CHANNEL_TYPE.CATEGORY) return [{ t: 'space', space: mapCategory(c) }];
-  if (c.type === CHANNEL_TYPE.DM || c.type === CHANNEL_TYPE.GROUP_DM) {
+  if (isPrivate(c.type)) {
     st.known.add(c.id);
     return [{ t: 'conversation', conversation: mapPrivateChannel(c, st.selfId) }];
   }

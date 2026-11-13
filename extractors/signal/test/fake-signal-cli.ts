@@ -34,6 +34,19 @@
  *       (an invitation: declined); block (recipients or groups);
  *       sendMessageRequestResponse (accept / delete set profileSharing).
  *
+ *       Groups admin (admins only, as Signal's servers enforce it): updateGroup's removeMember, admin, removeAdmin, ban
+ *       (removes them too), unban, avatar (a path that must exist), link enabled-with-approval (kept as _approval);
+ *       memberLabel and memberLabelEmoji (anyone, their own); terminateGroup; sendAdminDelete (admins, groups only);
+ *       quitGroup refuses the only admin of a group with others in it unless `admin` names one, and `delete` forgets it.
+ *
+ *       People and this device: listIdentities from DIR/fake-identities.json (else none);
+ *       trust (verifiedSafetyNumber must be the current one; trustAllKnownKeys clears it); unblock; removeContact
+ *       (hide); updateContact's nick-names and note; updateProfile's names, About, emoji and picture; updateAccount
+ *       (username answers name.NN and a link, deleteUsername, deviceName); listDevices (the phone and this one, #2,
+ *       named as last set); submitRateLimitChallenge (a captcha "BAD…" is rejected). A send of the text "CAPTCHA"
+ *       fails with a rate-limit challenge, as the real one does when Signal wants one.
+ * send: message "FAIL" fails the call; "PARTIAL" answers with one recipient failed (UNREGISTERED_FAILURE).
+ *
  * Knobs (env): FAKE_NUMBER, FAKE_ACI, FAKE_LINK_TIMEOUT_MS, FAKE_PROFILE_NAME.
  */
 
@@ -79,6 +92,7 @@ if (sub === 'link') {
         process.exit(3);
       }
       writeFileSync(accountsFile, JSON.stringify({ accounts: [{ path: '123456', environment: 'LIVE', number: NUMBER, uuid: ACI }], version: 2 }));
+      writeFileSync(join(config, 'data', '123456'), JSON.stringify({ version: 9, deviceId: 2 }));
       console.log(`Associated with: ${NUMBER}`);
       process.exit(0);
     }
@@ -221,7 +235,8 @@ if (sub === 'daemon') {
     if (!g) throw fail('Invalid group id');
     const admin = g.members.some((m: any) => m.uuid === SELF && m.isAdmin);
     const perm = (p: string) => (p === 'only-admins' ? 'ONLY_ADMINS' : 'EVERY_MEMBER');
-    const adminOnly = ['setPermissionSendMessages', 'setPermissionEditDetails', 'setPermissionAddMember', 'link', 'resetLink'].some((k) => k in params);
+    const adminOnly = ['setPermissionSendMessages', 'setPermissionEditDetails', 'setPermissionAddMember', 'link', 'resetLink', 'removeMember', 'admin', 'removeAdmin', 'ban', 'unban'].some((k) => k in params);
+    if (g.isTerminated) throw fail('Group is terminated');
     const edits = ['name', 'description', 'expiration'].some((k) => k in params);
     if ((adminOnly || (edits && g.permissionEditDetails === 'ONLY_ADMINS')) && !admin) throw fail('Not a group admin');
     // An update on an invitation accepts it first, as the real one does.
@@ -245,12 +260,38 @@ if (sub === 'daemon') {
         else g.pendingMembers.push({ number: c?.number ?? null, uuid: id });
       }
     }
+    const listOf = (k: string): string[] => [].concat(params[k] ?? []);
+    // Someone asking to join is let in by adding them, turned away by removing them.
+    for (const id of adds) g.requestingMembers = (g.requestingMembers ?? []).filter((m: any) => m.uuid !== id);
+    for (const id of listOf('removeMember')) {
+      g.members = g.members.filter((m: any) => m.uuid !== id);
+      g.pendingMembers = (g.pendingMembers ?? []).filter((m: any) => m.uuid !== id);
+      g.requestingMembers = (g.requestingMembers ?? []).filter((m: any) => m.uuid !== id);
+    }
+    for (const id of listOf('admin')) for (const m of g.members) if (m.uuid === id) m.isAdmin = true;
+    for (const id of listOf('removeAdmin')) for (const m of g.members) if (m.uuid === id) m.isAdmin = false;
+    for (const id of listOf('ban')) {
+      g.members = g.members.filter((m: any) => m.uuid !== id);
+      g.banned = [...(g.banned ?? []).filter((m: any) => m.uuid !== id), { number: null, uuid: id }];
+    }
+    for (const id of listOf('unban')) g.banned = (g.banned ?? []).filter((m: any) => m.uuid !== id);
+    if ('avatar' in params) {
+      if (!existsSync(params.avatar)) throw fail(`Group avatar file not found: ${params.avatar}`);
+      g._avatar = params.avatar;
+    }
+    if ('memberLabel' in params || 'memberLabelEmoji' in params) {
+      const me = g.members.find((m: any) => m.uuid === SELF);
+      if (!me) throw fail('User is not a group member');
+      if ('memberLabel' in params) me.label = params.memberLabel || null;
+      if ('memberLabelEmoji' in params) me.labelEmoji = params.memberLabelEmoji || null;
+    }
     if ('name' in params) g.name = params.name;
     if ('description' in params) g.description = params.description;
     if ('expiration' in params) g.messageExpirationTime = params.expiration;
     if ('setPermissionSendMessages' in params) g.permissionSendMessage = perm(params.setPermissionSendMessages);
     if ('setPermissionEditDetails' in params) g.permissionEditDetails = perm(params.setPermissionEditDetails);
     if ('setPermissionAddMember' in params) g.permissionAddMember = perm(params.setPermissionAddMember);
+    if (params.link) g._approval = params.link === 'enabled-with-approval';
     if (params.link === 'disabled') g.groupInviteLink = null;
     else if (params.link || params.resetLink) g.groupInviteLink = `https://signal.group/#CjQKIFake${nextTs().toString(36)}`;
     save('fake-groups.json', all);
@@ -261,7 +302,67 @@ if (sub === 'daemon') {
     const c = all.find((x: any) => x.uuid === params?.recipient || x.number === params?.recipient);
     if (!c) throw fail('Unknown recipient');
     if ('expiration' in params) c.messageExpirationTime = params.expiration;
+    // As the real one: a field not given is kept, and naming them un-hides them.
+    for (const k of ['nickGivenName', 'nickFamilyName', 'note', 'givenName', 'familyName']) if (k in params) c[k] = params[k];
+    if (['nickGivenName', 'nickFamilyName', 'note', 'givenName', 'familyName'].some((k) => k in params)) c.isHidden = false;
     save('fake-contacts.json', all);
+    return {};
+  };
+  const identities = () => {
+    const f = join(config, 'fake-identities.json');
+    if (existsSync(f)) return JSON.parse(readFileSync(f, 'utf8'));
+    return [];
+  };
+  const trust = (params: any) => {
+    const all = identities();
+    const id = all.find((x: any) => x.uuid === params?.recipient || x.number === params?.recipient);
+    if (!id) throw fail('Failed to set the trust for this number, make sure the number is correct.');
+    if (params.trustAllKnownKeys) id.trustLevel = 'TRUSTED_UNVERIFIED';
+    else if (params.verifiedSafetyNumber === id.safetyNumber) id.trustLevel = 'TRUSTED_VERIFIED';
+    else throw fail('Failed to set the trust for this number, make sure the number and the fingerprint/safety number are correct.');
+    save('fake-identities.json', all);
+    return {};
+  };
+  const unblock = (params: any) => {
+    const people = contacts();
+    for (const r of [].concat(params?.recipient ?? [])) {
+      const c = people.find((x: any) => x.uuid === r || x.number === r);
+      if (c) c.isBlocked = false;
+    }
+    if (params?.recipient) save('fake-contacts.json', people);
+    const all = groups();
+    for (const id of [].concat(params?.groupId ?? [])) {
+      const g = all.find((x: any) => x.id === id);
+      if (g) g.isBlocked = false;
+    }
+    if (params?.groupId) save('fake-groups.json', all);
+    return {};
+  };
+  const removeContact = (params: any) => {
+    const people = contacts();
+    const c = people.find((x: any) => x.uuid === params?.recipient || x.number === params?.recipient);
+    if (!c) throw fail('Unknown recipient');
+    if (params.forget) throw fail('fake: forget is not faked');
+    if (params.hide) c.isHidden = true;
+    save('fake-contacts.json', people);
+    return {};
+  };
+  const deviceFile = join(config, 'fake-device.json');
+  const updateAccount = (params: any) => {
+    if (params?.deviceName) writeFileSync(deviceFile, JSON.stringify({ name: params.deviceName }));
+    const people = contacts();
+    const me = people.find((x: any) => x.uuid === SELF);
+    if (params?.deleteUsername) {
+      me.username = null;
+      save('fake-contacts.json', people);
+      return {};
+    }
+    if (params?.username) {
+      const name = /\.\d+$/.test(params.username) ? params.username : `${params.username}.42`;
+      me.username = name;
+      save('fake-contacts.json', people);
+      return { username: name, usernameLink: `https://signal.me/#eu/fake${name.length}` };
+    }
     return {};
   };
   // Your own profile: only the fields given change, as in signal-cli.
@@ -270,6 +371,11 @@ if (sub === 'daemon') {
     const me = all.find((x: any) => x.uuid === SELF);
     me.profile ??= { lastUpdateTimestamp: 0, givenName: null, familyName: null, about: null, aboutEmoji: null, hasAvatar: false, mobileCoinAddress: null };
     for (const k of ['givenName', 'familyName', 'about', 'aboutEmoji']) if (k in params) me.profile[k] = params[k];
+    if (params.avatar) {
+      if (!existsSync(params.avatar)) throw fail(`Failed to read avatar file: ${params.avatar}`);
+      me.profile.hasAvatar = true;
+    }
+    if (params.removeAvatar) me.profile.hasAvatar = false;
     me.profile.lastUpdateTimestamp = Date.now();
     save('fake-contacts.json', all);
     return {};
@@ -292,10 +398,15 @@ if (sub === 'daemon') {
     const g = all.find((x: any) => x.id === params?.groupId);
     if (!g) throw fail('Invalid group id');
     if ((g.pendingMembers ?? []).some((m: any) => m.uuid === SELF)) g.pendingMembers = g.pendingMembers.filter((m: any) => m.uuid !== SELF);
-    else if (g.isMember) g.members = g.members.filter((m: any) => m.uuid !== SELF);
-    else throw fail('User is not a group member');
+    else if (g.isMember) {
+      const admins = g.members.filter((m: any) => m.isAdmin);
+      const next: string[] = [].concat(params?.admin ?? []);
+      if (admins.length === 1 && admins[0].uuid === SELF && g.members.length > 1 && !next.length) throw fail('You need to choose at least one new admin as you are the last admin');
+      for (const m of g.members) if (next.includes(m.uuid)) m.isAdmin = true;
+      g.members = g.members.filter((m: any) => m.uuid !== SELF);
+    } else throw fail('User is not a group member');
     g.isMember = false;
-    save('fake-groups.json', all);
+    save('fake-groups.json', params?.delete ? all.filter((x: any) => x !== g) : all);
     return { timestamp: nextTs(), results: [] };
   };
   const block = (params: any) => {
@@ -360,22 +471,96 @@ if (sub === 'daemon') {
         const ids: string[] | undefined = params?.groupId ? [].concat(params.groupId) : undefined;
         return groups().filter((g: any) => !ids || ids.includes(g.id));
       }
+      case 'sendPollCreate':
+      case 'sendPollVote':
+      case 'sendPollTerminate':
+      case 'sendPinMessage':
+      case 'sendUnpinMessage':
       case 'send':
       case 'sendReaction':
       case 'remoteDelete':
       case 'sendReceipt':
       case 'sendTyping': {
         if (params?.message === 'FAIL') throw Object.assign(new Error('Failed to send message'), { code: -1 });
+        if (params?.message === 'CAPTCHA') {
+          const results = [{ recipientAddress: { uuid: 'a11ce000-2222-4ccc-9ddd-000000000002', number: '+15550137' }, type: 'RATE_LIMIT_FAILURE', token: 'fake-challenge-1' }];
+          throw Object.assign(new Error('Failed to send message due to rate limiting'), { code: -5, data: { response: { timestamp: nextTs(), results } } });
+        }
+        // Some of a group reached, as the real one answers when one member is gone from Signal.
+        if (params?.message === 'PARTIAL')
+          return {
+            timestamp: nextTs(),
+            results: [
+              { recipientAddress: { uuid: 'a11ce000-2222-4ccc-9ddd-000000000002', number: '+15550137' }, type: 'SUCCESS' },
+              { recipientAddress: { uuid: '5a3e0000-3333-4eee-afff-000000000003', number: '+15550161' }, type: 'UNREGISTERED_FAILURE' },
+            ],
+          };
         return { timestamp: nextTs(), results: [{ recipientAddress: { uuid: 'a11ce000-2222-4ccc-9ddd-000000000002', number: '+15550137' }, type: 'SUCCESS' }] };
       }
       case 'updateGroup':
         return updateGroup(params);
+      case 'terminateGroup': {
+        const all = groups();
+        const g = all.find((x: any) => x.id === params?.groupId);
+        if (!g) throw fail('Invalid group id');
+        if (!g.members.some((m: any) => m.uuid === SELF && m.isAdmin)) throw fail('Not a group admin');
+        g.isTerminated = true;
+        save('fake-groups.json', all);
+        return { timestamp: nextTs(), results: [] };
+      }
+      case 'sendAdminDelete': {
+        const g = groups().find((x: any) => ([] as any[]).concat(params?.groupId ?? []).includes(x.id));
+        if (!g) throw fail('sendAdminDelete needs a group');
+        if (!g.members.some((m: any) => m.uuid === SELF && m.isAdmin)) throw fail('Not a group admin');
+        return { timestamp: nextTs(), results: [] };
+      }
       case 'updateContact':
         return updateContact(params);
       case 'updateProfile':
         return updateProfile(params);
       case 'sendSyncRequest':
         return {};
+      case 'listIdentities':
+        return identities();
+      case 'trust':
+        return trust(params);
+      case 'unblock':
+        return unblock(params);
+      case 'removeContact':
+        return removeContact(params);
+      case 'updateAccount':
+        return updateAccount(params);
+      case 'listDevices': {
+        const name = existsSync(deviceFile) ? JSON.parse(readFileSync(deviceFile, 'utf8')).name : 'dither-chat';
+        return [
+          { id: 1, name: null, createdTimestamp: 1600000000000, lastSeenTimestamp: Date.now() },
+          { id: 2, name, createdTimestamp: 1700000000000, lastSeenTimestamp: Date.now() },
+        ];
+      }
+      case 'submitRateLimitChallenge':
+        if (String(params?.captcha ?? '').startsWith('BAD')) throw fail('Captcha rejected, it may be outdated, already used or solved from a different IP address.');
+        if (params?.challenge !== 'fake-challenge-1') throw fail('Invalid challenge');
+        return {};
+      // Sticker packs: one installed to begin with, and whatever addStickerPack put in fake-stickers.json.
+      case 'listStickerPacks': {
+        const file = join(config, 'fake-stickers.json');
+        const added = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : [];
+        const cats = { packId: '0123456789abcdef0123456789abcdef', url: 'https://signal.art/addstickers/#pack_id=0123456789abcdef0123456789abcdef&pack_key=k', installed: true, title: 'Cats', author: 'A', cover: { id: 0, emoji: '😺', contentType: 'image/webp' }, stickers: [{ id: 0, emoji: '😺', contentType: 'image/webp' }, { id: 1, emoji: '😿', contentType: 'image/webp' }] };
+        const known = { packId: 'fedcba9876543210fedcba9876543210', installed: false, title: 'Seen, not installed', stickers: [{ id: 0, emoji: '🙂' }] };
+        return [cats, known, ...added];
+      }
+      case 'addStickerPack': {
+        const uri = [].concat(params?.uri ?? [])[0] as string | undefined;
+        const m = /pack_id=([0-9a-f]{32})/.exec(uri ?? '');
+        if (!m) throw fail('Invalid sticker pack uri');
+        const file = join(config, 'fake-stickers.json');
+        const added = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : [];
+        added.push({ packId: m[1], installed: true, title: 'Added', stickers: [{ id: 0, emoji: '⭐', contentType: 'image/png' }] });
+        save('fake-stickers.json', added);
+        return {};
+      }
+      case 'getSticker':
+        return { data: Buffer.from(`sticker ${params?.packId}:${params?.stickerId}`).toString('base64') };
       case 'version':
         return { version: '0.14.8-fake' };
       default:
@@ -406,7 +591,7 @@ if (sub === 'daemon') {
           try {
             send(s, { jsonrpc: '2.0', id: req.id, result: handle(req.method, req.params) });
           } catch (e: any) {
-            send(s, { jsonrpc: '2.0', id: req.id, error: { code: e.code ?? -1, message: e.message, data: null } });
+            send(s, { jsonrpc: '2.0', id: req.id, error: { code: e.code ?? -1, message: e.message, data: e.data ?? null } });
           }
         }
       },

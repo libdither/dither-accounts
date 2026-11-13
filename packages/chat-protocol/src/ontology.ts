@@ -15,13 +15,15 @@
  * (persons, folders, notification rules, triage) are never written back.
  */
 
-export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' | 'gmessages' | 'messenger' | 'instagram' | 'x' | 'email';
+export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' | 'gmessages' | 'messenger' | 'instagram' | 'x' | 'email' | 'calendar';
 /**
  * The chat networks this hub offers. telegram, gmessages (Google Messages: SMS and RCS), messenger, instagram and x
  * (X's direct messages) run only in dither-accounts. `email` is a Network for people's addresses (identities) and the
  * tables below, but not a chat account kind: mail comes through dither-accounts' mail interface (docs/mail.md).
+ * `calendar` is a calendar service beside the hub (dither-calendar, docs/calendar.md): its account brings the calendar's
+ * own chats, and while one is on, the calendar's pane, plans and reminders are too.
  */
-export const NETWORKS: readonly Network[] = ['discord', 'signal', 'matrix', 'whatsapp', 'telegram', 'gmessages', 'messenger', 'instagram', 'x'];
+export const NETWORKS: readonly Network[] = ['discord', 'signal', 'matrix', 'whatsapp', 'telegram', 'gmessages', 'messenger', 'instagram', 'x', 'calendar'];
 
 /** Where a conversation sits in the social structure, independent of network. */
 export type Shape =
@@ -50,12 +52,22 @@ export type AccountStatus = 'connecting' | 'online' | 'attention' | 'offline' | 
 /** Why an account needs a human. Drives the "Needs you" cards. */
 export type AttentionKind =
   | 'login' //           not logged in; open the live view and log in
-  | 'captcha' //         a captcha is on screen in the sandbox
+  | 'captcha' //         a captcha is on screen in the sandbox, or (detail.captcha: CaptchaCheck) one to solve in a browser
   | 'verify' //          email / phone / "suspicious activity" challenge
   | 'link_device' //     Signal, WhatsApp: scan the QR code with your phone
   | 'selector_broken' // the client changed and a hook no longer resolves
   | 'rate_limited'
   | 'unknown';
+
+/**
+ * A captcha the owner solves in their own browser (Signal's rate-limit challenge), in Attention.detail.captcha: open
+ * `url`, solve it, copy the link "Open Signal" points at, and paste it; it goes to the adapter as the account action
+ * `action` with { captcha }. Nothing solves it for them.
+ */
+export interface CaptchaCheck {
+  url: string;
+  action: string;
+}
 
 export interface Attention {
   kind: AttentionKind;
@@ -143,6 +155,8 @@ export const REACTION_RULES: Record<Network, ReactionRules> = {
   x: { exclusive: false, freeText: false },
   // Mail has no reactions.
   email: { exclusive: true, freeText: false, maxDistinct: 0 },
+  // The calendar's chats have none either.
+  calendar: { exclusive: true, freeText: false, maxDistinct: 0 },
 };
 
 export function discordEmojiUrl(id: string, animated?: boolean): string {
@@ -205,6 +219,8 @@ export const ATTACHMENT_LIMITS: Record<Network, { bytes: number; files: number }
   x: { bytes: MAX_UPLOAD, files: 1 },
   // dither-accounts' mail.attachment and OutgoingFile: 25 MB a file.
   email: { bytes: MAX_UPLOAD, files: 20 },
+  // Words only.
+  calendar: { bytes: 0, files: 0 },
 };
 
 /** Brand colours used to annotate the source of every object in the UI. */
@@ -219,4 +235,5 @@ export const NETWORK_META: Record<Network, { name: string; color: string; spaceN
   instagram: { name: 'Instagram', color: '#FF0069', spaceNoun: 'group', sectionNoun: 'section' },
   x: { name: 'X', color: '#000000', spaceNoun: 'group', sectionNoun: 'section' },
   email: { name: 'Email', color: '#5B7083', spaceNoun: 'mailbox', sectionNoun: 'folder' },
+  calendar: { name: 'Calendar', color: '#7E57C2', spaceNoun: 'calendar', sectionNoun: 'section' },
 };

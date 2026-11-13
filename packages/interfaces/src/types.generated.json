@@ -41,8 +41,8 @@
     }
    },
    "threads": {
-    "input": "{ conversation: string; offset: number; archived: boolean }",
-    "output": "{\n  count: number;\n  /** More after these: ask again with offset + count. */\n  more: boolean;\n  /** The network is still indexing this channel's threads (Discord's 202): ask the same again after this long. */\n  retryAfterMs?: number;\n}",
+    "input": "{ conversation: string; offset: number; archived: boolean; mine?: boolean }",
+    "output": "{\n  count: number;\n  /** More after these: ask again with offset + count. */\n  more: boolean;\n  /** The network is still indexing this channel's threads (Discord's 202): ask the same again after this long. */\n  retryAfterMs?: number;\n  /** The page's threads, native ids in the network's order (threads.ts ThreadPageView); absent from an older adapter. */\n  ids?: string[];\n}",
     "example": {
      "conversation": "",
      "offset": 0,
@@ -51,7 +51,7 @@
    },
    "reactionContext": {
     "input": "{ conversation: string; message?: string }",
-    "output": "{\n  canReact: boolean;\n  /** Why not, or a limit worth knowing. Shown in the picker. */\n  reason?: string;\n  /** Only reactions already on the message can be added to (Discord without Add Reactions). */\n  existingOnly?: boolean;\n  /** Custom emoji usable here: this server first, then others, Matrix image packs. */\n  custom: { id: string; name: string; icon?: string; emoji: CustomEmojiFact[] }[];\n  /** Absent: this network has no super reactions. */\n  super?: { available: boolean; reason?: string };\n}",
+    "output": "{\n  canReact: boolean;\n  /** Why not, or a limit worth knowing. Shown in the picker. */\n  reason?: string;\n  /** Only reactions already on the message can be added to (Discord without Add Reactions). */\n  existingOnly?: boolean;\n  /** Custom emoji usable here: this server first, then others, Matrix image packs. */\n  custom: { id: string; name: string; icon?: string; emoji: CustomEmojiFact[] }[];\n  /** Absent: this network has no super reactions. */\n  super?: { available: boolean; reason?: string };\n  /** What this account may do to others' messages here (capability 'moderate'). Absent: nothing. */\n  moderation?: MessageModeration;\n}",
     "example": {
      "conversation": ""
     }
@@ -74,7 +74,7 @@
    },
    "about": {
     "input": "{ target: AboutTarget }",
-    "output": "{\n  /** The network's word for it: \"Group\", \"Server\", \"Room\", \"Channel\", \"Community\". */\n  noun?: string;\n  fields: AboutFields;\n  members?: {\n    list: AboutMember[];\n    /** How many there are; list may hold fewer (Discord servers load members lazily). */\n    total?: number;\n    complete: boolean;\n  };\n  /** Adding people here, for an adapter with 'addMembers'. Left out where nobody adds people (DMs, servers, channels). */\n  adding?: AboutAdding;\n  roles?: AboutRole[];\n  rules?: AboutRule[];\n  /** This account's own standing here. */\n  you?: { role?: string; rank?: number };\n  invite?: AboutInvite;\n  pinned?: AboutPinned;\n  /** Read-only details only some networks have: \"Room version\", \"Verification level\", \"Created\". */\n  facts?: { label: string; value: string }[];\n}",
+    "output": "{\n  /** The network's word for it: \"Group\", \"Server\", \"Room\", \"Channel\", \"Community\". */\n  noun?: string;\n  fields: AboutFields;\n  members?: {\n    list: AboutMember[];\n    /** How many there are; list may hold fewer (Discord servers load members lazily). */\n    total?: number;\n    complete: boolean;\n  };\n  /** Adding people here, for an adapter with 'addMembers'. Left out where nobody adds people (DMs, servers, channels). */\n  adding?: AboutAdding;\n  roles?: AboutRole[];\n  rules?: AboutRule[];\n  /** This account's own standing here. */\n  you?: { role?: string; rank?: number };\n  invite?: AboutInvite;\n  pinned?: AboutPinned;\n  /** Read-only details only some networks have: \"Room version\", \"Verification level\", \"Created\". */\n  facts?: { label: string; value: string }[];\n  /** Leaving it (capability 'leave', servers.ts). */\n  leaving?: AboutLeaving;\n  /** Your own nickname here (capability 'nick', the `setNick` command): value null for none. */\n  nick?: { value: null | string; canEdit: boolean; reason?: string; max?: number };\n  /** You blocked this group: nothing from it reaches you (capability 'block'; the `block` command changes it). */\n  blocked?: boolean;\n  /** A thread's archiving, locking and following (threads.ts). */\n  thread?: AboutThread;\n  /** A group with an owner: who, and whether this account may remove people or hand it over (threads.ts). */\n  ownership?: AboutOwnership;\n  /** What this account may do to its members (capability 'moderate', moderation.ts). */\n  moderation?: AboutModeration;\n  /** Your own member label here (Signal); `configure` with key 'label' changes it. */\n  label?: AboutLabel;\n}",
     "example": {
      "target": {
       "kind": "conversation",
@@ -84,7 +84,7 @@
    },
    "profile": {
     "input": "{ who: string }",
-    "output": "{\n  /** As the network has them now. The adapter also emits an identity fact with these. */\n  displayName?: string;\n  handle?: string;\n  avatar?: string;\n  /** A banner picture (Discord). */\n  banner?: string;\n  /** A CSS colour for the banner when there is no picture (Discord's accent colour). */\n  accent?: string;\n  /** Bio or About text, as the network has it (Discord markdown, WhatsApp About, Signal About). */\n  bio?: string;\n  /** A short status line with an emoji (Discord custom status, Signal's About emoji). */\n  status?: { text?: string; emoji?: string };\n  pronouns?: string;\n  /** ms epoch: when their account was made (Discord, from the id). */\n  createdAt?: number;\n  /** Your standing with them on this network. */\n  relationship?: \"friend\" | \"requested\" | \"requesting\" | \"blocked\" | \"contact\" | \"following\" | \"stranger\";\n  /** Spaces you share, native ids, with their name and roles there. All of them, not only where they posted. */\n  mutualSpaces?: { id: string; nick?: string; roles?: { name: string; color?: string }[]; joinedAt?: number }[];\n  /** Friends you share: native identity ids (identity facts for them are emitted first). */\n  mutualFriends?: string[];\n  /** When the person is you: your friends or contacts on this network, native identity ids. */\n  friends?: string[];\n  /** Connected accounts, websites, a phone number. */\n  links?: { label: string; value: string; url?: string; verified?: boolean }[];\n  /** Anything else worth a line: \"Business account\", \"Local time\". */\n  facts?: { label: string; value: string }[];\n  /** Their recent posts, newest first (X: up to 20 from their profile's Posts tab, reposts included, a pinned one first with `pinned`). Only in an answer to `profile`, never in a `personAbout` event. */\n  posts?: PostFact[];\n  /** Follower and following counts and their posts in all, where the network shows them. */\n  counts?: { followers?: number; following?: number; posts?: number };\n  /** They follow you (X). */\n  followsYou?: boolean;\n}",
+    "output": "{\n  /** As the network has them now. The adapter also emits an identity fact with these. */\n  displayName?: string;\n  handle?: string;\n  avatar?: string;\n  /** A banner picture (Discord). */\n  banner?: string;\n  /** A CSS colour for the banner when there is no picture (Discord's accent colour). */\n  accent?: string;\n  /** Bio or About text, as the network has it (Discord markdown, WhatsApp About, Signal About). */\n  bio?: string;\n  /** A short status line with an emoji (Discord custom status, Signal's About emoji). */\n  status?: { text?: string; emoji?: string };\n  pronouns?: string;\n  /** ms epoch: when their account was made (Discord, from the id). */\n  createdAt?: number;\n  /** Your standing with them on this network. */\n  relationship?: \"friend\" | \"requested\" | \"requesting\" | \"blocked\" | \"contact\" | \"following\" | \"stranger\";\n  /** Spaces you share, native ids, with their name and roles there. All of them, not only where they posted. */\n  mutualSpaces?: { id: string; nick?: string; roles?: { name: string; color?: string }[]; joinedAt?: number }[];\n  /** Friends you share: native identity ids (identity facts for them are emitted first). */\n  mutualFriends?: string[];\n  /** When the person is you: your friends or contacts on this network, native identity ids. */\n  friends?: string[];\n  /** Connected accounts, websites, a phone number. */\n  links?: { label: string; value: string; url?: string; verified?: boolean }[];\n  /** Anything else worth a line: \"Business account\", \"Local time\". */\n  facts?: { label: string; value: string }[];\n  /** Badges the network shows on their profile, by name, with the network's picture. */\n  badges?: { name: string; icon?: string }[];\n  /** A frame drawn around their picture (Discord's avatar decoration). */\n  decoration?: string;\n  /** Their profile's own colours, as CSS hex, top first (Discord's theme colours). */\n  themeColors?: string[];\n  /** Your safety number with them (capability 'safetyNumbers'). */\n  safety?: SafetyNumber;\n  /** When the person is you: what the `setProfile` command can change on this account. Absent: only the bio. */\n  editable?: ProfileField[];\n  /** When the person is you: your username and its link, where the network has them and one is set. */\n  username?: { name: string; link?: string };\n  /** Their recent posts, newest first (X: up to 20 from their profile's Posts tab, reposts included, a pinned one first with `pinned`). Only in an answer to `profile`, never in a `personAbout` event. */\n  posts?: PostFact[];\n  /** Follower and following counts and their posts in all, where the network shows them. */\n  counts?: { followers?: number; following?: number; posts?: number };\n  /** They follow you (X). */\n  followsYou?: boolean;\n}",
     "example": {
      "who": ""
     }
@@ -101,8 +101,48 @@
      }
     }
    },
+   "scheduledEvents": {
+    "input": "{ space: string }",
+    "output": "{ events: ScheduledEventFact[] }",
+    "example": {
+     "space": ""
+    }
+   },
+   "gate": {
+    "input": "{ space: string }",
+    "output": "null | SpaceGate",
+    "example": {
+     "space": ""
+    }
+   },
+   "appCommands": {
+    "input": "{ conversation: string; kind?: \"chat\" | \"message\" | \"user\" }",
+    "output": "{ commands: AppCommandFact[]; apps: AppFact[] }",
+    "example": {
+     "conversation": ""
+    }
+   },
+   "appAutocomplete": {
+    "input": "{\n  conversation: string;\n  query: string;\n  command: string;\n  app: string;\n  options: AppOptionValue[];\n  focused: string;\n}",
+    "output": "{ choices: AppChoiceFact[] }",
+    "example": {
+     "conversation": "",
+     "query": "",
+     "command": "",
+     "app": "",
+     "options": [],
+     "focused": ""
+    }
+   },
+   "stickers": {
+    "input": "{ conversation: string; cursor?: string }",
+    "output": "{\n  packs: StickerPackFact[];\n  /** Pass as `cursor` for the next page; null at the end. */\n  next: null | string;\n  /** Why there are none, or a limit worth knowing (\"Stickers from other servers need Nitro\"). Shown in the picker. */\n  note?: string;\n}",
+    "example": {
+     "conversation": ""
+    }
+   },
    "send": {
-    "input": "{ conversation: string; body: string; replyTo?: string; attachments?: OutgoingAttachment[] }",
+    "input": "{\n  conversation: string;\n  body: string;\n  replyTo?: string;\n  attachments?: OutgoingAttachment[];\n  /** capability 'linkPreviews' */\n  preview?: LinkPreviewOut;\n  /** A sticker from the `stickers` reply, by its id (capability 'sendStickers'); body may be empty with it. */\n  sticker?: string;\n  /** The files open once (capability 'sendViewOnce'). */\n  viewOnce?: boolean;\n  /** capability 'silentSend': nobody is notified of it (Discord's */\n  silent?: boolean;\n  /** capability 'replyMention', with replyTo: false, the reply does not ping its author. Absent: the network's default (it pings). */\n  mentionReplied?: boolean;\n}",
     "output": "undefined | { nativeId?: string }",
     "example": {
      "conversation": "",
@@ -135,11 +175,48 @@
      "upTo": ""
     }
    },
+   "markUnread": {
+    "input": "{ conversation: string; from: string }",
+    "output": "unknown",
+    "example": {
+     "conversation": "",
+     "from": ""
+    }
+   },
+   "markReadMany": {
+    "input": "{ items: { conversation: string; upTo: string }[] }",
+    "output": "{ marked: number }",
+    "example": {
+     "items": []
+    }
+   },
    "typing": {
     "input": "{ conversation: string; stop?: boolean }",
     "output": "unknown",
     "example": {
      "conversation": ""
+    }
+   },
+   "viewed": {
+    "input": "{ conversation: string; message: string }",
+    "output": "{ sent: boolean }",
+    "example": {
+     "conversation": "",
+     "message": ""
+    }
+   },
+   "storyViewed": {
+    "input": "{ story: string }",
+    "output": "{ sent: boolean }",
+    "example": {
+     "story": ""
+    }
+   },
+   "storyReply": {
+    "input": "{ conversation?: string; body?: string; story: string; emoji?: string }",
+    "output": "{ nativeId?: string }",
+    "example": {
+     "story": ""
     }
    },
    "react": {
@@ -161,7 +238,7 @@
     }
    },
    "redact": {
-    "input": "{ conversation: string; message: string }",
+    "input": "{ conversation: string; message: string; moderator?: true }",
     "output": "unknown",
     "example": {
      "conversation": "",
@@ -169,7 +246,7 @@
     }
    },
    "call": {
-    "input": "{\n  call: string;\n  conversation: string;\n  op: \"join\";\n  mode: CallMode;\n  muted?: boolean;\n  deafened?: boolean;\n}\n| { call: string; op: \"leave\" }\n| { call: string; op: \"mute\"; muted: boolean; deafened: boolean }\n| { call: string; op: \"note\" | \"signal\"; data: unknown }",
+    "input": "{\n  input?: CallInput;\n  call: string;\n  conversation: string;\n  op: \"join\";\n  mode: CallMode;\n  muted?: boolean;\n  deafened?: boolean;\n  ring?: boolean;\n}\n| { call: string; op: \"leave\" }\n| { call: string; op: \"mute\"; muted: boolean; deafened: boolean }\n| { call: string; op: \"note\" | \"signal\"; data: unknown }\n| { call: string; op: \"local\"; muted?: boolean; user: string; volume?: number }\n| { input: CallInput; call: string; op: \"input\" }\n| { call: string; action: StageAction; op: \"stage\"; user?: string }\n| { call: string; op: \"sounds\" }\n| { call: string; op: \"sound\"; sound: string; guild: string }",
     "output": "unknown",
     "example": {
      "call": "",
@@ -178,9 +255,29 @@
      "mode": "bridge"
     }
    },
+   "declineCall": {
+    "input": "{ call: string; conversation: string }",
+    "output": "unknown",
+    "example": {
+     "call": "",
+     "conversation": ""
+    }
+   },
+   "interact": {
+    "input": "{ conversation: string; interaction: InteractRequest }",
+    "output": "{ nonce: string }",
+    "example": {
+     "conversation": "",
+     "interaction": {
+      "kind": "component",
+      "message": "",
+      "component": ""
+     }
+    }
+   },
    "configure": {
     "input": "{ target: AboutTarget; change: AboutChange }",
-    "output": "{\n  /** The network's word for it: \"Group\", \"Server\", \"Room\", \"Channel\", \"Community\". */\n  noun?: string;\n  fields: AboutFields;\n  members?: {\n    list: AboutMember[];\n    /** How many there are; list may hold fewer (Discord servers load members lazily). */\n    total?: number;\n    complete: boolean;\n  };\n  /** Adding people here, for an adapter with 'addMembers'. Left out where nobody adds people (DMs, servers, channels). */\n  adding?: AboutAdding;\n  roles?: AboutRole[];\n  rules?: AboutRule[];\n  /** This account's own standing here. */\n  you?: { role?: string; rank?: number };\n  invite?: AboutInvite;\n  pinned?: AboutPinned;\n  /** Read-only details only some networks have: \"Room version\", \"Verification level\", \"Created\". */\n  facts?: { label: string; value: string }[];\n}",
+    "output": "{\n  /** The network's word for it: \"Group\", \"Server\", \"Room\", \"Channel\", \"Community\". */\n  noun?: string;\n  fields: AboutFields;\n  members?: {\n    list: AboutMember[];\n    /** How many there are; list may hold fewer (Discord servers load members lazily). */\n    total?: number;\n    complete: boolean;\n  };\n  /** Adding people here, for an adapter with 'addMembers'. Left out where nobody adds people (DMs, servers, channels). */\n  adding?: AboutAdding;\n  roles?: AboutRole[];\n  rules?: AboutRule[];\n  /** This account's own standing here. */\n  you?: { role?: string; rank?: number };\n  invite?: AboutInvite;\n  pinned?: AboutPinned;\n  /** Read-only details only some networks have: \"Room version\", \"Verification level\", \"Created\". */\n  facts?: { label: string; value: string }[];\n  /** Leaving it (capability 'leave', servers.ts). */\n  leaving?: AboutLeaving;\n  /** Your own nickname here (capability 'nick', the `setNick` command): value null for none. */\n  nick?: { value: null | string; canEdit: boolean; reason?: string; max?: number };\n  /** You blocked this group: nothing from it reaches you (capability 'block'; the `block` command changes it). */\n  blocked?: boolean;\n  /** A thread's archiving, locking and following (threads.ts). */\n  thread?: AboutThread;\n  /** A group with an owner: who, and whether this account may remove people or hand it over (threads.ts). */\n  ownership?: AboutOwnership;\n  /** What this account may do to its members (capability 'moderate', moderation.ts). */\n  moderation?: AboutModeration;\n  /** Your own member label here (Signal); `configure` with key 'label' changes it. */\n  label?: AboutLabel;\n}",
     "example": {
      "target": {
       "kind": "conversation",
@@ -192,11 +289,29 @@
      }
     }
    },
+   "resetSession": {
+    "input": "{ conversation: string }",
+    "output": "unknown",
+    "example": {
+     "conversation": ""
+    }
+   },
    "setProfile": {
-    "input": "{ change: { bio?: string } }",
-    "output": "{\n  /** As the network has them now. The adapter also emits an identity fact with these. */\n  displayName?: string;\n  handle?: string;\n  avatar?: string;\n  /** A banner picture (Discord). */\n  banner?: string;\n  /** A CSS colour for the banner when there is no picture (Discord's accent colour). */\n  accent?: string;\n  /** Bio or About text, as the network has it (Discord markdown, WhatsApp About, Signal About). */\n  bio?: string;\n  /** A short status line with an emoji (Discord custom status, Signal's About emoji). */\n  status?: { text?: string; emoji?: string };\n  pronouns?: string;\n  /** ms epoch: when their account was made (Discord, from the id). */\n  createdAt?: number;\n  /** Your standing with them on this network. */\n  relationship?: \"friend\" | \"requested\" | \"requesting\" | \"blocked\" | \"contact\" | \"following\" | \"stranger\";\n  /** Spaces you share, native ids, with their name and roles there. All of them, not only where they posted. */\n  mutualSpaces?: { id: string; nick?: string; roles?: { name: string; color?: string }[]; joinedAt?: number }[];\n  /** Friends you share: native identity ids (identity facts for them are emitted first). */\n  mutualFriends?: string[];\n  /** When the person is you: your friends or contacts on this network, native identity ids. */\n  friends?: string[];\n  /** Connected accounts, websites, a phone number. */\n  links?: { label: string; value: string; url?: string; verified?: boolean }[];\n  /** Anything else worth a line: \"Business account\", \"Local time\". */\n  facts?: { label: string; value: string }[];\n  /** Their recent posts, newest first (X: up to 20 from their profile's Posts tab, reposts included, a pinned one first with `pinned`). Only in an answer to `profile`, never in a `personAbout` event. */\n  posts?: PostFact[];\n  /** Follower and following counts and their posts in all, where the network shows them. */\n  counts?: { followers?: number; following?: number; posts?: number };\n  /** They follow you (X). */\n  followsYou?: boolean;\n}",
+    "input": "{ change: ProfileChange }",
+    "output": "{\n  /** As the network has them now. The adapter also emits an identity fact with these. */\n  displayName?: string;\n  handle?: string;\n  avatar?: string;\n  /** A banner picture (Discord). */\n  banner?: string;\n  /** A CSS colour for the banner when there is no picture (Discord's accent colour). */\n  accent?: string;\n  /** Bio or About text, as the network has it (Discord markdown, WhatsApp About, Signal About). */\n  bio?: string;\n  /** A short status line with an emoji (Discord custom status, Signal's About emoji). */\n  status?: { text?: string; emoji?: string };\n  pronouns?: string;\n  /** ms epoch: when their account was made (Discord, from the id). */\n  createdAt?: number;\n  /** Your standing with them on this network. */\n  relationship?: \"friend\" | \"requested\" | \"requesting\" | \"blocked\" | \"contact\" | \"following\" | \"stranger\";\n  /** Spaces you share, native ids, with their name and roles there. All of them, not only where they posted. */\n  mutualSpaces?: { id: string; nick?: string; roles?: { name: string; color?: string }[]; joinedAt?: number }[];\n  /** Friends you share: native identity ids (identity facts for them are emitted first). */\n  mutualFriends?: string[];\n  /** When the person is you: your friends or contacts on this network, native identity ids. */\n  friends?: string[];\n  /** Connected accounts, websites, a phone number. */\n  links?: { label: string; value: string; url?: string; verified?: boolean }[];\n  /** Anything else worth a line: \"Business account\", \"Local time\". */\n  facts?: { label: string; value: string }[];\n  /** Badges the network shows on their profile, by name, with the network's picture. */\n  badges?: { name: string; icon?: string }[];\n  /** A frame drawn around their picture (Discord's avatar decoration). */\n  decoration?: string;\n  /** Their profile's own colours, as CSS hex, top first (Discord's theme colours). */\n  themeColors?: string[];\n  /** Your safety number with them (capability 'safetyNumbers'). */\n  safety?: SafetyNumber;\n  /** When the person is you: what the `setProfile` command can change on this account. Absent: only the bio. */\n  editable?: ProfileField[];\n  /** When the person is you: your username and its link, where the network has them and one is set. */\n  username?: { name: string; link?: string };\n  /** Their recent posts, newest first (X: up to 20 from their profile's Posts tab, reposts included, a pinned one first with `pinned`). Only in an answer to `profile`, never in a `personAbout` event. */\n  posts?: PostFact[];\n  /** Follower and following counts and their posts in all, where the network shows them. */\n  counts?: { followers?: number; following?: number; posts?: number };\n  /** They follow you (X). */\n  followsYou?: boolean;\n}",
     "example": {
      "change": {}
+    }
+   },
+   "mute": {
+    "input": "{ target: AboutTarget; muted: boolean; until?: number }",
+    "output": "{\n  level?: \"all\" | \"mentions\" | \"none\";\n  /** ms epoch; muted until then. */\n  until?: number;\n  /** Muted outright (Discord's Mute), rather than set to notify on nothing. */\n  muted?: boolean;\n  /** A space's: */\n  suppressEveryone?: boolean;\n  /** A space's: role mentions do not notify there. */\n  suppressRoles?: boolean;\n}",
+    "example": {
+     "target": {
+      "kind": "conversation",
+      "nativeId": ""
+     },
+     "muted": false
     }
    },
    "action": {
@@ -207,10 +322,10 @@
     }
    },
    "add": {
-    "input": "{ action: \"ask\" | \"friend\" | \"contact\" | \"join\" | \"follow\"; ref: AddRef; confirm?: true }",
-    "output": "{\n  /** What now exists on this account (native ids): open it. Space/conversation facts arrive before the reply. */\n  space?: string;\n  conversation?: string;\n  identity?: string;\n  relationship?: \"friend\" | \"requested\" | \"requesting\" | \"blocked\" | \"contact\" | \"following\" | \"stranger\";\n  /** Asked; waiting on the other side (join request, friend request, follow request). */\n  pending?: boolean;\n  /** The network wants a check only the owner can do, in the account's live view. Nothing was done. */\n  check?: \"captcha\" | \"verify\" | \"phone\" | \"rules\";\n  /** Plain notes, shown after the action: \"Joined; the admins must approve before you can post\". */\n  notes?: string[];\n  /** The network wants the owner to confirm first (Discord: \"You must confirm the friend request to add this user.\"): its words. Nothing was done. The page shows them with \"Accept anyway\" or \"Add anyway\", which sends the same command again with  */\n  confirm?: string;\n}",
+    "input": "{ action: \"follow\" | \"ask\" | \"friend\" | \"contact\" | \"join\"; ref: AddRef; confirm?: true }",
+    "output": "{\n  /** What now exists on this account (native ids): open it. Space/conversation facts arrive before the reply. */\n  space?: string;\n  conversation?: string;\n  identity?: string;\n  relationship?: \"friend\" | \"requested\" | \"requesting\" | \"blocked\" | \"contact\" | \"following\" | \"stranger\";\n  /** Asked; waiting on the other side (join request, friend request, follow request). */\n  pending?: boolean;\n  /** The network wants a check only the owner can do, in the account's live view. Nothing was done. */\n  check?: \"verify\" | \"rules\" | \"captcha\" | \"phone\";\n  /** Plain notes, shown after the action: \"Joined; the admins must approve before you can post\". */\n  notes?: string[];\n  /** The network wants the owner to confirm first (Discord: \"You must confirm the friend request to add this user.\"): its words. Nothing was done. The page shows them with \"Accept anyway\" or \"Add anyway\", which sends the same command again with  */\n  confirm?: string;\n}",
     "example": {
-     "action": "ask",
+     "action": "follow",
      "ref": {
       "kind": "invite",
       "network": "discord",
@@ -221,15 +336,15 @@
    },
    "answer": {
     "input": "{ answer: RequestAnswer; confirm?: true; request: string }",
-    "output": "{\n  /** What now exists on this account (native ids): open it. Space/conversation facts arrive before the reply. */\n  space?: string;\n  conversation?: string;\n  identity?: string;\n  relationship?: \"friend\" | \"requested\" | \"requesting\" | \"blocked\" | \"contact\" | \"following\" | \"stranger\";\n  /** Asked; waiting on the other side (join request, friend request, follow request). */\n  pending?: boolean;\n  /** The network wants a check only the owner can do, in the account's live view. Nothing was done. */\n  check?: \"captcha\" | \"verify\" | \"phone\" | \"rules\";\n  /** Plain notes, shown after the action: \"Joined; the admins must approve before you can post\". */\n  notes?: string[];\n  /** The network wants the owner to confirm first (Discord: \"You must confirm the friend request to add this user.\"): its words. Nothing was done. The page shows them with \"Accept anyway\" or \"Add anyway\", which sends the same command again with  */\n  confirm?: string;\n}",
+    "output": "{\n  /** What now exists on this account (native ids): open it. Space/conversation facts arrive before the reply. */\n  space?: string;\n  conversation?: string;\n  identity?: string;\n  relationship?: \"friend\" | \"requested\" | \"requesting\" | \"blocked\" | \"contact\" | \"following\" | \"stranger\";\n  /** Asked; waiting on the other side (join request, friend request, follow request). */\n  pending?: boolean;\n  /** The network wants a check only the owner can do, in the account's live view. Nothing was done. */\n  check?: \"verify\" | \"rules\" | \"captcha\" | \"phone\";\n  /** Plain notes, shown after the action: \"Joined; the admins must approve before you can post\". */\n  notes?: string[];\n  /** The network wants the owner to confirm first (Discord: \"You must confirm the friend request to add this user.\"): its words. Nothing was done. The page shows them with \"Accept anyway\" or \"Add anyway\", which sends the same command again with  */\n  confirm?: string;\n}",
     "example": {
-     "answer": "accept",
+     "answer": "block",
      "request": ""
     }
    },
    "remove": {
     "input": "{ identity: string; relationship: PersonRelationship }",
-    "output": "{\n  /** What now exists on this account (native ids): open it. Space/conversation facts arrive before the reply. */\n  space?: string;\n  conversation?: string;\n  identity?: string;\n  relationship?: \"friend\" | \"requested\" | \"requesting\" | \"blocked\" | \"contact\" | \"following\" | \"stranger\";\n  /** Asked; waiting on the other side (join request, friend request, follow request). */\n  pending?: boolean;\n  /** The network wants a check only the owner can do, in the account's live view. Nothing was done. */\n  check?: \"captcha\" | \"verify\" | \"phone\" | \"rules\";\n  /** Plain notes, shown after the action: \"Joined; the admins must approve before you can post\". */\n  notes?: string[];\n  /** The network wants the owner to confirm first (Discord: \"You must confirm the friend request to add this user.\"): its words. Nothing was done. The page shows them with \"Accept anyway\" or \"Add anyway\", which sends the same command again with  */\n  confirm?: string;\n}",
+    "output": "{\n  /** What now exists on this account (native ids): open it. Space/conversation facts arrive before the reply. */\n  space?: string;\n  conversation?: string;\n  identity?: string;\n  relationship?: \"friend\" | \"requested\" | \"requesting\" | \"blocked\" | \"contact\" | \"following\" | \"stranger\";\n  /** Asked; waiting on the other side (join request, friend request, follow request). */\n  pending?: boolean;\n  /** The network wants a check only the owner can do, in the account's live view. Nothing was done. */\n  check?: \"verify\" | \"rules\" | \"captcha\" | \"phone\";\n  /** Plain notes, shown after the action: \"Joined; the admins must approve before you can post\". */\n  notes?: string[];\n  /** The network wants the owner to confirm first (Discord: \"You must confirm the friend request to add this user.\"): its words. Nothing was done. The page shows them with \"Accept anyway\" or \"Add anyway\", which sends the same command again with  */\n  confirm?: string;\n}",
     "example": {
      "identity": "",
      "relationship": "friend"
@@ -253,6 +368,176 @@
      "people": []
     }
    },
+   "rsvp": {
+    "input": "{ space: string; event: string; occurrence?: string; interested: boolean }",
+    "output": "{\n  nativeId: string;\n  /** The space (a Discord guild) it belongs to. */\n  space: string;\n  name: string;\n  description?: string;\n  /** ms epoch. For a repeating event, its first occurrence (or the next, as the network keeps it). */\n  start: number;\n  end?: number;\n  status: EventStatus;\n  place?: { kind: \"voice\" | \"stage\"; conversation: string } | { kind: \"external\"; location: string };\n  /** Its cover picture. */\n  imageUrl?: string;\n  /** How many said they are interested, when the network said. */\n  interested?: number;\n  /** This account said it is interested (the series). Absent: not known yet. */\n  youInterested?: boolean;\n  /** Native identity id of who made it (its identity fact comes first). */\n  creator?: string;\n  /** RFC 5545 rule without the \"RRULE:\" prefix (\"FREQ=WEEKLY;INTERVAL=1;BYDAY=TU\"); absent: once. Times are UTC. */\n  rrule?: string;\n  exceptions?: EventException[];\n}",
+    "example": {
+     "space": "",
+     "event": "",
+     "interested": false
+    }
+   },
+   "leave": {
+    "input": "{\n  target: AboutTarget;\n  silent?: boolean;\n  /** Native identity ids made admin as you leave (AboutLeaving.needsAdmin; Signal's `--admin`). */\n  admins?: string[];\n  /** Forget the group's data on this device too (AboutLeaving.canForget; Signal's `--delete`). */\n  forget?: true;\n}",
+    "output": "{ left: boolean }",
+    "example": {
+     "target": {
+      "kind": "conversation",
+      "nativeId": ""
+     }
+    }
+   },
+   "answerGate": {
+    "input": "{ answer: GateAnswer; space: string }",
+    "output": "{\n  /** The gate is passed (rules, onboarding), or the application is in (apply: see status). */\n  done: boolean;\n  status?: \"open\" | \"submitted\" | \"approved\" | \"rejected\";\n  /** What it asks next, when it asks more (onboarding after the rules). */\n  next?: null | SpaceGate;\n}",
+    "example": {
+     "answer": {
+      "kind": "rules"
+     },
+     "space": ""
+    }
+   },
+   "setNick": {
+    "input": "{ space: string; nick: string }",
+    "output": "{\n  /** The network's word for it: \"Group\", \"Server\", \"Room\", \"Channel\", \"Community\". */\n  noun?: string;\n  fields: AboutFields;\n  members?: {\n    list: AboutMember[];\n    /** How many there are; list may hold fewer (Discord servers load members lazily). */\n    total?: number;\n    complete: boolean;\n  };\n  /** Adding people here, for an adapter with 'addMembers'. Left out where nobody adds people (DMs, servers, channels). */\n  adding?: AboutAdding;\n  roles?: AboutRole[];\n  rules?: AboutRule[];\n  /** This account's own standing here. */\n  you?: { role?: string; rank?: number };\n  invite?: AboutInvite;\n  pinned?: AboutPinned;\n  /** Read-only details only some networks have: \"Room version\", \"Verification level\", \"Created\". */\n  facts?: { label: string; value: string }[];\n  /** Leaving it (capability 'leave', servers.ts). */\n  leaving?: AboutLeaving;\n  /** Your own nickname here (capability 'nick', the `setNick` command): value null for none. */\n  nick?: { value: null | string; canEdit: boolean; reason?: string; max?: number };\n  /** You blocked this group: nothing from it reaches you (capability 'block'; the `block` command changes it). */\n  blocked?: boolean;\n  /** A thread's archiving, locking and following (threads.ts). */\n  thread?: AboutThread;\n  /** A group with an owner: who, and whether this account may remove people or hand it over (threads.ts). */\n  ownership?: AboutOwnership;\n  /** What this account may do to its members (capability 'moderate', moderation.ts). */\n  moderation?: AboutModeration;\n  /** Your own member label here (Signal); `configure` with key 'label' changes it. */\n  label?: AboutLabel;\n}",
+    "example": {
+     "space": "",
+     "nick": ""
+    }
+   },
+   "verify": {
+    "input": "{ who: string; safetyNumber?: string; clear?: true }",
+    "output": "{\n  /** As the network has them now. The adapter also emits an identity fact with these. */\n  displayName?: string;\n  handle?: string;\n  avatar?: string;\n  /** A banner picture (Discord). */\n  banner?: string;\n  /** A CSS colour for the banner when there is no picture (Discord's accent colour). */\n  accent?: string;\n  /** Bio or About text, as the network has it (Discord markdown, WhatsApp About, Signal About). */\n  bio?: string;\n  /** A short status line with an emoji (Discord custom status, Signal's About emoji). */\n  status?: { text?: string; emoji?: string };\n  pronouns?: string;\n  /** ms epoch: when their account was made (Discord, from the id). */\n  createdAt?: number;\n  /** Your standing with them on this network. */\n  relationship?: \"friend\" | \"requested\" | \"requesting\" | \"blocked\" | \"contact\" | \"following\" | \"stranger\";\n  /** Spaces you share, native ids, with their name and roles there. All of them, not only where they posted. */\n  mutualSpaces?: { id: string; nick?: string; roles?: { name: string; color?: string }[]; joinedAt?: number }[];\n  /** Friends you share: native identity ids (identity facts for them are emitted first). */\n  mutualFriends?: string[];\n  /** When the person is you: your friends or contacts on this network, native identity ids. */\n  friends?: string[];\n  /** Connected accounts, websites, a phone number. */\n  links?: { label: string; value: string; url?: string; verified?: boolean }[];\n  /** Anything else worth a line: \"Business account\", \"Local time\". */\n  facts?: { label: string; value: string }[];\n  /** Badges the network shows on their profile, by name, with the network's picture. */\n  badges?: { name: string; icon?: string }[];\n  /** A frame drawn around their picture (Discord's avatar decoration). */\n  decoration?: string;\n  /** Their profile's own colours, as CSS hex, top first (Discord's theme colours). */\n  themeColors?: string[];\n  /** Your safety number with them (capability 'safetyNumbers'). */\n  safety?: SafetyNumber;\n  /** When the person is you: what the `setProfile` command can change on this account. Absent: only the bio. */\n  editable?: ProfileField[];\n  /** When the person is you: your username and its link, where the network has them and one is set. */\n  username?: { name: string; link?: string };\n  /** Their recent posts, newest first (X: up to 20 from their profile's Posts tab, reposts included, a pinned one first with `pinned`). Only in an answer to `profile`, never in a `personAbout` event. */\n  posts?: PostFact[];\n  /** Follower and following counts and their posts in all, where the network shows them. */\n  counts?: { followers?: number; following?: number; posts?: number };\n  /** They follow you (X). */\n  followsYou?: boolean;\n}",
+    "example": {
+     "who": ""
+    }
+   },
+   "block": {
+    "input": "{ target: { kind: \"conversation\" | \"identity\"; nativeId: string }; unblock?: true }",
+    "output": "{ blocked: boolean }",
+    "example": {
+     "target": {
+      "kind": "conversation",
+      "nativeId": ""
+     }
+    }
+   },
+   "addStickerPack": {
+    "input": "{ uri: string }",
+    "output": "{ pack: StickerPackFact }",
+    "example": {
+     "uri": ""
+    }
+   },
+   "setContact": {
+    "input": "{ who: string; note?: string; nickname?: string }",
+    "output": "unknown",
+    "example": {
+     "who": ""
+    }
+   },
+   "pollVote": {
+    "input": "{ conversation: string; message: string; options: string[]; seq?: number }",
+    "output": "unknown",
+    "example": {
+     "conversation": "",
+     "message": "",
+     "options": []
+    }
+   },
+   "pollCreate": {
+    "input": "{ conversation: string; poll: PollDraft }",
+    "output": "{ nativeId?: string }",
+    "example": {
+     "conversation": "",
+     "poll": {
+      "question": "",
+      "options": [],
+      "multi": false
+     }
+    }
+   },
+   "pollEnd": {
+    "input": "{ conversation: string; message: string }",
+    "output": "unknown",
+    "example": {
+     "conversation": "",
+     "message": ""
+    }
+   },
+   "moderate": {
+    "input": "{ action: ModAction; target: AboutTarget }",
+    "output": "{\n  /** The network's word for it: \"Group\", \"Server\", \"Room\", \"Channel\", \"Community\". */\n  noun?: string;\n  fields: AboutFields;\n  members?: {\n    list: AboutMember[];\n    /** How many there are; list may hold fewer (Discord servers load members lazily). */\n    total?: number;\n    complete: boolean;\n  };\n  /** Adding people here, for an adapter with 'addMembers'. Left out where nobody adds people (DMs, servers, channels). */\n  adding?: AboutAdding;\n  roles?: AboutRole[];\n  rules?: AboutRule[];\n  /** This account's own standing here. */\n  you?: { role?: string; rank?: number };\n  invite?: AboutInvite;\n  pinned?: AboutPinned;\n  /** Read-only details only some networks have: \"Room version\", \"Verification level\", \"Created\". */\n  facts?: { label: string; value: string }[];\n  /** Leaving it (capability 'leave', servers.ts). */\n  leaving?: AboutLeaving;\n  /** Your own nickname here (capability 'nick', the `setNick` command): value null for none. */\n  nick?: { value: null | string; canEdit: boolean; reason?: string; max?: number };\n  /** You blocked this group: nothing from it reaches you (capability 'block'; the `block` command changes it). */\n  blocked?: boolean;\n  /** A thread's archiving, locking and following (threads.ts). */\n  thread?: AboutThread;\n  /** A group with an owner: who, and whether this account may remove people or hand it over (threads.ts). */\n  ownership?: AboutOwnership;\n  /** What this account may do to its members (capability 'moderate', moderation.ts). */\n  moderation?: AboutModeration;\n  /** Your own member label here (Signal); `configure` with key 'label' changes it. */\n  label?: AboutLabel;\n}",
+    "example": {
+     "action": {
+      "op": "remove",
+      "who": ""
+     },
+     "target": {
+      "kind": "conversation",
+      "nativeId": ""
+     }
+    }
+   },
+   "bans": {
+    "input": "{ target: AboutTarget }",
+    "output": "{\n  banned: { id: string; reason?: string }[];\n  /** The network has more than it gave. */\n  more?: boolean;\n}",
+    "example": {
+     "target": {
+      "kind": "conversation",
+      "nativeId": ""
+     }
+    }
+   },
+   "setLabel": {
+    "input": "{ conversation: string; emoji?: string; text: string }",
+    "output": "{\n  /** The network's word for it: \"Group\", \"Server\", \"Room\", \"Channel\", \"Community\". */\n  noun?: string;\n  fields: AboutFields;\n  members?: {\n    list: AboutMember[];\n    /** How many there are; list may hold fewer (Discord servers load members lazily). */\n    total?: number;\n    complete: boolean;\n  };\n  /** Adding people here, for an adapter with 'addMembers'. Left out where nobody adds people (DMs, servers, channels). */\n  adding?: AboutAdding;\n  roles?: AboutRole[];\n  rules?: AboutRule[];\n  /** This account's own standing here. */\n  you?: { role?: string; rank?: number };\n  invite?: AboutInvite;\n  pinned?: AboutPinned;\n  /** Read-only details only some networks have: \"Room version\", \"Verification level\", \"Created\". */\n  facts?: { label: string; value: string }[];\n  /** Leaving it (capability 'leave', servers.ts). */\n  leaving?: AboutLeaving;\n  /** Your own nickname here (capability 'nick', the `setNick` command): value null for none. */\n  nick?: { value: null | string; canEdit: boolean; reason?: string; max?: number };\n  /** You blocked this group: nothing from it reaches you (capability 'block'; the `block` command changes it). */\n  blocked?: boolean;\n  /** A thread's archiving, locking and following (threads.ts). */\n  thread?: AboutThread;\n  /** A group with an owner: who, and whether this account may remove people or hand it over (threads.ts). */\n  ownership?: AboutOwnership;\n  /** What this account may do to its members (capability 'moderate', moderation.ts). */\n  moderation?: AboutModeration;\n  /** Your own member label here (Signal); `configure` with key 'label' changes it. */\n  label?: AboutLabel;\n}",
+    "example": {
+     "conversation": "",
+     "text": ""
+    }
+   },
+   "clearReactions": {
+    "input": "{\n  conversation: string;\n  message: string;\n  key?: string;\n  /** Native identity id; needs `key`. */\n  who?: string;\n}",
+    "output": "unknown",
+    "example": {
+     "conversation": "",
+     "message": ""
+    }
+   },
+   "savedList": {
+    "input": "{ before?: number }",
+    "output": "{\n  saved: SavedFact[];\n  /** More saved messages past these: ask again with `before` = the oldest `savedAt` here. */\n  more: boolean;\n}",
+    "example": {}
+   },
+   "nativeScheduled": {
+    "input": "{}",
+    "output": "{ enabled: boolean; scheduled: NativeScheduledFact[] }",
+    "example": {}
+   },
+   "save": {
+    "input": "{ remove?: true; conversation: string; message: string; dueAt?: number }",
+    "output": "SavedFact | Record<string, never>",
+    "example": {
+     "conversation": "",
+     "message": ""
+    }
+   },
+   "suppressEmbeds": {
+    "input": "{ conversation: string; message: string }",
+    "output": "unknown",
+    "example": {
+     "conversation": "",
+     "message": ""
+    }
+   },
+   "cancelScheduled": {
+    "input": "{ nativeId: string }",
+    "output": "unknown",
+    "example": {
+     "nativeId": ""
+    }
+   },
    "lab": {
     "input": "{ lab: { [key: string]: unknown; op: string }; timeout?: number }",
     "output": "unknown",
@@ -261,87 +546,277 @@
       "op": ""
      }
     }
+   },
+   "sessions": {
+    "input": "{}",
+    "output": "{ sessions: AccountSession[] }",
+    "example": {}
+   },
+   "ignore": {
+    "input": "{ identity: string; ignored: boolean }",
+    "output": "{ ignored: boolean }",
+    "example": {
+     "identity": "",
+     "ignored": false
+    }
+   },
+   "setPresence": {
+    "input": "{ change: PresenceChange }",
+    "output": "{\n  state: OwnPresenceState;\n  /** ms epoch the state goes back to online by itself (Discord's \"for 1 hour\"). */\n  until?: number;\n  status?: OwnStatus;\n}",
+    "example": {
+     "change": {}
+    }
+   },
+   "followThread": {
+    "input": "{ conversation: string; follow: boolean }",
+    "output": "{\n  /** This account is in it (follows it); false: it is not. */\n  joined?: boolean;\n  /** How it notifies this account when that is set on the thread; absent: as its channel. */\n  notify?: \"all\" | \"mentions\" | \"none\";\n  /** Muted for this account; until then (ms epoch) when it runs out. */\n  muted?: boolean;\n  mutedUntil?: number;\n  /** Locked: only moderators may write or unarchive it. */\n  locked?: boolean;\n  /** A forum post's tags (ForumTag ids). */\n  tags?: string[];\n  /** Pinned to the top of its forum. */\n  pinned?: boolean;\n  /** Private: only those added (or moderators) see it. */\n  private?: boolean;\n  /** Native identity id of who started it. */\n  owner?: string;\n  /** ms epoch. */\n  createdAt?: number;\n  /** How many messages it has, as the network counts them. */\n  messageCount?: number;\n}",
+    "example": {
+     "conversation": "",
+     "follow": false
+    }
+   },
+   "threadNotify": {
+    "input": "{ conversation: string; muted?: boolean; until?: number; notify?: \"all\" | \"mentions\" | \"none\" }",
+    "output": "{\n  /** This account is in it (follows it); false: it is not. */\n  joined?: boolean;\n  /** How it notifies this account when that is set on the thread; absent: as its channel. */\n  notify?: \"all\" | \"mentions\" | \"none\";\n  /** Muted for this account; until then (ms epoch) when it runs out. */\n  muted?: boolean;\n  mutedUntil?: number;\n  /** Locked: only moderators may write or unarchive it. */\n  locked?: boolean;\n  /** A forum post's tags (ForumTag ids). */\n  tags?: string[];\n  /** Pinned to the top of its forum. */\n  pinned?: boolean;\n  /** Private: only those added (or moderators) see it. */\n  private?: boolean;\n  /** Native identity id of who started it. */\n  owner?: string;\n  /** ms epoch. */\n  createdAt?: number;\n  /** How many messages it has, as the network counts them. */\n  messageCount?: number;\n}",
+    "example": {
+     "conversation": ""
+    }
+   },
+   "createThread": {
+    "input": "{\n  conversation: string;\n  message?: string;\n  body?: string;\n  attachments?: OutgoingAttachment[];\n  name: string;\n  private?: boolean;\n}",
+    "output": "{\n  /** The new thread's native conversation id. */\n  conversation: string;\n}",
+    "example": {
+     "conversation": "",
+     "name": ""
+    }
+   },
+   "createPost": {
+    "input": "{\n  conversation: string;\n  body: string;\n  attachments?: OutgoingAttachment[];\n  name: string;\n  tags?: string[];\n}",
+    "output": "{\n  /** The new thread's native conversation id. */\n  conversation: string;\n}",
+    "example": {
+     "conversation": "",
+     "body": "",
+     "name": ""
+    }
+   },
+   "crosspost": {
+    "input": "{ conversation: string; message: string }",
+    "output": "unknown",
+    "example": {
+     "conversation": "",
+     "message": ""
+    }
+   },
+   "threadState": {
+    "input": "{ conversation: string; archived?: boolean; locked?: boolean }",
+    "output": "{\n  /** The network's word for it: \"Group\", \"Server\", \"Room\", \"Channel\", \"Community\". */\n  noun?: string;\n  fields: AboutFields;\n  members?: {\n    list: AboutMember[];\n    /** How many there are; list may hold fewer (Discord servers load members lazily). */\n    total?: number;\n    complete: boolean;\n  };\n  /** Adding people here, for an adapter with 'addMembers'. Left out where nobody adds people (DMs, servers, channels). */\n  adding?: AboutAdding;\n  roles?: AboutRole[];\n  rules?: AboutRule[];\n  /** This account's own standing here. */\n  you?: { role?: string; rank?: number };\n  invite?: AboutInvite;\n  pinned?: AboutPinned;\n  /** Read-only details only some networks have: \"Room version\", \"Verification level\", \"Created\". */\n  facts?: { label: string; value: string }[];\n  /** Leaving it (capability 'leave', servers.ts). */\n  leaving?: AboutLeaving;\n  /** Your own nickname here (capability 'nick', the `setNick` command): value null for none. */\n  nick?: { value: null | string; canEdit: boolean; reason?: string; max?: number };\n  /** You blocked this group: nothing from it reaches you (capability 'block'; the `block` command changes it). */\n  blocked?: boolean;\n  /** A thread's archiving, locking and following (threads.ts). */\n  thread?: AboutThread;\n  /** A group with an owner: who, and whether this account may remove people or hand it over (threads.ts). */\n  ownership?: AboutOwnership;\n  /** What this account may do to its members (capability 'moderate', moderation.ts). */\n  moderation?: AboutModeration;\n  /** Your own member label here (Signal); `configure` with key 'label' changes it. */\n  label?: AboutLabel;\n}",
+    "example": {
+     "conversation": ""
+    }
+   },
+   "removeMember": {
+    "input": "{ target: AboutTarget; who: string }",
+    "output": "{\n  /** The network's word for it: \"Group\", \"Server\", \"Room\", \"Channel\", \"Community\". */\n  noun?: string;\n  fields: AboutFields;\n  members?: {\n    list: AboutMember[];\n    /** How many there are; list may hold fewer (Discord servers load members lazily). */\n    total?: number;\n    complete: boolean;\n  };\n  /** Adding people here, for an adapter with 'addMembers'. Left out where nobody adds people (DMs, servers, channels). */\n  adding?: AboutAdding;\n  roles?: AboutRole[];\n  rules?: AboutRule[];\n  /** This account's own standing here. */\n  you?: { role?: string; rank?: number };\n  invite?: AboutInvite;\n  pinned?: AboutPinned;\n  /** Read-only details only some networks have: \"Room version\", \"Verification level\", \"Created\". */\n  facts?: { label: string; value: string }[];\n  /** Leaving it (capability 'leave', servers.ts). */\n  leaving?: AboutLeaving;\n  /** Your own nickname here (capability 'nick', the `setNick` command): value null for none. */\n  nick?: { value: null | string; canEdit: boolean; reason?: string; max?: number };\n  /** You blocked this group: nothing from it reaches you (capability 'block'; the `block` command changes it). */\n  blocked?: boolean;\n  /** A thread's archiving, locking and following (threads.ts). */\n  thread?: AboutThread;\n  /** A group with an owner: who, and whether this account may remove people or hand it over (threads.ts). */\n  ownership?: AboutOwnership;\n  /** What this account may do to its members (capability 'moderate', moderation.ts). */\n  moderation?: AboutModeration;\n  /** Your own member label here (Signal); `configure` with key 'label' changes it. */\n  label?: AboutLabel;\n}",
+    "example": {
+     "target": {
+      "kind": "conversation",
+      "nativeId": ""
+     },
+     "who": ""
+    }
+   },
+   "setOwner": {
+    "input": "{ target: AboutTarget; who: string }",
+    "output": "{\n  /** The network's word for it: \"Group\", \"Server\", \"Room\", \"Channel\", \"Community\". */\n  noun?: string;\n  fields: AboutFields;\n  members?: {\n    list: AboutMember[];\n    /** How many there are; list may hold fewer (Discord servers load members lazily). */\n    total?: number;\n    complete: boolean;\n  };\n  /** Adding people here, for an adapter with 'addMembers'. Left out where nobody adds people (DMs, servers, channels). */\n  adding?: AboutAdding;\n  roles?: AboutRole[];\n  rules?: AboutRule[];\n  /** This account's own standing here. */\n  you?: { role?: string; rank?: number };\n  invite?: AboutInvite;\n  pinned?: AboutPinned;\n  /** Read-only details only some networks have: \"Room version\", \"Verification level\", \"Created\". */\n  facts?: { label: string; value: string }[];\n  /** Leaving it (capability 'leave', servers.ts). */\n  leaving?: AboutLeaving;\n  /** Your own nickname here (capability 'nick', the `setNick` command): value null for none. */\n  nick?: { value: null | string; canEdit: boolean; reason?: string; max?: number };\n  /** You blocked this group: nothing from it reaches you (capability 'block'; the `block` command changes it). */\n  blocked?: boolean;\n  /** A thread's archiving, locking and following (threads.ts). */\n  thread?: AboutThread;\n  /** A group with an owner: who, and whether this account may remove people or hand it over (threads.ts). */\n  ownership?: AboutOwnership;\n  /** What this account may do to its members (capability 'moderate', moderation.ts). */\n  moderation?: AboutModeration;\n  /** Your own member label here (Signal); `configure` with key 'label' changes it. */\n  label?: AboutLabel;\n}",
+    "example": {
+     "target": {
+      "kind": "conversation",
+      "nativeId": ""
+     },
+     "who": ""
+    }
+   },
+   "setPicture": {
+    "input": "{ target: AboutTarget; picture: null | OutgoingAttachment }",
+    "output": "{\n  /** The network's word for it: \"Group\", \"Server\", \"Room\", \"Channel\", \"Community\". */\n  noun?: string;\n  fields: AboutFields;\n  members?: {\n    list: AboutMember[];\n    /** How many there are; list may hold fewer (Discord servers load members lazily). */\n    total?: number;\n    complete: boolean;\n  };\n  /** Adding people here, for an adapter with 'addMembers'. Left out where nobody adds people (DMs, servers, channels). */\n  adding?: AboutAdding;\n  roles?: AboutRole[];\n  rules?: AboutRule[];\n  /** This account's own standing here. */\n  you?: { role?: string; rank?: number };\n  invite?: AboutInvite;\n  pinned?: AboutPinned;\n  /** Read-only details only some networks have: \"Room version\", \"Verification level\", \"Created\". */\n  facts?: { label: string; value: string }[];\n  /** Leaving it (capability 'leave', servers.ts). */\n  leaving?: AboutLeaving;\n  /** Your own nickname here (capability 'nick', the `setNick` command): value null for none. */\n  nick?: { value: null | string; canEdit: boolean; reason?: string; max?: number };\n  /** You blocked this group: nothing from it reaches you (capability 'block'; the `block` command changes it). */\n  blocked?: boolean;\n  /** A thread's archiving, locking and following (threads.ts). */\n  thread?: AboutThread;\n  /** A group with an owner: who, and whether this account may remove people or hand it over (threads.ts). */\n  ownership?: AboutOwnership;\n  /** What this account may do to its members (capability 'moderate', moderation.ts). */\n  moderation?: AboutModeration;\n  /** Your own member label here (Signal); `configure` with key 'label' changes it. */\n  label?: AboutLabel;\n}",
+    "example": {
+     "target": {
+      "kind": "conversation",
+      "nativeId": ""
+     },
+     "picture": {
+      "path": "",
+      "name": "",
+      "mime": "",
+      "size": 0,
+      "kind": "image"
+     }
+    }
    }
   },
   "events": {
    "hello": "{ t: \"hello\"; network: Network; version: string; capabilities: Capability[]; protocol?: number }",
-   "status": "{\n  t: \"status\";\n  status: AccountStatus;\n  /** null clears it. */\n  attention?: null\n  | {\n    message: string;\n    /** A live view of the sandboxed client is available (VNC through the hub). */\n    liveView?: boolean;\n    kind: AttentionKind;\n    /** A URI to render as a QR code (Signal device linking). */\n    qr?: string;\n    /** When the adapter replaces `qr` with a fresh code (ms since epoch). */\n    qrRefreshAt?: number;\n    detail?: unknown;\n  };\n  /** The account's own identity, once known. */\n  self?: IdentityFact;\n  /** Live view endpoint for the hub (or dither-accounts' manager) to proxy: the sandbox's VNC, on a Unix socket owned by this user and on no TCP port (a VNC without a password on 127.0.0.1 is open to every local process and to any web page in a  */\n  liveView?: null | { vncSocket: string; width: number; height: number };\n  /** Non-secret facts about the session, for the account's page in dither-accounts (the hub ignores them). */\n  details?: Record<string, string | number | boolean | null>;\n  /** What the account rests on, outermost first (display, browser, extension, signed in, ...), for the dependency chain on its page in dither-accounts: the first layer that is not `ok` is why it is not working. The hub ignores it. Each status th */\n  layers?: StatusLayer[];\n}",
+   "status": "{\n  t: \"status\";\n  status: AccountStatus;\n  /** null clears it. */\n  attention?: null\n  | {\n    message: string;\n    kind: AttentionKind;\n    /** A live view of the sandboxed client is available (VNC through the hub). */\n    liveView?: boolean;\n    /** A URI to render as a QR code (Signal device linking). */\n    qr?: string;\n    /** When the adapter replaces `qr` with a fresh code (ms since epoch). */\n    qrRefreshAt?: number;\n    detail?: unknown;\n  };\n  /** The account's own identity, once known. */\n  self?: IdentityFact;\n  /** Live view endpoint for the hub (or dither-accounts' manager) to proxy: the sandbox's VNC, on a Unix socket owned by this user and on no TCP port (a VNC without a password on 127.0.0.1 is open to every local process and to any web page in a  */\n  liveView?: null | { vncSocket: string; width: number; height: number };\n  /** Non-secret facts about the session, for the account's page in dither-accounts (the hub ignores them). */\n  details?: Record<string, string | number | boolean | null>;\n  /** What the account rests on, outermost first (display, browser, extension, signed in, ...), for the dependency chain on its page in dither-accounts: the first layer that is not `ok` is why it is not working. The hub ignores it. Each status th */\n  layers?: StatusLayer[];\n}",
    "identity": "{ t: \"identity\"; identity: IdentityFact }",
    "space": "{ t: \"space\"; space: SpaceFact }",
    "conversation": "{ t: \"conversation\"; conversation: ConversationFact }",
    "leave": "{ t: \"leave\"; kind: \"conversation\" | \"space\"; nativeId: string }",
-   "message": "{ t: \"message\"; message: MessageFact; live?: boolean }",
+   "message": "{ t: \"message\"; message: MessageFact; live?: boolean; late?: boolean }",
    "delete": "{ t: \"delete\"; conversation: string; nativeId: string; reason?: \"expired\" }",
    "reaction": "{\n  t: \"reaction\";\n  conversation: string;\n  message: string;\n  author: string;\n  key: string;\n  remove?: boolean;\n  style?: \"normal\" | \"super\";\n  colors?: string[];\n  emoji?: CustomEmojiFact;\n}",
    "reactionsCleared": "{ t: \"reactionsCleared\"; conversation: string; message: string; key?: string }",
-   "read": "{ t: \"read\"; conversation: string; upToTs: number; unread?: number; mentions?: number }",
+   "read": "{\n  t: \"read\";\n  conversation: string;\n  upToTs: number;\n  unread?: number;\n  mentions?: number;\n  manual?: boolean;\n}",
    "pin": "{ t: \"pin\"; conversation: string; message: string; pinned: boolean; by?: string; ts?: number }",
+   "pollUpdate": "{\n  t: \"pollUpdate\";\n  conversation: string;\n  message: string;\n  counts?: Record<string, number>;\n  add?: Record<string, number>;\n  voters?: number;\n  mine?: string[];\n  vote?: PollVoteFact;\n  ended?: boolean;\n  ts?: number;\n}",
    "role": "{\n  t: \"role\";\n  target: AboutTarget;\n  member: string;\n  role: string;\n  given: boolean;\n  color?: string;\n  by?: string;\n  ts?: number;\n}",
    "customStatus": "{ t: \"customStatus\"; who: string; text?: string; emoji?: string; ts?: number }",
-   "presence": "{\n  t: \"presence\";\n  who: string;\n  state: \"online\" | \"offline\" | \"idle\" | \"dnd\";\n  devices?: (\"desktop\" | \"mobile\" | \"web\")[];\n  ts?: number;\n}",
+   "presence": "{\n  t: \"presence\";\n  who: string;\n  state: \"online\" | \"idle\" | \"dnd\" | \"offline\";\n  devices?: (\"desktop\" | \"mobile\" | \"web\")[];\n  ts?: number;\n}",
    "members": "{\n  t: \"members\";\n  space: string;\n  members: MemberFact[];\n  source: \"seen\" | \"walk\";\n  total?: number;\n  online?: number;\n  complete?: boolean;\n  ts?: number;\n}",
    "receipt": "{\n  t: \"receipt\";\n  conversation: string;\n  messages: string[];\n  who: string;\n  state: ReceiptState;\n  ts: number;\n}",
    "typing": "{ t: \"typing\"; conversation: string; author: string; stop?: boolean; ttl?: number; name?: string }",
-   "call": "{ t: \"call\"; call: string; signal?: unknown; state?: CallState; ended?: string }",
+   "call": "{\n  t: \"call\";\n  call: string;\n  signal?: unknown;\n  state?: CallState;\n  ended?: string;\n  effect?: CallEffect;\n}",
+   "callState": "{ t: \"callState\"; call: CallFact }",
+   "voice": "{ t: \"voice\"; conversation: string; space?: string; members: VoiceMember[]; ts?: number }",
+   "voiceStatus": "{ t: \"voiceStatus\"; conversation: string; text: null | string }",
    "requests": "{ t: \"requests\"; requests: RequestFact[] }",
    "request": "{ t: \"request\"; request: RequestFact }",
    "requestGone": "{ t: \"requestGone\"; nativeId: string }",
    "personAbout": "{ t: \"personAbout\"; who: string; about: PersonAbout; ts: number }",
    "relationships": "{ t: \"relationships\"; list: RelationshipFact[] }",
-   "relationship": "{ t: \"relationship\"; fact: RelationshipFact }"
+   "relationship": "{ t: \"relationship\"; fact: RelationshipFact }",
+   "notices": "{ t: \"notices\"; notices: AccountNotice[] }",
+   "selfState": "{ t: \"selfState\"; state: SelfState }",
+   "ignored": "{ t: \"ignored\"; identities: string[] }",
+   "scheduledEvents": "{ t: \"scheduledEvents\"; space: string; events: ScheduledEventFact[] }",
+   "scheduledEvent": "{ t: \"scheduledEvent\"; event: ScheduledEventFact }",
+   "scheduledEventGone": "{ t: \"scheduledEventGone\"; space: string; nativeId: string }",
+   "gate": "{ t: \"gate\"; space: string; gate: null | SpaceGate }",
+   "interaction": "{ t: \"interaction\"; outcome: InteractionOutcome }",
+   "appModal": "{ t: \"appModal\"; modal: AppModalFact }",
+   "story": "{ t: \"story\"; story: StoryFact }",
+   "storyGone": "{ t: \"storyGone\"; nativeId: string }",
+   "saved": "{ t: \"saved\"; saved: SavedFact[]; complete?: boolean }",
+   "unsaved": "{ t: \"unsaved\"; message: string; conversation?: string }",
+   "reminderDue": "{ t: \"reminderDue\"; saved: SavedFact }"
   },
   "defs": {
-   "About": "/** What `about` answers, in native ids. */\ntype About = {\n  /** The network's word for it: \"Group\", \"Server\", \"Room\", \"Channel\", \"Community\". */\n  noun?: string;\n  fields: AboutFields;\n  members?: {\n    list: AboutMember[];\n    /** How many there are; list may hold fewer (Discord servers load members lazily). */\n    total?: number;\n    complete: boolean;\n  };\n  /** Adding people here, for an adapter with 'addMembers'. Left out where nobody adds people (DMs, servers, channels). */\n  adding?: AboutAdding;\n  roles?: AboutRole[];\n  rules?: AboutRule[];\n  /** This account's own standing here. */\n  you?: { role?: string; rank?: number };\n  invite?: AboutInvite;\n  pinned?: AboutPinned;\n  /** Read-only details only some networks have: \"Room version\", \"Verification level\", \"Created\". */\n  facts?: { label: string; value: string }[];\n};",
+   "About": "/** What `about` answers, in native ids. */\ntype About = {\n  /** The network's word for it: \"Group\", \"Server\", \"Room\", \"Channel\", \"Community\". */\n  noun?: string;\n  fields: AboutFields;\n  members?: {\n    list: AboutMember[];\n    /** How many there are; list may hold fewer (Discord servers load members lazily). */\n    total?: number;\n    complete: boolean;\n  };\n  /** Adding people here, for an adapter with 'addMembers'. Left out where nobody adds people (DMs, servers, channels). */\n  adding?: AboutAdding;\n  roles?: AboutRole[];\n  rules?: AboutRule[];\n  /** This account's own standing here. */\n  you?: { role?: string; rank?: number };\n  invite?: AboutInvite;\n  pinned?: AboutPinned;\n  /** Read-only details only some networks have: \"Room version\", \"Verification level\", \"Created\". */\n  facts?: { label: string; value: string }[];\n  /** Leaving it (capability 'leave', servers.ts). */\n  leaving?: AboutLeaving;\n  /** Your own nickname here (capability 'nick', the `setNick` command): value null for none. */\n  nick?: { value: null | string; canEdit: boolean; reason?: string; max?: number };\n  /** You blocked this group: nothing from it reaches you (capability 'block'; the `block` command changes it). */\n  blocked?: boolean;\n  /** A thread's archiving, locking and following (threads.ts). */\n  thread?: AboutThread;\n  /** A group with an owner: who, and whether this account may remove people or hand it over (threads.ts). */\n  ownership?: AboutOwnership;\n  /** What this account may do to its members (capability 'moderate', moderation.ts). */\n  moderation?: AboutModeration;\n  /** Your own member label here (Signal); `configure` with key 'label' changes it. */\n  label?: AboutLabel;\n};",
    "AboutAdding": "/** Adding people to a group (capability 'addMembers', the `addMembers` command): whether this account may here, and */\ntype AboutAdding = {\n  /** This account may add people here now. */\n  can: boolean;\n  /** Why not, in words. When it may, a limit worth knowing (\"Only your friends\", \"Up to 10 people in all\"). */\n  reason?: string;\n  who: AddWho;\n  /** add: they are in at once. invite: they get an invite and are in once they accept (Matrix). */\n  mode: \"add\" | \"invite\";\n  /** How many more fit, when the network caps the group (Discord: 10 people in all). */\n  room?: number;\n};",
-   "AboutChange": "/** One change. `invite` makes, replaces or turns off the invite link; `pin` pins or unpins a message. */\ntype AboutChange = { key: \"history\"; value: HistoryVisibility }\n| { key: \"addMembers\"; value: Who }\n| { key: \"name\"; value: string }\n| { key: \"topic\"; value: string }\n| { key: \"avatar\"; value: string }\n| { key: \"disappearing\"; value: number }\n| { key: \"slowMode\"; value: number }\n| { key: \"nsfw\"; value: boolean }\n| { key: \"announceOnly\"; value: boolean }\n| { key: \"editInfo\"; value: Who }\n| { key: \"joinApproval\"; value: boolean }\n| { key: \"joinRule\"; value: JoinRule }\n| { key: \"encrypted\"; value: boolean }\n| { key: \"invite\"; op: \"create\" | \"revoke\" }\n| { key: \"pin\"; message: string; remove?: boolean };",
-   "AboutFields": "type AboutFields = {\n  history?: AboutSetting;\n  addMembers?: AboutSetting;\n  name?: AboutSetting;\n  topic?: AboutSetting;\n  avatar?: AboutSetting;\n  disappearing?: AboutSetting;\n  slowMode?: AboutSetting;\n  nsfw?: AboutSetting;\n  announceOnly?: AboutSetting;\n  editInfo?: AboutSetting;\n  joinApproval?: AboutSetting;\n  joinRule?: AboutSetting;\n  encrypted?: AboutSetting;\n};",
-   "AboutInvite": "type AboutInvite = {\n  /** The link, when there is one and this account may see it. */\n  link: null | string;\n  /** Make one, or a new one in place of the old (which stops working). */\n  canCreate: boolean;\n  /** Turn the link off. */\n  canRevoke?: boolean;\n  reason?: string;\n  /** A Matrix address (alias) or room id, which works as a link without anyone making one. */\n  derived?: boolean;\n};",
-   "AboutMember": "type AboutMember = {\n  /** Native identity id. The adapter emits identity facts for members first. */\n  id: string;\n  /** What the network calls their standing: \"Admin\", \"Owner\", \"Moderator\", the top Discord role. */\n  role?: string;\n  /** Power, to sort by: 100 for admins and owners, 50 for moderators, 0 for members. Matrix: the power level. */\n  rank?: number;\n  /** CSS colour of their role (Discord). */\n  color?: string;\n};",
-   "AboutPinned": "type AboutPinned = {\n  /** Native message ids, newest pin first. */\n  messages: string[];\n  canEdit: boolean;\n  reason?: string;\n};",
+   "AboutChange": "/** One change. `invite` makes, replaces or turns off the invite link; `pin` pins or unpins a message. */\ntype AboutChange = { key: \"history\"; value: HistoryVisibility }\n| { key: \"addMembers\"; value: Who }\n| { key: \"name\"; value: string }\n| { key: \"topic\"; value: string }\n| { key: \"avatar\"; value: string }\n| { key: \"disappearing\"; value: number }\n| { key: \"slowMode\"; value: number }\n| { key: \"nsfw\"; value: boolean }\n| { key: \"announceOnly\"; value: boolean }\n| { key: \"editInfo\"; value: Who }\n| { key: \"joinApproval\"; value: boolean }\n| { key: \"joinRule\"; value: JoinRule }\n| { key: \"encrypted\"; value: boolean }\n| { key: \"autoArchive\"; value: number }\n| { key: \"userLimit\"; value: number }\n| { key: \"bitrate\"; value: number }\n| {\n  key: \"invite\";\n  op: \"create\" | \"revoke\";\n  maxAge?: number;\n  maxUses?: number;\n  temporary?: boolean;\n  code?: string;\n}\n| { key: \"pin\"; message: string; remove?: boolean; seconds?: null | number };",
+   "AboutFields": "type AboutFields = {\n  history?: AboutSetting;\n  addMembers?: AboutSetting;\n  name?: AboutSetting;\n  topic?: AboutSetting;\n  avatar?: AboutSetting;\n  disappearing?: AboutSetting;\n  slowMode?: AboutSetting;\n  nsfw?: AboutSetting;\n  announceOnly?: AboutSetting;\n  editInfo?: AboutSetting;\n  joinApproval?: AboutSetting;\n  joinRule?: AboutSetting;\n  encrypted?: AboutSetting;\n  autoArchive?: AboutSetting;\n  userLimit?: AboutSetting;\n  bitrate?: AboutSetting;\n};",
+   "AboutInvite": "type AboutInvite = {\n  /** The link, when there is one and this account may see it. */\n  link: null | string;\n  /** Make one, or a new one in place of the old (which stops working). */\n  canCreate: boolean;\n  /** Turn the link off. */\n  canRevoke?: boolean;\n  reason?: string;\n  /** A Matrix address (alias) or room id, which works as a link without anyone making one. */\n  derived?: boolean;\n  /** Every link the account may see, newest first (capability 'inviteLinks'); `link` is then the newest of them. */\n  links?: InviteLinkFact[];\n  /** The space's own short address, which never runs out (Discord's vanity URL). */\n  vanity?: string;\n  /** The expiry and use limits a new link may have, and the defaults (capability 'inviteLinks'). */\n  options?: InviteOptions;\n};",
+   "AboutLabel": "/** The member label you show in a group (Signal), About.label: a few words and an emoji. */\ntype AboutLabel = {\n  value: null | string;\n  emoji: null | string;\n  canEdit: boolean;\n  reason?: string;\n  /** Characters. */\n  max?: number;\n};",
+   "AboutLeaving": "/** Leaving a conversation or space, as this account may (About.leaving). */\ntype AboutLeaving = {\n  can: boolean;\n  /** Why not (\"You own this server: give it to someone else in Discord first\"), in words. */\n  reason?: string;\n  /** What happens, worth a line in the confirm (\"You own this group: Discord makes someone else its owner\"). */\n  warning?: string;\n  /** The network can leave without telling the others (Discord group DMs). */\n  silent?: boolean;\n  /** You are its only admin and others are in it: the network wants someone made admin as you leave (Signal's `quitGroup --admin`). The app asks whom, from its members, before leaving. */\n  needsAdmin?: boolean;\n  /** This device can also forget the group's data as it leaves (Signal's `--delete`), on a confirm of its own. */\n  canForget?: boolean;\n};",
+   "AboutMember": "type AboutMember = {\n  /** Native identity id. The adapter emits identity facts for members first. */\n  id: string;\n  /** What the network calls their standing: \"Admin\", \"Owner\", \"Moderator\", the top Discord role. */\n  role?: string;\n  /** Power, to sort by: 100 for admins and owners, 50 for moderators, 0 for members. Matrix: the power level. */\n  rank?: number;\n  /** CSS colour of their role (Discord). */\n  color?: string;\n  /** Their member label in a group (Signal), a few words and an emoji. */\n  label?: { text?: string; emoji?: string };\n  /** How this account stands to them, for moderating (capability 'moderate', moderation.ts). */\n  mod?: MemberMod;\n};",
+   "AboutModeration": "/** What this account may do to the members of a group or server (About.moderation). Absent: nothing it may do. */\ntype AboutModeration = {\n  /** Take someone out (Signal: remove from the group; Discord: kick). They can come back with an invite. */\n  remove?: ModPower;\n  /** Ban them: out, and they cannot come back. `deleteHistory`: the choices of their recent messages to delete with the ban, seconds (Discord's dialog). */\n  ban?: { can: boolean; reason?: string; deleteHistory?: number[] };\n  /** Make someone an admin or stop them being one (Signal). */\n  admins?: ModPower;\n  /** Give or take a role (Discord): the ones this account may hand out, below its own top role, by AboutRole id. */\n  roles?: { can: boolean; reason?: string; assignable: string[] };\n  /** Time someone out (Discord): they cannot send, react, talk or join voice until it ends. The client's own choices, seconds. */\n  timeout?: { can: boolean; reason?: string; durations: number[] };\n  /** End the group for everyone (Signal): nobody can send or change anything in it again. */\n  end?: ModPower;\n  /** Server mute or unmute someone in voice (Discord: Mute Members, in the voice channel). */\n  voiceMute?: ModPower;\n  /** Server deafen or undeafen someone in voice (Discord: Deafen Members). */\n  voiceDeafen?: ModPower;\n  /** Move someone in voice to another voice channel, or disconnect them (Discord: Move Members). */\n  voiceMove?: ModPower;\n  /** Who is banned, as native identity ids, when the network lists them without being asked (Signal). */\n  banned?: string[];\n  /** The banned list is read on a click, through the `bans` command (Discord). */\n  bansOnRequest?: boolean;\n  /** People asking to join, native identity ids; they are answered under Requests (kind 'join'). */\n  requesting?: string[];\n  /** What moderating here is left to the network's own app, in words (\"Audit log, AutoMod, …: open Discord\"). */\n  elsewhere?: string;\n};",
+   "AboutOwnership": "/** A group someone owns, as this account stands in it (About.ownership): who owns it, and what this account may do. */\ntype AboutOwnership = {\n  /** Native identity id of the owner, when the network names one (in an AboutView: its hub identity id). */\n  owner?: string;\n  youOwn: boolean;\n  /** This account may take people out of it (removeMember). */\n  canRemove: boolean;\n  /** This account may give it to someone else in it (setOwner). */\n  canTransfer: boolean;\n  /** Why not, in words. */\n  reason?: string;\n};",
+   "AboutPinned": "type AboutPinned = {\n  /** Native message ids, newest pin first. */\n  messages: string[];\n  canEdit: boolean;\n  reason?: string;\n  /** The network's whole list, just read (Discord's pinned list). Absent: the network keeps none this account can read (Signal), so the hub adds the pins it saw itself. */\n  complete?: boolean;\n};",
    "AboutRole": "type AboutRole = {\n  id: string;\n  name: string;\n  color?: string;\n  rank: number;\n  /** Members with it, when known. */\n  count?: number;\n};",
    "AboutRule": "/** \"Who can do what\", in words: one row per thing the network gates. */\ntype AboutRule = {\n  what: string;\n  who: string;\n  /** This account may. */\n  you: boolean;\n};",
-   "AboutSetting": "/** One setting: its value, and whether this account may change it. */\ntype AboutSetting<K extends AboutKey = AboutKey> = {\n  /** null: the network has it but did not say. */\n  value: null | import(\"@dither-chat/protocol\").AboutValues[K];\n  canEdit: boolean;\n  /** Why not, in words (shown on hover and under the setting). Also a limit worth knowing when canEdit is true. */\n  reason?: string;\n};",
+   "AboutSetting": "/** One setting: its value, and whether this account may change it. */\ntype AboutSetting<K extends AboutKey = AboutKey> = {\n  /** null: the network has it but did not say. */\n  value: null | import(\"@dither-chat/protocol\").AboutValues[K];\n  canEdit: boolean;\n  /** Why not, in words (shown on hover and under the setting). Also a limit worth knowing when canEdit is true. */\n  reason?: string;\n  /** The values this account may pick here, where they depend on the place (Discord's bitrate by the server's boosts). */\n  options?: number[];\n  /** Only the change can be sent, not the value read back (Signal's join approval: signal-cli does not say whether it is on). The panel offers it as a choice, with the reason saying why the current value is unknown. */\n  writeOnly?: boolean;\n};",
    "AboutTarget": "type AboutTarget = { kind: \"conversation\" | \"space\"; nativeId: string };",
-   "AccountStatus": "type AccountStatus = \"connecting\" | \"online\" | \"attention\" | \"offline\" | \"error\" | \"disabled\";",
-   "AddAction": "type AddAction = \"message\" | \"ask\" | \"friend\" | \"contact\" | \"join\" | \"follow\";",
+   "AboutThread": "/** A thread's own part of its About: archiving, locking and following, and whether this account may. */\ntype AboutThread = {\n  archived: boolean;\n  locked: boolean;\n  /** This account may archive and unarchive it (who started it, or a moderator; a locked one only a moderator). */\n  canArchive: boolean;\n  /** This account may lock and unlock it (a moderator). */\n  canLock: boolean;\n  /** Why not, in words. */\n  reason?: string;\n  /** This account follows it. */\n  joined: boolean;\n  notify?: \"all\" | \"mentions\" | \"none\";\n  muted?: boolean;\n  mutedUntil?: number;\n};",
+   "AccountNotice": "/** Something the network wants the owner to do on the account, as it says it: verify a phone or email, agree to new */\ntype AccountNotice = {\n  /** Stable while the network says the same thing: 'required:REQUIRE_VERIFIED_PHONE', 'standing'. */\n  key: string;\n  kind: \"verify\" | \"agreements\" | \"standing\" | \"age\" | \"other\";\n  /** A few words: \"Verify your phone number\". */\n  title: string;\n  /** A plain sentence of what it means and where to do it. */\n  message: string;\n  /** The account's live view is where to do it. */\n  liveView?: boolean;\n  /** ms epoch, when the network said it first, where it says. */\n  since?: number;\n};",
+   "AccountSession": "/** One place the account is signed in. */\ntype AccountSession = {\n  /** The network's id for it (Discord's id_hash). */\n  id: string;\n  /** The session dither runs (its sandbox). */\n  current?: boolean;\n  /** \"Chrome\", \"Discord Android\". */\n  client?: string;\n  os?: string;\n  /** Rough place, as the network guesses it. */\n  location?: string;\n  /** ms epoch. */\n  lastUsed?: number;\n};",
+   "AccountStatus": "type AccountStatus = \"online\" | \"connecting\" | \"attention\" | \"offline\" | \"error\" | \"disabled\";",
+   "AddAction": "type AddAction = \"message\" | \"follow\" | \"ask\" | \"friend\" | \"contact\" | \"join\";",
    "AddRef": "/** What a pasted or typed thing could be. parseAdd gives every reading; the hub asks a fitting account to resolve one. */\ntype AddRef = { kind: \"invite\"; network: Network; code: string; url: string }\n| { kind: \"place\"; network: Network; address: string; via?: string[] }\n| { kind: \"name\"; network: Network; name: string }\n| { kind: \"person\"; network: Network; handle: string };",
    "AddWho": "/** Whom the network lets this account add to a group. friends: only its friends (Discord group DMs). contacts: people */\ntype AddWho = \"friends\" | \"contacts\" | \"known\";",
-   "AttachmentFact": "type AttachmentFact = {\n  nativeId?: string;\n  kind: AttachmentKind;\n  mime?: string;\n  name?: string;\n  size?: number;\n  width?: number;\n  height?: number;\n  url: string;\n};",
+   "AppChoiceFact": "type AppChoiceFact = { name: string; value: string | number };",
+   "AppCommandFact": "type AppCommandFact = {\n  /** The network's id for it (Discord: the command's id, then its group and subcommand names, NUL-separated). */\n  id: string;\n  /** What is typed after the slash, groups and subcommands included: \"remind me\". */\n  name: string;\n  description?: string;\n  /** The app's id (AppFact.id). */\n  app: string;\n  kind: AppCommandKind;\n  options: AppOptionFact[];\n  /** Only for age-restricted channels. */\n  nsfw?: true;\n};",
+   "AppCommandKind": "/** chat: typed after a slash; message: run on a message (its Apps menu); user: run on a person. */\ntype AppCommandKind = \"chat\" | \"message\" | \"user\";",
+   "AppFact": "type AppFact = {\n  id: string;\n  name: string;\n  icon?: string;\n  /** The app's bot, as a native identity id (its identity fact comes first). */\n  bot?: string;\n};",
+   "AppModalFact": "/** A form a bot opened in answer to one of the owner's interactions. It can be sent once, within 15 minutes. */\ntype AppModalFact = {\n  /** The network's id for it (Discord: the interaction id it answers to). */\n  id: string;\n  /** The interaction it answers (InteractResult.nonce). */\n  nonce: string;\n  conversation: string;\n  app: AppFact;\n  title: string;\n  fields: ModalFieldFact[];\n};",
+   "AppOptionFact": "type AppOptionFact = {\n  name: string;\n  description?: string;\n  type: AppOptionType;\n  required?: true;\n  /** The only values it takes, when the app lists them. */\n  choices?: AppChoiceFact[];\n  /** The app suggests values as you type (`appAutocomplete`). */\n  autocomplete?: true;\n  /** For numbers: the smallest and largest it takes. */\n  min?: number;\n  max?: number;\n  /** For strings: the shortest and longest. */\n  minLength?: number;\n  maxLength?: number;\n};",
+   "AppOptionType": "/** What an option takes. */\ntype AppOptionType = \"string\"\n| \"number\"\n| \"boolean\"\n| \"user\"\n| \"role\"\n| \"channel\"\n| \"integer\"\n| \"mentionable\"\n| \"attachment\";",
+   "AppOptionValue": "/** An option's value as the owner gave it. `ref`: the value is a native id of that kind (a person, a role, a channel); */\ntype AppOptionValue = { name: string; value: string | number | boolean; ref?: \"user\" | \"role\" | \"channel\" };",
+   "AttachmentFact": "type AttachmentFact = {\n  nativeId?: string;\n  kind: AttachmentKind;\n  mime?: string;\n  name?: string;\n  size?: number;\n  width?: number;\n  height?: number;\n  url: string;\n  /** Its description (alt text), shown with it and searched (docs/rich-messages.md). */\n  alt?: string;\n  /** Marked as a spoiler: drawn blurred until clicked. */\n  spoiler?: boolean;\n  /** The network flagged it as explicit: drawn blurred until clicked, as a spoiler. */\n  explicit?: boolean;\n  /** A voice message (rich.ts VoiceFact): drawn as a player with its waveform. */\n  voice?: VoiceFact;\n};",
    "AttachmentKind": "type AttachmentKind = \"image\" | \"video\" | \"audio\" | \"file\";",
-   "AttentionKind": "/** Why an account needs a human. Drives the \"Needs you\" cards. */\ntype AttentionKind = \"captcha\" | \"verify\" | \"login\" | \"link_device\" | \"selector_broken\" | \"rate_limited\" | \"unknown\";",
+   "AttentionKind": "/** Why an account needs a human. Drives the \"Needs you\" cards. */\ntype AttentionKind = \"verify\" | \"captcha\" | \"login\" | \"link_device\" | \"selector_broken\" | \"rate_limited\" | \"unknown\";",
+   "CallEffect": "/** A sound someone played or an emoji they sent in the call you are in (Discord's soundboard and voice effects). */\ntype CallEffect = {\n  /** Who: a native user id from the adapter, a hub identity id from the hub. */\n  who: string;\n  /** A Unicode emoji, or a custom emoji's name. */\n  emoji?: string;\n  /** A custom emoji's picture. */\n  emojiUrl?: string;\n  sound?: { id: string; name: string };\n};",
+   "CallFact": "/** A call as the network says it stands: ringing, going on, or over (the adapter's `callState` event). Idempotent: the */\ntype CallFact = {\n  /** The call's own id on the network: Discord the id of its call message, Signal the call id. */\n  nativeId: string;\n  conversation: string;\n  /** Who started it, when known. */\n  caller?: string;\n  /** ms epoch: when it started, the network's own time. A call that rang long ago never alerts (call.ts RING). */\n  startedAt: number;\n  state: \"ringing\" | \"ongoing\" | \"ended\";\n  /** It is ringing this account now. */\n  ringsSelf?: boolean;\n  /** This account started it. */\n  outgoing?: boolean;\n  video?: boolean;\n  /** Native identity ids of everyone who was in it, as far as the network says. */\n  participants?: string[];\n  /** With state 'ended'. */\n  outcome?: \"cancelled\" | \"answered\" | \"elsewhere\" | \"missed\" | \"declined\" | \"busy\";\n  /** ms epoch it ended, when known; with startedAt it gives the duration. */\n  endedAt?: number;\n  /** ms epoch someone answered, when known (a duration counts from here when it is). */\n  answeredAt?: number;\n  /** Native id of its line in the timeline (Discord's call message, Signal's offer). */\n  message?: string;\n};",
+   "CallInput": "/** How this device's microphone is handled (Settings → Calls, kept per device). In bridge mode the account's client is */\ntype CallInput = {\n  /** The browser's noise suppression on the microphone (and the account client's own, in bridge mode). */\n  noiseSuppression: boolean;\n  /** When the microphone counts as speaking: 'auto' (the network's or the device's own judgement), or a level in dB from -100 (everything) to 0. */\n  sensitivity: number | \"auto\";\n};",
    "CallMode": "/** Voice calls. Two ways to carry one, so they can be compared: */\ntype CallMode = \"bridge\" | \"direct\";",
-   "CallParticipant": "type CallParticipant = {\n  /** Native user id. */\n  id: string;\n  muted: boolean;\n  deafened: boolean;\n  speaking: boolean;\n  video?: boolean;\n};",
-   "CallState": "type CallState = { conversation: string; participants: CallParticipant[] };",
-   "Capability": "type Capability = \"history\"\n| \"send\"\n| \"forward\"\n| \"openDirect\"\n| \"search\"\n| \"walkMembers\"\n| \"mentionables\"\n| \"threads\"\n| \"markRead\"\n| \"typing\"\n| \"react\"\n| \"edit\"\n| \"redact\"\n| \"about\"\n| \"configure\"\n| \"profile\"\n| \"resolve\"\n| \"addMembers\"\n| \"createGroup\"\n| \"members\"\n| \"requests\"\n| \"relationships\"\n| \"join\"\n| \"media\"\n| \"sendMedia\"\n| \"e2ee\"\n| \"liveView\"\n| \"calls\"\n| \"editProfile\"\n| \"connect\"\n| \"disconnect\"\n| \"listThreads\";",
-   "ConversationFact": "type ConversationFact = {\n  /** Discord channel snowflake | Matrix room id | Matrix thread \"<roomId>|<rootEventId>\" | Signal group \"group:<base64 id>\" | Signal 1:1 \"dm:<selfAci>:<peerAci>\" */\n  nativeId: string;\n  shape: Shape;\n  variant?: \"rules\" | \"media\" | \"text\" | \"announcement\" | \"forum\" | \"voice\" | \"stage\" | \"feed\";\n  /** Omit for directs: the UI names them after the peer. */\n  name?: string;\n  topic?: string;\n  avatarUrl?: string;\n  encrypted?: boolean;\n  archived?: boolean;\n  /** Threads: the conversation they hang off. */\n  parentConversation?: string;\n  /** Containing spaces (a graph: a Matrix room may be in several). */\n  spaces?: SpaceRef[];\n  /** Identity native IDs. Only for direct, group and self; big channels skip this. */\n  participants?: string[];\n  mute?: NativeMute;\n  lastMessageAt?: number;\n};",
+   "CallParticipant": "type CallParticipant = {\n  /** Native user id. */\n  id: string;\n  muted: boolean;\n  deafened: boolean;\n  speaking: boolean;\n  /** Camera on. */\n  video?: boolean;\n  /** Sharing their screen (Go Live). */\n  streaming?: boolean;\n  /** Muted or deafened by a moderator (a server mute), rather than by themselves. */\n  serverMuted?: boolean;\n  serverDeafened?: boolean;\n  /** How loud they are for this account only, percent: 100 as they are, 0 to VOLUME_MAX (the network's per-person volume). Absent: 100. */\n  volume?: number;\n  /** Muted for this account only. */\n  localMute?: boolean;\n  /** On a stage: what they are there (StageRole). Absent outside a stage. */\n  stage?: \"invited\" | \"audience\" | \"speaker\" | \"hand\";\n};",
+   "CallStage": "/** A stage call's own facts (CallState.stage). */\ntype CallStage = {\n  /** What the stage is about, when someone started it with a topic. */\n  topic: null | string;\n  /** This account may invite people to speak and move speakers back to the audience (Discord: Mute Members there). */\n  moderator: boolean;\n};",
+   "CallState": "type CallState = {\n  conversation: string;\n  participants: CallParticipant[];\n  /** Present when the call is a stage. */\n  stage?: CallStage;\n};",
+   "Capability": "type Capability = \"history\"\n| \"send\"\n| \"forward\"\n| \"openDirect\"\n| \"search\"\n| \"walkMembers\"\n| \"mentionables\"\n| \"threads\"\n| \"markRead\"\n| \"viewed\"\n| \"resetSession\"\n| \"typing\"\n| \"react\"\n| \"edit\"\n| \"redact\"\n| \"moderate\"\n| \"about\"\n| \"configure\"\n| \"profile\"\n| \"declineCall\"\n| \"resolve\"\n| \"addMembers\"\n| \"createGroup\"\n| \"rsvp\"\n| \"leave\"\n| \"block\"\n| \"mute\"\n| \"markUnread\"\n| \"markReadMany\"\n| \"pollVote\"\n| \"pollCreate\"\n| \"pollEnd\"\n| \"suppressEmbeds\"\n| \"nativeScheduled\"\n| \"ignore\"\n| \"setPresence\"\n| \"sessions\"\n| \"threadState\"\n| \"crosspost\"\n| \"setPicture\"\n| \"nick\"\n| \"pin\"\n| \"members\"\n| \"requests\"\n| \"relationships\"\n| \"mentions\"\n| \"join\"\n| \"stage\"\n| \"disconnect\"\n| \"events\"\n| \"media\"\n| \"sendMedia\"\n| \"e2ee\"\n| \"liveView\"\n| \"calls\"\n| \"callStates\"\n| \"ringCalls\"\n| \"voicePresence\"\n| \"callVolume\"\n| \"callInput\"\n| \"soundboard\"\n| \"editProfile\"\n| \"connect\"\n| \"personRefs\"\n| \"listThreads\"\n| \"gates\"\n| \"inviteLinks\"\n| \"safetyNumbers\"\n| \"contactNotes\"\n| \"linkPreviews\"\n| \"memberLabels\"\n| \"interactComponents\"\n| \"interactCommands\"\n| \"interactModals\"\n| \"interactContext\"\n| \"sendStickers\"\n| \"installStickers\"\n| \"sendVoice\"\n| \"sendViewOnce\"\n| \"stories\"\n| \"polls\"\n| \"silentSend\"\n| \"replyMention\"\n| \"savedMessages\"\n| \"followThreads\"\n| \"createThreads\"\n| \"forumPosts\"\n| \"myThreads\"\n| \"removeMembers\"\n| \"transferOwner\"\n| \"groupPicture\";",
+   "ConversationFact": "type ConversationFact = {\n  /** Discord channel snowflake | Matrix room id | Matrix thread \"<roomId>|<rootEventId>\" | Signal group \"group:<base64 id>\" | Signal 1:1 \"dm:<selfAci>:<peerAci>\" */\n  nativeId: string;\n  shape: Shape;\n  variant?: \"text\" | \"voice\" | \"stage\" | \"rules\" | \"media\" | \"announcement\" | \"forum\" | \"feed\";\n  /** Omit for directs: the UI names them after the peer. */\n  name?: string;\n  topic?: string;\n  avatarUrl?: string;\n  encrypted?: boolean;\n  archived?: boolean;\n  /** Threads: the conversation they hang off. */\n  parentConversation?: string;\n  /** Containing spaces (a graph: a Matrix room may be in several). */\n  spaces?: SpaceRef[];\n  /** Identity native IDs. Only for direct, group and self; big channels skip this. */\n  participants?: string[];\n  mute?: NativeMute;\n  lastMessageAt?: number;\n  /** A thread's own facts: whether you follow it, its tags, who started it (threads.ts). */\n  thread?: ThreadFact;\n  /** A forum or media channel's tags and default order (threads.ts). */\n  forum?: ForumFact;\n};",
    "CustomEmojiFact": "/** A custom emoji. Reactions refer to it by key; the hub keeps a catalog per network. */\ntype CustomEmojiFact = { key: string; name: string; url: string; animated?: boolean };",
+   "EventException": "/** One occurrence of a repeating event that differs from the rule: moved, or called off. */\ntype EventException = {\n  /** The network's id for the change (Discord: a snowflake of the occurrence's original start). */\n  nativeId: string;\n  /** ms epoch: when this occurrence would have started by the rule (the calendar's RECURRENCE-ID). */\n  original: number;\n  /** Moved to, when moved. */\n  start?: number;\n  end?: number;\n  cancelled?: boolean;\n  /** This account's own answer to this occurrence, when it differs from the series'. */\n  youInterested?: boolean;\n};",
+   "EventStatus": "/** scheduled: not started; active: on now; completed: over; cancelled: called off. */\ntype EventStatus = \"scheduled\" | \"active\" | \"completed\" | \"cancelled\";",
+   "ForumFact": "/** What a forum (or media) channel says of its posts (ConversationFact.forum). */\ntype ForumFact = {\n  tags: ForumTag[];\n  /** The order its own client shows posts in by default: latest activity or newest first. */\n  sort?: \"activity\" | \"created\";\n  /** How its own client lays posts out by default. */\n  layout?: \"list\" | \"gallery\";\n  /** A new post must carry at least one tag (Discord's REQUIRE_TAG). */\n  tagRequired?: boolean;\n};",
+   "ForumTag": "/** One tag a forum offers its posts (Discord's forum tags). */\ntype ForumTag = {\n  id: string;\n  name: string;\n  /** A unicode emoji, or a custom one's name. */\n  emoji?: string;\n  /** Only moderators may put it on a post. */\n  moderated?: boolean;\n};",
    "ForwardFact": "/** Where a forwarded message came from, as far as the network says. Discord names the channel, message and */\ntype ForwardFact = {\n  conversation?: string;\n  message?: string;\n  /** The original's community, when the conversation alone does not say (a Discord guild id). */\n  space?: string;\n  author?: string;\n  authorName?: string;\n  ts?: number;\n};",
+   "GateAnswer": "/** The owner's answer to a gate. agree: they read and agree to the rules. answers: by question id. picks: option ids. */\ntype GateAnswer = {\n  kind: \"rules\" | \"apply\" | \"onboarding\";\n  agree?: boolean;\n  answers?: Record<string, string | number>;\n  picks?: string[];\n};",
+   "GatePrompt": "/** One onboarding question: pick channels or roles. */\ntype GatePrompt = {\n  id: string;\n  title: string;\n  /** Only one option may be picked. */\n  single: boolean;\n  required: boolean;\n  options: { id: string; title: string; description?: string; emoji?: string }[];\n};",
+   "GateQuestion": "/** A question an application asks (Discord's membership screening form). */\ntype GateQuestion = {\n  /** Its place in the form, as a string (\"0\", \"1\", ...). */\n  id: string;\n  kind: \"text\" | \"paragraph\" | \"choice\";\n  label: string;\n  description?: string;\n  required: boolean;\n  choices?: string[];\n};",
    "HistoryVisibility": "/** Matrix: who can read the history. */\ntype HistoryVisibility = \"world_readable\" | \"shared\" | \"invited\" | \"joined\";",
-   "IdentityFact": "type IdentityFact = {\n  nativeId: string;\n  handle?: string;\n  displayName?: string;\n  avatarUrl?: string;\n  isBot?: boolean;\n  isSelf?: boolean;\n  /** In the address book / friends list. Contacts get a Person, strangers in big channels do not. */\n  contact?: boolean;\n};",
+   "IdentityFact": "type IdentityFact = {\n  nativeId: string;\n  handle?: string;\n  displayName?: string;\n  avatarUrl?: string;\n  isBot?: boolean;\n  isSelf?: boolean;\n  /** In the address book / friends list. Contacts get a Person, strangers in big channels do not. */\n  contact?: boolean;\n  /** Your private nickname for them as the network keeps it (Signal's nickname, capability 'contactNotes'); '' when none. Left out when the adapter did not read it. `displayName` is then their own or address-book name, without it. */\n  nickname?: string;\n  /** Your private note about them as the network keeps it (Signal's contact note, capability 'contactNotes'); '' when none. */\n  note?: string;\n};",
+   "InteractionOutcome": "type InteractionOutcome = {\n  nonce: string;\n  conversation: string;\n  /** The message whose control was pressed. */\n  message?: string;\n  state: InteractionState;\n  /** Why, for failed, in words. */\n  error?: string;\n};",
+   "InteractionState": "/** sending: on its way, nothing back yet. answered: the bot answered (it changed the message, replied, or said it is */\ntype InteractionState = \"modal\" | \"failed\" | \"answered\" | \"sending\" | \"timedOut\";",
+   "InteractRequest": "/** What one `interact` does. */\ntype InteractRequest = { kind: \"component\"; message: string; component: string; values?: string[] }\n| {\n  kind: \"command\";\n  command: string;\n  app: string;\n  options: AppOptionValue[];\n  target?: { kind: \"message\" | \"user\"; id: string };\n}\n| { kind: \"modal\"; modal: string; values: ModalValue[] };",
+   "InviteLinkFact": "/** One invite link, as the network lists it. */\ntype InviteLinkFact = {\n  code: string;\n  url: string;\n  /** Native conversation id it leads to. */\n  conversation?: string;\n  /** Native identity id of who made it. */\n  inviter?: string;\n  uses?: number;\n  /** 0: no limit. */\n  maxUses?: number;\n  /** ms epoch; absent: never. */\n  expiresAt?: number;\n  /** Members who join with it are removed when they go offline, unless given a role (Discord). */\n  temporary?: boolean;\n  /** This account may turn it off. */\n  canRevoke?: boolean;\n};",
+   "InviteOptions": "/** The choices the network's own invite dialog offers, and its defaults (Discord: 7 days, no limit). */\ntype InviteOptions = {\n  /** Seconds; 0: never. */\n  maxAge: number[];\n  /** 0: no limit. */\n  maxUses: number[];\n  defaults: { maxAge: number; maxUses: number };\n};",
    "JoinRule": "/** How people get in. open: anyone who finds it or has the link. invite: only those invited. ask: they ask, a member */\ntype JoinRule = \"space\" | \"invite\" | \"open\" | \"ask\";",
+   "LinkPreviewOut": "/** A link preview to send with a message (the `send` command's `preview`, capability 'linkPreviews'): the hub fetched */\ntype LinkPreviewOut = {\n  url: string;\n  title: string;\n  description?: string;\n  /** A picture for it, a file in the hub's spool; the adapter reads it during the send and the hub deletes it after. */\n  image?: string;\n};",
    "MemberFact": "/** Someone seen as a member of a space. The identity fact for `who` is emitted first. */\ntype MemberFact = {\n  /** Native identity id. */\n  who: string;\n  /** ms epoch: when they joined the space, where the network says. */\n  joinedAt?: number;\n  /** Role names in the space. */\n  roles?: string[];\n  /** Their nickname in the space. */\n  nick?: string;\n};",
+   "MemberMod": "/** How this account stands to one member, where it differs from the About's powers (AboutMember.mod). */\ntype MemberMod = {\n  /** This account cannot act on them: they outrank it, own the place, or are this account. */\n  above?: boolean;\n  reason?: string;\n  /** Their roles by AboutRole id (Discord), to give or take one. */\n  roles?: string[];\n  /** ms epoch: timed out until then (Discord). */\n  timedOutUntil?: number;\n};",
    "MentionablePerson": "type MentionablePerson = {\n  /** Native identity id, as `<@nativeId>` in a body. */\n  nativeId: string;\n  name: string;\n  handle?: string;\n  avatar?: string;\n  isBot?: boolean;\n  /** ms of their last message in this conversation, when the adapter knows it. */\n  lastSpoke?: number;\n};",
    "MentionableRole": "/** A role that may be pinged here (Discord: a mentionable role, or any role while you have Mention Everyone). */\ntype MentionableRole = {\n  id: string;\n  name: string;\n  /** #RRGGBB */\n  color?: string;\n  count?: number;\n};",
-   "MessageFact": "/** Canonical message body: a Discord-flavoured Markdown subset. */\ntype MessageFact = {\n  /** Discord snowflake | Matrix event id | Signal \"<authorAci>:<sentTimestamp>\" */\n  nativeId: string;\n  conversation: string;\n  author: string;\n  ts: number;\n  editedTs?: number;\n  kind?: \"call\" | \"encrypted\" | \"media\" | \"text\" | \"system\" | \"sticker\";\n  body: string;\n  replyTo?: string;\n  /** This message is the root of that thread conversation. */\n  threadRoot?: string;\n  mentionsSelf?: boolean;\n  /** With mentionsSelf: the mention was */\n  mentionsAll?: boolean;\n  attachments?: AttachmentFact[];\n  /** Full reaction snapshot (backfill). Live changes use the `reaction` event. */\n  reactions?: ReactionFact[];\n  /** This message forwards another, as the network marks it. body and attachments are the forwarded content. */\n  forward?: ForwardFact;\n  extra?: Record<string, unknown>;\n};",
-   "NativeMute": "type NativeMute = {\n  level?: \"all\" | \"mentions\" | \"none\";\n  /** ms epoch; muted until then. */\n  until?: number;\n};",
-   "Network": "/** The dither-chat ontology: one vocabulary for Discord, Signal, Matrix and WhatsApp. */\ntype Network = \"discord\"\n| \"signal\"\n| \"matrix\"\n| \"whatsapp\"\n| \"telegram\"\n| \"gmessages\"\n| \"messenger\"\n| \"instagram\"\n| \"x\"\n| \"email\";",
+   "MessageFact": "/** Canonical message body: a Discord-flavoured Markdown subset. */\ntype MessageFact = {\n  /** Discord snowflake | Matrix event id | Signal \"<authorAci>:<sentTimestamp>\" */\n  nativeId: string;\n  conversation: string;\n  author: string;\n  ts: number;\n  editedTs?: number;\n  kind?: \"call\" | \"sticker\" | \"text\" | \"encrypted\" | \"media\" | \"system\";\n  body: string;\n  replyTo?: string;\n  /** This message is the root of that thread conversation. */\n  threadRoot?: string;\n  mentionsSelf?: boolean;\n  /** With mentionsSelf: the mention was */\n  mentionsAll?: boolean;\n  attachments?: AttachmentFact[];\n  /** Full reaction snapshot (backfill). Live changes use the `reaction` event. */\n  reactions?: ReactionFact[];\n  /** This message forwards another, as the network marks it. body and attachments are the forwarded content. */\n  forward?: ForwardFact;\n  /** Its sender sent it silently (Discord's */\n  silent?: boolean;\n  /** Embeds as `embeds` (api.ts EmbedView), and the keys of rich.ts RichExtra. */\n  extra?: Record<string, unknown>;\n};",
+   "MessageModeration": "/** What this account may do to others' messages here (ReactionContext.moderation). */\ntype MessageModeration = {\n  /** Delete someone else's message for everyone (Discord: Manage Messages; Signal: a group admin's delete). */\n  delete: boolean;\n  /** Remove others' reactions: all, one emoji's, one person's (Discord: Manage Messages). */\n  reactions?: boolean;\n};",
+   "ModAction": "/** One moderating action. `who`: a native identity id (the hub's API takes hub identity ids instead). */\ntype ModAction = { op: \"remove\"; who: string }\n| { op: \"ban\"; who: string; deleteSeconds?: number }\n| { op: \"unban\"; who: string }\n| { op: \"admin\"; who: string; remove?: true }\n| { op: \"role\"; who: string; role: string; remove?: true }\n| { op: \"timeout\"; who: string; seconds: number }\n| { op: \"end\" }\n| { op: \"voiceMute\"; who: string; on: boolean }\n| { op: \"voiceDeafen\"; who: string; on: boolean }\n| { op: \"move\"; who: string; to: string }\n| { op: \"disconnect\"; who: string };",
+   "ModalFieldFact": "/** A field of a form. Its `id` is the bot's custom id. */\ntype ModalFieldFact = {\n  kind: \"text\";\n  id: string;\n  label?: string;\n  description?: string;\n  style: \"paragraph\" | \"short\";\n  placeholder?: string;\n  value?: string;\n  required?: true;\n  minLength?: number;\n  maxLength?: number;\n}\n| {\n  kind: \"select\";\n  id: string;\n  label?: string;\n  description?: string;\n  select: SelectKind;\n  options?: SelectOptionFact[];\n  placeholder?: string;\n  min?: number;\n  max?: number;\n  required?: true;\n}\n| {\n  kind: \"radio\";\n  id: string;\n  label?: string;\n  description?: string;\n  options: SelectOptionFact[];\n  required?: true;\n}\n| {\n  kind: \"checkboxes\";\n  id: string;\n  label?: string;\n  description?: string;\n  options: SelectOptionFact[];\n  min?: number;\n  max?: number;\n  required?: true;\n}\n| { kind: \"checkbox\"; id: string; label?: string; description?: string; default?: true }\n| { kind: \"file\"; id: string; label?: string; description?: string; required?: true }\n| { kind: \"display\"; text: string };",
+   "ModalValue": "/** An answer to one field of a form (AppModalFact). Only what its kind takes. */\ntype ModalValue = {\n  /** The field's id (ModalFieldFact id). */\n  field: string;\n  /** A text field's text, or a radio group's value. */\n  value?: string;\n  /** A select's or checkbox group's values (native ids for user, role and channel selects). */\n  values?: string[];\n  /** A lone checkbox. */\n  checked?: boolean;\n};",
+   "ModPower": "/** One power over members here: whether this account may use it, and why not in words. */\ntype ModPower = { can: boolean; reason?: string };",
+   "NativeMute": "/** The network's own notification setting for a place. An empty object says nothing is set there: an adapter sends */\ntype NativeMute = {\n  level?: \"all\" | \"mentions\" | \"none\";\n  /** ms epoch; muted until then. */\n  until?: number;\n  /** Muted outright (Discord's Mute), rather than set to notify on nothing. */\n  muted?: boolean;\n  /** A space's: */\n  suppressEveryone?: boolean;\n  /** A space's: role mentions do not notify there. */\n  suppressRoles?: boolean;\n};",
+   "NativeScheduledFact": "/** A message scheduled with the network's own Send later (Discord's scheduled messages), native ids. */\ntype NativeScheduledFact = {\n  nativeId: string;\n  conversation: string;\n  body: string;\n  /** ms epoch it goes out at. */\n  dueAt: number;\n  silent?: boolean;\n  /** Native message id it replies to. */\n  replyTo?: string;\n};",
+   "Network": "/** The dither-chat ontology: one vocabulary for Discord, Signal, Matrix and WhatsApp. */\ntype Network = \"discord\"\n| \"signal\"\n| \"matrix\"\n| \"whatsapp\"\n| \"telegram\"\n| \"gmessages\"\n| \"messenger\"\n| \"instagram\"\n| \"x\"\n| \"email\"\n| \"calendar\";",
+   "NetworkFolder": "/** A folder of spaces as the network keeps your arrangement (Discord's server folders). */\ntype NetworkFolder = {\n  id?: string;\n  name?: string;\n  /** CSS colour. */\n  color?: string;\n  /** Native space ids, in the network's order. A lone space outside any folder is a folder of one without a name. */\n  spaces: string[];\n};",
    "NetworkQuery": "/** What a network search asks for, from the hub's query language (search.ts) in the network's terms. */\ntype NetworkQuery = {\n  /** Words and phrases as typed (\"quoted\" kept), without operators. */\n  text: string;\n  /** Native identity ids. */\n  authors?: string[];\n  mentions?: string[];\n  /** Native conversation ids, inside a space scope. */\n  in?: string[];\n  has?: string[];\n  /** ms, inclusive and exclusive as search.ts. */\n  after?: number;\n  before?: number;\n  sort?: \"newest\" | \"oldest\" | \"relevance\";\n};",
-   "OutgoingAttachment": "/** A file to send, in the hub's spool. The adapter reads it during the send; the hub deletes it afterwards. */\ntype OutgoingAttachment = { path: string; name: string; mime: string; size: number; kind: AttachmentKind };",
-   "PersonAbout": "/** What a network says about one person (the `profile` command, docs/profile.md), in native ids. Only what the */\ntype PersonAbout = {\n  /** As the network has them now. The adapter also emits an identity fact with these. */\n  displayName?: string;\n  handle?: string;\n  avatar?: string;\n  /** A banner picture (Discord). */\n  banner?: string;\n  /** A CSS colour for the banner when there is no picture (Discord's accent colour). */\n  accent?: string;\n  /** Bio or About text, as the network has it (Discord markdown, WhatsApp About, Signal About). */\n  bio?: string;\n  /** A short status line with an emoji (Discord custom status, Signal's About emoji). */\n  status?: { text?: string; emoji?: string };\n  pronouns?: string;\n  /** ms epoch: when their account was made (Discord, from the id). */\n  createdAt?: number;\n  /** Your standing with them on this network. */\n  relationship?: \"friend\" | \"requested\" | \"requesting\" | \"blocked\" | \"contact\" | \"following\" | \"stranger\";\n  /** Spaces you share, native ids, with their name and roles there. All of them, not only where they posted. */\n  mutualSpaces?: { id: string; nick?: string; roles?: { name: string; color?: string }[]; joinedAt?: number }[];\n  /** Friends you share: native identity ids (identity facts for them are emitted first). */\n  mutualFriends?: string[];\n  /** When the person is you: your friends or contacts on this network, native identity ids. */\n  friends?: string[];\n  /** Connected accounts, websites, a phone number. */\n  links?: { label: string; value: string; url?: string; verified?: boolean }[];\n  /** Anything else worth a line: \"Business account\", \"Local time\". */\n  facts?: { label: string; value: string }[];\n  /** Their recent posts, newest first (X: up to 20 from their profile's Posts tab, reposts included, a pinned one first with `pinned`). Only in an answer to `profile`, never in a `personAbout` event. */\n  posts?: PostFact[];\n  /** Follower and following counts and their posts in all, where the network shows them. */\n  counts?: { followers?: number; following?: number; posts?: number };\n  /** They follow you (X). */\n  followsYou?: boolean;\n};",
+   "OutgoingAttachment": "/** A file to send, in the hub's spool. The adapter reads it during the send; the hub deletes it afterwards. */\ntype OutgoingAttachment = {\n  path: string;\n  name: string;\n  mime: string;\n  size: number;\n  kind: AttachmentKind;\n  /** Send it as the network's voice message (capability 'sendVoice', media.ts): the only file of its send. */\n  voice?: VoiceOut;\n};",
+   "OwnPresence": "type OwnPresence = {\n  state: OwnPresenceState;\n  /** ms epoch the state goes back to online by itself (Discord's \"for 1 hour\"). */\n  until?: number;\n  status?: OwnStatus;\n};",
+   "OwnPresenceState": "type OwnPresenceState = \"online\" | \"idle\" | \"dnd\" | \"invisible\";",
+   "OwnStatus": "/** Your own status line. Absent fields: none. */\ntype OwnStatus = {\n  text?: string;\n  /** A Unicode emoji, or a custom one as `:name:` (it shows by name). */\n  emoji?: string;\n  /** ms epoch it clears itself at. */\n  expiresAt?: number;\n};",
+   "PersonAbout": "/** What a network says about one person (the `profile` command, docs/profile.md), in native ids. Only what the */\ntype PersonAbout = {\n  /** As the network has them now. The adapter also emits an identity fact with these. */\n  displayName?: string;\n  handle?: string;\n  avatar?: string;\n  /** A banner picture (Discord). */\n  banner?: string;\n  /** A CSS colour for the banner when there is no picture (Discord's accent colour). */\n  accent?: string;\n  /** Bio or About text, as the network has it (Discord markdown, WhatsApp About, Signal About). */\n  bio?: string;\n  /** A short status line with an emoji (Discord custom status, Signal's About emoji). */\n  status?: { text?: string; emoji?: string };\n  pronouns?: string;\n  /** ms epoch: when their account was made (Discord, from the id). */\n  createdAt?: number;\n  /** Your standing with them on this network. */\n  relationship?: \"friend\" | \"requested\" | \"requesting\" | \"blocked\" | \"contact\" | \"following\" | \"stranger\";\n  /** Spaces you share, native ids, with their name and roles there. All of them, not only where they posted. */\n  mutualSpaces?: { id: string; nick?: string; roles?: { name: string; color?: string }[]; joinedAt?: number }[];\n  /** Friends you share: native identity ids (identity facts for them are emitted first). */\n  mutualFriends?: string[];\n  /** When the person is you: your friends or contacts on this network, native identity ids. */\n  friends?: string[];\n  /** Connected accounts, websites, a phone number. */\n  links?: { label: string; value: string; url?: string; verified?: boolean }[];\n  /** Anything else worth a line: \"Business account\", \"Local time\". */\n  facts?: { label: string; value: string }[];\n  /** Badges the network shows on their profile, by name, with the network's picture. */\n  badges?: { name: string; icon?: string }[];\n  /** A frame drawn around their picture (Discord's avatar decoration). */\n  decoration?: string;\n  /** Their profile's own colours, as CSS hex, top first (Discord's theme colours). */\n  themeColors?: string[];\n  /** Your safety number with them (capability 'safetyNumbers'). */\n  safety?: SafetyNumber;\n  /** When the person is you: what the `setProfile` command can change on this account. Absent: only the bio. */\n  editable?: ProfileField[];\n  /** When the person is you: your username and its link, where the network has them and one is set. */\n  username?: { name: string; link?: string };\n  /** Their recent posts, newest first (X: up to 20 from their profile's Posts tab, reposts included, a pinned one first with `pinned`). Only in an answer to `profile`, never in a `personAbout` event. */\n  posts?: PostFact[];\n  /** Follower and following counts and their posts in all, where the network shows them. */\n  counts?: { followers?: number; following?: number; posts?: number };\n  /** They follow you (X). */\n  followsYou?: boolean;\n};",
    "PersonRelationship": "/** friend: accepted; requested: you asked them; requesting: they asked you; contact: in your address book. */\ntype PersonRelationship = \"friend\" | \"requested\" | \"requesting\" | \"blocked\" | \"contact\" | \"following\" | \"stranger\";",
+   "PollDraft": "/** A poll to make. `hours`: how long it stays open, one of POLL_RULES' choices, where the network has them. */\ntype PollDraft = { question: string; options: string[]; multi: boolean; hours?: number };",
+   "PollVoteFact": "/** One voter's whole vote: the options they hold now ([] took it back). `seq`: Signal's vote count; the highest wins. */\ntype PollVoteFact = { voter: string; options: string[]; seq: number; ts?: number };",
    "PostFact": "/** One post as the network shows it. `author` is a native identity id (an identity fact for it comes first). A */\ntype PostFact = {\n  /** The network's id for the post (X: the tweet's rest id). */\n  id: string;\n  /** Where it opens on the network: https://x.com/<handle>/status/<id>. */\n  url: string;\n  /** ms epoch. */\n  ts: number;\n  author?: string;\n  /** Plain text with links expanded, as the network shows it (X: a long post's whole text). */\n  text: string;\n  /** It answers this post (its id, and its author's native id where known). */\n  replyTo?: { id: string; author?: string };\n  repostOf?: PostFact;\n  quoteOf?: PostFact;\n  counts?: { replies?: number; reposts?: number; likes?: number; quotes?: number; views?: number };\n  media?: PostMedia[];\n  /** Pinned at the top of its author's profile. */\n  pinned?: boolean;\n};",
    "PostMedia": "/** A picture or video in a post. `url` is the full picture (for a video, its poster frame). */\ntype PostMedia = { kind: \"image\" | \"video\" | \"gif\"; url: string; width?: number; height?: number; alt?: string };",
+   "PresenceChange": "/** What `setPresence` changes. A field left out stays as it is; `status: null` clears the status line. */\ntype PresenceChange = { state?: \"online\" | \"idle\" | \"dnd\" | \"invisible\"; status?: null | OwnStatus };",
+   "ProfileChange": "/** What the `setProfile` command changes: only the fields given (see it there). */\ntype ProfileChange = {\n  bio?: string;\n  name?: string;\n  emoji?: string;\n  avatar?: null | OutgoingAttachment;\n  username?: null | string;\n  /** Your pronouns ('' clears them). */\n  pronouns?: string;\n  /** The picture across the top of your profile, or null to remove it (Discord: Nitro only). */\n  banner?: null | OutgoingAttachment;\n  /** The colour across the top when there is no banner picture, CSS hex, or null. */\n  accent?: null | string;\n};",
+   "ProfileField": "/** What `setProfile` may change: the bio, the profile name, the emoji by the bio, the picture, the username, pronouns, the banner and its colour. */\ntype ProfileField = \"emoji\" | \"name\" | \"avatar\" | \"bio\" | \"username\" | \"pronouns\" | \"banner\" | \"accent\";",
    "ReactionFact": "type ReactionFact = {\n  key: string;\n  style?: \"normal\" | \"super\";\n  /** Who reacted, as far as the network says. */\n  authors: string[];\n  /** The network's total, when it does not name everyone (Discord). Omit when authors is the full list. */\n  count?: number;\n  /** Super reactions: the colours of the effect, as CSS hex. */\n  colors?: string[];\n  emoji?: CustomEmojiFact;\n};",
    "ReceiptState": "/** How far a message got with someone: their device has it, they read it, they played it (a voice note, a video). */\ntype ReceiptState = \"read\" | \"delivered\" | \"played\";",
    "RelationshipFact": "/** One entry of an account's list: a friend, a request you sent, someone blocked, a contact, someone you follow. */\ntype RelationshipFact = {\n  /** Native identity id (identity fact first). */\n  identity: string;\n  /** 'stranger': gone from the list. */\n  relationship: \"friend\" | \"requested\" | \"blocked\" | \"contact\" | \"following\" | \"stranger\";\n  /** ms epoch, when the network says. */\n  since?: number;\n};",
-   "RequestAnswer": "type RequestAnswer = \"accept\" | \"decline\" | \"block\";",
-   "RequestFact": "/** A request waiting on the owner. */\ntype RequestFact = {\n  nativeId: string;\n  /** friend: wants to be friends. follow: wants to follow you (private account). invite: you were invited to a group, space or room. message: a DM from someone not in your contacts waits for you to accept (Signal, Instagram, Messenger, X). join: */\n  kind: \"message\" | \"invite\" | \"friend\" | \"join\" | \"follow\";\n  /** Native identity id (identity fact first). */\n  from?: string;\n  target?: { kind: \"conversation\" | \"space\"; nativeId: string; name?: string; members?: number };\n  ts: number;\n  answers: RequestAnswer[];\n  /** The network's own words when it flagged the request, plain text for the card: \"Discord filed this request as possible spam\", \"Discord says you share no server or friend with them\". */\n  warning?: string;\n};",
+   "RequestAnswer": "type RequestAnswer = \"block\" | \"accept\" | \"decline\";",
+   "RequestFact": "/** A request waiting on the owner. */\ntype RequestFact = {\n  nativeId: string;\n  /** friend: wants to be friends. follow: wants to follow you (private account). invite: you were invited to a group, space or room. message: a DM from someone not in your contacts waits for you to accept (Signal, Instagram, Messenger, X). join: */\n  kind: \"message\" | \"follow\" | \"invite\" | \"friend\" | \"join\";\n  /** Native identity id (identity fact first). */\n  from?: string;\n  target?: { kind: \"conversation\" | \"space\"; nativeId: string; name?: string; members?: number };\n  ts: number;\n  answers: RequestAnswer[];\n  /** The network's own words when it flagged the request, plain text for the card: \"Discord filed this request as possible spam\", \"Discord says you share no server or friend with them\". */\n  warning?: string;\n  /** The network filed it as spam (Discord's spam folder): it never notifies, and sits last under Requests. */\n  spam?: boolean;\n};",
+   "SafetyNumber": "/** A safety number (Signal): the digits two people compare to know nobody sits between them, and what their phones */\ntype SafetyNumber = {\n  /** The digits, without spaces (Signal shows 60 in 12 groups of 5). */\n  digits: string;\n  /** What Signal's QR code holds, base64: shown as a QR code of those bytes, for their phone to scan. */\n  scannable?: string;\n  trust: \"verified\" | \"unverified\" | \"untrusted\";\n  /** ms epoch: when their key last changed, if it changed since this device first saw it. */\n  changedAt?: number;\n};",
+   "SavedFact": "/** A message saved on the network, as the network keeps it (native ids). */\ntype SavedFact = {\n  /** The conversation it is in, where the network said (a reminder always does; a bare saved id may not). */\n  conversation?: string;\n  message: string;\n  /** ms epoch. */\n  savedAt: number;\n  /** ms epoch the network reminds you at (Discord's \"Remind me\"); absent, only saved. */\n  dueAt?: number;\n  /** Your note on it, where the network keeps one. */\n  note?: string;\n  /** What the network shows when the message itself is not loaded: its author, place and text, shortened. */\n  summary?: { author?: string; place?: string; text?: string };\n};",
+   "ScheduledEventFact": "type ScheduledEventFact = {\n  nativeId: string;\n  /** The space (a Discord guild) it belongs to. */\n  space: string;\n  name: string;\n  description?: string;\n  /** ms epoch. For a repeating event, its first occurrence (or the next, as the network keeps it). */\n  start: number;\n  end?: number;\n  status: EventStatus;\n  place?: { kind: \"voice\" | \"stage\"; conversation: string } | { kind: \"external\"; location: string };\n  /** Its cover picture. */\n  imageUrl?: string;\n  /** How many said they are interested, when the network said. */\n  interested?: number;\n  /** This account said it is interested (the series). Absent: not known yet. */\n  youInterested?: boolean;\n  /** Native identity id of who made it (its identity fact comes first). */\n  creator?: string;\n  /** RFC 5545 rule without the \"RRULE:\" prefix (\"FREQ=WEEKLY;INTERVAL=1;BYDAY=TU\"); absent: once. Times are UTC. */\n  rrule?: string;\n  exceptions?: EventException[];\n};",
+   "SelectKind": "/** What a select picks from: options the bot listed, or people, roles, either, or channels of the place. */\ntype SelectKind = \"string\" | \"user\" | \"role\" | \"channel\" | \"mentionable\";",
+   "SelectOptionFact": "type SelectOptionFact = {\n  label: string;\n  value: string;\n  description?: string;\n  emoji?: string;\n  /** Picked to begin with. */\n  default?: boolean;\n};",
+   "SelfFact": "/** A setting as a line to show: \"Direct messages from server members\": \"Allowed, except in 2 servers\". */\ntype SelfFact = { label: string; value: string };",
+   "SelfState": "/** The account's own state as the network keeps it. Each part an event carries replaces what the hub has of it; a part */\ntype SelfState = {\n  presence?: OwnPresence;\n  /** Every folder and lone space, in the network's order. */\n  folders?: NetworkFolder[];\n  /** Privacy settings worth knowing, as words. */\n  privacy?: SelfFact[];\n};",
    "Shape": "/** Where a conversation sits in the social structure, independent of network. */\ntype Shape = \"group\" | \"channel\" | \"direct\" | \"thread\" | \"self\";",
    "SpaceFact": "type SpaceFact = {\n  nativeId: string;\n  kind: SpaceKind;\n  name: string;\n  topic?: string;\n  iconUrl?: string;\n  /** Parent spaces. Discord category -> its guild; Matrix subspace -> every space that lists it. */\n  parents?: SpaceRef[];\n  mute?: NativeMute;\n};",
+   "SpaceGate": "/** What a space asks of you before (or right after) you are in, one step at a time: */\ntype SpaceGate = {\n  space: string;\n  kind: \"rules\" | \"apply\" | \"onboarding\";\n  description?: string;\n  /** rules (and an application that has them too): the rules, one per line, as written. */\n  rules?: string[];\n  questions?: GateQuestion[];\n  prompts?: GatePrompt[];\n  /** apply: where the application stands. open: not sent yet. */\n  status?: \"open\" | \"submitted\" | \"approved\" | \"rejected\";\n  /** rejected: the moderator's reason, when they gave one. */\n  reason?: string;\n  /** The form's version, sent back with the answer (Discord). */\n  version?: string;\n};",
    "SpaceKind": "/** community: something you join and that has its own membership and moderation */\ntype SpaceKind = \"community\" | \"section\";",
    "SpaceRef": "type SpaceRef = {\n  nativeId: string;\n  /** Sort key within the parent: Discord `position`, Matrix `order`. Compared as strings, so zero-pad numbers. */\n  position?: string;\n};",
+   "StageAction": "/** What a stage asks of you or a moderator: put your own hand up or down; speak (taking a moderator's invitation, or */\ntype StageAction = \"invite\" | \"raiseHand\" | \"lowerHand\" | \"speak\" | \"listen\" | \"audience\";",
    "StatusLayer": "/** One link of an account's dependency chain (AdapterEvent status.layers). */\ntype StatusLayer = {\n  /** Short and stable: 'browser', 'extension', 'signed in', 'API key'. */\n  name: string;\n  /** ok; waiting (not there yet, expected to come); failed; off (not used here). */\n  state: \"ok\" | \"waiting\" | \"failed\" | \"off\";\n  /** One line: what it is, or why not (\"33 of 33 hooks\", \"no SAPISID cookie\"). */\n  note?: string;\n};",
-   "Who": "/** Who may do something, as far as the networks agree. */\ntype Who = \"everyone\" | \"admins\";"
+   "StickerFact": "type StickerFact = {\n  /** What `send`'s `sticker` takes: Discord's sticker id; Signal's `packId:stickerId`. */\n  id: string;\n  name: string;\n  /** The emoji it stands for, where the network names one. */\n  emoji?: string;\n  url: string;\n  mime?: string;\n};",
+   "StickerPackFact": "type StickerPackFact = {\n  id: string;\n  name: string;\n  source: StickerSource;\n  /** Its cover, else the first sticker's picture. */\n  cover?: string;\n  stickers: StickerFact[];\n};",
+   "StickerSource": "/** Where a pack comes from: a server's own stickers, the network's standard packs, or packs installed on the account. */\ntype StickerSource = \"server\" | \"standard\" | \"installed\";",
+   "StoryFact": "/** Someone's story (the `story` event, capability 'stories'). Never a message: it shows on its author's or group's */\ntype StoryFact = {\n  /** Signal: \"<authorAci>:<sentTimestamp>\". */\n  nativeId: string;\n  author: string;\n  /** A group story's group conversation; absent for one sent to its author's contacts. */\n  conversation?: string;\n  ts: number;\n  expiresAt: number;\n  /** A picture or video story. */\n  attachment?: AttachmentFact;\n  text?: StoryTextFact;\n  /** Its author lets people reply (and react). */\n  allowsReplies: boolean;\n};",
+   "StoryTextFact": "/** A text story's look, as Signal sends it: colours as CSS hex. */\ntype StoryTextFact = {\n  text: string;\n  /** Signal's font style: 'DEFAULT', 'REGULAR', 'BOLD', 'SERIF', 'SCRIPT', 'CONDENSED'. */\n  style?: string;\n  color?: string;\n  /** Behind the text only. */\n  textBackground?: string;\n  background?: string;\n  /** Background gradient, from the first colour to the last, at `angle` degrees. */\n  gradient?: { colors: string[]; angle?: number };\n  /** A link the story shows. */\n  url?: string;\n};",
+   "ThreadFact": "/** What a thread says beyond a conversation (ConversationFact.thread). Each field only when the network said it. */\ntype ThreadFact = {\n  /** This account is in it (follows it); false: it is not. */\n  joined?: boolean;\n  /** How it notifies this account when that is set on the thread; absent: as its channel. */\n  notify?: \"all\" | \"mentions\" | \"none\";\n  /** Muted for this account; until then (ms epoch) when it runs out. */\n  muted?: boolean;\n  mutedUntil?: number;\n  /** Locked: only moderators may write or unarchive it. */\n  locked?: boolean;\n  /** A forum post's tags (ForumTag ids). */\n  tags?: string[];\n  /** Pinned to the top of its forum. */\n  pinned?: boolean;\n  /** Private: only those added (or moderators) see it. */\n  private?: boolean;\n  /** Native identity id of who started it. */\n  owner?: string;\n  /** ms epoch. */\n  createdAt?: number;\n  /** How many messages it has, as the network counts them. */\n  messageCount?: number;\n};",
+   "VoiceFact": "/** A voice message: how long it lasts and its waveform, one byte (0 to 255) per point, as base64. */\ntype VoiceFact = { seconds?: number; waveform?: string };",
+   "VoiceMember": "/** Someone in a voice channel (the adapter's `voice` event). */\ntype VoiceMember = {\n  /** Native identity id. */\n  who: string;\n  muted?: boolean;\n  deafened?: boolean;\n  video?: boolean;\n  /** Sharing their screen (Go Live). */\n  streaming?: boolean;\n};",
+   "VoiceOut": "/** A recorded voice message: its length and Discord's waveform (base64 of up to 256 bytes, one each tenth of a second, */\ntype VoiceOut = { seconds: number; waveform?: string };",
+   "Who": "/** Who may do something, as far as the networks agree. */\ntype Who = \"admins\" | \"everyone\";"
   }
  },
  "google.calendar": {
@@ -413,7 +888,7 @@
     "example": {}
    },
    "cal.events": {
-    "input": "{ calendarId: string; pageToken?: string; from?: string; to?: string; expand?: boolean }",
+    "input": "{ calendarId: string; from?: string; pageToken?: string; to?: string; expand?: boolean }",
     "output": "{ events: CalEvent[]; next: null | string; syncToken: null | string }",
     "example": {
      "calendarId": ""
@@ -428,11 +903,11 @@
     }
    },
    "cal.put": {
-    "input": "{ calendarId: string; event: CalEventInput; id?: string; ifMatch?: string }",
-    "output": "{\n  id: string;\n  calendarId: string;\n  uid: string;\n  /** Set on one changed (or cancelled) instance of a series: the start it replaces. */\n  recurrenceId: null | { date: string } | { dateTime: string; timeZone: null | string };\n  title: string;\n  description: null | string;\n  location: null | string;\n  url: null | string;\n  start: CalTime;\n  end: CalTime;\n  status: null | \"confirmed\" | \"tentative\" | \"cancelled\";\n  /** transparent: does not count as busy. */\n  transparency: null | \"opaque\" | \"transparent\";\n  /** RRULE, RDATE and EXDATE lines, on the series itself; empty on an expanded instance and on a changed one. */\n  recurrence: string[];\n  organizer: null | CalPerson;\n  attendees: CalAttendee[];\n  updated: null | number;\n  /** For ifMatch on cal.put and cal.delete. */\n  etag: null | string;\n  /** The event's iCalendar text as the server has it (VEVENT with its VTIMEZONEs), for anything the fields leave out. */\n  ics: null | string;\n}",
+    "input": "{ event: CalEventInput; calendarId: string; id?: string; ifMatch?: string }",
+    "output": "{\n  id: string;\n  calendarId: string;\n  uid: string;\n  /** Set on one changed (or cancelled) instance of a series: the start it replaces. */\n  recurrenceId: null | { date: string } | { dateTime: string; timeZone: null | string };\n  title: string;\n  description: null | string;\n  location: null | string;\n  url: null | string;\n  start: CalTime;\n  end: CalTime;\n  status: null | \"cancelled\" | \"confirmed\" | \"tentative\";\n  /** transparent: does not count as busy. */\n  transparency: null | \"opaque\" | \"transparent\";\n  /** RRULE, RDATE and EXDATE lines, on the series itself; empty on an expanded instance and on a changed one. */\n  recurrence: string[];\n  organizer: null | CalPerson;\n  attendees: CalAttendee[];\n  updated: null | number;\n  /** For ifMatch on cal.put and cal.delete. */\n  etag: null | string;\n  /** The event's iCalendar text as the server has it (VEVENT with its VTIMEZONEs), for anything the fields leave out. */\n  ics: null | string;\n}",
     "example": {
-     "calendarId": "",
-     "event": {}
+     "event": {},
+     "calendarId": ""
     }
    },
    "cal.delete": {
@@ -450,10 +925,10 @@
    "cal.changed": "{ calendarId: string }"
   },
   "defs": {
-   "CalAttendee": "type CalAttendee = {\n  status: null | \"tentative\" | \"needs-action\" | \"accepted\" | \"declined\" | \"delegated\";\n  role: null | \"chair\" | \"required\" | \"optional\" | \"non-participant\";\n  email: string;\n  name: null | string;\n};",
+   "CalAttendee": "type CalAttendee = {\n  status: null | \"declined\" | \"tentative\" | \"needs-action\" | \"accepted\" | \"delegated\";\n  role: null | \"chair\" | \"required\" | \"optional\" | \"non-participant\";\n  email: string;\n  name: null | string;\n};",
    "Calendar": "type Calendar = {\n  id: string;\n  name: string;\n  /** #RRGGBB, when the server has one. */\n  color: null | string;\n  description: null | string;\n  timeZone: null | string;\n  readOnly: boolean;\n  /** What it holds: events, tasks (VTODO), or both. */\n  components: (\"event\" | \"task\")[];\n};",
-   "CalEvent": "type CalEvent = {\n  id: string;\n  calendarId: string;\n  uid: string;\n  /** Set on one changed (or cancelled) instance of a series: the start it replaces. */\n  recurrenceId: null | { date: string } | { dateTime: string; timeZone: null | string };\n  title: string;\n  description: null | string;\n  location: null | string;\n  url: null | string;\n  start: CalTime;\n  end: CalTime;\n  status: null | \"confirmed\" | \"tentative\" | \"cancelled\";\n  /** transparent: does not count as busy. */\n  transparency: null | \"opaque\" | \"transparent\";\n  /** RRULE, RDATE and EXDATE lines, on the series itself; empty on an expanded instance and on a changed one. */\n  recurrence: string[];\n  organizer: null | CalPerson;\n  attendees: CalAttendee[];\n  updated: null | number;\n  /** For ifMatch on cal.put and cal.delete. */\n  etag: null | string;\n  /** The event's iCalendar text as the server has it (VEVENT with its VTIMEZONEs), for anything the fields leave out. */\n  ics: null | string;\n};",
-   "CalEventInput": "/** A new or changed event: the fields, or `ics` (a VCALENDAR with one event), used as it is. */\ntype CalEventInput = {\n  uid?: string;\n  title?: string;\n  start?: { date: string } | { dateTime: string; timeZone: null | string };\n  end?: { date: string } | { dateTime: string; timeZone: null | string };\n  description?: null | string;\n  location?: null | string;\n  url?: null | string;\n  status?: \"confirmed\" | \"tentative\" | \"cancelled\";\n  transparency?: \"opaque\" | \"transparent\";\n  recurrence?: string[];\n  attendees?: CalAttendee[];\n  ics?: string;\n};",
+   "CalEvent": "type CalEvent = {\n  id: string;\n  calendarId: string;\n  uid: string;\n  /** Set on one changed (or cancelled) instance of a series: the start it replaces. */\n  recurrenceId: null | { date: string } | { dateTime: string; timeZone: null | string };\n  title: string;\n  description: null | string;\n  location: null | string;\n  url: null | string;\n  start: CalTime;\n  end: CalTime;\n  status: null | \"cancelled\" | \"confirmed\" | \"tentative\";\n  /** transparent: does not count as busy. */\n  transparency: null | \"opaque\" | \"transparent\";\n  /** RRULE, RDATE and EXDATE lines, on the series itself; empty on an expanded instance and on a changed one. */\n  recurrence: string[];\n  organizer: null | CalPerson;\n  attendees: CalAttendee[];\n  updated: null | number;\n  /** For ifMatch on cal.put and cal.delete. */\n  etag: null | string;\n  /** The event's iCalendar text as the server has it (VEVENT with its VTIMEZONEs), for anything the fields leave out. */\n  ics: null | string;\n};",
+   "CalEventInput": "/** A new or changed event: the fields, or `ics` (a VCALENDAR with one event), used as it is. */\ntype CalEventInput = {\n  uid?: string;\n  title?: string;\n  start?: { date: string } | { dateTime: string; timeZone: null | string };\n  end?: { date: string } | { dateTime: string; timeZone: null | string };\n  description?: null | string;\n  location?: null | string;\n  url?: null | string;\n  status?: \"cancelled\" | \"confirmed\" | \"tentative\";\n  transparency?: \"opaque\" | \"transparent\";\n  recurrence?: string[];\n  attendees?: CalAttendee[];\n  ics?: string;\n};",
    "CalPerson": "type CalPerson = { email: string; name: null | string };",
    "CalTime": "type CalTime = { date: string } | { dateTime: string; timeZone: null | string };"
   }
@@ -505,7 +980,7 @@
   "defs": {
    "AddressBook": "type AddressBook = { id: string; name: string; description: null | string; readOnly: boolean };",
    "Contact": "type Contact = {\n  id: string;\n  bookId: string;\n  uid: string;\n  name: { full: null | string; given: null | string; family: null | string };\n  nickname: null | string;\n  emails: ContactValue[];\n  phones: ContactValue[];\n  /** One line each, as it would be written on an envelope. */\n  addresses: ContactValue[];\n  org: null | string;\n  title: null | string;\n  /** YYYY-MM-DD, or --MM-DD without a year. */\n  birthday: null | string;\n  urls: string[];\n  note: null | string;\n  /** A URL, or a data: URI for a photo kept in the card. */\n  photo: null | string;\n  updated: null | number;\n  etag: null | string;\n  /** The vCard as the server has it, for anything the fields leave out. */\n  vcard: null | string;\n};",
-   "ContactInput": "/** A new or changed contact: the fields, or `vcard`, used as it is. */\ntype ContactInput = {\n  note?: null | string;\n  name?: { full: null | string; given: null | string; family: null | string };\n  uid?: string;\n  nickname?: null | string;\n  emails?: ContactValue[];\n  phones?: ContactValue[];\n  /** One line each, as it would be written on an envelope. */\n  addresses?: ContactValue[];\n  org?: null | string;\n  title?: null | string;\n  /** YYYY-MM-DD, or --MM-DD without a year. */\n  birthday?: null | string;\n  urls?: string[];\n  /** A URL, or a data: URI for a photo kept in the card. */\n  photo?: null | string;\n  vcard?: string;\n};",
+   "ContactInput": "/** A new or changed contact: the fields, or `vcard`, used as it is. */\ntype ContactInput = {\n  note?: null | string;\n  name?: { full: null | string; given: null | string; family: null | string };\n  nickname?: null | string;\n  uid?: string;\n  emails?: ContactValue[];\n  phones?: ContactValue[];\n  /** One line each, as it would be written on an envelope. */\n  addresses?: ContactValue[];\n  org?: null | string;\n  title?: null | string;\n  /** YYYY-MM-DD, or --MM-DD without a year. */\n  birthday?: null | string;\n  urls?: string[];\n  /** A URL, or a data: URI for a photo kept in the card. */\n  photo?: null | string;\n  vcard?: string;\n};",
    "ContactValue": "type ContactValue = {\n  value: string;\n  /** home, work, cell… as the card says; null when it does not. */\n  type: null | string;\n};"
   }
  },
@@ -517,7 +992,7 @@
     "example": {}
    },
    "mail.list": {
-    "input": "{ mailboxId: string; limit?: number; since?: number; before?: string }",
+    "input": "{ mailboxId: string; limit?: number; before?: string; since?: number }",
     "output": "{ messages: MailSummary[]; next: null | string }",
     "example": {
      "mailboxId": ""
@@ -546,7 +1021,7 @@
     }
    },
    "mail.search": {
-    "input": "{ query: string; limit?: number; mailboxId?: string; idsOnly?: boolean; cursor?: string }",
+    "input": "{ query: string; limit?: number; cursor?: string; mailboxId?: string; idsOnly?: boolean }",
     "output": "{ messages: MailSummary[]; next?: null | string }\n| { ids: string[]; next: null | string; estimate: null | number }",
     "example": {
      "query": ""
@@ -560,7 +1035,7 @@
     }
    },
    "mail.flag": {
-    "input": "{\n  ids: string[];\n  seen?: boolean;\n  threadIds?: (null | string)[];\n  flagged?: boolean;\n  answered?: boolean;\n}",
+    "input": "{\n  ids: string[];\n  seen?: boolean;\n  answered?: boolean;\n  threadIds?: (null | string)[];\n  flagged?: boolean;\n}",
     "output": "{ refused?: string[]; unknown?: string[] }",
     "example": {
      "ids": []
@@ -686,7 +1161,7 @@
   },
   "defs": {
    "DesktopDownload": "type DesktopDownload = {\n  id: string;\n  /** Relative to the downloads folder: \"Telegram Desktop/photo.jpg\". */\n  path: string;\n  name: string;\n  size: number;\n  mime: string;\n  at: number;\n};",
-   "DesktopFileRequest": "type DesktopFileRequest = {\n  id: string;\n  /** open: the app wants a file (to attach); save, saveMany: where to put one. */\n  kind: \"open\" | \"save\" | \"saveMany\";\n  title: string;\n  /** outbox: given what desktop.offer left there; downloads: saved into the downloads folder; cancelled. */\n  answer: \"cancelled\" | \"outbox\" | \"downloads\";\n  files: string[];\n  at: number;\n};",
+   "DesktopFileRequest": "type DesktopFileRequest = {\n  id: string;\n  /** open: the app wants a file (to attach); save, saveMany: where to put one. */\n  kind: \"save\" | \"open\" | \"saveMany\";\n  title: string;\n  /** outbox: given what desktop.offer left there; downloads: saved into the downloads folder; cancelled. */\n  answer: \"cancelled\" | \"outbox\" | \"downloads\";\n  files: string[];\n  at: number;\n};",
    "DesktopLink": "type DesktopLink = {\n  id: string;\n  url: string;\n  /** How the app asked: the xdg-open shim on its PATH, or the OpenURI portal. */\n  via: \"xdg-open\" | \"portal\";\n  at: number;\n};"
   }
  },
@@ -752,7 +1227,7 @@
     }
    },
    "exchange.postOffer": {
-    "input": "{\n  direction: \"BUY\" | \"SELL\";\n  currency: string;\n  amount: string;\n  paymentAccountId: string;\n  minAmount?: string;\n  price?: string;\n  marketMarginPct?: number;\n  triggerPrice?: string;\n  securityDepositPct?: number;\n  reserveExactAmount?: boolean;\n  private?: boolean;\n  buyerAsTakerWithoutDeposit?: boolean;\n  extraInfo?: string;\n}",
+    "input": "{\n  direction: \"BUY\" | \"SELL\";\n  currency: string;\n  amount: string;\n  paymentAccountId: string;\n  private?: boolean;\n  minAmount?: string;\n  price?: string;\n  marketMarginPct?: number;\n  triggerPrice?: string;\n  securityDepositPct?: number;\n  reserveExactAmount?: boolean;\n  buyerAsTakerWithoutDeposit?: boolean;\n  extraInfo?: string;\n}",
     "output": "{ offer: ExchangeOffer }",
     "example": {
      "direction": "BUY",

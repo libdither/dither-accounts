@@ -8,6 +8,7 @@
  *   13 stage  15 forum  16 media  1 DM  3 group DM
  */
 
+import { withThreadFacts } from './threads.ts';
 import { discordEmojiUrl } from '@dither-chat/protocol';
 import type {
   AttachmentKind,
@@ -35,6 +36,9 @@ import type {
   RawStickerItem,
   RawUser,
 } from './discord-types.ts';
+import { callMessageText } from './calls.ts';
+import { pollFact } from './polls.ts';
+import { attachmentMarks, embedMore, flattenComponents, isCrosspost, moreSystemText, pingsYourRole, richExtra, sentSilently } from './rich.ts';
 
 export const DISCORD_EPOCH = 1420070400000n;
 
@@ -74,13 +78,25 @@ export const CHANNEL_TYPE = {
   DIRECTORY: 14,
   FORUM: 15,
   MEDIA: 16,
+  // Newer ones (threads.ts NEW_TYPES): a game lobby, a game's DM, a media channel's post, and two server experiments.
+  LOBBY: 17,
+  DM_SDK: 18,
+  MEDIA_THREAD: 19,
+  GUILD_SPACE: 20,
+  GUILD_APP: 21,
 } as const;
 
 export const THREAD_TYPES = new Set<number>([
   CHANNEL_TYPE.ANNOUNCEMENT_THREAD,
   CHANNEL_TYPE.PUBLIC_THREAD,
   CHANNEL_TYPE.PRIVATE_THREAD,
+  CHANNEL_TYPE.MEDIA_THREAD,
 ]);
+
+/** DMs and group DMs, and the newer private kinds read as them: a game's DM as a DM, a game lobby as a group. */
+export function isPrivate(type: number): boolean {
+  return type === CHANNEL_TYPE.DM || type === CHANNEL_TYPE.GROUP_DM || type === CHANNEL_TYPE.DM_SDK || type === CHANNEL_TYPE.LOBBY;
+}
 
 export function isThread(type: number): boolean {
   return THREAD_TYPES.has(type);
@@ -144,8 +160,8 @@ export function mapCategory(c: RawChannel, mute?: NativeMute): SpaceFact {
 // --------------------------------------------------------------- conversations
 
 export function channelShape(type: number): Shape {
-  if (type === CHANNEL_TYPE.DM) return 'direct';
-  if (type === CHANNEL_TYPE.GROUP_DM) return 'group';
+  if (type === CHANNEL_TYPE.DM || type === CHANNEL_TYPE.DM_SDK) return 'direct';
+  if (type === CHANNEL_TYPE.GROUP_DM || type === CHANNEL_TYPE.LOBBY) return 'group';
   if (isThread(type)) return 'thread';
   return 'channel';
 }
@@ -176,27 +192,34 @@ export function channelVariant(c: RawChannel, guild?: RawGuild): Variant | undef
 export function mapGuildChannel(c: RawChannel, guild?: RawGuild, mute?: NativeMute): ConversationFact {
   // A channel sits under its category if it has one, else directly under the guild.
   const parentSpace = c.parent_id ?? c.guild_id ?? undefined;
-  return {
-    nativeId: c.id,
-    shape: 'channel',
-    variant: channelVariant(c, guild),
-    name: c.name ?? undefined,
-    topic: c.topic ?? undefined,
-    spaces: parentSpace ? [{ nativeId: parentSpace, position: pos(c.position) }] : undefined,
-    ...(mute ? { mute } : {}),
-  };
+  return withThreadFacts(
+    {
+      nativeId: c.id,
+      shape: 'channel',
+      variant: channelVariant(c, guild),
+      name: c.name ?? undefined,
+      topic: c.topic ?? undefined,
+      spaces: parentSpace ? [{ nativeId: parentSpace, position: pos(c.position) }] : undefined,
+      ...(mute ? { mute } : {}),
+    },
+    c,
+  );
 }
 
 export function mapThread(c: RawChannel, mute?: NativeMute): ConversationFact {
-  return {
-    nativeId: c.id,
-    shape: 'thread',
-    variant: channelVariant(c),
-    name: c.name ?? undefined,
-    parentConversation: c.parent_id ?? undefined,
-    archived: c.thread_metadata?.archived || undefined,
-    ...(mute ? { mute } : {}),
-  };
+  return withThreadFacts(
+    {
+      nativeId: c.id,
+      shape: 'thread',
+      variant: channelVariant(c),
+      name: c.name ?? undefined,
+      parentConversation: c.parent_id ?? undefined,
+      // Said both ways when the client said it, so a thread opened again is shown again.
+      archived: c.thread_metadata ? !!c.thread_metadata.archived : undefined,
+      ...(mute ? { mute } : {}),
+    },
+    c,
+  );
 }
 
 /** A group DM's own picture, else the default one the client shows for it. */
@@ -208,7 +231,7 @@ export function groupIconUrl(c: RawChannel): string | undefined {
 export function mapPrivateChannel(c: RawChannel, selfId: string, mute?: NativeMute): ConversationFact {
   const recipients = c.recipients ?? [];
   const participants = [selfId, ...recipients.map((r) => r.id)];
-  if (c.type === CHANNEL_TYPE.GROUP_DM) {
+  if (c.type === CHANNEL_TYPE.GROUP_DM || c.type === CHANNEL_TYPE.LOBBY) {
     const name = c.name?.trim() || recipients.map(userDisplayName).join(', ') || 'Group';
     return {
       nativeId: c.id,
@@ -231,7 +254,7 @@ export function mapPrivateChannel(c: RawChannel, selfId: string, mute?: NativeMu
 /** Dispatch any channel object to the right conversation mapper, or null for a category. */
 export function mapChannel(c: RawChannel, ctx: { selfId: string; guild?: RawGuild; mute?: NativeMute }): ConversationFact | null {
   if (c.type === CHANNEL_TYPE.CATEGORY) return null;
-  if (c.type === CHANNEL_TYPE.DM || c.type === CHANNEL_TYPE.GROUP_DM) return mapPrivateChannel(c, ctx.selfId, ctx.mute);
+  if (isPrivate(c.type)) return mapPrivateChannel(c, ctx.selfId, ctx.mute);
   if (isThread(c.type)) return mapThread(c, ctx.mute);
   return mapGuildChannel(c, ctx.guild, ctx.mute);
 }
@@ -261,6 +284,7 @@ export function mapAttachment(a: RawAttachment): AttachmentFact {
     width: a.width,
     height: a.height,
     url: a.url,
+    ...attachmentMarks(a),
   };
 }
 
@@ -279,6 +303,8 @@ export function systemMessageText(m: RawMessage, selfId?: string): string | null
       return null;
   }
   const who = m.author ? userDisplayName(m.author) : 'Someone';
+  const more = moreSystemText(m, who);
+  if (more !== undefined) return more;
   switch (m.type) {
     case 1: {
       // RECIPIENT_ADD and RECIPIENT_REMOVE name whom in their mentions.
@@ -291,7 +317,7 @@ export function systemMessageText(m: RawMessage, selfId?: string): string | null
       return them ? `${who} removed ${userDisplayName(them)} from the group.` : `${who} removed someone from the group.`;
     }
     case 3:
-      return `${who} started a call.`;
+      return callMessageText(m, selfId, who);
     case 4:
       return `${who} changed the channel name${m.content ? `: ${m.content}` : '.'}`;
     case 5:
@@ -394,6 +420,7 @@ export function normalizeMentions(body: string): string {
 }
 
 export function messageKind(m: RawMessage, system: string | null): MessageKind {
+  if (m.type === 3) return 'call';
   if (system !== null) return 'system';
   if (stickerAttachments(m).length && (!m.content || !m.content.trim())) return 'sticker';
   if (m.attachments && m.attachments.length && (!m.content || !m.content.trim())) return 'media';
@@ -417,6 +444,7 @@ function embedExtra(m: RawMessage) {
     author: e.author?.name,
     image: e.image?.url ?? e.thumbnail?.url,
     fields: e.fields,
+    ...embedMore(e),
   }));
   return { embeds };
 }
@@ -475,7 +503,7 @@ function bodyFallback(m: RawMessage): string {
   const stickers = m.sticker_items ?? [];
   if (stickers.length && stickers.every((s) => stickerAsset(s))) return '';
   if (stickers.length) return stickers.map((s) => `[sticker: ${s.name}]`).join(' ');
-  if (m.poll?.question) return [`**${m.poll.question}**`, ...(m.poll.answers ?? []).map((a) => `- ${a}`)].join('\n');
+  if (m.poll?.question) return [`**${m.poll.question}**`, ...(m.poll.answers ?? []).map((a) => `- ${typeof a === 'string' ? a : a.text ?? ''}`)].join('\n');
   return '';
 }
 
@@ -484,30 +512,46 @@ function attachmentsOf(m: RawMessage): AttachmentFact[] | undefined {
   return all.length ? all : undefined;
 }
 
-export function mapMessage(m: RawMessage, selfId: string): MessageFact {
+/** What mapMessage knows beyond the message: your own roles in its server (rich.ts), for role pings. */
+export interface MapContext {
+  selfRoles?: readonly string[];
+}
+
+export function mapMessage(m: RawMessage, selfId: string, ctx: MapContext = {}): MessageFact {
   const system = systemMessageText(m, selfId);
-  const body = system !== null ? system : normalizeMentions(m.content || bodyFallback(m));
-  const byName = (m.mentions?.some((u) => u.id === selfId) ?? false) || body.includes(`<@${selfId}>`);
+  // A bot's controls, and a Components V2 message's text and files, which have no content of their own (rich.ts).
+  const flat = flattenComponents(m.components, m.attachments);
+  const body = system !== null ? system : normalizeMentions(m.content || flat.body || bodyFallback(m));
+  // A ping to a role you hold is a mention of you, as Discord counts it.
+  const byName = (m.mentions?.some((u) => u.id === selfId) ?? false) || body.includes(`<@${selfId}>`) || pingsYourRole(m, ctx.selfRoles);
   const mentionsSelf = byName || !!m.mention_everyone;
-  const extra = embedExtra(m);
+  const rich = richExtra(m, body, flat.rows);
+  const embeds = embedExtra(m);
+  // A poll as structured data (polls.ts); its words stay in the body too, for search and previews.
+  const poll = pollFact(m.poll);
+  const extra = embeds || Object.keys(rich).length || poll ? { ...embeds, ...rich, ...(poll ? { poll } : {}) } : undefined;
+  const attachments = attachmentsOf(m)?.map((a) => (a.nativeId && flat.ofAttachments.has(a.nativeId) ? { ...a, ...flat.ofAttachments.get(a.nativeId) } : a));
+  const all = flat.attachments.length ? [...(attachments ?? []), ...flat.attachments] : attachments;
   const forward = forwardFact(m);
-  const replyTo = m.type !== 21 && !forward ? m.message_reference?.message_id : undefined;
+  // A crosspost's reference is the message it was published from, in another server: not a reply.
+  const replyTo = m.type !== 21 && !forward && !isCrosspost(m) ? m.message_reference?.message_id : undefined;
   return {
     nativeId: m.id,
     conversation: m.channel_id,
     author: m.author.id,
     ts: isoToMs(m.timestamp) || snowflakeToMs(m.id),
     editedTs: m.edited_timestamp ? isoToMs(m.edited_timestamp) : undefined,
-    kind: messageKind(m, system),
+    kind: messageKind(flat.body && !m.content ? { ...m, content: flat.body } : m, system),
     body,
     replyTo,
     // A message carrying a `thread` object is the root of that thread conversation.
     threadRoot: m.thread?.id,
     mentionsSelf: mentionsSelf || undefined,
     mentionsAll: (mentionsSelf && !byName) || undefined,
-    attachments: attachmentsOf(m),
+    attachments: all,
     reactions: m.reactions?.length ? reactionFacts(m, selfId) : undefined,
     ...(forward ? { forward } : {}),
+    ...(sentSilently(m) ? { silent: true } : {}),
     extra,
   };
 }
@@ -543,6 +587,8 @@ export function mapMute(s: {
   const mute: NativeMute = {};
   if (level) mute.level = level;
   if (until) mute.until = until;
+  // Discord's Mute, rather than a level of nothing: what dither's "Muted on Discord" and Unmute are about.
+  if (s.muted) mute.muted = true;
   return Object.keys(mute).length ? mute : undefined;
 }
 

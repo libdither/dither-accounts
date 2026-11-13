@@ -532,8 +532,20 @@ export function notAMessage(bytes: Uint8Array, type: string | null | undefined):
   if (type && /^text\/html\b/i.test(type)) return 'an HTML page, not a message';
   const head = Buffer.from(bytes.subarray(0, 256 * 1024)).toString('latin1');
   const end = head.search(/\r?\n\r?\n/);
-  if (!/^[\x21-\x39\x3b-\x7e]{1,76}:/.test(head)) return 'no header line at the start';
+  if (!/^[\x21-\x39\x3b-\x7e]{1,76}:/.test(head)) return `no header line at the start (${startOf(bytes.length, head)})`;
   if (end < 0) return 'no end to the header block';
   if (!/^(?:from|date|message-id|received|mime-version|subject|return-path|delivered-to):/im.test(head.slice(0, end))) return 'no message header in the header block';
   return null;
+}
+
+/** What a download with no header line starts with, as a shape only (never its text): what tells a fix which case it is. */
+function startOf(size: number, head: string): string {
+  if (size === 0) return 'the download is empty';
+  if (/^\xef\xbb\xbf/.test(head)) return 'a byte-order mark first';
+  if (/^\r?\n/.test(head)) return 'a blank line first';
+  if (/^[ \t]/.test(head)) return 'a space first';
+  if (/^From /.test(head)) return 'an mbox "From " line first';
+  if (/^\s*</.test(head)) return 'markup first';
+  if (/^[\x21-\x39\x3b-\x7e]{77,}:/.test(head)) return 'a field name over 76 characters first';
+  return `a first line with no field name and colon, ${size} bytes`;
 }

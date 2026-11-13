@@ -230,7 +230,15 @@ test("answers are read by their anchors; one laid out otherwise is refused, sayi
   // The download route: a message, or not (an HTML page, no header block).
   expect(notAMessage(Buffer.from(fakeEml(fake.gmail.messages[0]!)), 'message/rfc822')).toBeNull();
   expect(notAMessage(Buffer.from('<html><body>Sign in</body></html>'), 'text/html')).toBe('an HTML page, not a message');
-  expect(notAMessage(Buffer.from('<html><body>x</body></html>'), null)).toBe('no header line at the start');
+  expect(notAMessage(Buffer.from('<html><body>x</body></html>'), null)).toBe('no header line at the start (markup first)');
+  // Which shape a download with no header line has, never its text.
+  expect(notAMessage(Buffer.alloc(0), 'message/rfc822')).toBe('no header line at the start (the download is empty)');
+  expect(notAMessage(Buffer.from('\r\nFrom: a@example.com\r\n\r\nx'), null)).toBe('no header line at the start (a blank line first)');
+  expect(notAMessage(Buffer.from(' From: a@example.com\r\n\r\nx'), null)).toBe('no header line at the start (a space first)');
+  expect(notAMessage(Buffer.from('\xef\xbb\xbfFrom: a@example.com\r\n\r\nx', 'latin1'), null)).toBe('no header line at the start (a byte-order mark first)');
+  expect(notAMessage(Buffer.from('From a@example.com Thu Jan  1 00:00:00 2026\nFrom: a@example.com\n\nx'), null)).toBe('no header line at the start (an mbox "From " line first)');
+  expect(notAMessage(Buffer.from('just some text\n'), null)).toBe('no header line at the start (a first line with no field name and colon, 15 bytes)');
+  expect(notAMessage(Buffer.from('just some text\n'), null)).not.toContain('just');
   expect(notAMessage(Buffer.from('X-Thing: 1\r\n\r\nbody'), null)).toBe('no message header in the header block');
 });
 

@@ -2405,6 +2405,41 @@
     }
     return null;
   }
+  /**
+   * The post page's endpoint factory when its module keeps it to itself: x.com exports only the conversation timeline
+   * built on it (`({focalTweetId, withReplies}) => timeline`, whose creation options' `network.getEndpoint(api)` is
+   * `api.withEndpoint(factory).fetchTweetDetail`). The timeline is made for no post and nothing is fetched: its
+   * `getEndpoint` is handed a stand-in api that keeps the factory it is given.
+   */
+  function detailThroughTimeline(ids) {
+    for (const id of ids || []) {
+      let ex;
+      try {
+        ex = feed.req(id);
+      } catch (e) {
+        continue;
+      }
+      const cands = [ex];
+      try {
+        for (const k of Object.keys(ex)) cands.push(get(ex, k));
+      } catch (e) {}
+      for (const c of cands) {
+        if (!fn(c)) continue;
+        const src = srcOf(c);
+        if (src.indexOf('.fetchTweetDetail') < 0 || src.indexOf('withEndpoint(') < 0) continue;
+        try {
+          const tl = c({ focalTweetId: '0', withReplies: true });
+          const opts = tl && fn(get(tl, 'getCreationOptions')) ? tl.getCreationOptions() : null;
+          const net = get(opts, 'network');
+          if (!net || !fn(get(net, 'getEndpoint'))) continue;
+          let factory = null;
+          net.getEndpoint({ withEndpoint: (f) => ((factory = f), {}) });
+          if (fn(factory) && srcOf(factory).indexOf(MARKS.detail) >= 0) return factory;
+        } catch (e) {}
+      }
+    }
+    return null;
+  }
   /** The All timeline module among a module's exports: getCreationOptions().network fetching notifications. */
   function timelineIn(ns) {
     const cands = [];
@@ -2443,8 +2478,12 @@
     if (!feed.users) feed.users = exportIn(marked.users, MARKS.users);
     if (!feed.tweets) feed.tweets = exportIn(marked.tweets, MARKS.tweets);
     mark('profiles', !!(feed.users && feed.tweets), 'module');
-    if (!feed.detail) feed.detail = exportIn(marked.detail, MARKS.detail);
-    mark('posts', !!feed.detail, 'module');
+    if (!feed.detail) {
+      feed.detail = exportIn(marked.detail, MARKS.detail);
+      if (feed.detail) mark('posts', true, 'module');
+      else if ((feed.detail = detailThroughTimeline(marked.detail))) mark('posts', true, 'timeline');
+      else mark('posts', false, null);
+    }
     if (!feed.actions) feed.actions = exportIn(marked.actions, MARKS.actions, 'unretweet(');
     mark('actions', !!feed.actions, 'module');
     // Loaded already (someone opened a post's likes): there. Else pending until the first `reactors` loads it.

@@ -1037,7 +1037,9 @@ export class GmailMail {
       throw this.stopFor(lane) ?? new StatusError(r.type && /^text\/html\b/i.test(r.type) ? "Gmail's message download answered an HTML page, not a message; nothing was returned rather than possibly wrong mail" : `Gmail answered ${r.status} to the message download`, 502);
     }
     this.count(r.bytes.length);
-    const bad = notAMessage(r.bytes, r.type);
+    let bad = notAMessage(r.bytes, r.type);
+    // A blank line first is a message with no headers when Gmail's own listing has it with no sender: then it is taken.
+    if (bad && notAMessage(r.bytes, r.type, { headerless: true }) === null && (await this.listedWithoutSender(id, lane))) bad = null;
     if (bad) {
       this.note('raw', false, `the download is ${bad}`);
       this.o.log('warn', `gmail raw: the download is ${bad}`);
@@ -1045,6 +1047,15 @@ export class GmailMail {
     }
     this.note('raw', true);
     return r.bytes;
+  }
+
+  /**
+   * Whether Gmail's own listing has this message with no sender (a message with no headers): as last seen, else its
+   * thread fetched again (fd). Not seen in a listing since this started: false (refused, as before).
+   */
+  private async listedWithoutSender(id: string, lane: LaneName): Promise<boolean> {
+    const k = await this.locate(id, null, lane).catch(() => null);
+    return !!k && !k.from;
   }
 
   /** A message's labels and thread: as last seen (2 minutes), else its thread fetched again (fd), else a search for its Message-ID. */

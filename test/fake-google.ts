@@ -94,6 +94,8 @@ export interface FakeMessage {
   pending?: boolean;
   /** Sent from the web app: its record's id is the page's own (msg-a), with Gmail's id in hex at [55], as live Gmail sends it. */
   localId?: boolean;
+  /** Kept by Gmail with no headers at all (its original a blank line, then the body); list it with an empty from.email. */
+  headerless?: boolean;
   /** The sync point (history id) of its last change. */
   history: number;
 }
@@ -189,6 +191,7 @@ export function fakeMailbox(mark: string, now: number) {
 
 /** A message as Gmail's "Download message" gives it: RFC 822, multipart/alternative, and mixed when it has an attachment. */
 export function fakeEml(m: FakeMessage): string {
+  if (m.headerless) return `\r\n${m.body}\r\n`;
   const a = (x: FakeAddress) => (x.name ? `"${x.name}" <${x.email}>` : x.email);
   const head = [
     `From: ${a(m.from)}`,

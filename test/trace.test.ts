@@ -127,6 +127,8 @@ describe('through the manager', () => {
     // The extractor on the shared link gets its input as sent: `trace` is not part of it.
     expect(await c.callRaw(made.id, 'echo', { text: 'hi' }, 30_000, { trace: TRACEPARENT })).toEqual({ text: 'hi' });
     expect(await c.call(testEcho, made.id, 'echo', { text: 'untraced' })).toEqual({ text: 'untraced' });
+    // A refusal with an upstream status: its span says the status (bugwatch tells expected refusals by it).
+    expect(await c.call(testEcho, made.id, 'fail', { status: 410 }).catch((e) => e.code)).toBe('failed');
 
     // An extractor's finished span, as the Discord extractor sends it.
     const fromExtractor = { name: 'discord createGroup', traceId: APP_TRACE, spanId: 'c'.repeat(16), parentSpanId: APP_SPAN, startMs: 1, durationMs: 9, attrs: { op: 'createGroup' }, status: 'ok' };
@@ -144,6 +146,7 @@ describe('through the manager', () => {
     expect(calls[0]).toMatchObject({ traceId: APP_TRACE, parentSpanId: APP_SPAN, attrs: { app: app.app, account: made.id, op: 'echo' }, status: 'ok' });
     expect(calls[0]!.events!.map((e) => e.name)).toEqual(['to the extractor', 'the extractor answered']);
     expect(calls[1]!.parentSpanId).toBeUndefined();
+    expect(spans.find((s) => s.name === 'call fail')).toMatchObject({ status: 'error', error: 'failed with 410', attrs: { outcome: 'failed', status: 410 } });
     expect(spans.filter((s) => s.name === 'discord createGroup')).toEqual([{ ...fromExtractor, attrs: { op: 'createGroup', account: made.id } } as SpanRecord]);
     expect(spans.some((s) => s.name === 'junk')).toBe(false);
     // Not in the account's log.

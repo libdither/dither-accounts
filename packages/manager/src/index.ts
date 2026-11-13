@@ -1,6 +1,7 @@
 /** The manager as a library: main.ts runs it, tests make one on a temp dir and port. */
 import { join, resolve } from 'node:path';
 import { Approvers } from './approvers.ts';
+import { errorBlocks, ErrorLog } from './errors.ts';
 import { Store } from './db.ts';
 import { Http } from './http.ts';
 import { type Kind, loadKinds } from './kinds.ts';
@@ -33,6 +34,11 @@ export interface ManagerOpts {
    * hold of the event loop of 200 ms or more to <data>/traces/event-loop-stalls.ndjson (trace.ts). main.ts sets it.
    */
   trace?: boolean;
+  /**
+   * Write the manager's errors (its uncaught exceptions and rejections, extractors that crash) to
+   * <data>/traces/errors.ndjson (errors.ts), the file the bugwatch extractor reads. main.ts sets it.
+   */
+  errors?: boolean;
   /** Tests only: the manager's notices' hold times, debounce and sweep (notices.ts NOTICE_TIMES). */
   noticeTimes?: Partial<NoticeTimes>;
 }
@@ -44,6 +50,8 @@ export interface Manager {
   http: Http;
   approvers: Approvers;
   notices: Notices;
+  /** The error file, when `errors` is on (main.ts installs the process handlers on it). */
+  errors: ErrorLog | null;
   kinds: Map<string, Kind>;
   providers: Provider[];
   url: string;
@@ -55,6 +63,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
   const traceFile = o.trace ? new NdjsonFile(join(o.dataDir, 'traces/manager.trace.ndjson')) : null;
   const stallFile = o.trace ? new NdjsonFile(join(o.dataDir, 'traces/event-loop-stalls.ndjson'), { maxBytes: 2 * 1024 * 1024, keep: 3 }) : null;
   if (traceFile) setTraceSink(traceFile.push);
+  const errors = o.errors ? new ErrorLog(join(o.dataDir, 'traces/errors.ndjson'), { root: repoRoot }) : null;
   const stalls = stallFile ? new StallWatch({ record: stallFile.push }).begin() : null;
   // The extractors' kinds, and the manager's own notices (notices.ts), which no extractor runs.
   const kinds = new Map(o.kinds ?? (await loadKinds(repoRoot)));
@@ -77,6 +86,14 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
       notices?.poke();
     },
     onCrash: (id) => notices?.crashed(id),
+    // An extractor that crashed: its last error and frames from its stderr, never its other output.
+    onFailedExit: (id, kind, exit) => {
+      const block = errorBlocks(exit.stderr, repoRoot).at(-1);
+      const extra = { kind, account: id, code: exit.code, signal: exit.signal };
+      const where = `extractor ${kind}`;
+      if (block) errors?.record({ source: 'uncaught', where, name: block.name, message: block.message, stack: block.frames, extra });
+      else errors?.record({ source: 'uncaught', where, name: 'Exit', message: exit.signal ? `ended by signal ${exit.signal}` : `exited with code ${exit.code}`, extra });
+    },
     onExit: (id) => router?.processGone(id),
     // The approver's questions, for kinds that hold passkeys; the manager names the account itself.
     onAsk: async (id, what, input) => {
@@ -110,6 +127,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     http,
     approvers,
     notices,
+    errors,
     kinds,
     providers,
     url: `http://127.0.0.1:${http.server.port}`,
@@ -125,6 +143,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
       if (traceFile) setTraceSink(null);
       traceFile?.close();
       stallFile?.close();
+      errors?.close();
     },
   };
 }

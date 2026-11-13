@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./kinds": "./src/kinds.ts",
+    "./errors": "./src/errors.ts",
     "./api-types": "./src/api-types.ts"
   },
   "dependencies": {

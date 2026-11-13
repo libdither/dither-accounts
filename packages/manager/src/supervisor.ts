@@ -37,7 +37,14 @@ interface Running {
   /** Starts since the manager started (restarts after a crash included). */
   starts?: number;
   lastExit?: { code: number | null; signal: string | null; at: number };
+  /** The last lines its process wrote to stderr (STDERR_LINES), for the error file when it crashes. */
+  stderr?: string[];
+  /** Its stderr read to the end. */
+  stderrDone?: Promise<void>;
 }
+
+/** How many of an extractor's last stderr lines are kept for a crash record. */
+const STDERR_LINES = 60;
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: ExtractorError) => void; timer: Timer };
 
@@ -150,6 +157,11 @@ export class Supervisor {
       onExit?: (accountId: string) => void;
       /** An extractor's process ended on its own and is being started again. */
       onCrash?: (accountId: string) => void;
+      /**
+       * An extractor's process ended on its own with a failure (a code other than 0, or a signal), with the last lines
+       * it wrote to stderr: the manager's error file (errors.ts) records its last error.
+       */
+      onFailedExit?: (accountId: string, kind: string, exit: { code: number | null; signal: string | null; stderr: string[] }) => void;
       /** A question from an account's extractor to the manager (`what`, its input); throw to refuse. */
       onAsk?: (accountId: string, what: string, input: Record<string, unknown>) => Promise<unknown>;
     },
@@ -222,15 +234,27 @@ export class Supervisor {
       onExit: (p, code, signal) => this.exited(id, p, code, signal),
     });
     r.proc = proc;
+    const tail: string[] = (r.stderr = []);
     for (const stream of [proc.stdout, proc.stderr]) {
-      (async () => {
+      const isErr = stream === proc.stderr;
+      const decoder = new TextDecoder();
+      let partial = '';
+      const done = (async () => {
         const reader = (stream as ReadableStream<Uint8Array>).getReader();
         for (;;) {
           const { value, done } = await reader.read();
           if (done) break;
           appendFileSync(log, value);
+          if (isErr) {
+            const lines = (partial + decoder.decode(value, { stream: true })).split('\n');
+            partial = lines.pop() ?? '';
+            tail.push(...lines);
+            if (tail.length > STDERR_LINES) tail.splice(0, tail.length - STDERR_LINES);
+          }
         }
+        if (isErr && partial) tail.push(partial);
       })().catch(() => {});
+      if (isErr) r.stderrDone = done;
     }
     this.opts.onChange(id);
   }
@@ -254,6 +278,13 @@ export class Supervisor {
     if (r.stopping || !acc?.enabled) {
       if (acc) releaseLock(acc.dir);
       return;
+    }
+    if ((code !== null && code !== 0) || signal != null) {
+      const stderr = r.stderr ?? [];
+      const kind = acc.kind;
+      const exit = { code, signal: signal == null ? null : String(signal) };
+      // Its stderr can still be draining when the exit is reported.
+      void Promise.race([r.stderrDone ?? Promise.resolve(), Bun.sleep(1000)]).then(() => this.opts.onFailedExit?.(id, kind, { ...exit, stderr: [...stderr] }));
     }
     if (Date.now() - r.lastStart > 120_000) r.restarts = 0;
     const delay = BACKOFF[Math.min(r.restarts, BACKOFF.length - 1)];

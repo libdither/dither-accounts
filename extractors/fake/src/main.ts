@@ -21,6 +21,10 @@ function layers(config: Record<string, any>) {
   };
 }
 
+function crashWith(message: string): never {
+  throw new TypeError(message);
+}
+
 const link = linkManager({
   onConnect: () => {
     link.emit({ t: 'hello', version: '1', label: link.label });
@@ -29,6 +33,8 @@ const link = linkManager({
     // config.crash: end at once (the manager's notices count crashes); config.attention: say it needs you, with that
     // message (and config.attentionKind, and config.attentionStatus: a passing state such as connecting).
     if (link.config.crash) process.exit(3);
+    // config.throw: crash with an uncaught TypeError of that message (the manager's error file records it).
+    if (typeof link.config.throw === 'string') setTimeout(() => crashWith(String(link.config.throw)));
     const at = typeof link.config.attention === 'string' ? { status: String(link.config.attentionStatus ?? 'attention'), attention: { kind: String(link.config.attentionKind ?? 'login'), message: link.config.attention } } : { status: 'online' };
     link.emit({ t: 'status', ...at, self: { displayName: 'Fake', handle: 'fake-one' }, ...lv, ...layers(link.config) });
     link.log('info', 'fake extractor up');

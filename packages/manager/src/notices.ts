@@ -11,6 +11,10 @@
  * - an extractor that crashed 3 times in 10 minutes (`normal`), read again after 10 quiet minutes.
  * One id is announced at most once per 30 minutes (a flapping account), and not while its account is muted (24 h).
  *
+ * A service on this machine can say something too (`local`, POST /api/notices/local with the CLI token): the deployer
+ * that ships dither-chat and this manager says what it deployed or rolled back. Its words are its own, under
+ * `local:<source>:<id>`; muting one mutes that source for a day; the sweep never reads them.
+ *
  * Only the manager's own words and the account's label and kind: never an extractor's text (an attention's message can
  * carry a password hint, a code or a raw error), so a body says what the attention's kind means. Never secrets or
  * account data.
@@ -60,6 +64,45 @@ export function noticesKind(): Kind {
 }
 
 type Cond = 'attention' | 'stopped' | 'crashing' | 'no-device';
+
+/** What a service on this machine says (local). */
+export interface LocalNotice {
+  /** Stable per thing said: the same id again replaces it (and makes it unread). */
+  id: string;
+  /** Who says it, a short name ("deployer"). */
+  source: string;
+  title: string;
+  body?: string | null;
+  url?: string | null;
+  urgency?: Urgency;
+  /** What it is about, a word ("dither-chat"). */
+  context?: string | null;
+}
+
+const LOCAL_ID = /^[\w.:-]{1,100}$/;
+const SOURCE = /^[\w.-]{1,40}$/;
+const URGENCIES = new Set<Urgency>(['high', 'normal', 'low']);
+/** A local notice as given, checked; or why not. */
+export function localNotice(v: unknown): LocalNotice | string {
+  const o = (v ?? {}) as Record<string, unknown>;
+  if (typeof o.id !== 'string' || !LOCAL_ID.test(o.id)) return 'id: letters, digits and . : - _ (1-100)';
+  if (typeof o.source !== 'string' || !SOURCE.test(o.source)) return 'source: letters, digits and . - _ (1-40)';
+  const title = oneLine(o.title);
+  if (!title) return 'a title';
+  if (o.body != null && typeof o.body !== 'string') return 'body: a string';
+  if (o.url != null && (typeof o.url !== 'string' || !/^https?:\/\/\S+$/.test(o.url))) return 'url: an http(s) address';
+  if (o.urgency != null && !URGENCIES.has(o.urgency as Urgency)) return 'urgency: high, normal or low';
+  if (o.context != null && typeof o.context !== 'string') return 'context: a string';
+  return {
+    id: o.id,
+    source: o.source,
+    title,
+    body: typeof o.body === 'string' ? clip(o.body.trim(), 2000) || null : null,
+    url: (o.url as string | undefined) ?? null,
+    urgency: (o.urgency as Urgency | undefined) ?? 'normal',
+    context: typeof o.context === 'string' ? clip(oneLine(o.context), 80) || null : null,
+  };
+}
 
 interface Episode {
   since: number;
@@ -170,6 +213,35 @@ export class Notices {
     this.emit(id, a, 'no-device', 'high', `${named(a)}: no device for a passkey approval`, `${what} for ${clip(oneLine(rpId), 100)} asked for approval on a device that is not paired with this manager.`);
   }
 
+  /**
+   * A service on this machine says something (POST /api/notices/local). Announced at once, every time: the service
+   * decides how often (the debounce is for flapping accounts). Null while the notices are off or its source is muted.
+   */
+  local(n: LocalNotice): Notification | null {
+    if (!this.on) return null;
+    const subject = `local:${n.source}`;
+    if (this.muted(subject)) return null;
+    const id = `${subject}:${n.id}`;
+    const now = Date.now();
+    const out: Notification = {
+      id,
+      source: n.source,
+      title: clip(n.title, 200),
+      body: n.body ?? null,
+      url: n.url ?? null,
+      reason: 'local',
+      context: n.context ?? null,
+      subject: { kind: 'service', title: n.source, url: null, state: null },
+      actors: [],
+      at: now,
+      unread: true,
+      urgency: n.urgency ?? 'normal',
+    };
+    this.keep(id, subject, 'local', out, now);
+    this.router.event(NOTICES_ID, { t: 'notify.new', notification: out });
+    return out;
+  }
+
   // ---------------------------------------------------------------- conditions
 
   /** Each account's conditions as they are now: announced once held long enough, read again once gone. */
@@ -195,7 +267,8 @@ export class Notices {
       }
     }
     // An account that is gone: what it had said no longer holds.
-    for (const r of this.store.all<{ id: string; reason: string }>('SELECT id, reason FROM notice WHERE unread = 1')) if (!seen.has(r.id) && r.reason !== 'no-device') this.clear(r.id);
+    // A service's own notices (local) are not an account's condition: only it, or you, read them.
+    for (const r of this.store.all<{ id: string; reason: string }>('SELECT id, reason FROM notice WHERE unread = 1')) if (!seen.has(r.id) && r.reason !== 'no-device' && r.reason !== 'local') this.clear(r.id);
     for (const id of [...this.episodes.keys()]) if (!seen.has(id)) this.episodes.delete(id);
     for (const [id, list] of this.crashes) if (!list.some((t) => now - t < this.times.crashWindowMs)) this.crashes.delete(id);
   }
@@ -254,18 +327,23 @@ export class Notices {
       unread: true,
       urgency,
     };
+    this.keep(id, a.id, cond, n, now);
+    this.router.event(NOTICES_ID, { t: 'notify.new', notification: n });
+  }
+
+  /** Stores a notice (a repeat of its id replaces it, unread), keeping the last KEEP. */
+  private keep(id: string, subject: string, reason: string, n: Notification, now: number) {
     this.store.run(
       `INSERT INTO notice (id, subject, reason, notification, at, unread, emitted_at) VALUES (?, ?, ?, ?, ?, 1, ?)
        ON CONFLICT(id) DO UPDATE SET subject = excluded.subject, reason = excluded.reason, notification = excluded.notification, at = excluded.at, unread = 1, emitted_at = excluded.emitted_at`,
       id,
-      a.id,
-      cond,
+      subject,
+      reason,
       JSON.stringify(n),
       now,
       now,
     );
     this.store.run('DELETE FROM notice WHERE id NOT IN (SELECT id FROM notice ORDER BY at DESC LIMIT ?)', KEEP);
-    this.router.event(NOTICES_ID, { t: 'notify.new', notification: n });
   }
 
   /** The condition is gone: its episode ends, and an unread notice about it is read. */

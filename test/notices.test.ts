@@ -6,7 +6,7 @@
  * it, and the notices kept across a restart.
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AccountsClient, CallFailed, register } from '@dither-accounts/client';
@@ -234,6 +234,37 @@ test('grants apply: an app without notifications hears nothing of it and may not
   expect(e.code).toBe('denied');
   // And notices hold no secrets: none carries the pairing code given to the linking account.
   expect(JSON.stringify(m.store.all('SELECT notification FROM notice'))).not.toContain('ABCD-1234');
+});
+
+test('a service on this machine says something with the CLI token: announced at once, replaced by its id, never swept', async () => {
+  const cli = readFileSync(join(dir, 'cli.token'), 'utf8').trim();
+  const post = (b: unknown, token: string | null = cli) =>
+    fetch(`${m.url}/api/notices/local`, { method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { 'x-dither-accounts-cli': token } : {}) }, body: JSON.stringify(b) });
+  const say = { id: 'chat', source: 'deployer', title: 'Deployed dither-chat a14daa9', body: '#162, #163', context: 'dither-chat', urgency: 'low' };
+  // Not without the CLI token, nor from a page.
+  expect((await post(say, null)).status).toBe(401);
+  expect((await post(say, 'not-the-token')).status).toBe(401);
+  expect((await fetch(`${m.url}/api/notices/local`, { method: 'POST', headers: { origin: m.url, 'x-dither-accounts-cli': cli }, body: '{}' })).status).toBe(403);
+  // What it says is checked.
+  expect((await post({ ...say, id: 'no spaces' })).status).toBe(400);
+  expect((await post({ ...say, url: 'javascript:alert(1)' })).status).toBe(400);
+  expect((await post({ ...say, urgency: 'now' })).status).toBe(400);
+  const before = news().length;
+  const r = await post(say);
+  expect(r.status).toBe(200);
+  expect(((await r.json()) as { notice: string }).notice).toBe('local:deployer:chat');
+  await until(() => news().length > before, 5000, 'the local notice');
+  const n = news().at(-1)!;
+  expect(n).toMatchObject({ id: 'local:deployer:chat', source: 'deployer', title: 'Deployed dither-chat a14daa9', body: '#162, #163', reason: 'local', context: 'dither-chat', urgency: 'low', unread: true });
+  // The same id again replaces it; the sweep (every 50 ms here) leaves it unread.
+  await post({ ...say, title: 'Rolled back dither-chat to d8aa3b6', urgency: 'high' });
+  await until(() => news().length > before + 1, 5000, 'the replacement');
+  await Bun.sleep(300);
+  const listed = await app.c.call(notifications, 'notices', 'notify.list', { unreadOnly: true });
+  const mine = listed.notifications.filter((x) => x.id === 'local:deployer:chat');
+  expect(mine).toHaveLength(1);
+  expect(mine[0]).toMatchObject({ title: 'Rolled back dither-chat to d8aa3b6', urgency: 'high', unread: true });
+  expect(reads()).not.toContain('local:deployer:chat');
 });
 
 test('kept across a restart, not announced again, read or unread; the account is made once', async () => {

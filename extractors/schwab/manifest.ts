@@ -9,7 +9,7 @@ import type { Manifest } from '@dither-accounts/manager/kinds';
 export default {
   kind: 'schwab',
   name: 'Charles Schwab',
-  interfaces: ['statements'],
+  interfaces: ['statements', 'browser'],
   entry: 'src/main.ts',
   passkeys: true,
   add: {

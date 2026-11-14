@@ -125,7 +125,7 @@ it(
   "two pulls write amazon.py's bytes; a code is answered; a robot check and a checkpoint hold the account for you",
   async () => {
     await until(() => events.some((e) => e.t === 'hello'), 20_000, 'hello');
-    expect(events.find((e) => e.t === 'hello')).toMatchObject({ interfaces: ['statements'], capabilities: ['liveView'] });
+    expect(events.find((e) => e.t === 'hello')).toMatchObject({ interfaces: ['statements', 'browser'], capabilities: ['liveView'] });
     await until(() => lastStatus()?.status === 'online', 60_000, 'online');
 
     // 1. The backfill, with the password asked for on the third details page: amazon.py's file and pages.
@@ -187,4 +187,42 @@ it(
     for (const s of [PASSWORD, EMAIL, TOTP_SECRET]) expect(wire).not.toContain(s);
   },
   400_000,
+);
+
+it(
+  'the browser interface: its own tab on the site only, real clicks and keys, and no Buy Now below manage',
+  async () => {
+    await until(() => lastStatus()?.status === 'online', 60_000, 'online');
+    await expect(call('browser.read')).rejects.toThrow(/no tab of this interface is open/);
+    await expect(call('browser.open', { url: 'https://elsewhere.example.com/' })).rejects.toThrow(/not this account's site/);
+
+    const opened = await call('browser.open', { url: `${fake.origin}/dp/B0TESTCART` });
+    expect(opened).toMatchObject({ title: 'Amazon.com: Test mug', challenge: null });
+    const tabId = opened.tabId;
+    expect((await call('browser.tabs')).tabs).toEqual([expect.objectContaining({ tabId, active: true })]);
+
+    const page = await call('browser.read');
+    expect(page.text).toContain('Test mug, blue, 12 oz');
+    const el = (name: string) => page.elements.find((e: any) => e.name === name);
+    expect(el('Quantity')).toMatchObject({ role: 'combobox', value: '1' });
+    expect(el('Gift note')).toMatchObject({ role: 'textbox', value: '' });
+    expect(el('Add to cart')).toMatchObject({ role: 'button' });
+    expect(el('Add to cart').guarded).toBeUndefined();
+    expect(el('Buy Now')).toMatchObject({ role: 'button', guarded: true, inView: false });
+
+    await call('browser.select', { ref: el('Quantity').ref, option: '2' });
+    await call('browser.type', { ref: el('Gift note').ref, text: 'for the office' });
+    await expect(call('browser.click', { ref: el('Buy Now').ref })).rejects.toThrow(/only browser.press/);
+    const shot = await call('browser.shot');
+    expect(Buffer.from(shot.base64, 'base64').subarray(1, 4).toString()).toBe('PNG');
+
+    const after = await call('browser.click', { ref: el('Add to cart').ref });
+    expect(after.url).toBe(`${fake.origin}/cart`);
+    expect(fake.shop).toEqual([{ what: 'add', trusted: true, qty: '2', note: 'for the office' }]);
+    await expect(call('browser.click', { ref: el('Add to cart').ref })).rejects.toThrow(/read the page again/);
+
+    expect(await call('browser.close', { tabId })).toEqual({ closed: true });
+    await expect(call('browser.read', { tabId })).rejects.toThrow(/not one this interface opened|closed/);
+  },
+  120_000,
 );

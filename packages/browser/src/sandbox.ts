@@ -54,7 +54,7 @@ export interface Bins {
 const CHROMIUM_CANDIDATES = [`/etc/profiles/per-user/${process.env.USER}/bin/chromium`, '/run/current-system/sw/bin/chromium'];
 
 /** Resolve a binary: env override -> PATH -> known candidates -> nix build. */
-function resolveBin(name: 'Xvfb' | 'x11vnc' | 'chromium', envVar: string, nixAttr: string, candidates: string[], log: Log): string {
+function resolveBin(name: 'Xvfb' | 'x11vnc' | 'chromium' | 'xdotool' | 'import', envVar: string, nixAttr: string, candidates: string[], log: Log): string {
   const fromEnv = process.env[envVar];
   if (fromEnv && existsSync(fromEnv)) return fromEnv;
   const onPath = Bun.which(name);
@@ -67,6 +67,16 @@ function resolveBin(name: 'Xvfb' | 'x11vnc' | 'chromium', envVar: string, nixAtt
   const bin = join(store, 'bin', name);
   if (!existsSync(bin)) throw new Error(`nix built ${nixAttr} but ${bin} is missing`);
   return bin;
+}
+
+/** xdotool, for real mouse and key input on an account's display (the `browser` interface: docs/browser.md). */
+export function resolveXdotool(log: Log): string {
+  return resolveBin('xdotool', 'XDOTOOL_BIN', 'xdotool', [], log);
+}
+
+/** ImageMagick's import, for a PNG of an account's display (the `browser` interface's screenshot). */
+export function resolveImport(log: Log): string {
+  return resolveBin('import', 'IMPORT_BIN', 'imagemagick', [], log);
 }
 
 export function resolveBins(log: Log): Bins {

@@ -52,12 +52,13 @@ export interface HostOpts {
 }
 
 /**
- * The driver as the extension's sw.js (with passkeys.js after it for a kind with a passkey), and in tests the fake
+ * The driver as the extension's sw.js (browser.js after it, for the `browser` interface, and passkeys.js for a kind
+ * with a passkey), and in tests the fake
  * site's origins added to the host permissions and the content scripts' matches.
  */
 export function prepareDriver(dir: string, opts: { passkeys?: boolean; testOrigins?: (string | null | undefined)[] } = {}) {
   const ext = join(import.meta.dir, '../extension');
-  const worker = readFileSync(join(ext, 'driver.js'), 'utf8') + (opts.passkeys ? readFileSync(join(ext, 'passkeys.js'), 'utf8') : '');
+  const worker = readFileSync(join(ext, 'driver.js'), 'utf8') + readFileSync(join(ext, 'browser.js'), 'utf8') + (opts.passkeys ? readFileSync(join(ext, 'passkeys.js'), 'utf8') : '');
   writeFileSync(join(dir, 'sw.js'), worker);
   const origins = (opts.testOrigins ?? []).filter((o): o is string => !!o);
   if (!origins.length) return;

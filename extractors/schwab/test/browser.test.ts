@@ -145,7 +145,7 @@ it(
   'asks for a sign-in, shows the code page as needing you, pulls every export after it, then enrolls a passkey in a frame and signs itself in with it',
   async () => {
     await until(() => events.some((e) => e.t === 'hello'), 20_000, 'hello');
-    expect(events.find((e) => e.t === 'hello')).toMatchObject({ kind: 'schwab', interfaces: ['statements'], capabilities: ['liveView'] });
+    expect(events.find((e) => e.t === 'hello')).toMatchObject({ kind: 'schwab', interfaces: ['statements', 'browser'], capabilities: ['liveView'] });
 
     // Signed out, never pulled: the sign-in attention (step 1 of 3).
     await until(() => lastStatus()?.attention?.kind === 'login', 60_000, 'the sign-in attention');

@@ -3167,7 +3167,9 @@
     if (mod.SelectedChannelStore.getChannelId() !== channelId) {
       const prev = browsing.channelId;
       if (!prev) browsing.home = location.pathname;
-      const landed = nextAction(['LOAD_MESSAGES_SUCCESS'], (a) => String(a.channelId) === channelId && a.before == null && a.after == null && !a.jump, 10_000);
+      // Opening a channel loads its newest messages with a jump that says how to scroll there and names no message
+      // (MessageManager's initial fetch); a jump to a message (an unread thread's) is not the newest page.
+      const landed = nextAction(['LOAD_MESSAGES_SUCCESS'], (a) => String(a.channelId) === channelId && a.before == null && a.after == null && (!a.jump || a.jump.messageId == null), 10_000);
       const guildId = c.guild_id ?? c.guildId ?? null;
       transition(`/channels/${guildId || '@me'}/${channelId}`);
       browsing.channelId = channelId;

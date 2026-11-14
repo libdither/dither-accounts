@@ -100,7 +100,8 @@ function client(opts: { unread?: string[] } = {}) {
     setTimeout(() => {
       if (!loaded.has(channel)) {
         loaded.add(channel);
-        dispatcher.dispatch({ type: 'LOAD_MESSAGES_SUCCESS', channelId: channel, messages: loadPage(channel), isBefore: false, isAfter: false, limit: 50 });
+        // As MessageManager's initial fetch: a jump with how to scroll, and no message.
+        dispatcher.dispatch({ type: 'LOAD_MESSAGES_SUCCESS', channelId: channel, messages: loadPage(channel), isBefore: false, isAfter: false, limit: 50, jump: { jumpType: 'ANIMATED' } });
       }
       mount(channel);
     }, 1);

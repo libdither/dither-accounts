@@ -1152,8 +1152,15 @@
       return;
     }
     if (p.t !== 'cmd' || !p.cmd) return;
+    // Received: the extractor can tell a command lost on the way from one this page is still working on.
+    post({ t: 'got', id: p.id, at: 'page' });
+    const kind = String(p.cmd.kind);
+    if (kind === 'page.state') return post({ t: 'reply', id: p.id, ok: true, result: pageState() });
+    const what = commandName(p.cmd);
+    const work = { what, since: Date.now(), timer: 0 };
+    work.timer = later.call(window, () => log('warn', `${what} still open after ${SLOW_MS / 1000} s`, { visibility: document.visibilityState }), SLOW_MS);
+    open.set(p.id, work);
     try {
-      const kind = String(p.cmd.kind);
       let result;
       if (kind === 'gfetch') result = await gfetch(p.cmd);
       else if (kind.startsWith('gmail.')) result = await gmailCommand(p.cmd);
@@ -1161,8 +1168,51 @@
       post({ t: 'reply', id: p.id, ok: true, result });
     } catch (err) {
       post({ t: 'reply', id: p.id, ok: false, error: String((err && err.message) || err) });
+    } finally {
+      clearTimeout(work.timer);
+      open.delete(p.id);
     }
   });
+
+  // ------------------------------------------------------------ what the extractor asks when the page goes quiet
+  // Counts and names of steps only: never an address's query, a body, or an error's text.
+  const SLOW_MS = 20000;
+  const open = new Map(); // command id -> { what, since, timer }
+  const life = { events: [], errors: 0, rejections: 0, startedAt: Date.now() };
+  /** A command as a log may name it: its kind, and for a gfetch its method, host and path template. */
+  function commandName(c) {
+    if (c.kind !== 'gfetch') return String(c.kind);
+    try {
+      const u = new URL(c.url);
+      return `gfetch ${c.method || 'GET'} ${u.host}${template(u.pathname)}`;
+    } catch (e) {
+      return 'gfetch';
+    }
+  }
+  function lifeEvent(name) {
+    life.events.push({ name, at: Date.now() });
+    if (life.events.length > 20) life.events.shift();
+    log('info', `page ${name}`, { visibility: document.visibilityState });
+  }
+  addListener.call(document, 'visibilitychange', () => lifeEvent(document.visibilityState === 'hidden' ? 'hidden' : 'visible'));
+  addListener.call(document, 'freeze', () => lifeEvent('frozen'));
+  addListener.call(document, 'resume', () => lifeEvent('resumed'));
+  addListener.call(window, 'pagehide', (e) => lifeEvent(e.persisted ? 'hidden into the back-forward cache' : 'unloading'));
+  addListener.call(window, 'error', () => life.errors++);
+  addListener.call(window, 'unhandledrejection', () => life.rejections++);
+  function pageState() {
+    const now = Date.now();
+    return {
+      visibility: document.visibilityState,
+      focused: document.hasFocus(),
+      wasDiscarded: !!document.wasDiscarded,
+      upMs: now - life.startedAt,
+      errors: life.errors,
+      rejections: life.rejections,
+      open: Array.from(open.values(), (w) => ({ what: w.what, ms: now - w.since })),
+      events: life.events.map((e) => ({ name: e.name, agoMs: now - e.at })),
+    };
+  }
 
   announce();
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', scanHtml, { once: true });

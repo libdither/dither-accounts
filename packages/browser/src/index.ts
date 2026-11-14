@@ -2,7 +2,7 @@
  * Browser-session extractors' shared parts: the sandbox (Xvfb + Chromium + extension + x11vnc), its bridge, a free
  * display, the live view's socket, and the names its extensions leave in pages, made per install.
  */
-export { BridgeServer, type BridgeReply, type BridgeServerOpts } from './bridge.ts';
+export { BridgeServer, type BridgeReply, type BridgeServerOpts, type Reached } from './bridge.ts';
 export { displayTaken, type FreeDisplay, pickFreeDisplay, portInUse } from './display.ts';
 export { MARKER_KEY_ENV, markerHex, markerKey, markerName, stampExtension, stampMarkers } from './markers.ts';
 export { type Bins, type Log, resolveBins, resolveImport, resolveXdotool, Sandbox, type SandboxOptions } from './sandbox.ts';

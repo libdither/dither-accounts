@@ -1087,7 +1087,8 @@ export class Supervisor {
         return;
       }
       const acc = this.store.account(id);
-      const line = `[${ev.level}] ${ev.msg}${ev.data !== undefined ? ' ' + JSON.stringify(ev.data) : ''}\n`;
+      // Each line with its time, so a line can be put next to a trace's spans or another account's log.
+      const line = `${new Date().toISOString()} [${ev.level}] ${ev.msg}${ev.data !== undefined ? ' ' + JSON.stringify(ev.data) : ''}\n`;
       if (acc) appendFileSync(join(acc.dir, 'adapter.log'), line);
       return;
     }

@@ -9,7 +9,9 @@
  * its role (`page`, default 'calendar') and goes to that role's current port only (the newest: a reload or a
  * replacement takes over), never to every tab: a write must happen once. Commands of kind `tab.open` and `tab.reload`
  * are this worker's own: open a role's tab if it has none, or send it back to its start address (or close it and open
- * a new one), so the extractor can bring one page back without touching the other.
+ * a new one), so the extractor can bring one page back without touching the other; `tab.state` says how Chromium sees
+ * a role's tab. Each command handed to a page's port is reported up as `got` (at 'worker'), and the page reports it
+ * again when it arrives (at 'page'), so a command never answered says how far it got.
  *
  * Every frame a page sends up carries its port's role.
  */
@@ -172,6 +174,34 @@ async function tabCommand(id, cmd) {
   }
 }
 
+/**
+ * tab.state: what Chromium says of the role's tab (loading or not, discarded, frozen, active, its origin and path),
+ * and how many ports its page has open, for a log line when the page stops answering.
+ */
+async function tabState(id, cmd) {
+  const role = ROLES.includes(cmd.page) ? cmd.page : 'calendar';
+  try {
+    const t = await tabFor(role, cmd.tabId);
+    const port = current(role);
+    const result = t
+      ? {
+          tabId: t.id,
+          url: bare(t.url || t.pendingUrl || ''),
+          status: t.status || null,
+          active: !!t.active,
+          discarded: !!t.discarded,
+          frozen: typeof t.frozen === 'boolean' ? t.frozen : null,
+          audible: !!t.audible,
+          portTab: port ? tabOf(port) : null,
+          ports: ports.filter((p) => roleOf(p) === role).length,
+        }
+      : { tabId: null, ports: ports.filter((p) => roleOf(p) === role).length };
+    sendUp({ t: 'reply', id, ok: true, result });
+  } catch (err) {
+    sendUp({ t: 'reply', id, ok: false, error: String((err && err.message) || err) });
+  }
+}
+
 // ------------------------------------------------------------ the socket
 async function connect() {
   if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
@@ -209,6 +239,10 @@ async function connect() {
       tabCommand(msg.id, cmd);
       return;
     }
+    if (cmd.kind === 'tab.state') {
+      tabState(msg.id, cmd);
+      return;
+    }
     const role = ROLES.includes(cmd.page) ? cmd.page : 'calendar';
     const port = current(role);
     if (!port) {
@@ -217,6 +251,8 @@ async function connect() {
     }
     try {
       port.postMessage(msg);
+      // Handed to the page's port: a command that is never answered was lost in the page, not on the way to it.
+      sendUp({ t: 'got', id: msg.id, at: 'worker', tab: tabOf(port) });
     } catch (err) {
       sendUp({ t: 'reply', id: msg.id, ok: false, error: `the ${NAMES[role]} page went away` });
     }

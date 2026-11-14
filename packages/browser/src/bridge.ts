@@ -3,7 +3,9 @@
  * worker connects to ws://127.0.0.1:<port>/?token=…; nothing else may talk to the page's hook. Bound to loopback,
  * token-gated, port 0 by default (any free one).
  *
- * Up from the extension: `{ t: 'reply', id, ok, result | error }` for commands, anything else to onMessage.
+ * Up from the extension: `{ t: 'reply', id, ok, result | error }` for commands; `{ t: 'got', id, at }` where a command
+ * has got to (the service worker handed it to the page's port: 'worker'; the page has it: 'page'), so one never
+ * answered says how far it got (the timeout's `reached`); anything else to onMessage.
  * Down to it: `{ t: 'cmd', id, cmd }` (request) and `{ t: 'ping' }`.
  */
 import type { Server, ServerWebSocket } from 'bun';
@@ -23,7 +25,12 @@ export interface BridgeServerOpts<Up> {
   log: Log;
 }
 
+/** How far a command got before its timeout: nowhere we heard of, the service worker, or the page itself. */
+export type Reached = 'none' | 'worker' | 'page';
+const REACHED_RANK: Record<Reached, number> = { none: 0, worker: 1, page: 2 };
+
 interface Pending {
+  reached: Reached;
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -76,6 +83,12 @@ export class BridgeServer<Up extends { t: string } = { t: string; [k: string]: u
           } catch {
             return;
           }
+          if (msg.t === 'got') {
+            const g = msg as unknown as { id?: unknown; at?: unknown };
+            const p = typeof g.id === 'string' ? self.pending.get(g.id) : undefined;
+            if (p && (g.at === 'worker' || g.at === 'page') && REACHED_RANK[g.at] > REACHED_RANK[p.reached]) p.reached = g.at;
+            return;
+          }
           if (msg.t === 'reply') {
             const r = msg as BridgeReply;
             const p = self.pending.get(r.id);
@@ -107,16 +120,17 @@ export class BridgeServer<Up extends { t: string } = { t: string; [k: string]: u
     this.sock.send(JSON.stringify(payload));
   }
 
-  /** Run a command in the page and await its reply. */
+  /** Run a command in the page and await its reply. A timeout's error carries `reached`: how far the command got. */
   request<T = unknown>(cmd: Cmd, timeoutMs = 30_000): Promise<T> {
     const id = `c${++this.seq}`;
     return new Promise<T>((resolve, reject) => {
       if (!this.sock) return reject(new Error('extension not connected'));
       const timer = setTimeout(() => {
+        const reached = this.pending.get(id)?.reached ?? 'none';
         this.pending.delete(id);
-        reject(new Error(`hook timed out on ${cmd.kind}`));
+        reject(Object.assign(new Error(`hook timed out on ${cmd.kind}`), { reached }));
       }, timeoutMs);
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
+      this.pending.set(id, { reached: 'none', resolve: resolve as (v: unknown) => void, reject, timer });
       try {
         this.sendDown({ t: 'cmd', id, cmd });
       } catch (e) {

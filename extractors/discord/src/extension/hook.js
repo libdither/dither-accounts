@@ -1453,7 +1453,7 @@
         participants.push({ id, muted: !!(v.selfMute || v.mute), deafened: !!(v.selfDeaf || v.deaf), speaking, video: !!v.selfVideo, ...inCallExtras(id, v, stage) });
         users.push(resolveUser(id));
       }
-      const self = selfState();
+      const self = callSelf();
       // Its call view is what asks the voice server for people's video: opened, as clicking the channel would, once
       // there is video to see (an audio call never pays for drawing it), and after the join has answered.
       if (call.mode === 'bridge' && !call.viewOpen && (participants.some((x) => x.video || x.streaming) || watching.size)) {
@@ -6152,7 +6152,7 @@
   }
 
   /** The account's own client in the call, for the device (CallState.self). */
-  function selfState() {
+  function callSelf() {
     const ms = mod.MediaEngineStore;
     const me = currentUser();
     let connected = call.mode === 'direct';

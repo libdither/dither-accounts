@@ -17,7 +17,9 @@ that looks like a bot. Stopping the manager (`systemctl --user stop`) still stop
 | `child` | A plain child, stopped with the manager: the old behaviour. |
 | `auto` (default) | `scope` when the manager is the **main process of a systemd user service** (its control group is `<name>.service` and the unit's MainPID is its pid) and a trial `systemd-run --user --scope true` works; else `child`. A shell or script that only inherited a service's `INVOCATION_ID` (an agent's shell, a trial manager from a script) is not a service, so its extractors stop with it. |
 
-The manager's start line in its log says which one it uses (`launch=scope`). The unit file needs no change.
+The manager's log says which one it uses and why (`launch=scope: the main process of dither-accounts.service, and
+systemd-run --user --scope works`, or what kept it from a scope). Right at a service's start systemd may not have
+recorded its main process yet; that is asked again for a few seconds. The unit file needs no change.
 
 In every mode the extractor's stdout and stderr go straight to the account's `adapter.log` (a file descriptor, not a
 pipe through the manager), so a manager that goes cannot break a pipe under it. When an extractor crashes, the error

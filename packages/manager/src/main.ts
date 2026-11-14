@@ -51,6 +51,8 @@ const m = await createManager({ dataDir, port, hostname: host, publicUrl, ...(we
 // Its own uncaught exceptions and rejections into <data>/traces/errors.ndjson; it still ends as the crash would have.
 if (m.errors) installProcessHandlers(m.errors);
 console.log(`dither-accounts on ${m.url.replace('127.0.0.1', host)}  page=${publicUrl}  kinds=${[...m.kinds.keys()].join(',')}  data=${dataDir}  launch=${m.sup.launch}`);
+// Why: a service whose extractors would not outlive a restart (child) says so plainly.
+console.log(`launch=${m.sup.launch}: ${m.launchWhy}`);
 
 // A restart (a deploy, `systemctl --user restart`) leaves the extractors that can outlive the manager running: the next
 // one adopts them. A stop (`systemctl --user stop`, a shutdown) stops them, as does stopping one account. Under systemd,

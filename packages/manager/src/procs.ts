@@ -180,19 +180,43 @@ export async function endAll(procs: ProcRef[], graceMs = 3000): Promise<void> {
  * MainPID is this pid), or null: a shell or a script started from inside a service, which inherits its INVOCATION_ID,
  * is not it.
  */
-export function ownService(pid = process.pid, mainPid: (unit: string) => number | null = systemdMainPid): string | null {
-  const cg = cgroupOf(pid);
-  const unit = cg?.split('/').pop() ?? '';
-  if (!unit.endsWith('.service')) return null;
-  return mainPid(unit) === pid ? unit : null;
+export function ownService(pid = process.pid, mainPid: (unit: string) => number | null = systemdMainPid, tries = 10): string | null {
+  return serviceOf(pid, mainPid, tries).unit;
 }
 
+/**
+ * ownService, with why not when it is none (the manager logs it: a service that ends up with `child` should say why).
+ * systemd may not have recorded the main process yet right at its start (MainPID 0), so that is asked again a few times.
+ */
+export function serviceOf(pid = process.pid, mainPid: (unit: string) => number | null = systemdMainPid, tries = 10): { unit: string | null; why: string } {
+  const cg = cgroupOf(pid);
+  const unit = cg?.split('/').pop() ?? '';
+  if (!unit.endsWith('.service')) return { unit: null, why: `not a systemd service (its control group is ${cg ?? 'unknown'})` };
+  let main: number | null = null;
+  for (let i = 0; i < tries; i++) {
+    main = mainPid(unit);
+    if (main === pid) return { unit, why: `the main process of ${unit}` };
+    // Another process is its main one (this is a child of the service), or no user service of that name: no point
+    // asking again.
+    if (main) break;
+    if (i + 1 < tries) Bun.sleepSync(300);
+  }
+  return { unit: null, why: main === -1 ? `in ${unit}, which is no service of this user's systemd` : `in ${unit}, whose main process is ${main ?? 'unknown'}, not this one (${pid})` };
+}
+
+/**
+ * A user service's MainPID: null while systemd has none recorded yet, -1 when the user's systemd has no such unit (a
+ * system service, a CI runner's), which is never worth asking again.
+ */
 function systemdMainPid(unit: string): number | null {
   try {
-    const r = Bun.spawnSync(['systemctl', '--user', 'show', '-p', 'MainPID', '--value', unit], { stdout: 'pipe', stderr: 'ignore', timeout: 10_000 });
-    return r.exitCode === 0 ? Number(r.stdout.toString().trim()) || null : null;
+    const r = Bun.spawnSync(['systemctl', '--user', 'show', '-p', 'LoadState', '-p', 'MainPID', unit], { stdout: 'pipe', stderr: 'ignore', timeout: 10_000 });
+    if (r.exitCode !== 0) return -1;
+    const v = Object.fromEntries(r.stdout.toString().trim().split('\n').map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+    if (v.LoadState !== 'loaded') return -1;
+    return Number(v.MainPID) || null;
   } catch {
-    return null;
+    return -1;
   }
 }
 

@@ -1,7 +1,7 @@
 /**
- * The `mail` interface (read-only) over Gmail's own web protocol, through the Gmail tab: thread lists and searches
- * (bv), thread fetches (fd), the sync call from a history point (s), and the original message from Gmail's own
- * download route. protocol.ts builds the bodies and reads the answers by their anchors; this class pages, pairs
+ * The `mail` interface over Gmail's own web protocol, through the Gmail tab: thread lists and searches (bv), thread
+ * fetches (fd), the sync call from a history point (s), the original message from Gmail's own download route, and the
+ * page's own writes (label changes, a draft and its send, an attachment's upload: write.ts). protocol.ts builds the bodies and reads the answers by their anchors; this class pages, pairs
  * messages with mailboxes, keeps what it learned (label names, a message's labels for a while), paces the calls, and
  * keeps each endpoint's fingerprint result, which the 'Gmail protocol' layer shows. docs/google.md, "Gmail mail".
  *
@@ -22,13 +22,38 @@
  *   state     `g1.<history id>.<ms>`: Gmail's sync point, and when it was handed out. One for the whole account. A
  *             trailing `.b`: the sync point was taken from a list answer (bv's json[18][0]), not from Gmail's sync.
  *
- * Nothing here writes: no label is changed, nothing is sent.
+ * Writes go through the same foreground lane, one call at a time: mail.flag, mail.move and mail.trash are label changes
+ * (one per thread and kind of change), mail.send uploads the files, saves a draft and sends it. Spam is not written
+ * (Gmail's "Report spam" may report the sender, and its call was never recorded).
  */
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import type { MailChanges, MailFlags, MailMessage, MailSummary, Mailbox } from '@dither-accounts/interfaces';
+import type { MailChanges, MailFlags, MailMessage, MailMoveAnswer, MailSummary, MailWriteAnswer, Mailbox } from '@dither-accounts/interfaces';
 import { StatusError } from '@dither-accounts/link';
 import { shape } from '../gmail-learn.js';
 import { parseMessage } from './mime.ts';
+import type { OutgoingChecked } from './send.ts';
+import {
+  type DraftFile,
+  draftChange,
+  draftFile,
+  EDITS,
+  htmlOfText,
+  intoLabel,
+  type LabelEdit,
+  labelChange,
+  newFileId,
+  newMessageId,
+  newSession,
+  newThreadId,
+  parseWrite,
+  sendChange,
+  sentRecord,
+  UPLOAD_TOKEN,
+  uploadMeta,
+  WriteLayoutError,
+  type Writing,
+  writeRequest,
+} from './write.ts';
 import {
   type BvAnswer,
   type BvLayout,
@@ -37,6 +62,7 @@ import {
   type Count,
   DECIMAL_ID,
   ENDPOINT_NAMES,
+  fDecimal,
   ENDPOINTS,
   type Endpoint,
   type FdAnswer,
@@ -146,6 +172,13 @@ export interface SyncAnswer {
   error?: string;
   page?: PageKind | null;
 }
+/** An attachment's upload through the page: Gmail's token for it, or what went wrong. */
+export interface UploadAnswer {
+  status: number;
+  token?: string;
+  error?: string;
+  page?: PageKind | null;
+}
 export interface RawAnswer {
   status: number;
   bytes?: Buffer;
@@ -167,6 +200,10 @@ export interface Transport {
   info(): Promise<SyncInfo>;
   sync(endpoint: 'bv' | 'fd' | 's', body: unknown): Promise<SyncAnswer>;
   raw(hex: string, max: number): Promise<RawAnswer>;
+  /** A sync call that changes something (write.ts builds it; the hook checks it is one of the writes it knows). */
+  write(body: unknown): Promise<SyncAnswer>;
+  /** One attachment to Gmail's upload route, with the start's metadata (write.ts uploadMeta). */
+  upload(file: { name: string; mime: string; bytes: Buffer }, meta: string): Promise<UploadAnswer>;
 }
 
 type Log = (level: 'debug' | 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
@@ -180,6 +217,8 @@ interface Box {
 }
 interface Known {
   thread: string | null;
+  /** Its Message-ID, when an answer carried it (s's rows). */
+  messageId?: string | null;
   labels: string[];
   date: number;
   from: GMessage['from'];
@@ -746,7 +785,7 @@ export class GmailMail {
       for (const m of t.messages) {
         if (!m.id) continue;
         const k = this.known.get(m.id);
-        this.keep(m.id, { thread: t.thread, labels: m.labels, date: m.date, from: m.from ?? k?.from ?? null, subject: k?.subject ?? '', snippet: m.snippet ?? k?.snippet ?? null, at: now });
+        this.keep(m.id, { thread: t.thread, messageId: k?.messageId ?? null, labels: m.labels, date: m.date, from: m.from ?? k?.from ?? null, subject: k?.subject ?? '', snippet: m.snippet ?? k?.snippet ?? null, at: now });
       }
     return r;
   }
@@ -856,7 +895,7 @@ export class GmailMail {
     if (this.known.size > CACHE_MAX) this.known.delete(this.known.keys().next().value!);
   }
   private remember(m: Msg, row: ThreadRow) {
-    this.keep(m.id, { thread: row.thread, labels: m.labels, date: m.date, from: m.from, subject: row.subject, snippet: m.snippet, at: this.now() });
+    this.keep(m.id, { thread: row.thread, messageId: m.messageId ?? this.known.get(m.id)?.messageId ?? null, labels: m.labels, date: m.date, from: m.from, subject: row.subject, snippet: m.snippet, at: this.now() });
   }
 
   // ------------------------------------------------------------- mailboxes
@@ -904,7 +943,7 @@ export class GmailMail {
       id: m.id,
       emailId: m.id,
       mailboxId,
-      messageId: null,
+      messageId: m.messageId,
       threadId: row.thread,
       from: m.from ? [m.from] : [],
       to: m.to,
@@ -917,8 +956,8 @@ export class GmailMail {
       size: 0,
       preview: m.snippet,
       hasAttachments: m.attachments > 0,
-      inReplyTo: null,
-      references: [],
+      inReplyTo: m.inReplyTo,
+      references: m.references,
     };
   }
 
@@ -1252,6 +1291,198 @@ export class GmailMail {
 
   // ------------------------------------------------------------- status
   /** The 'Gmail protocol' layer: failed while an endpoint's last call failed its fingerprint (or answered an error). */
+  // ------------------------------------------------------------- writes
+  /** The numbers our changes go by (the page's own count up from 1: ours start far from them). */
+  private op = 500_000 + Math.floor(Math.random() * 400_000);
+
+  /**
+   * One write: these changes in one sync call, through the hook's write path, in the foreground lane. Each op's status
+   * comes back (0: applied). The call failing, or an answer not laid out as known, throws: 503 when nothing reached
+   * Gmail, 502 when it may have (label changes are harmless to send again).
+   */
+  private async writeCall(changes: unknown[], sending = false): Promise<{ acks: Map<number, number>; changed: unknown }> {
+    const history = this.history ?? (await this.t.info()).history;
+    const body = writeRequest(changes, { history, now: this.now(), sending });
+    const r = await this.paced('fg', 'list', () => this.t.write(body));
+    const what = ENDPOINT_NAMES.write;
+    if (r.status === 0) throw new StatusError(r.error === 'no-sync-yet' ? 'the Gmail page has not made a sync call of its own yet, so the headers it sends are not known; try again in a moment' : `the Gmail page could not make the change (${String(r.error ?? 'no reason').slice(0, 80)})`, 503, 'unavailable');
+    if (r.page) {
+      const page = r.page === 'signin' ? 'a sign-in page' : 'a verification page';
+      this.note('write', false, `the answer is ${page}`);
+      throw new StatusError(`Gmail answered the page's ${what} call with ${page}; open the live view`, 502);
+    }
+    if (r.status !== 200 || r.json === undefined) {
+      this.note('write', false, r.status !== 200 ? `answered ${r.status}` : 'the answer is not JSON after its prefix');
+      this.o.log('warn', `gmail write: answered ${r.status}${r.json === undefined ? ', not JSON' : ''}`);
+      throw new StatusError(`Gmail answered ${r.status} to the page's ${what} call`, 502);
+    }
+    try {
+      const out = parseWrite(r.json);
+      this.note('write', true);
+      return out;
+    } catch (e) {
+      if (!(e instanceof WriteLayoutError)) throw e;
+      this.note('write', false, e.message);
+      this.fp.write.firstShape ??= shape(r.json);
+      throw new StatusError(`Gmail's answer to a ${what} call is not laid out as this extractor knows it (${e.message}); it may have made the change`, 502);
+    }
+  }
+
+  /** A message's thread: as last seen here, else as the caller's `threadIds` say (decimal, or thread-f:<n>). */
+  private threadOf(id: string, given: unknown): string | null {
+    const k = this.known.get(id)?.thread;
+    if (k) return k;
+    if (typeof given !== 'string') return null;
+    return DECIMAL_ID.test(given) ? given : fDecimal(given);
+  }
+
+  /** The labels known for a message, changed as a write just changed them in Gmail. */
+  private applied(id: string, e: LabelEdit) {
+    const k = this.known.get(id);
+    if (!k) return;
+    this.keep(id, { ...k, labels: [...k.labels.filter((l) => !e.remove.includes(l)), ...e.add.filter((l) => !k.labels.includes(l))], at: this.now() });
+  }
+
+  /**
+   * Label changes on these messages: one change per thread and edit, at most 100 changes a call. Ids with no known
+   * thread are left out (`unknown`), and ids whose change Gmail refused are `refused`; none known is 404.
+   */
+  private async relabel(idsIn: unknown, threadIds: unknown, edits: LabelEdit[]): Promise<{ ids: string[]; refused: string[]; unknown: string[] }> {
+    if (!Array.isArray(idsIn) || !idsIn.length || idsIn.length > 1000 || !idsIn.every((x) => typeof x === 'string')) throw new StatusError('ids is a list of 1 to 1000 message ids', 400);
+    const ids = [...new Set(idsIn as string[])];
+    const given = Array.isArray(threadIds) ? threadIds : [];
+    const threads = new Map<string, string[]>();
+    const unknown: string[] = [];
+    for (const id of ids) {
+      const t = DECIMAL_ID.test(id) ? this.threadOf(id, given[(idsIn as string[]).indexOf(id)]) : null;
+      if (!t) unknown.push(id);
+      else threads.set(t, [...(threads.get(t) ?? []), id]);
+    }
+    if (!threads.size) throw new StatusError(ids.length === 1 ? 'no such message' : 'none of these messages is known here', 404);
+    const changes: { op: number; ids: string[]; edit: LabelEdit; change: unknown[] }[] = [];
+    for (const edit of edits)
+      for (const [t, ms] of threads) {
+        const op = ++this.op;
+        changes.push({ op, ids: ms, edit, change: labelChange(op, t, ms, edit) });
+      }
+    const refused = new Set<string>();
+    for (let i = 0; i < changes.length; i += 100) {
+      const chunk = changes.slice(i, i + 100);
+      const r = await this.writeCall(chunk.map((c) => c.change));
+      for (const c of chunk) {
+        const status = r.acks.get(c.op);
+        if (status === undefined) throw new StatusError("Gmail's answer did not say whether it made every change; it may have, so look again before trying once more", 502);
+        if (status !== 0) for (const id of c.ids) refused.add(id);
+        else for (const id of c.ids) this.applied(id, c.edit);
+      }
+    }
+    if (refused.size) this.o.log('info', `gmail write: ${refused.size} of ${ids.length} refused by Gmail`);
+    return { ids, refused: [...refused], unknown };
+  }
+
+  /** A write's answer: {} when all applied, what did not otherwise; 422 'refused' when nothing applied. */
+  private answer(r: { ids: string[]; refused: string[]; unknown: string[] }): MailWriteAnswer {
+    if (r.refused.length && r.refused.length + r.unknown.length >= r.ids.length) throw new StatusError(`Gmail turned ${r.ids.length === 1 ? 'it' : 'them'} down; nothing changed`, 422, 'refused');
+    return { ...(r.refused.length ? { refused: r.refused } : {}), ...(r.unknown.length ? { unknown: r.unknown } : {}) };
+  }
+
+  /** mail.flag: read or unread, starred or not, as the page's toolbar marks them. `answered` is Gmail's own to set. */
+  async flag(input: { ids: unknown; threadIds?: unknown; seen?: unknown; flagged?: unknown; answered?: unknown }): Promise<MailWriteAnswer> {
+    if (input.answered !== undefined) throw new StatusError('Gmail marks a message answered itself when a reply to it is sent; mail.flag cannot set it', 400);
+    const edits: LabelEdit[] = [];
+    if (input.seen === true) edits.push(EDITS.read);
+    else if (input.seen === false) edits.push(EDITS.unread);
+    if (input.flagged === true) edits.push(EDITS.star);
+    else if (input.flagged === false) edits.push(EDITS.unstar);
+    if (!edits.length) return {};
+    return this.answer(await this.relabel(input.ids, input.threadIds, edits));
+  }
+
+  /** What moving into a mailbox changes: archive (All Mail), Inbox, Trash, or one of your labels. */
+  private async moveEdit(to: unknown): Promise<LabelEdit> {
+    const sys = SYSTEM.find((b) => b.id === to);
+    if (to === 'all') return EDITS.archive;
+    if (to === L.INBOX) return EDITS.inbox;
+    if (to === L.TRASH) return EDITS.trash;
+    if (to === L.SPAM) throw new StatusError("marking mail as spam is not built for Gmail (Gmail's Report spam may report the sender); move it to the trash, or mark it in Gmail", 501);
+    if (sys || to === '^b') throw new StatusError(sys ? `mail is not moved into ${sys.name}${sys.label === L.STARRED ? ' (star it with mail.flag)' : ''}` : 'mail is not moved into Chats', 400);
+    if (typeof to === 'string' && /^\^x_\d{1,24}$/.test(to)) {
+      if (!this.userLabels.has(to)) await this.ensureNames(true, 'fg');
+      if (this.userLabels.has(to)) return intoLabel(to);
+    }
+    throw new StatusError('no such mailbox', 404);
+  }
+
+  /** mail.move: the same ids back (a message keeps its id in Gmail), null where it did not move (listed in refused or unknown). */
+  async move(input: { ids: unknown; threadIds?: unknown; mailboxId: unknown }): Promise<MailMoveAnswer> {
+    const edit = await this.moveEdit(input.mailboxId);
+    const r = await this.relabel(input.ids, input.threadIds, [edit]);
+    const out = this.answer(r);
+    const not = new Set([...r.refused, ...r.unknown]);
+    return { ids: (input.ids as string[]).map((id) => (not.has(id) ? null : id)), ...out };
+  }
+
+  /** mail.trash: into Gmail's Trash (emptied by Gmail after 30 days). */
+  async trash(input: { ids: unknown; threadIds?: unknown }): Promise<MailWriteAnswer> {
+    return this.answer(await this.relabel(input.ids, input.threadIds, [EDITS.trash]));
+  }
+
+  /**
+   * mail.send, as the page sends: each file uploaded, a draft saved (a new thread, or in the answered message's
+   * thread), then sent; the answered message marked replied. The draft stays in Drafts if the send is refused. Never
+   * retried from here: the answer says whether it may have gone.
+   */
+  async send(m: OutgoingChecked, me: { email: string; name: string | null }): Promise<{ messageId: string; sentId: string | null }> {
+    if (m.from && m.from.toLowerCase() !== me.email.toLowerCase()) throw new StatusError(`${m.from} is not an address this Gmail account sends as`, 422, 'from');
+    let reply: { thread: string; message: string } | null = null;
+    let inReplyTo: string | null = null;
+    if (m.replyTo) {
+      const k = this.known.get(m.replyTo);
+      if (k?.thread && k.messageId) [reply, inReplyTo] = [{ thread: k.thread, message: m.replyTo }, k.messageId];
+      else {
+        const orig = await this.get({ id: m.replyTo });
+        inReplyTo = orig.messageId;
+        if (orig.threadId) reply = { thread: orig.threadId, message: m.replyTo };
+      }
+    }
+    const msgId = newMessageId();
+    const recipients = [...m.to, ...m.cc, ...m.bcc].map((a) => a.email);
+    const files: DraftFile[] = [];
+    for (const [i, f] of m.files.entries()) {
+      const r = await this.paced('fg', 'message', () => this.t.upload({ name: f.filename, mime: f.mime, bytes: f.bytes }, uploadMeta(msgId, me.email, recipients)));
+      if (r.status !== 200 || typeof r.token !== 'string' || !UPLOAD_TOKEN.test(r.token)) {
+        const why = r.page ? `the answer is ${r.page === 'signin' ? 'a sign-in page' : 'a verification page'}` : r.status === 0 ? String(r.error ?? 'the page could not make the call').slice(0, 80) : `answered ${r.status}${r.status === 200 ? ' with no token' : ''}`;
+        if (r.status !== 0) this.note('upload', false, why);
+        throw new StatusError(`Gmail did not take attachment ${i + 1} (${why}); nothing was sent`, r.status === 0 ? 503 : 502);
+      }
+      this.note('upload', true);
+      files.push(draftFile({ mime: f.mime, name: f.filename, size: f.bytes.length, token: r.token, id: newFileId() }));
+    }
+    const w: Writing = { msgId, from: { email: me.email, name: me.name }, to: m.to, cc: m.cc, bcc: m.bcc, subject: m.subject, html: m.html ?? htmlOfText(m.text ?? ''), files, inReplyTo, session: newSession(msgId) };
+    const thread = newThreadId();
+    const draftOp = ++this.op;
+    const d = await this.writeCall([draftChange(draftOp, w, this.now(), reply, thread)]);
+    const ds = d.acks.get(draftOp);
+    if (ds !== 0) throw new StatusError(ds === undefined ? "Gmail's answer did not say whether it saved the draft; nothing was sent" : `Gmail did not take the message (status ${ds}); nothing was sent`, ds === undefined ? 502 : 422, ds === undefined ? undefined : 'refused');
+    const sendOp = ++this.op;
+    const changes = [sendChange(sendOp, w, this.now(), reply, thread)];
+    if (reply) changes.push(labelChange(++this.op, reply.thread, [reply.message], EDITS.replied));
+    let s: { acks: Map<number, number>; changed: unknown };
+    try {
+      s = await this.writeCall(changes, true);
+    } catch (e) {
+      const err = e as StatusError;
+      throw new StatusError(`${err.message}. A draft of it is in Gmail's Drafts; look in Sent before sending it again`, err.status === 503 ? 502 : (err.status ?? 502));
+    }
+    const ss = s.acks.get(sendOp);
+    if (ss === undefined) throw new StatusError("Gmail's answer did not say whether it sent the message; look in Sent before sending it again", 502);
+    if (ss !== 0) throw new StatusError(`Gmail did not send it (status ${ss}); it is in Drafts`, 422, 'refused');
+    const rec = sentRecord(s.changed, msgId);
+    this.o.log('info', `gmail: sent a message to ${recipients.length} recipient${recipients.length === 1 ? '' : 's'}${files.length ? ` with ${files.length} file${files.length === 1 ? '' : 's'}` : ''}${reply ? ', a reply' : ''}${rec?.messageId ? '' : '; its Message-ID was not in the answer'}`);
+    if (reply && s.acks.get(sendOp + 1) === 0) this.applied(reply.message, EDITS.replied);
+    return { messageId: rec?.messageId ?? '', sentId: rec?.id ?? null };
+  }
+
   layer(): { name: string; state: 'ok' | 'waiting' | 'failed'; note: string } {
     const name = 'Gmail protocol';
     const failed = ENDPOINTS.filter((e) => this.fp[e].last === false);

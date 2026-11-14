@@ -3,7 +3,7 @@
 Google accounts are signed in here, on the accounts page (https://accounts.example.net, your `--public-url`), not in the apps that use
 them. There are two ways in, two kinds of account, and both answer the `google.calendar` interface
 (packages/interfaces/src/google-calendar.ts) with Google's own JSON; the browser kind also reads Gmail, as `mail`
-(read-only for now: "Gmail mail" below):
+(read, marked, filed and sent from: "Gmail mail" and "Writing to Gmail" below):
 
 | kind | extractor | how it signs in |
 |---|---|---|
@@ -80,7 +80,7 @@ them. With `testOrigin` and no `testMailOrigin` there is no Gmail tab, so a test
 The browser has two pages, each a **role**: the Calendar tab (`calendar`, the browser's start page) and the Gmail tab
 (`gmail`, https://mail.google.com/mail/u/<authuser>/), which the extractor asks the service worker to open in the
 background once the extension attaches, unless the config says `mail: false`. One sign-in covers both. Both tabs are
-marked not discardable, so Chromium does not drop the background one. The Gmail tab answers `mail`, read-only, from
+marked not discardable, so Chromium does not drop the background one. The Gmail tab answers `mail` from
 inside its own signed-in page ("Gmail mail" below), and the diagnostic, the learn runs and the self-check below.
 
 - **Roles.** The same `hook.js` runs in both pages and says which one it is in when it comes up (from `location.host`:
@@ -312,8 +312,10 @@ operators-only search, opens the first and second read rows only, goes back, fin
 XSRF header on its sync calls, syncs once on load and makes a call carrying its account key; behind its endpoints is
 a fake Gmail mailbox answering in the recorded layout, test/fake-google.ts): mailboxes with their roles, the inbox
 paged to its end by the cursor while a Calendar call runs beside each page, get, attachment and raw from the fake's
-.eml, a search and an ids-only one, free text refused there, `mail.changes` seeing a new message, writes 501 or
-denied and none made; a swapped layout refused with 502, the Gmail protocol layer failed, Calendar still online, and
+.eml, a search and an ids-only one, free text refused there, `mail.changes` seeing a new message, nothing written by
+any of that; then through the hook's write path, read and unread, a star and off, the trash and back to the inbox,
+Spam answering 501, and a reply with a file sent (the bytes handed to the page in pieces, uploaded, the draft, the
+send, the original marked replied); a swapped layout refused with 502, the Gmail protocol layer failed, Calendar still online, and
 ok again after; the watch's `mail.arrived` and `mail.changed`; the self-check from its file, with no subject,
 address, name, label name or id in it and only one read message older than 30 days downloaded. The suite is skipped
 when Xvfb, chromium or x11vnc cannot be found. `test/gmail-learn.test.ts` (no browser) covers the shapes (anchors kept, a marker in subjects,
@@ -358,11 +360,11 @@ ones the web app makes to list and change events, from the hook, as the Discord 
 map them to `google.calendar`'s v3 shapes in the extractor. That is more work and breaks when Google changes its app.
 Until then, the same Google account can be connected as `google-api` (below).
 
-## Gmail mail (read-only)
+## Gmail mail
 
-The `google` kind answers the `mail` interface (`packages/interfaces/src/mail.ts`) for Gmail, **read-only**: mailboxes,
-lists, one message whole, its attachments and original, search, and keeping up. Nothing changes mail: `mail.flag`,
-`mail.move` and `mail.trash` answer 501, `mail.send` 501 ("Sending from Gmail is not built yet"). Gmail's public API
+The `google` kind answers the `mail` interface (`packages/interfaces/src/mail.ts`) for Gmail: mailboxes, lists, one
+message whole, its attachments and original, search, and keeping up (this section); marking, filing, trashing and
+sending ("Writing to Gmail", below). Spam is not written. Gmail's public API
 refuses the page's auth (the probe above), so this goes the way the Gmail web app itself goes: its own endpoints on
 mail.google.com, called from inside the signed-in Gmail tab, with the page's own headers. The code is
 `extractors/google/src/gmail/`: `protocol.ts` (request bodies, reading answers by anchors, fingerprints, labels),
@@ -383,7 +385,9 @@ self-check (next section) settles most of them on the live account without readi
 - **`gmail.sync`**: a POST to `/sync/u/<n>/i/bv`, `fd` or `s` (nothing else) as the page makes it: its headers
   replayed, `?hl=…&c=<next>&rt=…&pt=…`, a JSON body, the page's cookies; the answer's JSON after its `)]}'` prefix. An
   `s` body that carries label changes (anything at element 1, or a list inside element 0: how the page's own writes
-  look) is refused in the hook, whatever the extractor sent. Until the page has made a sync call of its own: 503.
+  look) is refused in the hook, whatever the extractor sent: writes go through `gmail.write` ("Writing to Gmail").
+  Until the page has made a sync call of its own: 503. The sync point the hook notes comes from the page's reading `s`
+  calls only: in its writes, [3][4] holds another number (48 or 49 in every one seen).
 - **`gmail.raw`**: the page's own "Download message" route, `GET /mail/u/<n>/?ik=<ik>&view=att&th=<id in
   hex>&attid=0&disp=comp&safe=1&zw` (what "Show original" → "Download original" fetches; the hex id is Gmail's message
   id, the number after `msg-f:`, in hex). Kept in the page (at most three, two minutes) and handed to the extractor in
@@ -609,12 +613,14 @@ tripped, nothing changes (but the one `fd` after reading an unread message). It 
 that line is taken out of the file by hand.
 
 **Summaries** (`mail.list`, `mail.search`, `mail.changes`' `added`, `mail.arrived`): `id` and `emailId` Gmail's message
-id, `threadId` the thread's, `messageId: null`, `inReplyTo: null`, `references: []`, no `bulk` (Gmail's lists carry no
-headers: `details.summaryHeaders: false`; `mail.get` has them); `from` the row's sender; `to` and `cc` from the
-message's [2] and [5], which only `s`'s rows were seen to carry, so list and search summaries have none (a guess that
-`bv` never does); `subject` the thread's; `date` = `receivedAt` = the message's date ([6]); `preview` Gmail's snippet;
+id, `threadId` the thread's; `messageId`, `references` and `inReplyTo` from the message's [13], [14] and [15], which
+only `s`'s rows carry (so `mail.changes` and `mail.arrived` have them, and list and search summaries give `null`, `[]`
+and `null`); no `bulk` (`details.summaryHeaders: false`; `mail.get` has every header); `from` the row's sender; `to`
+and `cc` from the message's [2] and [3] (bcc is [4], on your own sent messages), again `s`'s rows only (seen on a
+message sent from here, 2026-11-13; [5], read before, is empty); `subject` the thread's; `date` = `receivedAt` = the message's date ([6]); `preview` Gmail's snippet;
 `hasAttachments` from Gmail's attachment list ([11]); `size` 0 (not in the list). `flags`: `seen` = no `^u`, `flagged`
-= `^t`, `draft` = `^r`, `answered` false (Gmail keeps no such label). `labels`: Inbox, Starred, Important, Sent,
+= `^t`, `draft` = `^r`, `answered` = `^io_re` (the label the page puts on a message when it sends a reply to it; a reply
+sent from another client may not leave it). `labels`: Inbox, Starred, Important, Sent,
 Drafts, Spam, Trash, Snoozed, Scheduled by name; yours by name (by id until the label list was seen); and at most one
 category, spelled as the proton kind's: a receipt (`^smartlabel_receipt`) is `Category/Transactions` always; else the
 inbox tab (`^sq_ig_i_*`) decides: `_personal` none, `_social` `Category/Social`, `_promo` `Category/Promotions`,
@@ -626,19 +632,114 @@ out.
 
 **Status details**: `provider: 'Gmail'`, `idPerMessage: true`, `summaryHeaders: false`, `raw: 'original'`,
 `searchIds: true`, `backgroundLane: true`, `backgroundStopped` (null, or why the background lane stopped),
-`readsMarkRead` (the unread guard tripped), `bvLayout` (`own` or `page`: the last `bv` answer's), `canSend: false`,
-`sendNote: 'Sending from Gmail is not built yet'`, `gmailWatch`, `gmailSelfCheckAt` and `gmailSelfCheck`. No storage quota (none was found in the recorded answers); no `sendCap` or
-`maxRecipients` until sending is built.
+`readsMarkRead` (the unread guard tripped), `bvLayout` (`own` or `page`: the last `bv` answer's), `writes: ['seen',
+'flagged', 'move', 'trash']` (no `junk`), `canSend` (the Gmail page up, signed in, its address shown) and `sendNote`
+(why not, else null), `sendCap` (25 MB), `maxRecipients` (100), `gmailWatch`, `gmailSelfCheckAt` and
+`gmailSelfCheck`. No storage quota (none was found in the recorded answers). `self.addresses` is the one address the
+page is signed in as, with the name its account button shows.
 
 **Guesses, in one place** (each a position the shapes show but cannot explain): `bv` request element 0 (a request
 id: a random 9-digit number here), element 7 (the sync point here), the number beside the time at [0][4][12] (the
 time zone's offset in ms here) and the query again at [0][5]; `bv`'s `json[4]` as the estimate; `s`'s `json[1][7]` as
 the new sync point; `bv`'s `json[18][0]` as the current sync point (tested as it is used, above); the counts' order
-(`s`'s `json[2][0]` and `bv`'s `json[6][0]` alike); the cheap `bv`'s page size of 10 (the page's own ask for 50); to and cc at a message's [2] and [5]; [6] as the date Gmail sorts by; rows
+(`s`'s `json[2][0]` and `bv`'s `json[6][0]` alike); the cheap `bv`'s page size of 10 (the page's own ask for 50); [6] as the date Gmail sorts by; rows
 dated by their newest *matching* message (paging works either way as long as rows come sorted by their date; the
 self-check counts rows dated after a page's `before:`); `^x_<n>`/type 2 as your labels.
 
-## The Gmail self-check
+## Writing to Gmail
+
+Marking, filing, trashing and sending go the way the Gmail page itself does them: label changes and a draft's send,
+each a sync call (`s`) with changes in it, made from inside the signed-in Gmail tab (`extractors/google/src/gmail/
+write.ts`). They were learned on the live page on 2026-11-13: first each action done by hand in a test account's live
+view while the shape recorder ran (type tags and anchors only), then the full bodies of a compose, an upload and a
+send, read from the page on test messages between the owner's own accounts, and each kind of call built here sent
+once on those test messages and checked in Gmail and at the other end.
+
+### How a write is made
+
+One sync call, `POST /sync/u/<n>/i/s`, with the page's headers and the next `c`, through the hook's **`gmail.write`**:
+
+```
+[head, [[change, …]], client, [now, <number of changes>, now, sending ? 1 : 0, 49], 2]
+```
+
+`head` is null, or `[null, null, 2]` when the call sends; `client` is `[1, <sync point>, null, null, [null, 0], null,
+1]` (null when it sends). Each change is `[op, [<thread id>, detail]]`, `op` a number of ours that Gmail's answer
+acknowledges: its `json[0]` is `[[[op, status, null, <sync point>], …]]`, status 0 when Gmail applied that change.
+
+- **A label change**: `detail[6] = [add | null, remove | null, [msg-f:<id>, …], null ×9]`. The labels go on and off the
+  messages listed (not the rest of their thread). The page adds what it knows of the message at [11] (its inbox tab,
+  sender and category) and sometimes a time and a reason; Gmail takes the change without them.
+- **A draft**: a new message, `detail[2] = [[subject, null, now, thread-a:r-<n>, [record]]]`, a thread of its own; a
+  reply, `detail[1] = [record, msg-f:<the message answered>, 1, null, [now]]`, in that message's thread.
+- **The send**: `detail[13] = [record, msg-f:<answered> | null, 1, null, [now]]`, the draft again with the sent labels,
+  in a call whose head says it sends. A reply's send also marks the answered message replied (`^io_re` on, `^io_fwd`
+  off), as the page does.
+- **The record** of a message being written has 78 positions: [0] the page's id for it (`msg-a:r-<n>`, a random
+  positive 63-bit number), [1] `[1, address, name, null ×6, address]` the sender, [2] to, [3] cc, [4] bcc (each `[1,
+  address, name?]`), [6] the time, [7] the subject, [8] `[null, [[0, html]], null ×4, 1]` the body, [10] the labels
+  (a draft's `^all ^r ^r_bt`, sent `^all ^pfg ^f_bt ^f_btns ^f_cl`), [11] the attachments, [15] In-Reply-To (the
+  answered message's Message-ID; Gmail adds References), [17] the time, [51] and [76] the page's compose session
+  (`s:<16 hex>|#<msg-a id>|0`), [74] 2 when sending, and the constants the page puts at [35], [36], [41], [42], [77].
+  Gmail answers with the thread as it now is (`json[1][5]`): the message's record under the id the page made, [13] its
+  Message-ID (Gmail's own), [14] References, [15] In-Reply-To, [55] Gmail's id in hex.
+- **An attachment** goes up before the draft, as the page uploads one (the hook's **`gmail.upload`**, the bytes handed
+  to the page in 4 MB pieces by `gmail.uploadChunk`): Google's resumable upload on the page's own origin, `POST
+  /_/upload?authuser=<n>&dcp=asu-n` with `X-Goog-Upload-Command: start` and a protobuf in base64url (1 the draft's id,
+  7 the sender, 8 each recipient, 3, 4 and 11 zero), then the bytes to the URL the answer names, with `upload,
+  finalize`. The answer is a token; the draft names the file `[mime, name, size, null, f_<id>, null, 0, [], null,
+  token]`, and the send names it the same way.
+- After a send the page posts one more change of its own, `detail[25] = [1, <a long token>, [msg-a:…]]`, most likely
+  Google's anti-abuse attestation, made by its script in the page. It is not made here: sends without it were
+  delivered (a new message; a reply with an attachment and a Bcc), and their copies sit in Sent as the page's do.
+
+The hook checks every write body again (`writeRefusal` in hook.js) and refuses anything else: label changes only with
+labels from a fixed set (the ones below and your labels' `^x_<n>`), never adding `^s`, on messages Gmail has
+(`msg-f:`); a draft and its send only with the draft's and the sent labels, and a send only in a call whose head says
+it sends; one part per change, at most 100 changes a call.
+
+### What each write does
+
+| | adds | takes off |
+|---|---|---|
+| read (`mail.flag seen: true`) | | `^u`, `^us` |
+| unread | `^u` | |
+| star (`flagged: true`) | `^t`, `^ss_sy` | the other star styles `^ss_*` |
+| unstar | | `^t` and every `^ss_*` |
+| archive (`mail.move` to `all`) | `^a` | `^i`, `^ri_hl`, `^iim`, `^t_p`, `^t_rd`, `^us`, `^k`, `^s`, `^t_z`, `^afw` |
+| back to the inbox (to `^i`) | `^i` | `^a`, `^t_z`, `^us`, `^k`, `^s`, `^pr_i_u` |
+| into one of your labels (to `^x_<n>`) | the label | `^i`, `^ri_hl`, `^iim`, `^t_p`, `^t_rd`, `^us`, `^k`, `^s` |
+| trash (`mail.trash`, or to `^k`) | `^k` | `^i`, `^ri_hl`, `^iim`, `^t_p`, `^t_rd`, `^us`, `^s`, `^a`, `^t_z`, `^afw`, `^pr_i_u` |
+
+These are the page's own sets, as recorded. Your other labels stay on a message through every one, as in Gmail. A
+change is a label added or taken off, so making it twice changes nothing more.
+
+- **Ids and threads**: a write needs each message's thread. It is the one this extractor last saw the message in, or
+  the caller's `threadIds` (the summary's `threadId`, beside `ids` in the same order). An id with neither is left out
+  and named in `unknown`; none placed is 404. One change per thread and kind of change, at most 100 a call.
+- **Answers**: `{}` when every change applied; otherwise the ids Gmail answered a non-zero status for are `refused`
+  (and null in `mail.move`'s `ids`); 422 `refused` when nothing applied. `mail.move` answers the same ids (a message
+  keeps its id in Gmail). A call that fails is 503 `unavailable` when nothing reached Gmail (the page not synced yet)
+  and 502 when it may have (harmless to send again).
+- **Not written**: Spam (`mail.move` to `^s` is 501: Gmail's "Report spam" may report the sender to Google, and its
+  call was never recorded), and nothing can be moved into Sent, Drafts, Scheduled, Chats, Starred, Important or
+  Snoozed (400). `answered` is Gmail's to set (400). Deleting for ever, emptying the trash, muting, snoozing and
+  filters are not made.
+
+### Sending
+
+`mail.send` checks the message first (`gmail/send.ts`: addresses, a text or HTML body, files of at most 25 MB
+together, at most 100 recipients, a path not one of the account's own files), then: each file uploaded, a draft
+saved, the send. `from` must be the address the page is signed in as (else 422 `from`). Text becomes the page's own
+HTML (`<div dir="ltr">`, a `<br>` per line); Gmail makes the plain-text part itself. A reply (`replyTo`, Gmail's id
+of the message answered) goes in that message's thread with In-Reply-To its Message-ID (from what this extractor
+saw, else from the message's original); Gmail adds References. The answer is `{ messageId, sentId }`: the sent
+message's Message-ID and Gmail's id, from the send's answer.
+
+A draft Gmail refuses is 422 `refused`, nothing sent. Once the draft is saved, a send that fails or is refused leaves
+the draft in Drafts and says so; nothing is retried here, since a send may have gone.
+
+
 
 A content-free check of all of the above on the live account. Make an empty file **`gmail-selfcheck.request`** in the
 account's directory; within 3 s it is taken (deleted) and the check runs in the Gmail tab, then writes
@@ -771,7 +872,10 @@ that used it lose it at once (dither-calendar drops its copies of those calendar
   point from a list answer with no sync point known (and one that is not taken), `pageKind`, the background lane
   (its pace for lists and downloads, the foreground going first past a backlog, the budget kept across a restart
   and freed a day later, a challenge of each kind, a signed-out page, back-off doubling and ending, `backoff`), and
-  the unread guard tripped (a fake whose download takes `^u` off) and not.
+  the unread guard tripped (a fake whose download takes `^u` off) and not. Writing: the label changes built against the
+  page's own as recorded, each write's labels in the fake, writes in part (`refused`, `unknown`, `threadIds`), 404 and
+  422, Spam 501 and the folders mail is not moved into 400; a send with Cc, Bcc and a file (upload, draft, send) and a
+  reply (its thread, In-Reply-To, the original answered, the reply's headers in `mail.changes`); `checkOutgoing`.
 - `test/google-browser.test.ts`: the `google` extractor in its real sandbox against the same fake in its `web` mode
   (config `testOrigin` and `apiBase` point at it, `testMailOrigin` and `gmailApiBase` at its Gmail side; `stall()`
   makes a page's API calls hang). The stall tests wait out the real 25 s, so the suite takes about three minutes. Skipped without Xvfb, chromium and x11vnc (found on PATH, through

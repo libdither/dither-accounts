@@ -1482,6 +1482,44 @@
    "DnsZone": "type DnsZone = {\n  /** The domain, example.com */\n  name: string;\n  /** The host's word for it (active, expired…), when it says. */\n  status: null | string;\n  /** When the registration runs out (ISO 8601), when the host says. */\n  expiry: null | string;\n};"
   }
  },
+ "claude": {
+  "ops": {
+   "claude.session": {
+    "input": "{}",
+    "output": "{\n  /** null until the extractor has looked. */\n  signedIn: null | boolean;\n  /** The email claude.ai says is signed in. */\n  email: null | string;\n  /** The email this account is for (its config). */\n  expectedEmail: null | string;\n  /** The tab's page, origin and path only. */\n  page: null | string;\n  /** The organizations' rate limit tiers claude.ai reports (`default_claude_max_20x`), when signed in. */\n  tiers: string[];\n}",
+    "example": {}
+   },
+   "claude.survey": {
+    "input": "{}",
+    "output": "{\n  page: string;\n  title: string;\n  headings: string[];\n  inputs: {\n    type: string;\n    name: null | string;\n    id: null | string;\n    placeholder: null | string;\n    label: null | string;\n  }[];\n  buttons: string[];\n  challenge: boolean;\n}",
+    "example": {}
+   },
+   "claude.signin.start": {
+    "input": "{}",
+    "output": "{ already: boolean; email: null | string; requestedAt: null | number }",
+    "example": {}
+   },
+   "claude.signin.finish": {
+    "input": "{ link: string }",
+    "output": "{ email: null | string }",
+    "example": {
+     "link": ""
+    }
+   },
+   "claude.authorize": {
+    "input": "{ url: string }",
+    "output": "{ callbackUrl: string }",
+    "example": {
+     "url": ""
+    }
+   }
+  },
+  "events": {
+   "hello": "Record<string, unknown>",
+   "status": "Record<string, unknown>"
+  },
+  "defs": {}
+ },
  "test.echo": {
   "ops": {
    "echo": {

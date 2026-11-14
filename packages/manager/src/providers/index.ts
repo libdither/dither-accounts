@@ -6,6 +6,7 @@ import type { Store } from '../db.ts';
 import type { Kind } from '../kinds.ts';
 import type { Router } from '../router.ts';
 import type { Supervisor } from '../supervisor.ts';
+import { cliproxyProvider } from './cliproxy.ts';
 import { googleProvider } from './google.ts';
 
 export interface ProviderContext {
@@ -29,4 +30,4 @@ export interface Provider {
 
 export type ProviderFactory = (ctx: ProviderContext) => Provider;
 
-export const providers: ProviderFactory[] = [googleProvider];
+export const providers: ProviderFactory[] = [googleProvider, cliproxyProvider];

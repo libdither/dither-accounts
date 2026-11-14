@@ -215,12 +215,49 @@ export interface SchwabState {
   hold?: Hold | null;
   /** The approver's refusal that stops automatic sign-ins (packages/passkey signin.ts). */
   approval?: StandingRefusal | null;
+  /** When the passkey option was last clicked by itself, or a passkey sign-in last answered (by itself or by you): the
+   * next automatic sign-in waits `signInGapMinutes` after it. Kept here, so a restart does not start the wait over. */
+  lastPasskeyTry?: number;
 }
 
 export function remember(st: SchwabState, sha: string, name: string) {
   st.seen[sha] = name;
   const keys = Object.keys(st.seen);
   for (const k of keys.slice(0, Math.max(0, keys.length - 400))) delete st.seen[k];
+}
+
+// ---------------------------------------------------------------- how often it signs in
+
+/**
+ * Whether the account signs in as it starts: only when a pull follows, that is when the last pull that found Schwab
+ * signed in is older than `autoPullMs` (the pull after a sign-in, config `autoPullHours`). A session nothing uses is
+ * not worth a sign-in: Schwab logs it out when idle, and the next pull signs in again anyway. Every restart of the
+ * manager restarts the extractor, so signing in at each start meant a sign-in per deploy.
+ */
+export const pullDueAtStart = (lastSignedInPull: number | null | undefined, now: number, autoPullMs: number) => now - (lastSignedInPull ?? 0) > autoPullMs;
+
+/**
+ * When the next automatic sign-in may click the passkey option: `gapMs` after the last passkey try (`lastPasskeyTry`).
+ * Schwab stopped asking for the passkey after two or three passkey sign-ins within a few minutes, and more clicks did
+ * not bring it back. 0: now.
+ */
+export const signInNotBefore = (lastPasskeyTry: number | null | undefined, gapMs: number) => (lastPasskeyTry && gapMs > 0 ? lastPasskeyTry + gapMs : 0);
+
+/** What the sign-in widget's alerts say (page.js `passkey`'s `said`, from every frame), safe for the log: each once,
+ * at most four, digits as #, anything with an @ as [address], cut to 120 characters. */
+export function pageWords(said: unknown): string[] {
+  const out = new Set<string>();
+  for (const s of Array.isArray(said) ? said : []) {
+    if (typeof s !== 'string') continue;
+    const t = s
+      .replace(/\S+@\S+/g, '[address]')
+      .replace(/\d/g, '#')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120);
+    if (t.length > 2) out.add(t);
+  }
+  return [...out].slice(0, 4);
 }
 
 // ---------------------------------------------------------------- status
@@ -254,6 +291,8 @@ export interface AutoSignIn {
   lastOkAt: number | null;
   /** The paired phone refused: no automatic sign-in until a pull you start (or, if it expired, the next scheduled pull). */
   approval?: StandingRefusal | null;
+  /** A sign-in waits until then: the last passkey try was less than `signInGapMinutes` ago. */
+  waitUntil?: number | null;
 }
 
 export interface View {
@@ -274,8 +313,8 @@ const att = (kind: string, message: string) => ({ status: 'attention', attention
 /**
  * The three steps, as Privacy's (docs/schwab.md): sign in in the live view (`login`), add a passkey in Schwab's
  * security settings (`passkey`), log out and back in with it (`passkey_check`). After that a signed-out Schwab is not
- * your problem: the passkey signs in by itself before each pull, and you are asked (`login`) only when that fails three
- * times or Schwab asks for a code, an approval or a captcha. While the page itself shows a code being asked for, that
+ * your problem: the passkey signs in by itself before each pull, and you are asked (`login`) only when its tries fail
+ * or Schwab asks for a code, an approval or a captcha. While the page itself shows a code being asked for, that
  * is `verify`, as before.
  */
 export function state(v: View): { status: string; attention: Attention | null } {
@@ -300,6 +339,8 @@ export function state(v: View): { status: string; attention: Attention | null } 
 type Layer = { name: string; state: 'ok' | 'waiting' | 'failed'; note: string };
 const day = (t: number) => new Date(t).toISOString().slice(0, 10);
 const minute = (t: number) => `${new Date(t).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+/** A sign-in waiting out the gap after the last passkey try. */
+export const waitNote = (until: number) => `waits until ${minute(until)} to sign in with the passkey: the last try was too recent (Schwab stops asking after a few in a row); signing in yourself in the live view goes ahead now`;
 
 export function signedInLayer(v: View): Layer {
   const checked = !!v.passkey.newest?.verifiedAt;
@@ -307,6 +348,7 @@ export function signedInLayer(v: View): Layer {
   if (v.signedIn) return { name: 'signed in', state: 'ok', note: 'on client.schwab.com' };
   if (checked && v.auto.hold) return { name: 'signed in', state: 'failed', note: `held: Schwab asks for ${v.auto.hold.what === 'captcha' ? 'a captcha' : 'a code or an approval'}; log in in the live view` };
   if (checked && v.auto.approval) return { name: 'signed in', state: 'failed', note: `the passkey sign-in stopped: ${refusalNote(v.auto.approval)}` };
+  if (checked && v.auto.waitUntil) return { name: 'signed in', state: 'waiting', note: waitNote(v.auto.waitUntil) };
   if (checked && v.auto.failed) return { name: 'signed in', state: 'failed', note: `the passkey sign-in failed: ${v.auto.failed}` };
   if (checked) return { name: 'signed in', state: v.auto.signingIn ? 'waiting' : 'ok', note: v.auto.signingIn ? 'signing in with the passkey' : SIGNS_ITSELF_IN };
   return { name: 'signed in', state: 'waiting', note: 'sign in in the live view; the pull follows by itself' };
@@ -343,6 +385,8 @@ export function passkeyDetails(v: View): Record<string, string | number | boolea
       ? `held (${v.auto.hold.what}) since ${minute(v.auto.hold.since)}`
       : v.auto.approval
         ? `stopped: ${v.auto.approval.reason} on ${v.auto.approval.device} at ${minute(v.auto.approval.at)}`
+      : v.auto.waitUntil
+        ? `waiting until ${minute(v.auto.waitUntil)}`
       : v.auto.failed
         ? `failed: ${v.auto.failed}`
         : v.auto.signingIn

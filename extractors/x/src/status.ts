@@ -104,7 +104,8 @@ export function capabilitiesOf(st: SelfTest | null): P.Capability[] {
   if (feedOk(st, 'store') && feedOk(st, 'endpoints') && feedOk(st, 'posts')) caps.push('posts');
   // Answering on X: the post actions factory (like, repost, sendTweet); who liked or reposted, whose chunk is loaded at
   // the first ask (pending until then, and offered: it fails with "not found" and is withdrawn if it is not there).
-  if (feedOk(st, 'store') && feedOk(st, 'endpoints') && feedOk(st, 'actions')) caps.push('postActions', 'publish');
+  // Its "Translate post" lives on the same factory (fetchTranslation).
+  if (feedOk(st, 'store') && feedOk(st, 'endpoints') && feedOk(st, 'actions')) caps.push('postActions', 'publish', 'translate');
   if (feedOk(st, 'store') && feedOk(st, 'endpoints') && (feedOk(st, 'reactors') || st?.feed?.reactors?.via === 'pending')) caps.push('postReactors');
   return caps;
 }

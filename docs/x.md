@@ -217,6 +217,7 @@ toast they raise is the refusal.
 | `postAct` | like, unlike, repost or unrepost a post, the one call its button makes ("Answering on X") |
 | `publish` | a post, a reply (`replyTo`) or a quote (`quote`) through the composer's own `sendTweet` ("Answering on X") |
 | `postReactors` | who liked or reposted a post, a page (`cursor` for more), as its Likes and Reposts tabs ask ("Answering on X") |
+| `translate` | a post translated into `to`, as its Translate post link does ("Translating a post") |
 | `action diagnose` | the page's shapes into `diagnostics.json` (below) |
 | `action selftest` | the self-test now |
 | `action resync` | conversations and people announced again; the 10 newest read again |
@@ -672,3 +673,17 @@ From the bundle's own code and its SQLite schema, for XChat; legacy DMs may diff
   Xvfb, chromium and x11vnc.
 - `bun scripts/verify-x.ts [--keep]`: the same end to end with a throwaway manager process (port 18575), as the page
   and dither-chat use it (the page's API signed in with that manager's CLI token).
+
+## Translating a post
+
+`translate { post, to, lang? }` → `{ text, from?, by? }` (capability `translate`, offered with `postActions`: it is on
+the same factory). The hook calls the post actions' `fetchTranslation({ id, lang, userLanguage })`, read from the
+public bundle: it GETs `strato/column/None/tweetId=<id>,destinationLanguage=None,translationSource=Some(<X|Google|
+Papago>),…/translation/service/translateTweet` (X picks the service from its feature switches: `X` when
+`responsive_web_x_translation_enabled`) and answers the post normalized with `text` the translation, beside the
+service's own `sourceLanguage` and `translationSource`. The t.co links in it are put back as their addresses
+(`entities.urls`). `lang` (X's `legacy.lang`, now on every `PostFact` as `lang`) only steers Papago for Korean.
+
+Not checked live: the answer's field names beyond `translation` (`sourceLanguage`, `translationSource`) are from
+memory of X's answers; without them the hub labels it "X" and takes the language X tagged the post with.
+

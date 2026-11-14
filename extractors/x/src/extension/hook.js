@@ -2640,6 +2640,34 @@
     }
     return cmd.act === 'like' || cmd.act === 'unlike' ? { liked: cmd.act === 'like' } : { reposted: cmd.act === 'repost' };
   }
+  /**
+   * A post translated as its "Translate post" link does: the post actions' fetchTranslation({id, lang, userLanguage}),
+   * which asks X's translation service and answers the post normalized with its text the translation, beside the
+   * service's own fields (sourceLanguage, translationSource). Its t.co links are given back as their addresses.
+   */
+  async function translatePost(cmd) {
+    if (!POST_ID.test(String(cmd.post))) throw new Error('not a post id');
+    const a = actionsApi();
+    if (!fn(get(a, 'fetchTranslation'))) throw new Error('X changed: its post translation (fetchTranslation) was not found');
+    let r;
+    try {
+      r = await a.fetchTranslation({ id: String(cmd.post), lang: String(cmd.lang || 'und'), userLanguage: String(cmd.to) });
+    } catch (e) {
+      throw new Error(xError(e).message);
+    }
+    let text = get(r, 'translation');
+    if (typeof text !== 'string') text = get(r, 'text');
+    if (typeof text !== 'string') throw new Error('X gave no translation');
+    const urls = get(get(r, 'entities'), 'urls');
+    if (Array.isArray(urls))
+      for (const u of urls) {
+        const short = get(u, 'url');
+        const long = get(u, 'expanded_url');
+        if (typeof short === 'string' && typeof long === 'string') text = text.split(short).join(long);
+      }
+    const word = (k) => (typeof get(r, k) === 'string' ? get(r, k) : null);
+    return { text, from: word('sourceLanguage') || word('lang'), source: word('translationSource') };
+  }
   /** One post as TweetResultByRestId gives it (the post page's factory without replies): `{ result: Tweet }`. */
   async function oneTweet(id) {
     if (!feed.detail) throw new Error('X changed: the post endpoint (TweetDetail) was not found');
@@ -2902,6 +2930,8 @@
         return postRead(cmd);
       case 'postAct':
         return postAct(cmd);
+      case 'translate':
+        return translatePost(cmd);
       case 'publish':
         return publish(cmd);
       case 'reactors':

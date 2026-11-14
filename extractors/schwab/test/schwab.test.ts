@@ -18,17 +18,21 @@ import {
   keptTo,
   maskIn,
   pageKind,
+  pageWords,
   passkeyDetails,
   passkeyLayers,
   printName,
+  pullDueAtStart,
   realizedRanges,
   recognize,
   SIGN_IN_MESSAGE,
   signedInLayer,
+  signInNotBefore,
   SIGNS_ITSELF_IN,
   state,
   us,
   type View,
+  waitNote,
 } from '../src/schwab.ts';
 import { exportCsv } from './fake-schwab.ts';
 
@@ -162,6 +166,43 @@ test('passkey layers and details: facts only, no secrets', () => {
   expect(passkeyLayers({ ...v, passkey: checked })[0]!.note).toBe('ES256 passkey AbCdEfGh… for schwab.com, added 2026-11-10');
   const d = passkeyDetails({ ...v, passkey: checked });
   expect(d).toMatchObject({ passkeyEnrolled: true, passkeys: 1, credentialIdPrefix: 'AbCdEfGh…', passkeyAlgorithm: 'ES256', passkeyRpId: 'schwab.com', autoSignIn: 'ready' });
+});
+
+test('how often it signs in: at start only when a pull follows; never sooner than the gap after the last passkey try', () => {
+  const h = 3600_000;
+  const now = Date.UTC(2026, 10, 13, 12);
+  // Never pulled, or the last pull over autoPullHours ago: the start signs in, and the pull follows.
+  expect(pullDueAtStart(undefined, now, 12 * h)).toBe(true);
+  expect(pullDueAtStart(now - 13 * h, now, 12 * h)).toBe(true);
+  // A recent pull: a restart signs nothing in (the next pull does).
+  expect(pullDueAtStart(now - 2 * h, now, 12 * h)).toBe(false);
+  expect(pullDueAtStart(now - 2 * h, now, 0)).toBe(true);
+  // The gap: none before any passkey try, or with a gap of 0.
+  expect(signInNotBefore(undefined, 30 * 60_000)).toBe(0);
+  expect(signInNotBefore(now, 0)).toBe(0);
+  expect(signInNotBefore(now, 30 * 60_000)).toBe(now + 30 * 60_000);
+});
+
+test("pageWords: the sign-in widget's alerts for the log, masked, each once, at most four", () => {
+  expect(pageWords(['  There was a problem   logging you in. ', 'There was a problem logging you in.'])).toEqual(['There was a problem logging you in.']);
+  expect(pageWords(['Too many attempts (error 4029). Call 800-555-0100.'])).toEqual(['Too many attempts (error ####). Call ###-###-####.']);
+  expect(pageWords(['Signed in as alice@example.com'])).toEqual(['Signed in as [address]']);
+  expect(pageWords(['a', 'b', 'one', 'two', 'three', 'four', 'five'])).toEqual(['one', 'two', 'three', 'four']);
+  expect(pageWords(['x'.repeat(300)])[0]).toHaveLength(120);
+  expect(pageWords(null)).toEqual([]);
+  expect(pageWords([1, { t: 'no' }])).toEqual([]);
+});
+
+test('status: a sign-in waiting out the gap says until when, and that signing in yourself goes ahead', () => {
+  const until = Date.UTC(2026, 10, 13, 12, 30);
+  const waiting = { ...v, passkey: checked, auto: { ...auto, signingIn: false, waitUntil: until } };
+  expect(signedInLayer(waiting)).toEqual({ name: 'signed in', state: 'waiting', note: waitNote(until) });
+  expect(waitNote(until)).toContain('2026-11-13 12:30 UTC');
+  expect(passkeyDetails(waiting).autoSignIn).toBe('waiting until 2026-11-13 12:30 UTC');
+  // Not an attention: nothing for you to do.
+  expect(state(waiting)).toEqual({ status: 'online', attention: null });
+  // Waiting comes before the last failure, which the coming sign-in may clear.
+  expect(signedInLayer({ ...waiting, auto: { ...waiting.auto, failed: 'Schwab did not ask for the passkey' } }).state).toBe('waiting');
 });
 
 test('shownRange: the dates a page says it shows', () => {

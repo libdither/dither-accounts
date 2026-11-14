@@ -31,7 +31,7 @@ import { ingestInbox, ingestMessages, XState } from './ingest.ts';
 import { FeedTracker, FIRST_READ_MS, FIRST_READ_PAGES, type FeedKept, parseNotifications, parseProfileUser, parsePublished, parseReactors, parseTweetDetail, parseUserTweets, personAbout } from './feed.ts';
 import { conversationFact, identityFact, parseMediaRef, peerOf, shapeOf, toPlain } from './map.ts';
 import { Pace } from './pace.ts';
-import type { Down, FeedHookName, FeedReply, HookName, OutFile, PageState, PersonRef, PostActReply, PostReply, ProfileReply, PublishReply, ReactorsReply, SelfTest, Up } from './raw.ts';
+import type { Down, FeedHookName, FeedReply, HookName, OutFile, PageState, PersonRef, PostActReply, PostReply, ProfileReply, PublishReply, ReactorsReply, SelfTest, Up, TranslateReply } from './raw.ts';
 import { FEED_HOOK_NAMES } from './raw.ts';
 import { capabilitiesOf, compute, CORE, type Facts, type FeedFacts, HOOK_GRACE_MS } from './status.ts';
 import * as V from './validate.ts';
@@ -381,6 +381,8 @@ async function onCommand(cmd: P.AdapterCommand): Promise<unknown> {
       return post(cmd.post, cmd.cursor);
     case 'postAct':
       return postAct(cmd.post, cmd.act);
+    case 'translate':
+      return translate(cmd.post, cmd.to, cmd.lang);
     case 'publish':
       return publish(cmd.text, cmd.replyTo, cmd.quote);
     case 'postReactors':
@@ -569,6 +571,19 @@ function feedNeed(hook: FeedHookName, what: string) {
   if (page?.state === 'login') throw new Error('X is not signed in (live view)');
   const h = selfTest?.feed?.[hook];
   if (!h?.ok && h?.via !== 'pending') throw new Error(`cannot ${what}: X changed and the page's ${hook} hook was not found`);
+}
+
+/** A post translated by X into `to`, as its "Translate post" link does it (the post actions' fetchTranslation). */
+async function translate(id: string, to: string, lang?: string): Promise<P.NetworkTranslation> {
+  if (typeof id !== 'string' || !POST_ID.test(id)) throw new Error('not an X post id');
+  if (typeof to !== 'string' || !/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(to)) throw new Error('not a language to translate into');
+  feedNeed('actions', 'translate');
+  const r = await run('translate', () => pace.run(() => bridge.request<TranslateReply>({ kind: 'translate', post: id, to, ...(typeof lang === 'string' && lang.length <= 20 ? { lang } : {}) }, 45_000)));
+  if (!r || typeof r.text !== 'string') throw new Error('X gave no translation');
+  const word = (v: unknown) => (typeof v === 'string' && v.length <= 40 ? v : null);
+  const from = word(r.from);
+  const by = word(r.source);
+  return { text: r.text.slice(0, 20_000), ...(from ? { from } : {}), ...(by ? { by } : {}) };
 }
 
 /** Like, unlike, repost or unrepost a post. Answers how it stands after: `{ liked }` or `{ reposted }`. */

@@ -16,17 +16,20 @@
  * in once by hand, add a passkey in Schwab's security settings (the page's navigator.credentials.create reaches this
  * process: hook.js → content.js → sw.js → the bridge, with the frame's origin and the frames above it as Chromium
  * reports them; packages/passkey makes the key, keeps it in secret.json and answers), and log out and in with it once.
- * From then on, before each pull (and once at start) the account signs itself in when it finds Schwab signed out: it
- * clicks the sign-in page's passkey option, in whichever schwab.com frame shows it, and the authenticator answers; three
- * tries. Anything only you can give (a code, an approval, a captcha) stops it: every pull waits until the live view
- * shows Schwab signed in again. A passkey on a paired phone that the phone refuses stops it too, with no more tries
- * (packages/passkey signin.ts: denied waits for a pull you start, unanswered for the next scheduled pull).
+ * From then on, before each pull (and at start when a pull follows) the account signs itself in when it finds Schwab
+ * signed out: it clicks the sign-in page's passkey option, in whichever schwab.com frame shows it, and the authenticator
+ * answers; two tries, and never sooner than `signInGapMinutes` after the last passkey try (Schwab stops asking for the
+ * passkey after a few sign-ins in a row). Anything only you can give (a code, an approval, a captcha) stops it: every
+ * pull waits until the live view shows Schwab signed in again. A passkey on a paired phone that the phone refuses
+ * stops it too, with no more tries (packages/passkey signin.ts: denied waits for a pull you start, unanswered for the
+ * next scheduled pull).
  *
  * Without a checked passkey, a pull starts by itself right after you sign in (when the last one that found you signed
  * in is over 12 hours old), and a pull that finds Schwab signed out skips quietly.
  *
  * Config: { pullAt?, jitterMinutes?, schedule?, autoPullHours? (12), since? (backfill's first year; default last year),
- * signInOnStart? (true), testOrigin?, testFrameOrigin? (the fake's sign-in widget), paceScale?, noSandbox? }.
+ * signInOnStart? (true: at start, when a pull follows), signInGapMinutes? (30), testOrigin?, testFrameOrigin? (the
+ * fake's sign-in widget), paceScale?, noSandbox? }.
  * secret.json: { passkeys }. Logs pages, masks, layouts, ranges and row counts: never an amount, a balance, a
  * description, a key, a full credential id, a user handle or a challenge.
  */
@@ -50,9 +53,11 @@ import {
   type Layout,
   pageKind,
   type PageKind,
+  pageWords,
   passkeyDetails,
   passkeyLayers,
   printName,
+  pullDueAtStart,
   type Range,
   realizedRanges,
   recognize,
@@ -61,6 +66,7 @@ import {
   signedInLayer,
   state as statusOf,
   shownRange,
+  signInNotBefore,
   us,
   type View,
 } from './schwab.ts';
@@ -95,11 +101,18 @@ const defaultSince = Number.isInteger(Number(cfg.since)) && Number(cfg.since) > 
 const SETTLE_MS = 4000;
 const AUTO_RETRY_MS = 10 * 60_000;
 const pace = () => sleep(Math.round((2000 + Math.random() * 3000) * scale));
-/** Automatic sign-in: the waits before each try (so at most three tries). */
-const BACKOFF_MS = [0, 20_000, 60_000];
-/** The sign-in page is up this long before its passkey option is clicked; a click with no answer is repeated after. */
+/** Automatic sign-in: the waits before each try (so at most two tries). More tries did not help: when Schwab stopped
+ * asking for the passkey, it stopped for every try after (seen live). */
+const BACKOFF_MS = [0, 30_000];
+/** The sign-in page is up this long before its passkey option is clicked; a click with no answer is repeated once after. */
 const HYDRATE_MS = 3000;
 const RECLICK_MS = 10_000;
+const MAX_CLICKS = 2;
+/** No automatic sign-in sooner than this after the last passkey try (config signInGapMinutes, live; 0: none). */
+const gapMs = () => {
+  const n = Number(cfg.signInGapMinutes ?? 30);
+  return (Number.isFinite(n) ? Math.max(0, n) : 30) * 60_000;
+};
 /** A sign-in that used the passkey must reach the app within this long to count as checked. */
 const CHECK_WINDOW_MS = 3 * 60_000;
 
@@ -602,7 +615,7 @@ const runner = new StatementsRunner({
 
 // ------------------------------------------------------------------- status
 function view(): View {
-  const auto: AutoSignIn = { signingIn: signin.signingIn, hold: st.hold ?? null, failed: signin.failed, lastOkAt: signin.lastOkAt, approval: signin.refusal };
+  const auto: AutoSignIn = { signingIn: signin.signingIn, hold: st.hold ?? null, failed: signin.failed, lastOkAt: signin.lastOkAt, approval: signin.refusal, waitUntil: waitUntil || null };
   return { signedIn: signedIn(), challenge, lastSignedInPull: st.lastSignedInPull ?? null, now: Date.now(), passkey: auth.summary(), auto, lastRefusal };
 }
 
@@ -660,6 +673,8 @@ async function onWebauthn(m: WebauthnUp) {
     log('info', 'a passkey sign-in asked for a credential this browser does not hold: left to the browser', { page: where, frame });
   } else if (r.used) {
     counts.assertions++;
+    st.lastPasskeyTry = Date.now();
+    saveState();
     // A sign-in with it (not a re-check inside the app): from a sign-in page, as Chromium reports the tab's page, or
     // while not signed in. The app that follows has to settle again, and then the passkey counts as checked.
     const from = pageKind(typeof m.topPage === 'string' ? m.topPage : null, appOrigin);
@@ -701,10 +716,11 @@ const until = async (f: () => boolean, ms: number) => {
   return f();
 };
 
-/** The frames of a tab that show Schwab's passkey option, and whether any shows a captcha (page.js `passkey`). */
-async function passkeyFrames(tabId: number): Promise<{ frames: number[]; captcha: boolean }> {
-  const all = await host.execAll<{ passkey: boolean; captcha: boolean } | null>(tabId, 'passkey', [false], 'ISOLATED', 10_000).catch(() => []);
-  return { frames: all.filter((f) => !!f.result?.passkey).map((f) => f.frameId), captcha: all.some((f) => !!f.result?.captcha) };
+/** The frames of a tab that show Schwab's passkey option, whether any shows a captcha, and what their alerts say
+ * (page.js `passkey`; pageWords masks them for the log). */
+async function passkeyFrames(tabId: number): Promise<{ frames: number[]; captcha: boolean; said: string[] }> {
+  const all = await host.execAll<{ passkey: boolean; captcha: boolean; said?: string[] } | null>(tabId, 'passkey', [false], 'ISOLATED', 10_000).catch(() => []);
+  return { frames: all.filter((f) => !!f.result?.passkey).map((f) => f.frameId), captcha: all.some((f) => !!f.result?.captcha), said: pageWords(all.flatMap((f) => f.result?.said ?? [])) };
 }
 /** What on the sign-in page only you can give (a code or an approval, a captcha), or null. */
 async function askedOf(tabId: number, afterPasskey: boolean): Promise<Hold['what'] | null> {
@@ -741,10 +757,10 @@ async function signInOnce(): Promise<Try> {
   if (settledOnApp()) return { ok: true };
   if (!frames.length) return { ok: false, reason: kind === 'signin' ? "Schwab's sign-in page shows no passkey option" : 'Schwab did not settle on a page' };
   // The sign-in widget may show its button before its script has hydrated it, and a click then does nothing. So the
-  // page's frames have been up a few seconds first, and a click that brings no passkey request is repeated.
+  // page's frames have been up a few seconds first, and a click that brings no passkey request is repeated once.
   await until(() => Date.now() - lastHookAt >= HYDRATE_MS * scale, HYDRATE_MS);
   const before = counts.assertions;
-  const stop = Date.now() + 45_000;
+  const stop = Date.now() + Math.max(10_000, 45_000 * scale);
   let clicks = 0;
   let lastClick = 0;
   log('info', 'signing in with the passkey', { page: page ? pathOf(page) : null });
@@ -752,12 +768,14 @@ async function signInOnce(): Promise<Try> {
     if (settledOnApp()) return { ok: true };
     // The paired phone refused: no click again (each would ask it once more).
     if (signin.stopped) return { ok: false, reason: 'the approver refused' };
-    if (counts.assertions === before && clicks < 3 && Date.now() - lastClick >= RECLICK_MS * scale && kind === 'signin') {
+    if (counts.assertions === before && clicks < MAX_CLICKS && Date.now() - lastClick >= RECLICK_MS * scale && kind === 'signin') {
       const fid = (await passkeyFrames(t.id)).frames[0];
       const r = fid === undefined ? { clicked: false } : await host.execIn<{ clicked: boolean }>(t.id, fid, 'passkey', [true], 'ISOLATED', 10_000).catch(() => ({ clicked: false }));
       if (!r?.clicked && !clicks) return { ok: false, reason: 'the passkey option could not be clicked' };
       if (r?.clicked) {
         clicks++;
+        st.lastPasskeyTry = Date.now();
+        saveState();
         log('debug', `clicked the passkey option (${fid === 0 ? 'top frame' : 'a frame'}, click ${clicks})`);
       }
       lastClick = Date.now();
@@ -768,7 +786,12 @@ async function signInOnce(): Promise<Try> {
     }
     await sleep(500);
   }
-  return { ok: false, reason: counts.assertions > before ? 'Schwab did not finish the sign-in after the passkey answered' : 'Schwab did not ask for the passkey' };
+  if (counts.assertions > before) return { ok: false, reason: 'Schwab did not finish the sign-in after the passkey answered' };
+  // Why not, as far as the page says: the widget's alerts (an idle logout's "There was a problem logging you in", or
+  // whatever Schwab shows when it stops offering the passkey), masked.
+  const said = kind === 'signin' ? (await passkeyFrames(t.id)).said : [];
+  if (said.length) log('info', 'the sign-in page says', said);
+  return { ok: false, reason: `Schwab did not ask for the passkey${said.length ? ` (the page says "${said[0]!.slice(0, 100)}")` : ''}` };
 }
 const pathOf = (u: string) => {
   try {
@@ -778,12 +801,40 @@ const pathOf = (u: string) => {
   }
 };
 
-/** Sign in with the passkey: at most three tries with backoff; a question only you can answer holds every pull, and a
+/** A sign-in waiting out the gap after the last passkey try, until then (for the status); 0: none. */
+let waitUntil = 0;
+/**
+ * Before an automatic sign-in, wait until `signInGapMinutes` after the last passkey try (state.json, so restarts in a
+ * row do not each sign in): Schwab stopped asking for the passkey after two or three sign-ins within a few minutes.
+ * Signing in yourself in the live view ends the wait at once.
+ */
+async function waitForGap(trigger: Trigger): Promise<void> {
+  const at = signInNotBefore(st.lastPasskeyTry, gapMs());
+  if (Date.now() >= at) return;
+  waitUntil = at;
+  log('info', `waiting until ${new Date(at).toISOString()} to sign in (${trigger}): the last passkey try was ${Math.round((Date.now() - st.lastPasskeyTry!) / 60_000)} min ago`);
+  status();
+  try {
+    // Re-read each time: a passkey answered meanwhile (you, in the live view) moves it on, and you being in ends it.
+    await until(() => Date.now() >= signInNotBefore(st.lastPasskeyTry, gapMs()) || (settledOnApp() && signedIn()), Math.max(0, at - Date.now()) + gapMs() + 1000);
+  } finally {
+    waitUntil = 0;
+    status();
+  }
+}
+
+/** Sign in with the passkey: at most two tries with backoff; a question only you can answer holds every pull, and a
  * refusal from a paired phone stops the tries (signin.ts). */
 async function signIn(trigger: Trigger, force: boolean): Promise<void> {
   if (!force && settledOnApp()) return;
   const blocked = blockedNow();
   if (blocked) throw new NeedsYou(blocked, 'login');
+  // Automatic sign-ins wait out the gap; a pull you start (statements.refresh) goes now. A phone's standing refusal
+  // throws in run() at once, with no wait first.
+  if (trigger !== 'refresh' && !signin.blocked(trigger)) {
+    await waitForGap(trigger);
+    if (settledOnApp() && signedIn()) return;
+  }
   await signin.run<Hold['what']>(trigger, () => signInOnce(), {
     done: settledOnApp,
     hold: (what) => {
@@ -815,12 +866,15 @@ host.start().then(
   (ok) => {
     if (!ok) return;
     setInterval(tick, 2000);
-    // At start, sign in once with the passkey if Schwab is signed out.
+    // At start, sign in with the passkey if Schwab is signed out and a pull follows (the last one that found it signed
+    // in is over autoPullHours old). Otherwise not: the session would go unused until Schwab logs it out, and each
+    // restart of the manager (every deploy) would sign in again.
     if (cfg.signInOnStart === false) return;
     void until(() => host.attached, 60_000).then(async (up) => {
       if (!up) return;
       await until(() => settledOnApp() || kind === 'signin', 30_000 * Math.max(scale, 0.2));
       if (settledOnApp() || kind !== 'signin' || runner.pulling || !passkeyReady() || blockedNow()) return;
+      if (!pullDueAtStart(st.lastSignedInPull, Date.now(), autoPullMs)) return void log('info', 'no sign-in at start: the last pull is recent, and the next one signs in by itself');
       // A refusal from the phone stands: the start asks nothing (the attention says what does).
       if (signin.blocked('start')) return void log('info', 'no sign-in at start: the last approval on the phone was not given');
       await ensureSignedIn('start').catch((e) => log('warn', 'automatic sign-in at start did not go through', String((e as Error)?.message ?? e).slice(0, 200)));

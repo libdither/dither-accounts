@@ -176,7 +176,7 @@ A prompt nobody expected, again and again, teaches you to tap Approve. So a refu
 - The authenticator throws `ApproverRefusal` (a `NotAllowedError` with the reason and the device's name; an answer
   that does not check out is one too, reason `error`). The page's answer is unchanged: the plain `NotAllowedError`.
 - If the account was **signing in by itself**, that sign-in ends at once: no second click on the site's passkey
-  button, no second try (the three tries with backoff are for passkeys kept here). The pull that needed it fails with
+  button, no second try (the tries with backoff are for passkeys kept here). The pull that needed it fails with
   the attention **`approval`**, and the refusal is kept in the account's `state.json` (`approval`: reason, device,
   time), so a restart does not ask again.
 - What asks again depends on the reason:
@@ -244,8 +244,8 @@ Passkeys kept on this machine meet none of this: their sign-ins try three times 
   runner's retry window, Schwab's tick, a restart and the next day's pull, and a pull you start asks once more; an
   unanswered request is one prompt per scheduled pull; each reason's rule; a passkey kept here still gets its three
   tries. `extractors/privacy/test/approver.test.ts` (where Chromium is): the privacy kind in its sandbox with its
-  passkey on the fake phone: denied at start (one request), nothing at a restart, a pull from the page asks once more,
-  expired, then approved and pulled.
+  passkey on the fake phone: denied at start (`signInOnStart` on; one request), nothing at a restart, a pull from the
+  page asks once more, expired, then approved and pulled.
 
 ## Moving a passkey to the phone
 

@@ -285,6 +285,8 @@ export function parsePost(v: unknown, ctx: PostCtx, depth = 0): P.PostFact | nul
   const views = isObj(v.views) ? num(v.views.count) : null;
   const liked = bool(legacy.favorited);
   const reposted = bool(legacy.retweeted);
+  // The language X says it is in ('und' when it cannot tell; 'qme' media only, 'qht' hashtags only).
+  const lang = typeof legacy.lang === 'string' && /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(legacy.lang) ? legacy.lang : null;
   const counts: NonNullable<P.PostFact['counts']> = {
     ...(num(legacy.reply_count) !== null ? { replies: num(legacy.reply_count)! } : {}),
     ...(num(legacy.retweet_count) !== null ? { reposts: num(legacy.retweet_count)! } : {}),
@@ -305,6 +307,7 @@ export function parsePost(v: unknown, ctx: PostCtx, depth = 0): P.PostFact | nul
     ...(media.length ? { media } : {}),
     ...(root ? { root } : {}),
     ...(liked !== null || reposted !== null ? { viewer: { ...(liked !== null ? { liked } : {}), ...(reposted !== null ? { reposted } : {}) } } : {}),
+    ...(lang ? { lang } : {}),
   };
 }
 

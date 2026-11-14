@@ -91,20 +91,35 @@ itself before each pull". To revoke: delete the passkey in Schwab's security set
 
 ### Signing in by itself
 
-Before each pull (and once at start, config `signInOnStart`, default on), when the account's tab is not settled on the
-app, it loads the accounts summary there (which goes to the sign-in page when signed out), on every try and even when
-the tab already shows a sign-in page: the one Schwab leaves after logging an idle session out ("we've logged you out
+Before each pull, when the account's tab is not settled on the app, it loads the accounts summary there (which goes
+to the sign-in page when signed out), on every try and even when the tab already shows a sign-in page: the one Schwab leaves after logging an idle session out ("we've logged you out
 … due to inactivity", "There was a problem logging you in") shows the passkey option, but clicking it asks for
 nothing until the page is loaded again. Then it finds the frame whose
 control's **accessible name says "passkey"** (page.js `passkey`: buttons and links, by aria-labelledby, aria-label,
 text, value, title, images' alt; "sign in / log in / use / continue with a passkey" first; links to learn about, add or
 manage passkeys never), waits until the page's frames have been up 3 s (a widget may show its button before its script
-is up, when a click does nothing), clicks it, and clicks again after 10 s if no passkey request came, **at most three
+is up, when a click does nothing), clicks it, and clicks again after 10 s if no passkey request came, **at most two
 clicks a try**. The modal `get` is answered by the authenticator (counter + 1, saved first). Signed in means the tab
-then settles on the app (`client.schwab.com`, not a sign-in path) for 4 s, schwab.ts's classification. At most **three
-tries**, 0 s, 20 s and 60 s apart; then the attention `login` ("Signing in to Schwab with the passkey did not work
-(why): open the live view and log in, choosing the passkey option."). A pull whose History tab finds the session gone
-although the account's tab still shows the app signs in once more.
+then settles on the app (`client.schwab.com`, not a sign-in path) for 4 s, schwab.ts's classification. At most **two
+tries**, 30 s apart; then the attention `login` ("Signing in to Schwab with the passkey did not work (why): open the
+live view and log in, choosing the passkey option."). When no passkey request came, the why and the log carry what the
+sign-in widget's alerts said (role alert or status, error boxes; digits as `#`, anything with an `@` left out), such
+as "There was a problem logging you in". A pull whose History tab finds the session gone although the account's tab
+still shows the app signs in once more.
+
+**How often**: once per pull, that is once a day and for each pull you start, and no more. Schwab logs an idle session
+out long before the next day's pull, so a session nobody uses is not worth a sign-in, and Schwab stopped asking for
+the passkey after two or three sign-ins within a few minutes (more clicks did not bring it back). So:
+
+- **At start** (config `signInOnStart`, default on) it signs in only when a pull follows: when the last pull that found
+  Schwab signed in is over `autoPullHours` (12) old, and that pull starts once it is in. Each restart of the manager
+  (each deploy) restarts the extractor, whose new browser has no Schwab session, so signing in at every start meant a
+  sign-in per deploy. A missed daily pull is the runner's catch-up, which signs in for itself.
+- **A gap**: an automatic sign-in (at start, the daily pull, its retries, the pull after you sign in) waits until
+  `signInGapMinutes` (default 30; 0 for none) after the last passkey try: a click on the passkey option by itself, or
+  any passkey sign-in answered, yours in the live view too. The time is `state.json` `lastPasskeyTry`, so restarts in a
+  row do not each sign in. While it waits, the `signed in` layer says until when; signing in yourself in the live view
+  ends the wait. A pull you start (`statements.refresh`) does not wait.
 
 **What stops it**: a visible captcha, a code field before the passkey answered, or after it a code field or words
 asking for a code or an approval (any frame). Then the account **holds**: `state.json` `hold`, every pull refused
@@ -145,9 +160,12 @@ cross-origin frame, and so does the hook). `lastRefusal`, `page` and the log sho
   origin of the fake (as sws-gateway's): the three attentions in turn, a passkey (ES256, all the fake offers) made in
   the settings frame and checked by the relying party (origin, crossOrigin, topOrigin, counter), log out and in with
   it; a pull that finds the session gone signs itself in, clicking a button that ignores clicks until hydrated; after
-  an idle logout that leaves a sign-in page whose passkey option asks for nothing, a pull loads a fresh one; a code
-  after the passkey holds (nothing typed, pulls refused) until you are in, then the held pull runs; no key, credential
-  id or user handle to the manager.
+  an idle logout that leaves a sign-in page whose passkey option asks for nothing, a pull loads a fresh one; a widget
+  that stops asking for the passkey (`throttled`): two tries, then the pull asks for you with the widget's alert,
+  masked; a code after the passkey holds (nothing typed, pulls refused) until you are in, then the held pull runs.
+  Then restarts on the same account directory: soon after a pull, no sign-in; with a pull due but a passkey try just
+  before, the start waits out the gap, signs in and pulls. No key, credential id or user handle to the manager.
+- `test/schwab.test.ts` also: when a start signs in, the gap, the widget's words for the log, the waiting status.
 - What a refusal from a paired phone does to the sign-in (one request, nothing more until a pull you start, one per
   scheduled pull when unanswered; Schwab's tick and the runner's retries ask nothing): the repo's
   `test/approver-signin.test.ts` (CI), the rules both kinds share, and `test/schwab.test.ts` for the attention and the

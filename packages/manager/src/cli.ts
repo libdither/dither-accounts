@@ -155,9 +155,11 @@ async function main() {
       console.log(`revoked ${n} session${n === 1 ? '' : 's'}`);
       return;
     }
+    case 'cliproxy':
+      return cliproxy(up);
     default:
       die(
-        'usage: cli.ts accounts | apps | approve <request> | grant <app> <interface> <level> | import-dither-chat --hub-data <dir> (--accounts id,id | --all) [--dry-run] | forget <account> | export-to-dither-chat <account> --hub-data <dir> | set-password [--file <file>] | sessions | revoke-sessions',
+        'usage: cli.ts accounts | apps | approve <request> | grant <app> <interface> <level> | import-dither-chat --hub-data <dir> (--accounts id,id | --all) [--dry-run] | forget <account> | export-to-dither-chat <account> --hub-data <dir> | set-password [--file <file>] | sessions | revoke-sessions | cliproxy (status | connect [keys.env] | add-claude <email> [--mail <account>] | relink|enable|disable|remove <account>)',
       );
   }
 }
@@ -241,6 +243,73 @@ async function importDitherChat(up: boolean) {
     for (const a of out)
       s.run('INSERT INTO account (id, kind, label, config, token, dir, enabled, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', a.id, a.kind, a.label, a.config, newToken(), a.dir, a.enabled ? 1 : 0, 'import', now, now);
     console.log(`  registered in ${dataDir}; the manager starts them when it starts`);
+  }
+}
+
+/**
+ * The CLIProxyAPI hub's provider (docs/claude.md): `connect` hands it the hub's URL and management key from the hub's
+ * keys.env (the file given, else the default path it tries, ~/.local/share/cliproxyapi/keys.env); `add-claude` makes a
+ * Claude account for an email and signs the hub in to it, following the job until it is done (the sign-in link comes
+ * from the mail account with that address); `relink` does it again; `enable`/`disable` take its sign-in in or out of the hub's rotation; `remove`
+ * drops the hub's sign-in (the browser stays signed in).
+ */
+async function cliproxy(up: boolean) {
+  if (!up) die(`the manager is not running at ${url}`);
+  const [sub, arg] = rest;
+  const show = (st: any) => {
+    console.log(`hub: ${st.hub ? st.hub.url : 'none (cli.ts cliproxy connect)'}${st.hubError ? `  error: ${st.hubError}` : ''}`);
+    for (const a of st.accounts) {
+      const f = a.authFile;
+      const hub = f ? `${f.disabled ? 'disabled' : f.status || 'in'}${f.needsSignIn ? ', needs sign-in' : ''}${f.refreshError ? `, refresh: ${f.refreshError}` : ''}${f.priority ? `, priority ${f.priority}` : ''}${f.weeklyResetAt ? `, weekly reset ${new Date(f.weeklyResetAt).toISOString()}` : ''}` : 'not signed in';
+      console.log(`${a.id}  ${String(a.email).padEnd(32)} hub: ${hub}${a.job ? `  last job ${a.job.id}: ${a.job.step}${a.job.error ? ` (${a.job.error})` : ''}` : ''}`);
+    }
+    for (const f of st.otherFiles ?? []) console.log(`(hub only) ${f.name}  ${f.provider} ${f.email ?? ''}${f.disabled ? ' disabled' : ''}`);
+  };
+  const follow = async (job: any) => {
+    let last = '';
+    for (;;) {
+      const line = `${job.step}${job.error ? `: ${job.error}` : ''}`;
+      if (line !== last) console.log(`${job.id}  ${line}`);
+      last = line;
+      if (['done', 'needs-you', 'error'].includes(job.step)) {
+        if (job.step === 'needs-you') console.log('  open the account\'s live view on the page, answer what it shows, then: cli.ts cliproxy relink ' + job.account);
+        if (job.step !== 'done') process.exitCode = 1;
+        return;
+      }
+      await Bun.sleep(1500);
+      job = (await call('GET', `/api/providers/cliproxy/jobs/${job.id}`)).job;
+    }
+  };
+  switch (sub) {
+    case undefined:
+    case 'status':
+      return show(await call('GET', '/api/providers/cliproxy?fresh=1'));
+    case 'connect': {
+      const file = arg ?? join(homedir(), '.local/share/cliproxyapi/keys.env');
+      const v: Record<string, string> = {};
+      for (const line of readFileSync(file, 'utf8').split('\n')) {
+        const m = line.match(/^\s*([A-Z_]+)=(.*)$/);
+        if (m) v[m[1]] = m[2].trim();
+      }
+      if (!v.CLIPROXY_MANAGEMENT_KEY) die(`${file} has no CLIPROXY_MANAGEMENT_KEY`);
+      return show(await call('PUT', '/api/providers/cliproxy/hub', { url: v.CLIPROXY_URL || 'http://127.0.0.1:8317', managementKey: v.CLIPROXY_MANAGEMENT_KEY }));
+    }
+    case 'add-claude': {
+      if (!arg) die('cliproxy add-claude <email> [--mail <mail account>]');
+      return follow((await call('POST', '/api/providers/cliproxy/claude', { email: arg, ...(opt('mail') ? { mailAccount: opt('mail') } : {}) })).job);
+    }
+    case 'relink':
+      if (!arg) die('cliproxy relink <claude account>');
+      return follow((await call('POST', `/api/providers/cliproxy/claude/${arg}/relink`)).job);
+    case 'enable':
+    case 'disable':
+      if (!arg) die(`cliproxy ${sub} <claude account>`);
+      return show(await call('POST', `/api/providers/cliproxy/claude/${arg}/${sub}`));
+    case 'remove':
+      if (!arg) die('cliproxy remove <claude account>');
+      return show(await call('DELETE', `/api/providers/cliproxy/claude/${arg}`));
+    default:
+      die('cliproxy (status | connect [keys.env] | add-claude <email> [--mail <account>] | relink|enable|disable|remove <account>)');
   }
 }
 

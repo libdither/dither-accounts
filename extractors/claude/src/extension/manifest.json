@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Claude sign-in",
+  "version": "0.1.0",
+  "description": "Signs claude.ai in with an emailed link and approves the local CLIProxyAPI hub's OAuth request, for a local extractor. Never reads chats. Personal use.",
+  "minimum_chrome_version": "111",
+  "background": { "service_worker": "sw.js" },
+  "permissions": ["tabs", "scripting", "webNavigation", "alarms"],
+  "host_permissions": ["https://claude.ai/*"]
+}

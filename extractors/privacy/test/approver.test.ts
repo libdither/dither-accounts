@@ -4,7 +4,8 @@
  * `approver.request` asks with the fake phone (packages/passkey/test/fake-device.ts, asked directly, the device's name
  * added as the manager adds it; a request nobody answers comes back `expired` at once instead of after 3 minutes):
  *
- *   - at start, signed out, the phone denies: one request, no second click or try; the attention `approval`;
+ *   - at start (signInOnStart), signed out, the phone denies: one request, no second click or try; the attention
+ *     `approval`;
  *   - restarted: the denial stands (state.json), so the start asks nothing;
  *   - a pull from the page asks once more (denied: one request); nobody answers: one request, the attention says so;
  *   - approved: signed in, the pull goes through, the refusal is gone, and the relying party has the phone's counter.
@@ -80,7 +81,8 @@ function spawn() {
       DITHER_ACCOUNT_ID: 'acc_privacyapr',
       DITHER_ADAPTER_TOKEN: 'token',
       DITHER_ACCOUNT_DIR: dir,
-      DITHER_ACCOUNT_CONFIG: JSON.stringify({ testOrigin: fake.origin, paceScale: 0.05, schedule: false }),
+      // signInOnStart: the start's sign-in is where the phone is first asked here (off by default).
+      DITHER_ACCOUNT_CONFIG: JSON.stringify({ testOrigin: fake.origin, paceScale: 0.05, schedule: false, signInOnStart: true }),
       DITHER_ACCOUNT_LABEL: 'Privacy approver test',
     },
     stdout: 'ignore',

@@ -15,7 +15,7 @@ import { markerName, resolveBins } from '../packages/browser/src/index.ts';
 import { inetSockets, rfbBanner, x11vncs } from '../packages/browser/test/inet.ts';
 import { pageMarkerKey } from '../packages/manager/src/supervisor.ts';
 import { ALICE, BOB, CAROL, DAVE, DIRECT, ERIN, type FakeX, GROUP, LEGACY, PIXEL, REQUEST, SELF, startFakeX } from './fake-x.ts';
-import { CARA, DEV, EMI, FINN } from './fake-x-feed.ts';
+import { CARA, DEV, EMI, FINN, TRANSLATIONS } from './fake-x-feed.ts';
 
 const ROOT = join(import.meta.dir, '..');
 let bins: ReturnType<typeof resolveBins> | null = null;
@@ -161,7 +161,7 @@ it(
       'hook.typing': 'found (composer)',
       'hook.forward': 'found (action)',
     });
-    expect(helloOf(acc)).toMatchObject({ network: 'x', capabilities: ['liveView', 'media', 'history', 'markRead', 'send', 'sendMedia', 'edit', 'redact', 'react', 'typing', 'forward', 'openDirect', 'requests', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'posts', 'postActions', 'publish', 'postReactors'] });
+    expect(helloOf(acc)).toMatchObject({ network: 'x', capabilities: ['liveView', 'media', 'history', 'markRead', 'send', 'sendMedia', 'edit', 'redact', 'react', 'typing', 'forward', 'openDirect', 'requests', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'posts', 'postActions', 'publish', 'translate', 'postReactors'] });
     const lv = m!.router.liveView(acc)!;
     expect(lv).toEqual({ vncSocket: join(m!.store.account(acc)!.dir, 'vnc.sock'), width: 1280, height: 800 });
     expect(await rfbBanner(lv.vncSocket)).toMatch(/^RFB \d{3}\.\d{3}/);
@@ -405,6 +405,22 @@ it(
     expect(fake.calls.filter((c) => c.op === 'notifications.seen')).toEqual([]);
   },
   90_000,
+);
+
+it(
+  "translating a post as Translate post does: X's translation, its t.co links as their addresses, the language it was in, who made it",
+  async () => {
+    const focal = fake.feed.thread.focal.rest_id;
+    TRANSLATIONS[focal] = { translation: 'The garden in winter: https://t.co/gw1', from: 'ja', urls: [{ url: 'https://t.co/gw1', expanded_url: 'https://garden.example/winter' }] };
+    expect(evs(acc).filter((e) => e.t === 'hello').at(-1)?.capabilities).toContain('translate');
+    expect(await call('translate', { post: focal, to: 'en', lang: 'ja' })).toEqual({ text: 'The garden in winter: https://garden.example/winter', from: 'ja', by: 'Grok' });
+    // The one REST call the link makes, X choosing its own service.
+    expect(fake.calls.filter((c) => c.op === 'translate').at(-1)).toEqual({ op: 'translate', name: 'translateTweet', variables: { tweetId: focal, source: 'X' } });
+    // A post X will not translate: its words.
+    await expect(call('translate', { post: '1856000000000009999', to: 'en' })).rejects.toThrow('This post cannot be translated.');
+    await expect(call('translate', { post: focal, to: 'english!' })).rejects.toThrow('not a language');
+  },
+  60_000,
 );
 
 it(
@@ -803,7 +819,7 @@ it(
     expect(st.attention.message).toMatch(/only reads/);
     expect(st.layers.find((l: any) => l.name === 'sending')).toMatchObject({ state: 'failed', note: 'read-only: the composer events were not found' });
     expect(st.details).toMatchObject({ 'hook.send': 'missing', 'hook.edit': 'missing', 'hook.history': 'found (event)', 'hook.classes': 'found (module)' });
-    expect(helloOf(id).capabilities).toEqual(['liveView', 'media', 'history', 'markRead', 'redact', 'react', 'forward', 'openDirect', 'requests', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'posts', 'postActions', 'publish', 'postReactors']);
+    expect(helloOf(id).capabilities).toEqual(['liveView', 'media', 'history', 'markRead', 'redact', 'react', 'forward', 'openDirect', 'requests', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'posts', 'postActions', 'publish', 'translate', 'postReactors']);
     // It still reads.
     await until(() => evs(id).some((e) => e.t === 'message' && e.message.conversation === GROUP), 60_000, 'messages while read-only');
     const d = await call('action', { action: 'diagnose' }, id);

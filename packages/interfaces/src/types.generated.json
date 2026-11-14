@@ -104,6 +104,14 @@
      "kind": "like"
     }
    },
+   "translate": {
+    "input": "{ post: string; to: string; lang?: string }",
+    "output": "{ text: string; from?: string; by?: string }",
+    "example": {
+     "post": "",
+     "to": ""
+    }
+   },
    "resolve": {
     "input": "{ ref: AddRef }",
     "output": "{\n  what: \"space\" | \"person\" | \"group\" | \"channel\" | \"room\";\n  name: string;\n  /** The network will not say more without acting (signal-cli has no group-link preview; Discord has no username lookup that does not send the request). `name` is then the pasted text, `actions` are still listed, and a note says why. A missing n */\n  partial?: true;\n  /** Native id of the space, conversation or identity, when the network says. */\n  nativeId?: string;\n  avatar?: string;\n  description?: string;\n  members?: number;\n  online?: number;\n  /** Already in it: native ids. */\n  joined?: { space?: string; conversation?: string };\n  relationship?: \"friend\" | \"requested\" | \"requesting\" | \"blocked\" | \"contact\" | \"following\" | \"stranger\";\n  /** What this account can do with it now, best first. 'ask' = a join request the admins approve. */\n  actions: AddAction[];\n  /** ms epoch the invite runs out. */\n  expires?: number;\n  /** Native identity id of who made the invite (identity fact first). */\n  inviter?: string;\n  /** Plain notes: \"Joining asks the admins first\", \"This server wants a verified phone\". */\n  notes?: string[];\n}",
@@ -185,7 +193,7 @@
    },
    "publish": {
     "input": "{ replyTo?: string; text: string; quote?: string }",
-    "output": "{\n  /** The network's id for the post (X: the tweet's rest id). */\n  id: string;\n  /** Where it opens on the network: https://x.com/<handle>/status/<id>. */\n  url: string;\n  /** ms epoch. */\n  ts: number;\n  author?: string;\n  /** Plain text with links expanded, as the network shows it (X: a long post's whole text). */\n  text: string;\n  /** It answers this post (its id, and its author's native id where known). */\n  replyTo?: { id: string; author?: string };\n  repostOf?: PostFact;\n  quoteOf?: PostFact;\n  counts?: { replies?: number; reposts?: number; likes?: number; quotes?: number; views?: number };\n  media?: PostMedia[];\n  /** Pinned at the top of its author's profile. */\n  pinned?: boolean;\n  /** The thread it belongs to: the id of the thread's first post (X: conversation_id_str). */\n  root?: string;\n  /** What the account that read it has done to it (X: legacy.favorited, legacy.retweeted). */\n  viewer?: PostViewer;\n}",
+    "output": "{\n  /** The network's id for the post (X: the tweet's rest id). */\n  id: string;\n  /** Where it opens on the network: https://x.com/<handle>/status/<id>. */\n  url: string;\n  /** ms epoch. */\n  ts: number;\n  author?: string;\n  /** Plain text with links expanded, as the network shows it (X: a long post's whole text). */\n  text: string;\n  /** It answers this post (its id, and its author's native id where known). */\n  replyTo?: { id: string; author?: string };\n  repostOf?: PostFact;\n  quoteOf?: PostFact;\n  counts?: { replies?: number; reposts?: number; likes?: number; quotes?: number; views?: number };\n  media?: PostMedia[];\n  /** Pinned at the top of its author's profile. */\n  pinned?: boolean;\n  /** The thread it belongs to: the id of the thread's first post (X: conversation_id_str). */\n  root?: string;\n  /** What the account that read it has done to it (X: legacy.favorited, legacy.retweeted). */\n  viewer?: PostViewer;\n  /** The language it is written in, as the network says (X: legacy.lang; 'und' when it cannot tell). */\n  lang?: string;\n}",
     "example": {
      "text": ""
     }
@@ -770,7 +778,7 @@
    "CallParticipant": "type CallParticipant = {\n  /** Native user id. */\n  id: string;\n  muted: boolean;\n  deafened: boolean;\n  speaking: boolean;\n  /** Camera on. */\n  video?: boolean;\n  /** Sharing their screen (Go Live). */\n  streaming?: boolean;\n  /** Muted or deafened by a moderator (a server mute), rather than by themselves. */\n  serverMuted?: boolean;\n  serverDeafened?: boolean;\n  /** How loud they are for this account only, percent: 100 as they are, 0 to VOLUME_MAX (the network's per-person volume). Absent: 100. */\n  volume?: number;\n  /** Muted for this account only. */\n  localMute?: boolean;\n  /** On a stage: what they are there (StageRole). Absent outside a stage. */\n  stage?: \"invited\" | \"audience\" | \"speaker\" | \"hand\";\n};",
    "CallStage": "/** A stage call's own facts (CallState.stage). */\ntype CallStage = {\n  /** What the stage is about, when someone started it with a topic. */\n  topic: null | string;\n  /** This account may invite people to speak and move speakers back to the audience (Discord: Mute Members there). */\n  moderator: boolean;\n};",
    "CallState": "type CallState = {\n  conversation: string;\n  participants: CallParticipant[];\n  /** Present when the call is a stage. */\n  stage?: CallStage;\n};",
-   "Capability": "type Capability = \"history\"\n| \"send\"\n| \"forward\"\n| \"openDirect\"\n| \"search\"\n| \"walkMembers\"\n| \"mentionables\"\n| \"threads\"\n| \"markRead\"\n| \"viewed\"\n| \"resetSession\"\n| \"typing\"\n| \"react\"\n| \"edit\"\n| \"redact\"\n| \"moderate\"\n| \"about\"\n| \"configure\"\n| \"profile\"\n| \"publish\"\n| \"postReactors\"\n| \"declineCall\"\n| \"resolve\"\n| \"addMembers\"\n| \"createGroup\"\n| \"rsvp\"\n| \"leave\"\n| \"block\"\n| \"mute\"\n| \"markUnread\"\n| \"markReadMany\"\n| \"pollVote\"\n| \"pollCreate\"\n| \"pollEnd\"\n| \"suppressEmbeds\"\n| \"nativeScheduled\"\n| \"ignore\"\n| \"setPresence\"\n| \"sessions\"\n| \"threadState\"\n| \"crosspost\"\n| \"setPicture\"\n| \"nick\"\n| \"pin\"\n| \"members\"\n| \"requests\"\n| \"relationships\"\n| \"mentions\"\n| \"join\"\n| \"stage\"\n| \"disconnect\"\n| \"events\"\n| \"media\"\n| \"sendMedia\"\n| \"e2ee\"\n| \"liveView\"\n| \"calls\"\n| \"callStates\"\n| \"ringCalls\"\n| \"voicePresence\"\n| \"callVolume\"\n| \"callInput\"\n| \"soundboard\"\n| \"posts\"\n| \"postActions\"\n| \"editProfile\"\n| \"connect\"\n| \"personRefs\"\n| \"listThreads\"\n| \"gates\"\n| \"inviteLinks\"\n| \"safetyNumbers\"\n| \"contactNotes\"\n| \"linkPreviews\"\n| \"memberLabels\"\n| \"interactComponents\"\n| \"interactCommands\"\n| \"interactModals\"\n| \"interactContext\"\n| \"sendStickers\"\n| \"installStickers\"\n| \"sendVoice\"\n| \"sendViewOnce\"\n| \"stories\"\n| \"polls\"\n| \"silentSend\"\n| \"replyMention\"\n| \"savedMessages\"\n| \"followThreads\"\n| \"createThreads\"\n| \"forumPosts\"\n| \"myThreads\"\n| \"removeMembers\"\n| \"transferOwner\"\n| \"groupPicture\";",
+   "Capability": "type Capability = \"history\"\n| \"send\"\n| \"forward\"\n| \"openDirect\"\n| \"search\"\n| \"walkMembers\"\n| \"mentionables\"\n| \"threads\"\n| \"markRead\"\n| \"viewed\"\n| \"resetSession\"\n| \"typing\"\n| \"react\"\n| \"edit\"\n| \"redact\"\n| \"moderate\"\n| \"about\"\n| \"configure\"\n| \"profile\"\n| \"publish\"\n| \"postReactors\"\n| \"translate\"\n| \"declineCall\"\n| \"resolve\"\n| \"addMembers\"\n| \"createGroup\"\n| \"rsvp\"\n| \"leave\"\n| \"block\"\n| \"mute\"\n| \"markUnread\"\n| \"markReadMany\"\n| \"pollVote\"\n| \"pollCreate\"\n| \"pollEnd\"\n| \"suppressEmbeds\"\n| \"nativeScheduled\"\n| \"ignore\"\n| \"setPresence\"\n| \"sessions\"\n| \"threadState\"\n| \"crosspost\"\n| \"setPicture\"\n| \"nick\"\n| \"pin\"\n| \"members\"\n| \"requests\"\n| \"relationships\"\n| \"mentions\"\n| \"join\"\n| \"stage\"\n| \"disconnect\"\n| \"events\"\n| \"media\"\n| \"sendMedia\"\n| \"e2ee\"\n| \"liveView\"\n| \"calls\"\n| \"callStates\"\n| \"ringCalls\"\n| \"voicePresence\"\n| \"callVolume\"\n| \"callInput\"\n| \"soundboard\"\n| \"posts\"\n| \"postActions\"\n| \"editProfile\"\n| \"connect\"\n| \"personRefs\"\n| \"listThreads\"\n| \"gates\"\n| \"inviteLinks\"\n| \"safetyNumbers\"\n| \"contactNotes\"\n| \"linkPreviews\"\n| \"memberLabels\"\n| \"interactComponents\"\n| \"interactCommands\"\n| \"interactModals\"\n| \"interactContext\"\n| \"sendStickers\"\n| \"installStickers\"\n| \"sendVoice\"\n| \"sendViewOnce\"\n| \"stories\"\n| \"polls\"\n| \"silentSend\"\n| \"replyMention\"\n| \"savedMessages\"\n| \"followThreads\"\n| \"createThreads\"\n| \"forumPosts\"\n| \"myThreads\"\n| \"removeMembers\"\n| \"transferOwner\"\n| \"groupPicture\";",
    "ConversationFact": "type ConversationFact = {\n  /** Discord channel snowflake | Matrix room id | Matrix thread \"<roomId>|<rootEventId>\" | Signal group \"group:<base64 id>\" | Signal 1:1 \"dm:<selfAci>:<peerAci>\" */\n  nativeId: string;\n  shape: Shape;\n  variant?: \"text\" | \"voice\" | \"stage\" | \"rules\" | \"media\" | \"posts\" | \"announcement\" | \"forum\" | \"feed\";\n  /** Omit for directs: the UI names them after the peer. */\n  name?: string;\n  topic?: string;\n  avatarUrl?: string;\n  encrypted?: boolean;\n  archived?: boolean;\n  /** Threads: the conversation they hang off. */\n  parentConversation?: string;\n  /** Containing spaces (a graph: a Matrix room may be in several). */\n  spaces?: SpaceRef[];\n  /** Identity native IDs. Only for direct, group and self; big channels skip this. */\n  participants?: string[];\n  mute?: NativeMute;\n  lastMessageAt?: number;\n  /** A thread's own facts: whether you follow it, its tags, who started it (threads.ts). */\n  thread?: ThreadFact;\n  /** A forum or media channel's tags and default order (threads.ts). */\n  forum?: ForumFact;\n};",
    "CustomEmojiFact": "/** A custom emoji. Reactions refer to it by key; the hub keeps a catalog per network. */\ntype CustomEmojiFact = { key: string; name: string; url: string; animated?: boolean };",
    "EventException": "/** One occurrence of a repeating event that differs from the rule: moved, or called off. */\ntype EventException = {\n  /** The network's id for the change (Discord: a snowflake of the occurrence's original start). */\n  nativeId: string;\n  /** ms epoch: when this occurrence would have started by the rule (the calendar's RECURRENCE-ID). */\n  original: number;\n  /** Moved to, when moved. */\n  start?: number;\n  end?: number;\n  cancelled?: boolean;\n  /** This account's own answer to this occurrence, when it differs from the series'. */\n  youInterested?: boolean;\n};",
@@ -814,7 +822,7 @@
    "PollDraft": "/** A poll to make. `hours`: how long it stays open, one of POLL_RULES' choices, where the network has them. */\ntype PollDraft = { question: string; options: string[]; multi: boolean; hours?: number };",
    "PollVoteFact": "/** One voter's whole vote: the options they hold now ([] took it back). `seq`: Signal's vote count; the highest wins. */\ntype PollVoteFact = { voter: string; options: string[]; seq: number; ts?: number };",
    "PostAct": "/** Done to a post (capability 'postActions', the `postAct` command). */\ntype PostAct = \"like\" | \"repost\" | \"unlike\" | \"unrepost\";",
-   "PostFact": "/** One post as the network shows it. `author` is a native identity id (an identity fact for it comes first). A */\ntype PostFact = {\n  /** The network's id for the post (X: the tweet's rest id). */\n  id: string;\n  /** Where it opens on the network: https://x.com/<handle>/status/<id>. */\n  url: string;\n  /** ms epoch. */\n  ts: number;\n  author?: string;\n  /** Plain text with links expanded, as the network shows it (X: a long post's whole text). */\n  text: string;\n  /** It answers this post (its id, and its author's native id where known). */\n  replyTo?: { id: string; author?: string };\n  repostOf?: PostFact;\n  quoteOf?: PostFact;\n  counts?: { replies?: number; reposts?: number; likes?: number; quotes?: number; views?: number };\n  media?: PostMedia[];\n  /** Pinned at the top of its author's profile. */\n  pinned?: boolean;\n  /** The thread it belongs to: the id of the thread's first post (X: conversation_id_str). */\n  root?: string;\n  /** What the account that read it has done to it (X: legacy.favorited, legacy.retweeted). */\n  viewer?: PostViewer;\n};",
+   "PostFact": "/** One post as the network shows it. `author` is a native identity id (an identity fact for it comes first). A */\ntype PostFact = {\n  /** The network's id for the post (X: the tweet's rest id). */\n  id: string;\n  /** Where it opens on the network: https://x.com/<handle>/status/<id>. */\n  url: string;\n  /** ms epoch. */\n  ts: number;\n  author?: string;\n  /** Plain text with links expanded, as the network shows it (X: a long post's whole text). */\n  text: string;\n  /** It answers this post (its id, and its author's native id where known). */\n  replyTo?: { id: string; author?: string };\n  repostOf?: PostFact;\n  quoteOf?: PostFact;\n  counts?: { replies?: number; reposts?: number; likes?: number; quotes?: number; views?: number };\n  media?: PostMedia[];\n  /** Pinned at the top of its author's profile. */\n  pinned?: boolean;\n  /** The thread it belongs to: the id of the thread's first post (X: conversation_id_str). */\n  root?: string;\n  /** What the account that read it has done to it (X: legacy.favorited, legacy.retweeted). */\n  viewer?: PostViewer;\n  /** The language it is written in, as the network says (X: legacy.lang; 'und' when it cannot tell). */\n  lang?: string;\n};",
    "PostMedia": "/** A picture or video in a post. `url` is the full picture (for a video, its poster frame). */\ntype PostMedia = { kind: \"image\" | \"video\" | \"gif\"; url: string; width?: number; height?: number; alt?: string };",
    "PostViewer": "/** What you have done to a post. */\ntype PostViewer = { liked?: boolean; reposted?: boolean };",
    "PresenceChange": "/** What `setPresence` changes. A field left out stays as it is; `status: null` clears the status line. */\ntype PresenceChange = { state?: \"online\" | \"idle\" | \"dnd\" | \"invisible\"; status?: null | OwnStatus };",
@@ -920,7 +928,7 @@
     "example": {}
    },
    "cal.events": {
-    "input": "{ calendarId: string; from?: string; pageToken?: string; to?: string; expand?: boolean }",
+    "input": "{ calendarId: string; to?: string; from?: string; pageToken?: string; expand?: boolean }",
     "output": "{ events: CalEvent[]; next: null | string; syncToken: null | string }",
     "example": {
      "calendarId": ""
@@ -1481,6 +1489,44 @@
    "DnsRecord": "type DnsRecord = {\n  /** The host's id for it: what dns.edit and dns.remove take. */\n  id: string;\n  /** Relative to the zone: `@`, `www`, `_acme-challenge.tn`. */\n  name: string;\n  type: string;\n  content: string;\n  /** Seconds. */\n  ttl: null | number;\n  /** MX and SRV priority. */\n  prio?: null | number;\n};",
    "DnsZone": "type DnsZone = {\n  /** The domain, example.com */\n  name: string;\n  /** The host's word for it (active, expired…), when it says. */\n  status: null | string;\n  /** When the registration runs out (ISO 8601), when the host says. */\n  expiry: null | string;\n};"
   }
+ },
+ "claude": {
+  "ops": {
+   "claude.session": {
+    "input": "{}",
+    "output": "{\n  /** null until the extractor has looked. */\n  signedIn: null | boolean;\n  /** The email claude.ai says is signed in. */\n  email: null | string;\n  /** The email this account is for (its config). */\n  expectedEmail: null | string;\n  /** The tab's page, origin and path only. */\n  page: null | string;\n  /** The organizations' rate limit tiers claude.ai reports (`default_claude_max_20x`), when signed in. */\n  tiers: string[];\n}",
+    "example": {}
+   },
+   "claude.survey": {
+    "input": "{}",
+    "output": "{\n  page: string;\n  title: string;\n  headings: string[];\n  inputs: {\n    type: string;\n    name: null | string;\n    id: null | string;\n    placeholder: null | string;\n    label: null | string;\n  }[];\n  buttons: string[];\n  challenge: boolean;\n}",
+    "example": {}
+   },
+   "claude.signin.start": {
+    "input": "{}",
+    "output": "{ already: boolean; email: null | string; requestedAt: null | number }",
+    "example": {}
+   },
+   "claude.signin.finish": {
+    "input": "{ link: string }",
+    "output": "{ email: null | string }",
+    "example": {
+     "link": ""
+    }
+   },
+   "claude.authorize": {
+    "input": "{ url: string }",
+    "output": "{ callbackUrl: string }",
+    "example": {
+     "url": ""
+    }
+   }
+  },
+  "events": {
+   "hello": "Record<string, unknown>",
+   "status": "Record<string, unknown>"
+  },
+  "defs": {}
  },
  "test.echo": {
   "ops": {

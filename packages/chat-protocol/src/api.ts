@@ -1202,6 +1202,8 @@ export interface Bootstrap {
   calendar?: CalendarLinkView;
   /** Notices (docs/notices.md). Absent when the hub has none. */
   notices?: NoticesBoot;
+  /** Changes when the hub process starts again, as in a sync answer: a new one may have brought a new web build. */
+  boot?: string;
 }
 
 /**

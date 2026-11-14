@@ -122,7 +122,7 @@ it(
   'asks for a sign-in, pulls right after it, checks the seeded range, then skips quietly when the session ends',
   async () => {
     await until(() => events.some((e) => e.t === 'hello'), 20_000, 'hello');
-    expect(events.find((e) => e.t === 'hello')).toMatchObject({ interfaces: ['statements'], capabilities: ['liveView'] });
+    expect(events.find((e) => e.t === 'hello')).toMatchObject({ interfaces: ['statements', 'browser'], capabilities: ['liveView'] });
 
     // Signed out, never pulled: the sign-in attention, with the live view.
     await until(() => lastStatus()?.attention?.kind === 'login', 60_000, 'the sign-in attention');

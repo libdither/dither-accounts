@@ -1528,6 +1528,96 @@
   },
   "defs": {}
  },
+ "browser": {
+  "ops": {
+   "browser.tabs": {
+    "input": "{}",
+    "output": "{ tabs: BrowserTab[] }",
+    "example": {}
+   },
+   "browser.read": {
+    "input": "{ maxText?: number; maxElements?: number; tabId?: number }",
+    "output": "{\n  tabId: number;\n  url: string;\n  title: string;\n  /** The page's visible text, cut to `maxText` (default 20 000 characters). */\n  text: string;\n  textCut: boolean;\n  /** Up to `maxElements` (default 300) interactive elements, in page order. */\n  elements: BrowserElement[];\n  elementsCut: boolean;\n  /** What the page asks only a person to do (a captcha, \"I am human\", a code), when it looks like one. */\n  challenge: null | string;\n}",
+    "example": {}
+   },
+   "browser.shot": {
+    "input": "{ tabId?: number }",
+    "output": "{ tabId: number; mime: \"image/png\"; base64: string }",
+    "example": {}
+   },
+   "browser.open": {
+    "input": "{ url: string }",
+    "output": "{ tabId: number; url: string; title: string; challenge: null | string }",
+    "example": {
+     "url": ""
+    }
+   },
+   "browser.go": {
+    "input": "{ url: string; tabId?: number }",
+    "output": "{ tabId: number; url: string; title: string; challenge: null | string }",
+    "example": {
+     "url": ""
+    }
+   },
+   "browser.click": {
+    "input": "{ ref: string; tabId?: number }",
+    "output": "{ tabId: number; url: string; title: string; challenge: null | string }",
+    "example": {
+     "ref": ""
+    }
+   },
+   "browser.type": {
+    "input": "{ ref: string; text: string; clear?: boolean; tabId?: number; enter?: boolean }",
+    "output": "{ tabId: number; url: string; title: string; challenge: null | string }",
+    "example": {
+     "ref": "",
+     "text": ""
+    }
+   },
+   "browser.select": {
+    "input": "{ ref: string; option: string; tabId?: number }",
+    "output": "{ tabId: number; url: string; title: string; challenge: null | string }",
+    "example": {
+     "ref": "",
+     "option": ""
+    }
+   },
+   "browser.key": {
+    "input": "{ keys: string; tabId?: number }",
+    "output": "{ tabId: number; url: string; title: string; challenge: null | string }",
+    "example": {
+     "keys": ""
+    }
+   },
+   "browser.scroll": {
+    "input": "{ direction: \"up\" | \"down\"; tabId?: number }",
+    "output": "{ tabId: number; url: string; title: string; challenge: null | string }",
+    "example": {
+     "direction": "up"
+    }
+   },
+   "browser.press": {
+    "input": "{ ref: string; tabId?: number }",
+    "output": "{ tabId: number; url: string; title: string; challenge: null | string }",
+    "example": {
+     "ref": ""
+    }
+   },
+   "browser.close": {
+    "input": "{ tabId?: number }",
+    "output": "{ closed: boolean }",
+    "example": {}
+   }
+  },
+  "events": {
+   "hello": "Record<string, unknown>",
+   "status": "Record<string, unknown>"
+  },
+  "defs": {
+   "BrowserElement": "type BrowserElement = {\n  /** What click/type take: e1, e2… */\n  ref: string;\n  /** link, button, textbox, checkbox, radio, combobox, option, tab, menuitem… (the role, else the tag). */\n  role: string;\n  /** Its accessible name or text, cut to 120 characters. */\n  name: string;\n  /** A field's value, a checkbox's checked state, a select's chosen option. */\n  value?: string;\n  href?: string;\n  disabled?: boolean;\n  /** Inside the window right now (else a click scrolls it in first). */\n  inView: boolean;\n  /** Pressing it buys, pays, sends or deletes, by its words: only browser.press (manage) presses it. */\n  guarded?: boolean;\n};",
+   "BrowserTab": "type BrowserTab = {\n  tabId: number;\n  /** The whole URL. */\n  url: string;\n  title: string;\n  /** In front on the display (the live view shows it). */\n  active: boolean;\n};"
+  }
+ },
  "test.echo": {
   "ops": {
    "echo": {

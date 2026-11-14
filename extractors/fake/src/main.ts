@@ -32,7 +32,9 @@ function crashWith(message: string): never {
  * one in a session of its own, as a sandbox or a browser's zygote may be. A stop must end both (docs/supervisor.md).
  */
 const children: number[] = [];
-const startConfig = JSON.parse(process.env.DITHER_ACCOUNT_CONFIG || '{}') as { children?: boolean; tick?: number; slowExit?: number };
+const startConfig = JSON.parse(process.env.DITHER_ACCOUNT_CONFIG || '{}') as { children?: boolean; tick?: number; slowExit?: number; hangOn?: string };
+// config.hangOn: started with that code fingerprint, it never connects (new code that does not come up).
+if (startConfig.hangOn && process.env.DITHER_EXTRACTOR_FINGERPRINT === startConfig.hangOn) await new Promise(() => {});
 if (startConfig.children) {
   for (const detached of [false, true]) children.push(Bun.spawn(['sleep', '3600'], { stdio: ['ignore', 'ignore', 'ignore'], detached }).pid);
   // A third with no environment at all, in a session of its own, as bubblewrap starts a native app's Xvfb: only its

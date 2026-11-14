@@ -102,7 +102,7 @@ interface Running {
 /** How many of an extractor's last log lines are kept for a crash record. */
 const CRASH_LINES = 60;
 
-type Pending = { resolve: (v: unknown) => void; reject: (e: ExtractorError) => void; timer: Timer };
+type Pending = { resolve: (v: unknown) => void; reject: (e: ExtractorError) => void; timer: Timer; ws: ServerWebSocket<ExtractorSocketData> };
 
 export class ExtractorError extends Error {
   constructor(
@@ -125,6 +125,8 @@ export const EXIT_FILE = 'extractor.exit';
 const WATCH_MS = 1000;
 /** How long an adopted process has to connect before it is taken for stuck and started afresh. */
 const ADOPT_CONNECT_MS = 60_000;
+/** How long a restarted extractor has to come online before its kind's restarts stop. */
+const RESTART_ONLINE_MS = 60_000;
 /** Between two restarts for changed code, and before the first. */
 const RESTART_PAUSE_MS = 20_000;
 /** An extractor that outlives its manager ends itself after this long without one (its link, DITHER_MANAGER_GONE_EXIT_S). */
@@ -308,7 +310,6 @@ export class Supervisor {
   readonly launch: Launch;
   private dataDir: string;
   private watcher?: Timer;
-  /** Adopted accounts whose code changed, restarted one at a time. */
   /** Adopted accounts whose code changed, by kind: one restart at a time per kind, different kinds side by side. */
   private outdated = new Map<string, string[]>();
   /** Accounts being restarted for changed code now (at most one per kind). */
@@ -325,7 +326,6 @@ export class Supervisor {
   private resync = new Set<string>();
   /** Accounts stopped on purpose (a stop from the page, an app, a disable): a staggered restart leaves them stopped. */
   private halted = new Set<string>();
-  private pause?: { timer: Timer; done: () => void };
   private scan?: { at: number; found: Found[] };
   /** When an account was last made sure to have nothing left running. */
   private cleanedAt = new Map<string, number>();
@@ -351,6 +351,8 @@ export class Supervisor {
       fingerprint?: (kind: Kind) => string;
       /** Between restarts for changed code (default 20 s). */
       restartPauseMs?: number;
+      /** How long an extractor restarted for changed code has to come online before its kind's restarts stop (60 s). */
+      restartOnlineMs?: number;
       /** How long an adopted extractor has to connect (default 60 s). */
       adoptConnectMs?: number;
       /** Seconds an extractor that outlives the manager waits for one before it ends itself (default 1800). */
@@ -415,6 +417,11 @@ export class Supervisor {
     for (const id of this.rolled) {
       const r = this.running.get(id);
       if (!r || this.halted.has(id)) continue; // stopped on purpose since
+      // Still under way: counted in `active`, once.
+      if (this.rollingNow.has(id)) {
+        if (this.rolledCrashes.get(id)) crashed++;
+        continue;
+      }
       restarted++;
       if (r.ws) online++;
       // Only exits nobody asked for: a restart from the page, an app or a gap is no crash.
@@ -950,8 +957,15 @@ export class Supervisor {
           this.start(id);
           this.rolled.add(id);
           this.rolledCrashes.delete(id);
-          const end = Date.now() + 60_000;
+          const end = Date.now() + (this.opts.restartOnlineMs ?? RESTART_ONLINE_MS);
           while (!this.closing && Date.now() < end && !this.running.get(id)?.ws) await Bun.sleep(250);
+          // Not back on the new code: the rest of its kind keep their old code (running) rather than get this too.
+          if (!this.closing && !this.running.get(id)?.ws && !this.halted.has(id)) {
+            const left = this.outdated.get(kind) ?? [];
+            appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} not online on its new code in ${Math.round((this.opts.restartOnlineMs ?? RESTART_ONLINE_MS) / 1000)} s: the ${left.length} other ${kind} account(s) waiting keep running their old code\n`);
+            this.outdated.delete(kind);
+            break;
+          }
         } finally {
           this.rollingNow.delete(id);
         }
@@ -1006,6 +1020,13 @@ export class Supervisor {
   detach(ws: ServerWebSocket<ExtractorSocketData>) {
     const r = this.running.get(ws.data.accountId);
     if (r?.ws === ws) r.ws = undefined;
+    // What was asked of it on that socket gets no answer now: said at once, not after the call's timeout.
+    for (const [id, p] of this.pending) {
+      if (p.ws !== ws) continue;
+      this.pending.delete(id);
+      clearTimeout(p.timer);
+      p.reject(new ExtractorError('the account went offline', 'offline'));
+    }
     this.opts.onChange(ws.data.accountId);
   }
 
@@ -1080,12 +1101,13 @@ export class Supervisor {
     const r = this.running.get(accountId);
     const id = crypto.randomUUID();
     return new Promise((resolve, reject) => {
-      if (!r?.ws) return reject(new ExtractorError('the account is not connected', 'offline'));
+      // Not connected, or being stopped (it heard `shutdown`): it would never answer.
+      if (!r?.ws || r.stopping) return reject(new ExtractorError('the account is not connected', 'offline'));
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new ExtractorError(`no answer to ${cmd.t} in ${Math.round(timeoutMs / 1000)} s`, 'timeout'));
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve, reject, timer, ws: r.ws });
       // The call's own id travels as `rid`, so an op input named `id` (mail.get, cal.delete…) reaches the extractor
       // as it was sent. Inputs without one also get it as `id`, which chat adapters (dither-chat's protocol) answer by.
       r.ws.send(JSON.stringify({ ...cmd, ...(cmd.id === undefined ? { id } : {}), rid: id }));

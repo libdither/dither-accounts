@@ -52,6 +52,8 @@ export interface ManagerOpts {
   fingerprint?: (kind: Kind) => string;
   /** Tests only: the pause between restarts of adopted extractors whose code changed (20 s). */
   restartPauseMs?: number;
+  /** Tests only: how long an extractor restarted for changed code has to come online (60 s). */
+  restartOnlineMs?: number;
   /** Tests only: how long an adopted extractor has to connect (60 s). */
   adoptConnectMs?: number;
   /** Tests only: what a `scope` launch goes through instead of systemd-run. */
@@ -130,6 +132,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     fingerprint: o.fingerprint,
     restartPauseMs: o.restartPauseMs,
     adoptConnectMs: o.adoptConnectMs,
+    restartOnlineMs: o.restartOnlineMs,
     systemdRun: o.systemdRun,
     managerGoneExitS: o.managerGoneExitS,
     onEvent: (id, ev) => {

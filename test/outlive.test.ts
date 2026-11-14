@@ -435,3 +435,38 @@ test('restarts for changed code: one at a time per kind, different kinds side by
   expect(m2.sup.codeRestarts()).toEqual({ queued: 0, active: 0, restarted: 3, online: 3, crashed: 0 });
   await m2.stop();
 }, 60_000);
+
+test("a restarted extractor that does not come online on its new code stops its kind's restarts; the others keep their old code", async () => {
+  const dir = tempDir('stuckroll');
+  const m1 = await manager(dir);
+  const a = await started(m1, dir, 'acc-sr-a', { hangOn: 'v2' });
+  const b = await started(m1, dir, 'acc-sr-b', { hangOn: 'v2' });
+  const port = m1.http.server.port!;
+  await m1.stop({ leaveExtractors: true });
+  const m2 = await manager(dir, { port, fingerprint: () => 'v2', restartPauseMs: 1000, restartOnlineMs: 1500 });
+  expect(m2.sup.details('acc-sr-a').adopted && m2.sup.details('acc-sr-b').adopted).toBe(true);
+  await until(() => { const c = m2.sup.codeRestarts(); return c.queued === 0 && c.active === 0 && c.restarted === 1; }, 15_000, 'the restarts stopped');
+  expect(m2.sup.codeRestarts()).toEqual({ queued: 0, active: 0, restarted: 1, online: 0, crashed: 0 });
+  // One was restarted and hangs; the other still runs its old code, adopted.
+  const kept = [a, b].filter((p) => procAlive(p.pid));
+  expect(kept).toHaveLength(1);
+  expect(m2.sup.details(kept[0] === a ? 'acc-sr-a' : 'acc-sr-b')).toMatchObject({ adopted: true, pid: kept[0]!.pid });
+  await m2.stop();
+}, 30_000);
+
+test("calls to an extractor that goes away fail at once ('offline'), not after their timeout", async () => {
+  const dir = tempDir('detach');
+  const m = await manager(dir);
+  await started(m, dir, 'acc-detach-1', { slowExit: 1000 });
+  const t0 = Date.now();
+  const slow = m.sup.command('acc-detach-1', { t: 'slow', ms: 20_000 }).catch((e) => e);
+  await Bun.sleep(50);
+  const stopping = m.sup.stop('acc-detach-1');
+  await until(() => !!(m.sup as any).running.get('acc-detach-1')?.stopping, 2000, 'its stop under way');
+  // Asked while it stops: it would never answer.
+  expect(((await m.sup.command('acc-detach-1', { t: 'echo', text: 'x' }).catch((e) => e)) as { code?: string }).code).toBe('offline');
+  expect(((await slow) as { code?: string }).code).toBe('offline');
+  expect(Date.now() - t0).toBeLessThan(10_000);
+  await stopping;
+  await m.stop();
+}, 30_000);

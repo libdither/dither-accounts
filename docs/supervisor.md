@@ -44,7 +44,8 @@ each by pid and start time). The same happens after an extractor crashes, before
 start that finds such leftovers: a browser or signal-cli left behind would be a second session on one account.
 
 One stop of an account at a time, and a start asked for while one is under way waits for it, so a stop never ends or
-forgets the extractor of the start that followed it.
+forgets the extractor of the start that followed it. A call to an extractor being stopped fails at once (`offline`), and so does every call
+waiting on a socket that closes, rather than after its timeout.
 
 A whole stop of the manager takes at most about 15 s (SIGKILL at 8 s, 2 + 1 s for what is left, `list-jobs` bounded to
 3 s), inside the unit's `TimeoutStopSec` (30 s on this setup; keep it at 20 s or more).
@@ -124,7 +125,8 @@ Each extractor carries the fingerprint of the code it was started with (`fingerp
 The same computation over the new release gives the new manager's fingerprint. A fingerprint that could not be made
 counts as changed. An adopted extractor whose fingerprint differs is restarted, gracefully and **one at a time per
 kind**: 20 s after the manager starts, then the next of that kind 20 s after the previous one is online again (or a
-minute). Different kinds restart side by side: a Discord and a Telegram account at once is not what looks like a bot
+minute; one not online by then stops its kind's restarts, so the rest of that kind keep their old code, and the
+deployer rolls the deploy back). Different kinds restart side by side: a Discord and a Telegram account at once is not what looks like a bot
 to either network; every account at once, or two of one network together, is. One stopped on purpose meanwhile stays
 stopped (so does one stopped while a Restart waits for its stop). One whose code did not change keeps running, across
 any number of deploys.

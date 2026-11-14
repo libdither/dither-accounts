@@ -11,9 +11,10 @@
  * FLOOD_WAIT: mtcute sleeps through waits up to `floodSleepMs` (10 s here) and retries; longer ones reach the adapter's
  * pacer (pacer.ts) as errors.
  */
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { MemoryAuthKeysRepository, MemoryStorage, MemoryStorageDriver, SqliteStorage, TelegramClient, type tl } from '@mtcute/bun';
+import type { InitConnection } from './profile.ts';
 import type { BackendInfo, ConnState, DeskClient, DesktopKey, QrHandlers, SentCode, TgBackend, UpdateInfo, UploadSpec } from './backend.ts';
 
 type Log = (level: 'debug' | 'info' | 'warn' | 'error', msg: string) => void;
@@ -23,16 +24,12 @@ export interface MtcuteOptions {
   apiHash: string;
   dir: string;
   testMode: boolean;
-  deviceModel: string;
-  appVersion: string;
+  /** initConnection's fields, whole: what this session says it is (profile.ts clientProfile). */
+  initConnection: InitConnection;
   log: Log;
   /** mtcute's own log level: 1 error, 2 warn, 3 info, 4 debug. */
   logLevel?: number;
-  /** initConnection's fields, whole (Telegram Desktop's, for its own key: desktopProfile). */
-  initConnection?: InitConnection;
 }
-
-type InitConnection = Partial<Omit<tl.RawInitConnectionRequest, 'apiId' | 'query'>>;
 
 const UPDATES_TYPES = new Set(['updates', 'updatesCombined', 'updateShort', 'updateShortMessage', 'updateShortChatMessage', 'updatesTooLong']);
 
@@ -69,7 +66,7 @@ export class MtcuteBackend implements TgBackend {
       apiHash: o.apiHash,
       storage,
       testMode: o.testMode,
-      initConnectionOptions: o.initConnection ?? { deviceModel: o.deviceModel, appVersion: o.appVersion, systemVersion: 'Linux', langCode: 'en', systemLangCode: 'en' },
+      initConnectionOptions: o.initConnection,
       updates: { catchUp: true },
       logLevel: o.logLevel ?? 2,
     });
@@ -235,31 +232,6 @@ function keySession(key: DesktopKey, testMode: boolean) {
   if (!ip) throw new Error(`Telegram Desktop's session is on DC ${key.dcId}, which is not a known ${testMode ? 'test ' : ''}DC`);
   const dc = { id: key.dcId, ipAddress: ip, port: 443, ...(testMode ? { testMode: true } : {}) };
   return { primaryDcs: { main: dc, media: dc }, authKey: key.authKey, self: { userId: Number(key.userId), isBot: false, isPremium: false, usernames: [] } };
-}
-
-/**
- * What Telegram Desktop 7.2.9 sends in initConnection from inside our sandbox (no /sys, no window manager, X11),
- * so a client on its key looks like it in Settings → Devices: the device model falls back to "Desktop", the system
- * is "Linux X11 glibc <its glibc>", the version "7.2.9", the language pack "tdesktop".
- */
-export function desktopProfile(bin?: string | null): InitConnection {
-  let glibc: string | null = null;
-  let version = '7.2.9';
-  try {
-    const head = bin ? readFileSync(bin).subarray(0, 4096).toString('latin1') : '';
-    glibc = head.match(/glibc-(\d+\.\d+)/)?.[1] ?? null;
-    version = bin?.match(/telegram-desktop-(\d+\.\d+\.\d+)/)?.[1] ?? version;
-  } catch {}
-  const tz = -new Date().getTimezoneOffset() * 60;
-  return {
-    deviceModel: 'Desktop',
-    systemVersion: ['Linux', 'X11', ...(glibc ? ['glibc', glibc] : [])].join(' '),
-    appVersion: version,
-    systemLangCode: 'en-US',
-    langPack: 'tdesktop',
-    langCode: 'en',
-    params: { _: 'jsonObject', value: [{ _: 'jsonObjectValue', key: 'tz_offset', value: { _: 'jsonNumber', value: Math.round(tz / 900) * 900 } }] },
-  };
 }
 
 /** A session string for Telegram Desktop's key (the shared fallback). Nothing connects. */

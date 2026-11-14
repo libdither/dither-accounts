@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as P from '@dither-chat/protocol';
 import { readSecretFile, writeSecretFile } from '@dither-chat/protocol/secret-file';
-import { type AdapterOptions, type Host, TelegramAdapter } from '../src/adapter.ts';
+import { type AdapterOptions, type Host, TELEGRAM_DESKTOP, TelegramAdapter } from '../src/adapter.ts';
 import type { DesktopKey } from '../src/backend.ts';
 import type { DesktopHost, DesktopSignIn } from '../src/desktop.ts';
 import { FAKE_IDS, FakeTelegram } from '../src/fake.ts';
@@ -70,7 +70,8 @@ const newKey = (): DesktopKey => {
 class Harness {
   events: Ev[] = [];
   logs: string[] = [];
-  profiles: (string | undefined)[] = [];
+  /** The api_id of each client the adapter made (on Telegram Desktop's, it says it is Telegram Desktop: profile.ts). */
+  apiIds: number[] = [];
   fake: FakeTelegram;
   desktop = new StubDesktop();
   adapter: TelegramAdapter;
@@ -90,8 +91,8 @@ class Harness {
       saveSecret: (v) => writeSecretFile(join(dir, 'secret.json'), v),
     };
     this.adapter = new TelegramAdapter(host, {
-      backend: (_c, profile) => {
-        this.profiles.push(profile);
+      backend: (c) => {
+        this.apiIds.push(c.apiId);
         return this.fake;
       },
       fake: true,
@@ -170,7 +171,10 @@ describe('through Telegram Desktop', () => {
     // Its own, not Desktop's: a different session in Telegram's list.
     expect(h.secret().session).not.toBe(FakeTelegram.keySession(key));
     expect(h.status!.layers!.find((l) => l.name === 'session imported')).toMatchObject({ state: 'ok', note: expect.stringContaining('its own session') });
-    expect(h.profiles.every((p) => p === undefined)).toBe(true);
+    // Its own session is on the account's app (Telegram Desktop's on a real manager; the fake's api_id here), never
+    // switched to Telegram Desktop's key: what it says it is follows that api_id (profile.ts).
+    expect(h.apiIds.length).toBeGreaterThan(0);
+    expect(h.apiIds.every((id) => id === h.apiIds[0])).toBe(true);
     // Signed out in the live view: the account stays online on its own session.
     h.desktop.signIn = { state: 'signed-out' };
     h.adapter.desktopChanged();
@@ -207,7 +211,7 @@ describe('through Telegram Desktop', () => {
     expect(h.secret()).toEqual({ sessionMode: 'shared', userId: String(FAKE_IDS.self), desktopKey: key.fingerprint });
     expect(h.status!.layers!.find((l) => l.name === 'session imported')).toMatchObject({ state: 'ok', note: "shares Telegram Desktop's session (auth.acceptLoginToken refused: SESSION_TOO_FRESH_86400)" });
     expect(h.status!.details).toMatchObject({ session: "Telegram Desktop's (shared, read from its tdata)" });
-    expect(h.profiles).toContain('desktop');
+    expect(h.apiIds).toContain(TELEGRAM_DESKTOP.apiId);
     await h.adapter.shutdown();
 
     // A restart: the session comes from Telegram Desktop again, nothing from secret.json.
@@ -216,7 +220,7 @@ describe('through Telegram Desktop', () => {
     const again = new Harness(dir, { desktop, opts: { healthEveryMs: 50 } });
     await again.adapter.start();
     await again.until(() => again.status?.status === 'online', 'online after a restart');
-    expect(again.profiles[0]).toBe('desktop');
+    expect(again.apiIds[0]).toBe(TELEGRAM_DESKTOP.apiId);
     // Telegram Desktop's session ends (signed out there, or from another device): this one goes with it, and waits.
     await again.fake.control({ op: 'endKey', fingerprint: key.fingerprint });
     await again.until(() => again.status?.attention?.kind === 'login', 'back to the sign-in');

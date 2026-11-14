@@ -9,7 +9,7 @@ import type { Manifest } from '@dither-accounts/manager/kinds';
 export default {
   kind: 'amazon',
   name: 'Amazon orders',
-  interfaces: ['statements'],
+  interfaces: ['statements', 'browser'],
   entry: 'src/main.ts',
   add: {
     blurb:

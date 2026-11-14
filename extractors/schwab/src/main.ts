@@ -38,6 +38,7 @@ import { dirname, join } from 'node:path';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
 import { ALG_NAMES, approverVia, Authenticator, PasskeySignIn, refusalNote, respond, secretStore, type Trigger, type Try as SignInTry, type WebauthnUp } from '@dither-accounts/passkey';
 import { NeedsYou, sha256hex, StatementsRunner, type Why, writeWhole } from '@dither-accounts/statements-common';
+import { BrowserOps } from '@dither-accounts/statements-common/browser-ops';
 import { BrowserHost, sleep } from '@dither-accounts/statements-common/tabs';
 import {
   type AutoSignIn,
@@ -73,7 +74,7 @@ import {
 
 const link = linkManager({
   onConnect: () => {
-    link.emit({ t: 'hello', kind: 'schwab', version: '1', interfaces: ['statements'], startedAt: STARTED, capabilities: ['liveView'] });
+    link.emit({ t: 'hello', kind: 'schwab', version: '1', interfaces: ['statements', 'browser'], startedAt: STARTED, capabilities: ['liveView'] });
     status(true);
   },
   onCommand,
@@ -855,9 +856,14 @@ function ensureSignedIn(trigger: Trigger, force = false): Promise<void> {
   return signingIn;
 }
 
+/** The `browser` interface (docs/browser.md): its tabs only, never while a pull runs. */
+const browserOps = new BrowserOps({ host, log, busy: () => (runner.details().pulling as string | null) ?? null });
+
 async function onCommand(cmd: Command): Promise<unknown> {
   const r = runner.handle(cmd);
   if (r !== undefined) return r;
+  const b = browserOps.handle(cmd);
+  if (b) return b;
   throw new StatusError(`schwab has no operation "${cmd.t}"`, 400);
 }
 

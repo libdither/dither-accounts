@@ -3,7 +3,9 @@
 `extractors/amazon` hands over your Amazon order history as `statements` files ([statements.md](statements.md)),
 under the names dither-finance's parser expects in `data/raw/amazon`. It is a port of an earlier Python puller
 (`amazon.py`, with `amazon_auth.py` for the sign-in), and writes the same bytes it wrote.
-**Read only**: nothing here orders, cancels, returns or changes anything on Amazon.
+**Read only**: nothing here orders, cancels, returns or changes anything on Amazon. Separately, it lends its signed-in
+browser through the `browser` interface ([browser.md](browser.md)), so a granted app can open its own tab on Amazon and
+click and type there (fill a cart, say). Below `manage`, that interface won't press Buy Now or Place your order.
 
 ## How it runs
 

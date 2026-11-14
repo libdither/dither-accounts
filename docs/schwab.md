@@ -5,7 +5,8 @@ exports as `statements` files ([statements.md](statements.md)): History (each br
 Realized Gain/Loss, as the CSV files those pages' **Export** buttons download. Exports, not printed pages:
 schwab.com offers no PDF of those pages to download, only the print, and a print is neither reproducible nor
 something an extension can make. **Read only**: the only controls it presses are the account picker, the date range,
-Search and Export; it cannot trade, transfer or change a setting.
+Search and Export; it cannot trade, transfer or change a setting. Its browser is also lent through the `browser`
+interface ([browser.md](browser.md)), which won't press a button that buys, transfers or deletes below `manage`.
 
 | Schwab page | File | dither-finance's parser |
 |---|---|---|

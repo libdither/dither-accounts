@@ -112,6 +112,6 @@ test('status: signed out is fine while a recent pull found you signed in; otherw
 
 test('the manifest: statements only, no fields (you sign in in the live view)', async () => {
   const m = (await import('../manifest.ts')).default;
-  expect(m).toMatchObject({ kind: 'venmo', interfaces: ['statements'], entry: 'src/main.ts' });
+  expect(m).toMatchObject({ kind: 'venmo', interfaces: ['statements', 'browser'], entry: 'src/main.ts' });
   expect((m.add as any).fields).toBeUndefined();
 });

@@ -85,6 +85,8 @@ export interface FakeAmazon {
   robotNext(where?: 'orders' | 'details'): void;
   humanNext(where?: 'orders' | 'details'): void;
   addOrder(): void;
+  /** The product page's buttons as pressed (browser interface test): what, whether the click was a real one, the quantity and note. */
+  shop: { what: 'add' | 'buy'; trusted: boolean; qty: string; note: string }[];
   stop(): void;
 }
 
@@ -98,6 +100,7 @@ export function startFakeAmazon(): FakeAmazon {
   const orders = makeOrders();
   const sessions = new Set<string>();
   const log: string[] = [];
+  const shop: FakeAmazon['shop'] = [];
   const steps: string[] = [];
   let detailCount = 0;
   let reauth: number | null = null;
@@ -163,6 +166,26 @@ ${o.card ? `<div>Payment method</div><div>${o.card}</div>` : '<div>Payment metho
       if (p === '/test-login') return redirect('/', newSession());
       if (p === '/api/next') return Response.json({ action: steps.length ? steps.shift() : null });
       if (p === '/') return html(PAGE('Amazon (fake)', '<h1>Amazon.com (fake)</h1>'));
+      // ----------------------------------------------------------- a product page (the browser interface's test)
+      if (p === '/dp/B0TESTCART')
+        return html(
+          PAGE(
+            'Amazon.com: Test mug',
+            `<h1>Test mug, blue, 12 oz</h1><div style="height:900px">Long description</div>
+<label for="qty">Quantity</label><select id="qty"><option>1</option><option>2</option><option>3</option></select>
+<input id="note" placeholder="Gift note">
+<button id="add-to-cart-button" type="button">Add to cart</button>
+<button id="buy-now-button" type="button">Buy Now</button>`,
+            `const send = (what, e) => fetch('/api/shop', { method: 'POST', body: JSON.stringify({ what, trusted: e.isTrusted, qty: document.getElementById('qty').value, note: document.getElementById('note').value }) }).then(() => { location.href = '/cart'; });
+document.getElementById('add-to-cart-button').addEventListener('click', (e) => send('add', e));
+document.getElementById('buy-now-button').addEventListener('click', (e) => send('buy', e));`,
+          ),
+        );
+      if (p === '/api/shop' && req.method === 'POST') {
+        shop.push(await req.json());
+        return Response.json({ ok: true });
+      }
+      if (p === '/cart') return html(PAGE('Amazon.com Shopping Cart', `<h1>Shopping Cart</h1><div>${shop.filter((s) => s.what === 'add').length} added</div>`));
       // ----------------------------------------------------------- sign-in
       if (p === '/ap/signin' && req.method === 'GET') {
         const back = u.searchParams.get('return_to') ?? '/';
@@ -309,6 +332,7 @@ ${o.card ? `<div>Payment method</div><div>${o.card}</div>` : '<div>Payment metho
         noShipBlock: false,
       });
     },
+    shop,
     stop: () => server.stop(true),
   };
 }

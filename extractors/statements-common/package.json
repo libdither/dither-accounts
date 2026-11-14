@@ -8,6 +8,7 @@
     "./pyjson": "./src/pyjson.ts",
     "./spool": "./src/spool.ts",
     "./tabs": "./src/tabs.ts",
+    "./browser-ops": "./src/browser-ops.ts",
     "./pystr": "./src/pystr.ts"
   },
   "dependencies": {

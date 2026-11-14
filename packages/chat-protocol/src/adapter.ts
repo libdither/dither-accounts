@@ -590,6 +590,13 @@ export interface HistoryResult {
   done: boolean;
   /** The ts of the page's oldest message, when there was one. */
   oldest?: number;
+  /** Where the next page starts, in the network's own terms (Discord: the oldest message's id): sent back as `cursor`. */
+  next?: string;
+  /**
+   * Nothing was fetched: the adapter cannot read this way just now (on Discord: the owner is using the live view, or a
+   * call is on). Ask again after this many ms; not a failure.
+   */
+  deferMs?: number;
 }
 
 /** The `walkMembers` command's reply. */
@@ -676,8 +683,13 @@ export type AdapterCommand =
   /**
    * Backfill older messages as message facts with live=false; reply.result: HistoryResult. `oldest`, the ts of the
    * page's oldest message, lets the hub's index jobs (jobs.ts) know exactly what a page covered.
+   * - `cursor`: the last page's `next`, when the page asked for ends where that one did; it names the message the
+   *   page goes back from, as the network's own client would (beforeTs is the same place as a time).
+   * - `pace: 'read'`: a bulk fetch the hub paces like a person reading back (docs/indexing.md "Reading pace"); an
+   *   adapter that can, fetches the page the way its client's scrolling would (Discord: opens the conversation in its
+   *   page and loads older messages there). Others ignore it.
    */
-  | { t: 'history'; id: string; conversation: string; beforeTs?: number; limit: number }
+  | { t: 'history'; id: string; conversation: string; beforeTs?: number; limit: number; cursor?: string; pace?: 'read' }
   /**
    * Search the network's own servers, one request (capability 'search'): Discord's guild or channel search,
    * Matrix's /search. `scope` is a space (a guild) or a conversation, native ids, or everything the account sees

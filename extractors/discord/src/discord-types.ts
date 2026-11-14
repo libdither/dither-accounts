@@ -489,6 +489,13 @@ export type HookCommand =
   | { kind: 'openDirect'; userId: string }
   | { kind: 'history'; channelId: string; limit: number; beforeId?: string }
   /**
+   * reply { messages, opened } | { defer: ms, why } | { plain: why }: a page read as a person reads it (hook.js browse):
+   * the channel opened in the page, its newest page as opening it loads it (no beforeId), older ones by the client's
+   * own scroll-up loader. `defer`: not now (the live view is in use, a call is on). `plain`: not this way here; fetch
+   * it with `history`.
+   */
+  | { kind: 'browse'; channelId: string; beforeId?: string }
+  /**
    * reply RawSearch (search.ts): Discord's message search of a server (guildId), or of one channel (channelId: a DM's
    * own search; a server channel's is its server's, narrowed to it), with the query Discord's search bar sends.
    */

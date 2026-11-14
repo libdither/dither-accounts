@@ -177,20 +177,20 @@ it(
       backgroundStopped: null,
       readsMarkRead: false,
     });
-    expect(layerOf(signedIn, 'Gmail page')).toEqual({ name: 'Gmail page', state: 'ok', note: 'hook up, signed in' });
-    // Calendar's chain as it was, then the Gmail page, which it does not rest on.
-    expect(st.layers.map((l: any) => [l.name, l.state])).toEqual([
-      ['display', 'ok'],
-      ['browser', 'ok'],
-      ['extension', 'ok'],
-      ['signed in', 'ok'],
-      ['API key', 'ok'],
-      ['Calendar API', 'ok'],
-      ['Gmail page', 'ok'],
-      ['Gmail protocol', 'waiting'],
-      ['Gmail background', 'ok'],
+    expect(layerOf(signedIn, 'Gmail page')).toEqual({ name: 'Gmail page', state: 'ok', note: 'hook up, signed in', interface: 'mail' });
+    // Calendar's chain as it was, then the Gmail page, which it does not rest on: each says whose it is alone.
+    expect(st.layers.map((l: any) => [l.name, l.state, l.interface ?? null])).toEqual([
+      ['display', 'ok', null],
+      ['browser', 'ok', null],
+      ['extension', 'ok', null],
+      ['signed in', 'ok', null],
+      ['API key', 'ok', 'google.calendar'],
+      ['Calendar API', 'ok', 'google.calendar'],
+      ['Gmail page', 'ok', 'mail'],
+      ['Gmail protocol', 'waiting', 'mail'],
+      ['Gmail background', 'ok', 'mail'],
     ]);
-    expect(layerOf(signedIn, 'Gmail background')).toEqual({ name: 'Gmail background', state: 'ok', note: 'idle' });
+    expect(layerOf(signedIn, 'Gmail background')).toEqual({ name: 'Gmail background', state: 'ok', note: 'idle', interface: 'mail' });
     expect([fake.pageLoads('calendar', 0), fake.pageLoads('gmail', 0)]).toEqual([1, 1]);
     expect(st.details.display).toMatch(/^:(8\d|1[0-5]\d)$/); // :80–:89, then :100–:159
     expect(events[signedIn].find((e) => e.t === 'hello')).toMatchObject({ network: 'google', version: '1', capabilities: ['liveView'] });
@@ -467,7 +467,7 @@ it(
     expect(statusOf(signedIn).details).toMatchObject({ calendarReloads: 1, gmailReloads: 0, calendarPage: true, gmailPage: true, tabs: 'calendar (hook up), gmail (hook up)' });
     // The Gmail tab was not touched, and the extractor did not restart.
     expect(fake.pageLoads('gmail', 0)).toBe(loads.gmail);
-    expect(layerOf(signedIn, 'Gmail page')).toEqual({ name: 'Gmail page', state: 'ok', note: 'hook up, signed in' });
+    expect(layerOf(signedIn, 'Gmail page')).toEqual({ name: 'Gmail page', state: 'ok', note: 'hook up, signed in', interface: 'mail' });
     expect(starts()).toBe(before);
     expect(logOf(signedIn)).not.toContain('exiting for a supervised restart');
   },
@@ -702,9 +702,9 @@ it(
     // Time enough for a Gmail tab to have been opened, if one were.
     await Bun.sleep(3000);
     expect(statusOf(mailOff).details).toMatchObject({ provider: 'Gmail', tabs: 'calendar (hook up)', mail: false, gmailTab: null, gmailPage: false, gmailSignedIn: null });
-    expect(layerOf(mailOff, 'Gmail page')).toEqual({ name: 'Gmail page', state: 'off', note: 'mail: false in the config' });
-    expect(layerOf(mailOff, 'Gmail protocol')).toEqual({ name: 'Gmail protocol', state: 'off', note: 'no Gmail tab' });
-    expect(layerOf(mailOff, 'Gmail background')).toEqual({ name: 'Gmail background', state: 'off', note: 'no Gmail tab' });
+    expect(layerOf(mailOff, 'Gmail page')).toEqual({ name: 'Gmail page', state: 'off', note: 'mail: false in the config', interface: 'mail' });
+    expect(layerOf(mailOff, 'Gmail protocol')).toEqual({ name: 'Gmail protocol', state: 'off', note: 'no Gmail tab', interface: 'mail' });
+    expect(layerOf(mailOff, 'Gmail background')).toEqual({ name: 'Gmail background', state: 'off', note: 'no Gmail tab', interface: 'mail' });
     expect(statusOf(mailOff).details.backgroundLane).toBeUndefined();
     expect(statusOf(mailOff).details).toMatchObject({ canSend: false, sendNote: 'This account reads no mail (mail: false in its config)' });
     expect(fake.pageLoads('gmail', 2)).toBe(0);
@@ -729,7 +729,7 @@ it(
     expect(lv.vncSocket).not.toBe(m!.router.liveView(signedIn)!.vncSocket);
     expect(st.details).toMatchObject({ signedIn: false, calendarPage: true, page: `${fake.url}/calendar/u/1/r`, keySource: null });
     expect(statusOf(signedOut).details).toMatchObject({ tabs: 'calendar (hook up), gmail (hook up)', gmailPage: true, gmailSignedIn: false, gmailTab: `${fake.mailUrl}/mail/u/1/` });
-    expect(layerOf(signedOut, 'Gmail page')).toEqual({ name: 'Gmail page', state: 'waiting', note: 'sign in to Google in the live view' });
+    expect(layerOf(signedOut, 'Gmail page')).toEqual({ name: 'Gmail page', state: 'waiting', note: 'sign in to Google in the live view', interface: 'mail' });
     expect(await rfbBanner(lv.vncSocket)).toMatch(/^RFB /);
     const e = (await app.call(googleCalendar, signedOut, 'calendar.calendarList.list', {}).catch((x: any) => x)) as CallFailed;
     expect([e.code, e.status]).toEqual(['failed', 401]);

@@ -436,6 +436,12 @@ export interface StatusLayer {
   state: 'ok' | 'waiting' | 'failed' | 'off';
   /** One line: what it is, or why not ("33 of 33 hooks", "no SAPISID cookie"). */
   note?: string;
+  /**
+   * Only this interface rests on it, not the account's others: under a Google account Gmail's layers say `mail` and
+   * Calendar's `google.calendar`, so an app reading mail is not told it stops at a failed Calendar API. Absent: all of
+   * its interfaces rest on it.
+   */
+  interface?: string;
 }
 
 export type AdapterEvent =

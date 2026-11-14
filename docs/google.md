@@ -276,7 +276,9 @@ address or content), `mail` (whether this account has a Gmail tab), `gmailTab` (
 `gmailProbe`, and the last learn run's `gmailLearnAt` and `gmailLearn`.
 
 `layers` are, outermost first, `display`, `browser`, `extension`, `signed in`, `API key` and `Calendar API` (what
-Calendar rests on), then **`Gmail page`**, which Calendar does not rest on: `ok` when its hook is up and signed in;
+Calendar rests on; the last two say `interface: 'google.calendar'`, so an app reading mail is not told it stops at
+them), then **`Gmail page`**, which Calendar does not rest on (it and the two Gmail layers after it say
+`interface: 'mail'`): `ok` when its hook is up and signed in;
 `waiting` while it opens or loads, while Google wants a sign-in, or while it does not answer or is being reloaded;
 `failed` with the reason when its tab could not be opened or reloaded, or is on another site after a sign-in; `off`
 with `mail: false`; and **`Gmail protocol`**: `ok` when the last calls to Gmail's endpoints were answered in the layout

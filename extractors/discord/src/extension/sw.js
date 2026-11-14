@@ -75,6 +75,12 @@ async function connect() {
       return;
     }
     if (cmd.t === 'ping') return; // keepalive from the adapter
+    // No Discord page has connected (the tab is on Chromium's error page, or still loading): say so now, rather than
+    // leave the adapter to wait out its timeout on a command nothing will answer.
+    if (cmd.t === 'cmd' && ports.size === 0) {
+      sendToAdapter({ t: 'reply', id: cmd.id, ok: false, error: 'Discord is not open in the sandbox' });
+      return;
+    }
     toPorts(cmd); // { t:'cmd', id, cmd } -> content.js -> hook.js
   };
   ws.onclose = () => {

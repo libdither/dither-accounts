@@ -374,7 +374,17 @@ function handleBridge(msg: BridgeUp) {
         t: 'call',
         call: msg.call,
         ...(msg.signal !== undefined ? { signal: msg.signal } : {}),
-        ...(msg.state ? { state: { conversation: msg.state.channelId, participants: msg.state.participants, ...(msg.state.stage ? { stage: msg.state.stage } : {}) } } : {}),
+        ...(msg.state
+          ? {
+              state: {
+                conversation: msg.state.channelId,
+                participants: msg.state.participants,
+                ...(msg.state.stage ? { stage: msg.state.stage } : {}),
+                ...(msg.state.self ? { self: msg.state.self } : {}),
+                ...(Array.isArray(msg.state.video) ? { video: msg.state.video } : {}),
+              },
+            }
+          : {}),
         ...(msg.ended ? { ended: msg.ended } : {}),
         ...(msg.effect ? { effect: msg.effect } : {}),
       });

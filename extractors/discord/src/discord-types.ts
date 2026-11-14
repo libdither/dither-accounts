@@ -9,7 +9,7 @@
  * map.ts turns these into protocol facts.
  */
 
-import type { CallEffect, CallParticipant, CallStage } from '@dither-chat/protocol';
+import type { CallEffect, CallParticipant, CallSelf, CallStage, CallVideo } from '@dither-chat/protocol';
 import type { RawSelfUp, SelfHookCommand } from './self.ts';
 import type { AttentionDispatch, AttentionHookCommand } from './attention.ts';
 import type { InteractDispatch, InteractHookCommand } from './interact.ts';
@@ -389,7 +389,7 @@ export type BridgeUp =
   /** A sign-in request Discord refused, from the client's own log. */
   | { t: 'loginIssue'; route: string; status: number; captcha?: string; message?: string; code?: number }
   /** A call's bridge signalling, its participants (with their users, so they have names), or its end. */
-  | { t: 'call'; call: string; signal?: unknown; state?: { channelId: string; participants: CallParticipant[]; stage?: CallStage }; users?: RawUser[]; ended?: string; effect?: CallEffect }
+  | { t: 'call'; call: string; signal?: unknown; state?: { channelId: string; participants: CallParticipant[]; stage?: CallStage; self?: CallSelf; video?: CallVideo[] }; users?: RawUser[]; ended?: string; effect?: CallEffect }
   | { t: 'reply'; id: string; ok: true; result?: unknown }
   | { t: 'reply'; id: string; ok: false; error: string; retryAfter?: number }
   | { t: 'log'; level: 'debug' | 'info' | 'warn' | 'error'; msg: string; data?: unknown }

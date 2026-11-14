@@ -61,6 +61,8 @@ export function managerHandshake() {
   let going = false;
   let opened = false;
   let heldAtClose = false;
+  /** Its queue overflowed since the last socket: events were dropped, whatever it held. */
+  let lost = false;
   return {
     /** Events wait for the next manager. */
     get holding() {
@@ -68,9 +70,14 @@ export function managerHandshake() {
     },
     /** A socket opened: call before flushing the queue. */
     opened(ws: { send(s: string): void }) {
-      if (opened) ws.send(JSON.stringify({ t: 'resumed', held: heldAtClose }));
+      if (opened) ws.send(JSON.stringify({ t: 'resumed', held: heldAtClose && !lost }));
       opened = true;
       going = false;
+      lost = false;
+    },
+    /** The queue dropped events (it overflowed): the next `resumed` says they were not held. */
+    dropped() {
+      lost = true;
     },
     closed() {
       heldAtClose = going;

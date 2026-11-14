@@ -62,7 +62,10 @@ export function linkHub(opts: LinkOptions): HubLink {
     if (open && ws && !handshake.holding) ws.send(s);
     else {
       queue.push(s);
-      if (queue.length > MAX_QUEUE) queue.splice(0, queue.length - MAX_QUEUE);
+      if (queue.length > MAX_QUEUE) {
+        queue.splice(0, queue.length - MAX_QUEUE);
+        handshake.dropped();
+      }
     }
   };
 

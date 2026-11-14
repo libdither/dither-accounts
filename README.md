@@ -262,7 +262,7 @@ Restart=always
 The sockets and app registration answer only this machine; the page answers this machine and the tailnet, after the
 login. Restarting the service does not restart the accounts: under systemd each extractor runs in a scope of its own,
 keeps its session while the manager is away, and the next manager adopts it, restarting only those whose code changed,
-one at a time; stopping the service stops them ([docs/supervisor.md](docs/supervisor.md)).
+one at a time per kind; stopping the service stops them ([docs/supervisor.md](docs/supervisor.md)).
 
 ```sh
 bun packages/manager/src/cli.ts accounts            # what runs, where

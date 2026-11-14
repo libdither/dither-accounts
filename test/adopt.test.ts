@@ -255,8 +255,9 @@ test('a restart hands over: events held for an absent app, and those emitted whi
   await Bun.sleep(300);
   const l = listen(m2, a);
   await until(() => l.got.length > 50, 10_000, 'the notes');
-  // Every note from the first on, none missing, none twice, in order.
-  expect(l.got).toEqual(l.got.map((_, i) => i));
+  // The first notes may come before the app had its grant; from the first it got on, none missing, none twice, in
+  // order, across the restart.
+  expect(l.got).toEqual(l.got.map((_, i) => l.got[0]! + i));
   expect(l.gaps).toEqual([]);
   l.c.close();
   await m2.stop();

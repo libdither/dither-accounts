@@ -288,8 +288,8 @@ interface Found {
 export interface CodeRestarts {
   /** Waiting for their turn. */
   queued: number;
-  /** One is being restarted now. */
-  active: boolean;
+  /** Being restarted now (at most one per kind). */
+  active: number;
   /** Restarted so far. */
   restarted: number;
   /** Of those, online now. */
@@ -309,9 +309,12 @@ export class Supervisor {
   private dataDir: string;
   private watcher?: Timer;
   /** Adopted accounts whose code changed, restarted one at a time. */
-  private outdated: string[] = [];
-  private rolling = false;
-  private rollingNow: string | null = null;
+  /** Adopted accounts whose code changed, by kind: one restart at a time per kind, different kinds side by side. */
+  private outdated = new Map<string, string[]>();
+  /** Accounts being restarted for changed code now (at most one per kind). */
+  private rollingNow = new Set<string>();
+  private pauses = new Set<{ timer: Timer; done: () => void }>();
+  private rollingKinds = new Set<string>();
   /** Accounts restarted for changed code, and how often each ended on its own since (a crash on the new code). */
   private rolled = new Set<string>();
   private rolledCrashes = new Map<string, number>();
@@ -417,7 +420,9 @@ export class Supervisor {
       // Only exits nobody asked for: a restart from the page, an app or a gap is no crash.
       if (this.rolledCrashes.get(id)) crashed++;
     }
-    return { queued: this.outdated.length, active: this.rollingNow !== null, restarted, online, crashed };
+    let queued = 0;
+    for (const q of this.outdated.values()) queued += q.length;
+    return { queued, active: this.rollingNow.size, restarted, online, crashed };
   }
 
   /** The fingerprint of the code a kind's extractor would run if started now. */
@@ -535,10 +540,12 @@ export class Supervisor {
    * they were, and anything carrying its account in this data directory's environment (Chromium's zygotes, Xvfb,
    * signal-cli, the WhatsApp bridge). A process left behind would be a second session on one account.
    */
-  private async end(accountId: string, p: { pid: number; start?: string; proc?: Subprocess; cgroup?: string }, graceMs = 8000) {
+  private async end(accountId: string, p: { pid: number; start?: string; proc?: Subprocess; cgroup?: string }, graceMs = 8000, spare?: number) {
     // Everything that is its, taken before it is signalled: looked for afterwards, a new extractor of the account
-    // (started meanwhile) would be taken for one of its leftovers.
-    const snapshot = [...descendants(p.pid), ...groupMembers(p.pid), ...this.leftovers(accountId)].filter((r) => r.pid !== p.pid);
+    // (started meanwhile) would be taken for one of its leftovers. `spare`: an extractor of the account that stays, and
+    // what it started.
+    const spared = new Set(spare ? [spare, ...descendants(spare).map((r) => r.pid)] : []);
+    const snapshot = [...descendants(p.pid), ...groupMembers(p.pid), ...this.leftovers(accountId)].filter((r) => r.pid !== p.pid && !spared.has(r.pid));
     const cgroup = p.cgroup ?? scopeOf(p.pid);
     signalRef({ pid: p.pid, start: p.start ?? '' }, 'SIGTERM');
     const gone = () => (p.proc ? p.proc.exitCode !== null || p.proc.signalCode !== null : !procAlive(p.pid, p.start));
@@ -557,7 +564,7 @@ export class Supervisor {
       await until(2000);
     }
     // Its old scope and process group hold nothing new; its environment is not looked at again.
-    await this.endLeft(accountId, cgroup, [...snapshot, ...groupMembers(p.pid)], false);
+    await this.endLeft(accountId, cgroup, [...snapshot, ...groupMembers(p.pid)].filter((r) => !spared.has(r.pid)), false);
   }
 
   /** What is left of an account's extractor: ended (SIGTERM, then SIGKILL). */
@@ -617,7 +624,8 @@ export class Supervisor {
     const found = this.found().filter((f) => f.accountId === id && f.token === acc.token);
     if (found.length) {
       const [f, ...more] = found;
-      for (const m of more) void this.end(id, { pid: m.pid, start: m.start });
+      // A second one of the same account (it should never be): ended in the account's line, sparing the adopted one.
+      for (const m of more) void this.serially(id, () => this.end(id, { pid: m.pid, start: m.start }, 8000, f!.pid));
       acquireLock(acc.dir, 'dither-accounts', acc.id, found.map((x) => x.pid));
       r.proc = undefined;
       r.pid = f!.pid;
@@ -819,7 +827,7 @@ export class Supervisor {
     if (!r) return;
     r.stopping = true;
     clearTimeout(r.retry);
-    this.outdated = this.outdated.filter((x) => x !== id);
+    for (const q of this.outdated.values()) if (q.includes(id)) q.splice(q.indexOf(id), 1);
     if (r.ws) {
       try {
         r.ws.send(JSON.stringify({ t: 'shutdown' }));
@@ -844,11 +852,12 @@ export class Supervisor {
     this.closing = true;
     clearInterval(this.watcher);
     this.watcher = undefined;
-    this.outdated = [];
-    if (this.pause) {
-      clearTimeout(this.pause.timer);
-      this.pause.done();
+    this.outdated.clear();
+    for (const p of this.pauses) {
+      clearTimeout(p.timer);
+      p.done();
     }
+    this.pauses.clear();
     const ids = [...this.running.keys()];
     for (const id of ids) clearTimeout(this.running.get(id)!.retry);
     const left = ids.filter((id) => o.leave && this.running.get(id)?.survives && this.running.get(id)?.pid);
@@ -879,45 +888,56 @@ export class Supervisor {
     return { holding };
   }
 
-  /** Stop and start again (the page's Restart, an extractor that never reconnected). */
+  /**
+   * Stop and start again (the page's Restart, an extractor that never reconnected). A Stop asked for while it waits for
+   * its stop wins: the account stays stopped.
+   */
   async restart(id: string) {
+    this.halted.delete(id);
     await this.stopProcess(id);
     // Apps hear it went before the next one's start takes the event loop.
     await Bun.sleep(1);
+    if (this.halted.has(id)) return;
     this.start(id);
   }
 
   // ---------------------------------------------------------- changed code
 
   private queueRestart(id: string) {
-    if (!this.outdated.includes(id)) this.outdated.push(id);
-    void this.roll();
+    const kind = this.store.account(id)?.kind ?? '?';
+    const q = this.outdated.get(kind) ?? this.outdated.set(kind, []).get(kind)!;
+    if (!q.includes(id)) q.push(id);
+    void this.roll(kind);
   }
 
   private sleep(ms: number) {
-    return new Promise<void>((done) => {
-      this.pause = { timer: setTimeout(done, ms), done };
+    return new Promise<void>((resolve) => {
+      const p = { timer: setTimeout(() => (this.pauses.delete(p), resolve()), ms), done: resolve };
+      this.pauses.add(p);
     });
   }
 
   /**
-   * Adopted extractors whose code changed restart one at a time, a pause before each, each waited for until it is
-   * online again (or a minute), so a deploy never restarts every account at once.
+   * Adopted extractors whose code changed restart one at a time per kind (a pause before each, each waited for until it
+   * is online again, or a minute); different kinds go side by side. Never every account at once, and never two of one
+   * network together, which is what looks like a bot to it.
    */
-  private async roll() {
-    if (this.rolling) return;
-    this.rolling = true;
+  private async roll(kind: string) {
+    if (this.rollingKinds.has(kind)) return;
+    this.rollingKinds.add(kind);
     try {
-      while (this.outdated.length && !this.closing) {
+      for (;;) {
+        const q = this.outdated.get(kind);
+        if (!q?.length || this.closing) break;
         await this.sleep(this.opts.restartPauseMs ?? RESTART_PAUSE_MS);
-        const id = this.outdated.shift();
+        const id = q.shift();
         if (!id || this.closing) break;
         const r = this.running.get(id);
         const acc = this.store.account(id);
-        const kind = acc && this.kinds.get(acc.kind);
-        if (!r?.adopted || !r.pid || r.stopping || !acc?.enabled || !kind || this.halted.has(id)) continue;
-        if (sameCode(r.fingerprint, this.fingerprintOf(kind))) continue;
-        this.rollingNow = id;
+        const k = acc && this.kinds.get(acc.kind);
+        if (!r?.adopted || !r.pid || r.stopping || !acc?.enabled || !k || this.halted.has(id)) continue;
+        if (sameCode(r.fingerprint, this.fingerprintOf(k))) continue;
+        this.rollingNow.add(id);
         try {
           // Connected first, so it hears a shutdown and ends as it would at a stop (the watch restarts one that never does).
           const by = Date.now() + (this.opts.adoptConnectMs ?? ADOPT_CONNECT_MS);
@@ -933,11 +953,11 @@ export class Supervisor {
           const end = Date.now() + 60_000;
           while (!this.closing && Date.now() < end && !this.running.get(id)?.ws) await Bun.sleep(250);
         } finally {
-          this.rollingNow = null;
+          this.rollingNow.delete(id);
         }
       }
     } finally {
-      this.rolling = false;
+      this.rollingKinds.delete(kind);
     }
   }
 

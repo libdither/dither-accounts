@@ -71,7 +71,7 @@ test('with no password the page stays locked and says how to set one', async () 
   expect(html).not.toContain('<form');
   expect((await get('/api/state')).status).toBe(401);
   // Without a login: up, and counts of restarts for changed code (the deployer waits for them), nothing else.
-  expect(await (await get('/api/health')).json()).toEqual({ ok: true, codeRestarts: { queued: 0, active: false, restarted: 0, online: 0, crashed: 0 } });
+  expect(await (await get('/api/health')).json()).toEqual({ ok: true, codeRestarts: { queued: 0, active: 0, restarted: 0, online: 0, crashed: 0 } });
   expect((await login()).status).toBe(503);
 });
 

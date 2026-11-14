@@ -94,7 +94,10 @@ export function linkManager(opts: LinkOptions): Link {
     if (open && ws && !handshake.holding) ws.send(x);
     else {
       queue.push(x);
-      if (queue.length > MAX_QUEUE) queue.splice(0, queue.length - MAX_QUEUE);
+      if (queue.length > MAX_QUEUE) {
+        queue.splice(0, queue.length - MAX_QUEUE);
+        handshake.dropped();
+      }
     }
   };
   const shutdown = async () => {

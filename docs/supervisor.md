@@ -70,10 +70,11 @@ On a restart nothing in flight is lost:
    events), holds its events for those apps before anything new, and adopts the extractors, which reconnect and send
    what they kept. A handover that is more than five minutes old, of another data directory or user, or whose writer
    still runs is set aside as if there were none.
-4. Back on a new socket, a link first says `resumed`, and whether it was holding when the old socket closed. Without a
+4. Back on a new socket, a link first says `resumed`, and whether it was holding when the old socket closed (a link
+   whose queue overflowed meanwhile says it was not). Only an adopted extractor's first return counts. Without a
    handover (the manager before crashed) every adopted extractor may have lost events; with one, only an extractor
    that it does not name and that says it was not holding. For those, every app with a grant on the account hears of
-   a `gap` and starts it over (dither-chat's hub restarts it for a fresh snapshot, one account at a time). The start
+   a `gap` and starts it over (dither-chat's hub restarts it for a fresh snapshot, one account of a kind at a time). The start
    that follows a gap gets `DITHER_RESYNC=1`: what the extractor kept from before is not trusted (Discord's backfill
    memory, below).
 
@@ -121,15 +122,19 @@ Each extractor carries the fingerprint of the code it was started with (`fingerp
 - the environment it is given that is not per account (its kind's `env`, `PATH`, `DITHER_*` settings), hashed.
 
 The same computation over the new release gives the new manager's fingerprint. A fingerprint that could not be made
-counts as changed. An adopted extractor whose fingerprint differs is restarted, gracefully and **one at a time**:
-20 s after the manager starts, then the next 20 s after the previous one is online again (or a minute). One stopped on
-purpose meanwhile stays stopped. One whose code did not change keeps running, across any number of deploys.
+counts as changed. An adopted extractor whose fingerprint differs is restarted, gracefully and **one at a time per
+kind**: 20 s after the manager starts, then the next of that kind 20 s after the previous one is online again (or a
+minute). Different kinds restart side by side: a Discord and a Telegram account at once is not what looks like a bot
+to either network; every account at once, or two of one network together, is. One stopped on purpose meanwhile stays
+stopped (so does one stopped while a Restart waits for its stop). One whose code did not change keeps running, across
+any number of deploys.
 
-`/api/health` says how that goes, in counts only: `codeRestarts: {queued, active, restarted, online, crashed}`, where
-`crashed` counts only restarted extractors that ended on their own with a failure since (a restart from the page, an
-app or a gap is none). The deployer (dither-chat's `packages/deploy`) waits after a deploy of dither-accounts until
-nothing is queued or active, then holds it to every restarted extractor being online and none having crashed;
-otherwise it rolls back. It also keeps every old release a running process still uses.
+`/api/health` says how that goes, in counts only: `codeRestarts: {queued, active, restarted, online, crashed}`
+(`active`: restarts under way now), where `crashed` counts only restarted extractors that ended on their own with a
+failure since (a restart from the page, an app or a gap is none). The deployer (dither-chat's `packages/deploy`) waits
+after a deploy of dither-accounts for those restarts, within its time; a crash of a restarted extractor rolls the
+deploy back, while restarts still under way when its time is up are only said in the notice (later crashes reach you
+through the manager's own notices). It also keeps every old release a running process still uses.
 
 ## Discord's startup backfill
 

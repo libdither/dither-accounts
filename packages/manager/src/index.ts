@@ -121,6 +121,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
   const approvers = new Approvers(store, { dataDir: o.dataDir, publicUrl, pushHttp: o.approverPushHttp === true, requestMs: o.approverRequestMs, onChange: () => router?.accountsChanged(), count: (account, op, outcome) => router?.count('approver', account, op, outcome), onNoDevice: (account, rpId, op) => notices?.noDevice(account, rpId, op) });
   const launch = chooseLaunch(o.launch ?? 'child');
   let handoverNow: Handover | null = null;
+  const resumedOnce = new Set<string>();
   const sup = new Supervisor(store, kinds, {
     extractorUrl: () => `ws://127.0.0.1:${http.server.port}/extractor`,
     repoRoot,
@@ -150,7 +151,10 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     },
     onExit: (id) => router?.processGone(id),
     // An adopted extractor back after a handover that did not name it: a gap only if it says it did not hold its events.
+    // Only its first return counts: a later blip of its socket, with this manager up all along, loses nothing.
     onResumed: (id, held) => {
+      if (resumedOnce.has(id)) return;
+      resumedOnce.add(id);
       if (!held && handoverNow && !handoverNow.holding?.includes(id)) router.markGap(id);
     },
     // The approver's questions, for kinds that hold passkeys; the manager names the account itself.

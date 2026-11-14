@@ -162,9 +162,9 @@ test('an account stopped while staggered restarts wait stays stopped; the others
   expect((await pidsOf(m2, 'acc-stagger-b')).pid).not.toBe(b.pid);
   await Bun.sleep(1000);
   expect(m2.sup.state('acc-stagger-a').running).toBe(false);
-  expect(m2.sup.codeRestarts()).toEqual({ queued: 0, active: false, restarted: 1, online: 1, crashed: 0 });
+  expect(m2.sup.codeRestarts()).toEqual({ queued: 0, active: 0, restarted: 1, online: 1, crashed: 0 });
   const health = (await (await fetch(`${m2.url}/api/health`)).json()) as any;
-  expect(health.codeRestarts).toEqual({ queued: 0, active: false, restarted: 1, online: 1, crashed: 0 });
+  expect(health.codeRestarts).toEqual({ queued: 0, active: 0, restarted: 1, online: 1, crashed: 0 });
   // A restart asked for (the page, an app after a gap) is no crash of the new code.
   await m2.sup.restart('acc-stagger-b');
   await until(() => online(m2, 'acc-stagger-b'), 15_000, 'b back after its restart');
@@ -380,4 +380,58 @@ test("both links answer a going manager and say on their return whether they hel
   h.opened(ws);
   expect(JSON.parse(sent.at(-1)!)).toEqual({ t: 'resumed', held: false });
   expect(h.message({ t: 'shutdown' }, ws)).toBe(false);
+  // Held, but its queue overflowed meanwhile: events were dropped, so it says it did not hold them.
+  h.message({ t: 'manager-going' }, ws);
+  h.dropped();
+  h.closed();
+  h.opened(ws);
+  expect(JSON.parse(sent.at(-1)!)).toEqual({ t: 'resumed', held: false });
 }, 30_000);
+
+test('a Stop asked for while a Restart waits for its stop wins: the account stays stopped', async () => {
+  const dir = tempDir('restartstop');
+  const m = await manager(dir);
+  const p = await started(m, dir, 'acc-rs-1', { slowExit: 1500 });
+  const restarting = m.sup.restart('acc-rs-1');
+  await Bun.sleep(20);
+  await m.sup.stop('acc-rs-1');
+  await restarting;
+  expect(procAlive(p.pid)).toBe(false);
+  await Bun.sleep(1000);
+  expect(m.sup.state('acc-rs-1').running).toBe(false);
+  // A Restart of a stopped account starts it.
+  await m.sup.restart('acc-rs-1');
+  await until(() => online(m, 'acc-rs-1'), 15_000, 'started by a restart');
+  await m.stop();
+}, 30_000);
+
+test('restarts for changed code: one at a time per kind, different kinds side by side', async () => {
+  const dir = tempDir('perkind');
+  const two = new Map([...kinds(), ['fake2', kindOf({ ...fakeManifest, kind: 'fake2' }, join(ROOT, 'extractors/fake'))]]);
+  const m1 = await manager(dir, { kinds: two });
+  const ids = ['acc-pk-a1', 'acc-pk-a2', 'acc-pk-b1'];
+  for (const id of ids) insertAccount(m1.store, dir, id, {});
+  m1.store.run('UPDATE account SET kind = ? WHERE id = ?', 'fake2', 'acc-pk-b1');
+  for (const id of ids) m1.sup.start(id);
+  await until(() => ids.every((id) => online(m1, id)), 15_000, 'all online');
+  const port = m1.http.server.port!;
+  await m1.stop({ leaveExtractors: true });
+  const m2 = await manager(dir, { kinds: two, port, fingerprint: () => 'v2', restartPauseMs: 300 });
+  await until(() => ids.every((id) => online(m2, id)), 15_000, 'all adopted and back');
+  let maxActive = 0;
+  let bothFakeDown = false;
+  const watch = setInterval(() => {
+    maxActive = Math.max(maxActive, m2.sup.codeRestarts().active);
+    if (!online(m2, 'acc-pk-a1') && !online(m2, 'acc-pk-a2')) bothFakeDown = true;
+  }, 5);
+  try {
+    await until(() => ids.every((id) => online(m2, id) && !m2.sup.details(id).adopted), 30_000, 'all restarted');
+  } finally {
+    clearInterval(watch);
+  }
+  expect(maxActive).toBe(2);
+  expect(bothFakeDown).toBe(false);
+  await until(() => m2.sup.codeRestarts().active === 0, 5000, 'the last restart done');
+  expect(m2.sup.codeRestarts()).toEqual({ queued: 0, active: 0, restarted: 3, online: 3, crashed: 0 });
+  await m2.stop();
+}, 60_000);

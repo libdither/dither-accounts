@@ -53,6 +53,8 @@ export interface FeedFake {
   route(req: Request, url: URL, calls: FeedCall[]): Promise<Response | null>;
 }
 
+/** What Translate post answers, by post id (a test sets them): X's translation, its t.co links, the source language. */
+export const TRANSLATIONS: Record<string, { translation: string; from: string; urls?: { url: string; expanded_url: string }[] }> = {};
 const MIN = 60_000;
 const H = 3600_000;
 const DAY = 24 * H;
@@ -168,6 +170,14 @@ export async function startFeedFake(self: Person = ME): Promise<FeedFake> {
       if (p === '/i/api/2/notifications/all/last_seen_cursor.json') {
         calls.push({ op: 'notifications.seen' });
         return json({ cursor: 'seen' });
+      }
+      // Translate post (the post actions' fetchTranslation): X's translation service over REST.
+      const tr = /^\/i\/api\/1\.1\/strato\/column\/None\/tweetId=(\d+),destinationLanguage=None,translationSource=Some\((\w+)\),.*\/translation\/service\/translateTweet$/.exec(p);
+      if (tr) {
+        calls.push({ op: 'translate', name: 'translateTweet', variables: { tweetId: tr[1], source: tr[2] } });
+        const t = TRANSLATIONS[tr[1]!];
+        if (!t) return json({ errors: [{ message: 'This post cannot be translated.', code: 34 }] }, 404);
+        return json({ id_str: tr[1], translation: t.translation, entities: { urls: t.urls ?? [] }, sourceLanguage: t.from, localizedSourceLanguage: t.from, destinationLanguage: 'en', translationSource: 'Grok' });
       }
       const m = /^\/i\/api\/graphql\/([\w-]+)\/(\w+)$/.exec(p);
       if (!m) return null;

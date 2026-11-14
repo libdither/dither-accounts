@@ -97,6 +97,8 @@ export type Capability =
   | 'publish'
   /** Says who liked or reposted a post (the `postReactors` command, feed.ts ReactorsPage). */
   | 'postReactors'
+  /** Translates a post of its network, as the network's own "Translate post" does (the `translate` command). */
+  | 'translate'
   /** Changes the account's own profile: its bio/About (the `setProfile` command). */
   | 'editProfile'
   /**
@@ -772,6 +774,11 @@ export type AdapterCommand =
    * only to its author. Identity facts first, then reply.result: ReactorsPage.
    */
   | { t: 'postReactors'; id: string; post: string; kind: 'like' | 'repost'; cursor?: string }
+  /**
+   * A post in another language, translated by the network itself into `to` (capability 'translate'; X: the
+   * "Translate post" link's call). `lang`: what the network said the post is in. reply.result: NetworkTranslation.
+   */
+  | { t: 'translate'; id: string; post: string; to: string; lang?: string }
   /**
    * Change the account's own profile (capability 'editProfile'). Only the fields given change. `bio`: the bio or
    * About text ('' clears it). The adapter checks the network's limit (about.ts BIO_LIMIT) and fails with a plain

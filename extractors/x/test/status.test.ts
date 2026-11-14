@@ -142,7 +142,7 @@ test('the feed: its own layer and details, never the account status; profile onl
   expect(compute(facts({ selfTest: feedHooks(['profiles']), feed: fd })).capabilities).toContain('posts');
   expect(compute(facts({ selfTest: feedHooks(['posts']), feed: fd })).capabilities).toEqual([...waiting.capabilities.filter((c) => c !== 'posts')]);
   // Answering on X: like/repost and posting with the actions factory; who liked while its lazy chunk is pending or found.
-  expect(waiting.capabilities).toEqual(expect.arrayContaining(['postActions', 'publish', 'postReactors']));
+  expect(waiting.capabilities).toEqual(expect.arrayContaining(['postActions', 'publish', 'translate', 'postReactors']));
   expect(waiting.details).toMatchObject({ 'hook.actions': 'found (module)', 'hook.reactors': 'pending' });
   const noActions = compute(facts({ selfTest: feedHooks(['actions']), feed: fd })).capabilities;
   expect(noActions).not.toContain('postActions');

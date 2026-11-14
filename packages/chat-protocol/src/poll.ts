@@ -106,12 +106,14 @@ export interface PollRules {
   /** How long a poll may stay open, in hours, as the network's own client offers; absent: it has no timer. */
   hours?: number[];
   defaultHours?: number;
+  /** A vote can be changed or taken back later, so a tap votes at once; otherwise you choose, then press Vote. */
+  voteChangeable: boolean;
 }
 
 /** What each network lets a poll be. Networks without polls are absent. */
 export const POLL_RULES: Partial<Record<Network, PollRules>> = {
-  discord: { minOptions: 2, maxOptions: 10, questionMax: 300, optionMax: 55, hours: [1, 4, 8, 24, 72, 168], defaultHours: 24 },
-  signal: { minOptions: 2, maxOptions: 10, questionMax: 200, optionMax: 150 },
+  discord: { minOptions: 2, maxOptions: 10, questionMax: 300, optionMax: 55, hours: [1, 4, 8, 24, 72, 168], defaultHours: 24, voteChangeable: true },
+  signal: { minOptions: 2, maxOptions: 10, questionMax: 200, optionMax: 150, voteChangeable: true },
 };
 
 /** Why this poll cannot be made on this network, or null. */

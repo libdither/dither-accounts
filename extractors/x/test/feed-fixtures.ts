@@ -161,6 +161,8 @@ export interface PostOpts {
   counts?: { replies?: number; reposts?: number; likes?: number; quotes?: number; views?: number };
   /** What the signed-in account did to it (`legacy.favorited`, `legacy.retweeted`). */
   viewer?: { liked?: boolean; reposted?: boolean };
+  /** The language X says it is in (`legacy.lang`); 'en' by default. */
+  lang?: string;
 }
 
 /** A post (`Tweet`), as the timelines carry it. */
@@ -214,7 +216,7 @@ export function tweet(o: PostOpts): any {
       favorited: !!o.viewer?.liked,
       full_text: full,
       is_quote_status: !!o.quote,
-      lang: 'en',
+      lang: o.lang ?? 'en',
       quote_count: o.counts?.quotes ?? 0,
       reply_count: o.counts?.replies ?? 0,
       retweet_count: o.counts?.reposts ?? 0,

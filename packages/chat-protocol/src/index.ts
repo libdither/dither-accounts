@@ -28,5 +28,6 @@ export * from './threads.ts';
 export * from './moderation.ts';
 export * from './sending.ts';
 export * from './feed.ts';
+export * from './translate.ts';
 export * from './notices.ts';
 export * from './mentions.ts';

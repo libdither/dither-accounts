@@ -114,6 +114,20 @@ nor does one cut short by its wait in the lane. After a Calendar reload, one `ca
 again; Gmail makes no call of its own, so its hook coming back up is its answer. A dead Chromium still exits for a
 supervised restart, as before.
 
+**Each unanswered request is told apart in the log, before any reload**, so the cause of a silence can be found from
+the log alone. The service worker reports each command it hands to a page's port (`got` at `worker`) and the hook
+reports it again when it arrives (`got` at `page`); after a silence the extractor asks the worker for the tab's state
+(`tab.state`: loading or complete, discarded, frozen, active, its origin and path) and the hook for its own, without
+the network (`page.state`: visibility, focus, lifecycle events seen, counts of uncaught errors and rejections, the
+commands it still has open and for how long), each within 5 s. One line says it all:
+`the Calendar page's silence: request received by the page, which never answered; the hook answers without the
+network {…}`. "Not acknowledged by the service worker" points at the bridge, "handed to the page, which never said
+it had it" at the page's port, a hook that does not answer either at a frozen or stuck page, and a hook that answers
+with the request still open at the call to Google. The hook also logs a command still open after 20 s
+(`[hook] gfetch GET <host><path template> still open after 20 s`) and the page's lifecycle (`[hook] page hidden`,
+`visible`, `frozen`, `resumed`). Only names of steps, path templates (ids taken out) and counts: no query, body or
+error text from the page. Every line of `adapter.log` starts with its time (ISO, UTC).
+
 In the layers: Calendar's **Calendar API** layer is `waiting` while its page is silent ("the Calendar page did not
 answer the last request in 25 s"), being reloaded, or reloaded and not yet answering, and `failed` when the tab could
 not be reloaded; the account's status keeps its meaning (still `online`). The **Gmail page** layer says the same of the

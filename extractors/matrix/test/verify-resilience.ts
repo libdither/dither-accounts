@@ -363,6 +363,6 @@ try {
   else rmSync(dir, { recursive: true, force: true });
 }
 const bad = results.filter(([ok]) => !ok).length;
-if (process.env.VERBOSE || bad) console.log(`\nadapter log (warnings):\n${logLines.filter((l) => !l.startsWith('[debug]')).slice(-40).join('\n')}`);
+if (process.env.VERBOSE || bad) console.log(`\nadapter log (warnings):\n${logLines.filter((l) => !/^(\S+Z )?\[debug\]/.test(l)).slice(-40).join('\n')}`);
 console.log(`\n${bad || failed ? `${bad} failed` : `all ${results.length} passed`}`);
 process.exit(bad || failed ? 1 : 0);

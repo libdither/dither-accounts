@@ -462,6 +462,16 @@ it(
     }
     // Two in a row: the Calendar tab, and only it, is sent back to its start page.
     await until(() => logOf(signedIn).includes('the Calendar page did not answer 2 requests in a row; reloading its tab, and only that one'), 10_000, 'the reload');
+    // Before that, each silence was told apart: the page had the request, its fetch was still open (the hook said so at
+    // 20 s, and again when asked without the network), and the tab was neither discarded nor frozen. Each line has its time.
+    const lines = logOf(signedIn).split('\n');
+    const silences = lines.filter((l) => l.includes("the Calendar page's silence: request received by the page, which never answered; the hook answers without the network"));
+    expect(silences.length).toBeGreaterThanOrEqual(2);
+    const said = JSON.parse(silences[0]!.slice(silences[0]!.indexOf(' {') + 1));
+    expect(said).toMatchObject({ request: 'gfetch', tab: { discarded: false, status: 'complete' }, hook: { visibility: 'visible', wasDiscarded: false } });
+    expect(said.hook.open.map((o: any) => o.what)).toContain(`gfetch GET ${new URL(fake.url).host}/calendar/v3/users/me/calendarList`);
+    expect(lines.some((l) => /^\d{4}-\d\d-\d\dT[\d:.]+Z \[warn\] \[hook\] gfetch GET \S+\/calendar\/v3\/users\/me\/calendarList still open after 20 s/.test(l))).toBe(true);
+    expect(logOf(signedIn)).not.toContain(WEB.sapisid);
     await until(() => fake.pageLoads('calendar', 0) === loads.calendar + 1, 15_000, 'the Calendar page loaded again');
     await until(() => logOf(signedIn).includes('the Calendar tab was sent back to its start page'), 10_000, 'the reload done');
     // It answers again.

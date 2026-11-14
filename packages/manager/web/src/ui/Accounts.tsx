@@ -548,7 +548,7 @@ function LogTab({ a }: { a: AccountInfo }) {
         <pre class={`log ${wrap ? 'wrap' : ''}`} ref={setBox} data-log>
           {shown.length
             ? shown.map((l, i) => (
-                <div key={i} class={/^\[(error)\]|\berror\b/i.test(l) ? 'l-error' : /^\[warn\]/.test(l) ? 'l-warn' : /^\[debug\]/.test(l) ? 'l-debug' : /^---/.test(l) ? 'l-mark' : ''}>
+                <div key={i} class={/^(\S+Z )?\[(error)\]|\berror\b/i.test(l) ? 'l-error' : /^(\S+Z )?\[warn\]/.test(l) ? 'l-warn' : /^(\S+Z )?\[debug\]/.test(l) ? 'l-debug' : /^---/.test(l) ? 'l-mark' : ''}>
                   {l}
                 </div>
               ))

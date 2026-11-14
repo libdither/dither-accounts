@@ -52,6 +52,8 @@ export function chooseLaunch(
   want: Launch | 'auto',
   o: { service?: () => string | null; probe?: () => true | string } = {},
 ): { launch: Launch; unit: string | null; why: string } {
+  // Only auto and scope need the service (scope: main.ts asks systemd on SIGTERM whether it restarts or stops).
+  if (want === 'child' || want === 'detached') return { launch: want, unit: null, why: `set to ${want}` };
   const svc = o.service ? { unit: o.service(), why: 'given' } : serviceOf();
   const unit = svc.unit;
   if (want !== 'auto') return { launch: want, unit, why: `set to ${want}` };

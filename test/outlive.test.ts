@@ -231,7 +231,7 @@ test('launch: a process that only inherited INVOCATION_ID is not a service; scop
   try {
     const c = chooseLaunch('auto');
     expect(c).toMatchObject({ launch: 'child', unit: null });
-    expect(c.why).toMatch(/^(not a systemd service|in .+\.service, whose main process is)/);
+    expect(c.why).toMatch(/^(not a systemd service|in .+\.service, (whose main process is|which is no service of this user's systemd))/);
   } finally {
     if (was === undefined) delete process.env.INVOCATION_ID;
     else process.env.INVOCATION_ID = was;

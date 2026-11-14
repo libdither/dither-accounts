@@ -6,7 +6,7 @@ import { afterAll, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { codeEnv, fingerprintEntry, sameCode } from '../packages/manager/src/fingerprint.ts';
+import { codeEnv, fingerprintEntry, lockEntries, sameCode } from '../packages/manager/src/fingerprint.ts';
 import { procAlive, procStat } from '../packages/manager/src/procs.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'dacc-fp-'));
@@ -80,9 +80,23 @@ test('only what it reaches: TypeScript of a reached package it never imports lea
   put('packages/shared/src/page.js', '// read as a file\n');
   const withAsset = fp().hash;
   expect(withAsset).not.toBe(before);
-  put('bun.lock', '{"lockfileVersion":1}\n');
+  // bun.lock: only the entries of what it reaches (left-pad and what left-pad depends on), not the whole file.
+  const lock = (padIntegrity: string, depVersion: string, other: string) =>
+    `{\n  "lockfileVersion": 2,\n  "workspaces": { "": { "name": "ws", }, },\n  "packages": {\n    "left-pad": ["left-pad@1.3.0", "", { "dependencies": { "dep": "^1.0.0" } }, "sha512-${padIntegrity}"],\n    "dep": ["dep@${depVersion}", "", {}, "sha512-d"],\n    "other": ["other@${other}", "", {}, "sha512-o"],\n  },\n}\n`;
+  put('bun.lock', lock('a', '1.0.0', '1.0.0'));
   const withLock = fp().hash;
   expect(withLock).not.toBe(withAsset);
+  put('bun.lock', lock('a', '1.0.0', '2.0.0'));
+  expect(fp().hash).toBe(withLock);
+  put('package.json', JSON.stringify({ name: 'ws', private: true, workspaces: ['packages/*', 'extractors/*'], devDependencies: { typescript: '^6' }, scripts: { x: 'y' } }));
+  expect(fp().hash).toBe(withLock);
+  put('bun.lock', lock('a', '1.0.1', '1.0.0'));
+  expect(fp().hash).not.toBe(withLock);
+  put('bun.lock', lock('b', '1.0.0', '1.0.0'));
+  expect(fp().hash).not.toBe(withLock);
+  put('bun.lock', lock('a', '1.0.0', '1.0.0'));
+  expect(fp().hash).toBe(withLock);
+  expect(lockEntries({ packages: { 'left-pad': ['left-pad@1.3.0', '', { dependencies: { dep: '1' } }, 'sha512-a'], 'left-pad/dep': ['dep@0.9.0', '', {}, 'sha512-n'], dep: ['dep@1.0.0', '', {}, 'sha512-d'] } }, ['left-pad'])).toEqual(['dep@0.9.0 sha512-n', 'left-pad@1.3.0 sha512-a']);
   const env = (e: Record<string, string>) => fingerprintEntry(root, join(root, 'extractors/x/src/main.ts'), e).hash;
   // Per account or per start (its id, token, the manager's port), and the manager's own settings: not the code.
   expect(env({ DITHER_ACCOUNT_ID: 'acc-1', DITHER_HUB_URL: 'ws://127.0.0.1:1/x', DITHER_ACCOUNTS_PORT: '1' })).toBe(withLock);

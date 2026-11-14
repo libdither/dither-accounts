@@ -98,7 +98,7 @@ export class Router {
     private store: Store,
     private kinds: Map<string, Kind>,
     private sup: Supervisor,
-    private opts: { dataDir: string },
+    private opts: { dataDir: string; onGap?: (account: string) => void },
   ) {
     this.handlers = [this.checkInput, this.limit, this.audit, this.dryRun];
     for (const a of store.all('SELECT DISTINCT app_id FROM grant_')) this.buffers.set(a.app_id, { frames: [], bytes: 0, dropped: new Map() });
@@ -479,6 +479,7 @@ export class Router {
     const account = this.store.account(accountId);
     const kind = account && this.kinds.get(account.kind);
     if (!account || !kind) return;
+    this.opts.onGap?.(accountId);
     for (const appId of new Set([...this.buffers.keys(), ...this.sockets.keys()])) {
       if (!kind.ifaces.some((i) => this.grantFor(appId, account, i.name))) continue;
       const socks = this.sockets.get(appId);
@@ -511,6 +512,7 @@ export class Router {
       let n = 0;
       b.frames = b.frames.filter((f) => (f.account === account ? (n++, (b.bytes -= f.data.length), false) : true));
       b.dropped.set(account, n + 1);
+      this.opts.onGap?.(account);
       return;
     }
     b.frames.push({ account, data });

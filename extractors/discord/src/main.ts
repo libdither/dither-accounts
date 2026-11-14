@@ -464,7 +464,9 @@ let backfillMemory: BackfillMemory | null = null;
 async function startupBackfill(targets: string[], newest: Record<string, string>) {
   backfillMemory ??= new BackfillMemory(join(hub.accountDir, BACKFILL_FILE));
   const memory = backfillMemory;
-  const fresh = targets.filter((id) => !backfilled.has(id) && memory.fresh(id, newest[id]));
+  // Started after an app heard of a gap (DITHER_RESYNC): it lost events, so nothing fetched before is trusted.
+  const resync = process.env.DITHER_RESYNC === '1';
+  const fresh = resync ? [] : targets.filter((id) => !backfilled.has(id) && memory.fresh(id, newest[id]));
   for (const id of fresh) backfilled.add(id);
   const todo = targets.filter((id) => !backfilled.has(id)).slice(0, 40);
   for (const id of todo) backfilled.add(id);

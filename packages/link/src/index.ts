@@ -23,7 +23,7 @@
  * when the page changes it (Keep new passkeys on), and the object is updated in place.
  */
 import { join } from 'node:path';
-import { exitWhenManagerGone, reconnectDelay, recordExitCode } from '@dither-chat/protocol/outlive';
+import { exitWhenManagerGone, managerHandshake, reconnectDelay, recordExitCode } from '@dither-chat/protocol/outlive';
 import { readSecretFile, writeSecretFile } from '@dither-chat/protocol/secret-file';
 
 /** An op's input with `t`, its name. The manager's call id comes as `rid` and is taken off before onCommand. */
@@ -82,8 +82,8 @@ export function linkManager(opts: LinkOptions): Link {
   const queue: string[] = [];
   let ws: WebSocket | null = null;
   let open = false;
-  /** The manager said it is going (a restart): hold everything for the next one. */
-  let going = false;
+  /** A manager's restart: events held for the next one (outlive.ts). */
+  const handshake = managerHandshake();
   let closed = false;
   let attempt = 0;
   const config: Record<string, any> = JSON.parse(process.env.DITHER_ACCOUNT_CONFIG || '{}');
@@ -91,7 +91,7 @@ export function linkManager(opts: LinkOptions): Link {
 
   const send = (x: string) => {
     // After the manager said it is going, everything waits for the next one.
-    if (open && ws && !going) ws.send(x);
+    if (open && ws && !handshake.holding) ws.send(x);
     else {
       queue.push(x);
       if (queue.length > MAX_QUEUE) queue.splice(0, queue.length - MAX_QUEUE);
@@ -109,9 +109,9 @@ export function linkManager(opts: LinkOptions): Link {
     ws = new WebSocket(url);
     ws.onopen = () => {
       open = true;
-      going = false;
       attempt = 0;
       gone.up();
+      handshake.opened(ws!);
       while (queue.length) ws!.send(queue.shift()!);
       opts.onConnect?.();
     };
@@ -123,13 +123,7 @@ export function linkManager(opts: LinkOptions): Link {
         return;
       }
       if (cmd.t === 'shutdown') return shutdown();
-      if (cmd.t === 'manager-going') {
-        // A manager restarting (docs/supervisor.md): from now on events wait for the next one; the answer comes after
-        // every frame sent before, so the going manager has them all.
-        going = true;
-        ws?.send(JSON.stringify({ t: 'holding' }));
-        return;
-      }
+      if (handshake.message(cmd, ws)) return;
       if (cmd.t === 'config') {
         if (cmd.config && typeof cmd.config === 'object' && !Array.isArray(cmd.config)) {
           for (const k of Object.keys(config)) if (!(k in cmd.config)) delete config[k];
@@ -163,6 +157,7 @@ export function linkManager(opts: LinkOptions): Link {
     };
     ws.onclose = () => {
       open = false;
+      handshake.closed();
       gone.down();
       if (closed) return;
       setTimeout(connect, reconnectDelay(attempt++));

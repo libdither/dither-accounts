@@ -85,6 +85,8 @@ interface Running {
   logFrom?: number;
   /** What an earlier process left behind is being ended before this one starts. */
   cleaning?: boolean;
+  /** Its link's `resumed` (back after its manager went): whether it held every event since. */
+  resumedHeld?: boolean;
   ws?: ServerWebSocket<ExtractorSocketData>;
   restarts: number;
   stopping: boolean;
@@ -128,7 +130,7 @@ const RESTART_PAUSE_MS = 20_000;
 /** An extractor that outlives its manager ends itself after this long without one (its link, DITHER_MANAGER_GONE_EXIT_S). */
 const MANAGER_GONE_EXIT_S = 1800;
 /** How long a going manager waits for its extractors to say they hold their events. */
-const GOING_MS = 2000;
+const GOING_MS = 5000;
 /** A scope the supervisor made: only such a control group is ever emptied (never the manager's own). */
 const OUR_SCOPE = /\/dither-accounts-x-[^/]+\.scope$/;
 
@@ -310,8 +312,14 @@ export class Supervisor {
   private outdated: string[] = [];
   private rolling = false;
   private rollingNow: string | null = null;
-  /** Accounts restarted for changed code, with their starts count just after. */
-  private rolled = new Map<string, number>();
+  /** Accounts restarted for changed code, and how often each ended on its own since (a crash on the new code). */
+  private rolled = new Set<string>();
+  private rolledCrashes = new Map<string, number>();
+  /** An account's stop under way: a start waits for it (`startAfter`), so a stop never ends the start that followed it. */
+  private stops = new Map<string, Promise<void>>();
+  private startAfter = new Set<string>();
+  /** Accounts whose next start must not trust what it kept from before (an app heard of a gap: DITHER_RESYNC). */
+  private resync = new Set<string>();
   /** Accounts stopped on purpose (a stop from the page, an app, a disable): a staggered restart leaves them stopped. */
   private halted = new Set<string>();
   private pause?: { timer: Timer; done: () => void };
@@ -357,6 +365,8 @@ export class Supervisor {
        * it wrote to its log: the manager's error file (errors.ts) records its last error.
        */
       onFailedExit?: (accountId: string, kind: string, exit: { code: number | null; signal: string | null; stderr: string[] }) => void;
+      /** An adopted extractor's link is back: `held`, it kept every event since its manager went (none was lost). */
+      onResumed?: (accountId: string, held: boolean) => void;
       /** A question from an account's extractor to the manager (`what`, its input); throw to refuse. */
       onAsk?: (accountId: string, what: string, input: Record<string, unknown>) => Promise<unknown>;
     },
@@ -399,12 +409,13 @@ export class Supervisor {
     let online = 0;
     let crashed = 0;
     let restarted = 0;
-    for (const [id, startsAfter] of this.rolled) {
+    for (const id of this.rolled) {
       const r = this.running.get(id);
       if (!r || this.halted.has(id)) continue; // stopped on purpose since
       restarted++;
       if (r.ws) online++;
-      if ((r.starts ?? 0) > startsAfter) crashed++;
+      // Only exits nobody asked for: a restart from the page, an app or a gap is no crash.
+      if (this.rolledCrashes.get(id)) crashed++;
     }
     return { queued: this.outdated.length, active: this.rollingNow !== null, restarted, online, crashed };
   }
@@ -452,7 +463,70 @@ export class Supervisor {
 
   /** Every process this data directory's extractors of an account started and left (it inherits their environment). */
   private leftovers(accountId: string): ProcRef[] {
-    return procsWithEnv((env) => env.DITHER_ACCOUNT_ID === accountId && env.DITHER_MANAGER_DATA === this.dataDir);
+    return [...procsWithEnv((env) => env.DITHER_ACCOUNT_ID === accountId && env.DITHER_MANAGER_DATA === this.dataDir), ...this.sandboxProcs(accountId)];
+  }
+
+  /**
+   * What a native-app sandbox of the account (packages/sandbox) says it runs, in its sandbox.json: bubblewrap clears
+   * the environment, so Xvfb, x11vnc, dbus-daemon, pasta and the app itself carry no account id. In the account's
+   * directory or a directory below it.
+   */
+  private sandboxProcs(accountId: string): ProcRef[] {
+    const acc = this.store.account(accountId);
+    if (!acc) return [];
+    const files: string[] = [];
+    const look = (d: string, depth: number) => {
+      let names: string[] = [];
+      try {
+        names = readdirSync(d);
+      } catch {
+        return;
+      }
+      for (const n of names) {
+        const p = join(d, n);
+        if (n === 'sandbox.json') files.push(p);
+        else if (depth > 0 && !n.startsWith('.') && n !== 'node_modules') {
+          try {
+            if (statSync(p).isDirectory()) look(p, depth - 1);
+          } catch {}
+        }
+      }
+    };
+    look(acc.dir, 2);
+    const out: ProcRef[] = [];
+    for (const f of files) {
+      try {
+        const { procs } = JSON.parse(readFileSync(f, 'utf8')) as { procs?: { pid?: unknown; start?: unknown; match?: unknown }[] };
+        for (const p of procs ?? []) {
+          if (typeof p.pid !== 'number') continue;
+          const st = procStat(p.pid);
+          if (!st || st.state === 'Z') continue;
+          // By its start time when the record has one, else by its command line (as the sandbox's own cleanup does).
+          if (typeof p.start === 'string' ? st.start !== p.start : !(typeof p.match === 'string' && p.match && procCmdline(p.pid).join(' ').includes(p.match))) continue;
+          out.push({ pid: p.pid, start: st.start });
+        }
+      } catch {}
+    }
+    return out;
+  }
+
+  /**
+   * One stop of an account at a time, and a start asked for meanwhile waits for it (start() queues it): a stop that
+   * finished later would end the new extractor, or forget it while it runs.
+   */
+  private serially(id: string, f: () => Promise<void>): Promise<void> {
+    const p = (this.stops.get(id) ?? Promise.resolve()).then(f, f);
+    this.stops.set(id, p);
+    return p.finally(() => {
+      if (this.stops.get(id) !== p) return;
+      this.stops.delete(id);
+      if (this.startAfter.delete(id) && !this.halted.has(id)) this.start(id);
+    });
+  }
+
+  /** An app heard of a gap for this account: its next start must not trust what it kept (DITHER_RESYNC). */
+  markResync(id: string) {
+    this.resync.add(id);
   }
 
   /**
@@ -462,7 +536,9 @@ export class Supervisor {
    * signal-cli, the WhatsApp bridge). A process left behind would be a second session on one account.
    */
   private async end(accountId: string, p: { pid: number; start?: string; proc?: Subprocess; cgroup?: string }, graceMs = 8000) {
-    const tree = descendants(p.pid);
+    // Everything that is its, taken before it is signalled: looked for afterwards, a new extractor of the account
+    // (started meanwhile) would be taken for one of its leftovers.
+    const snapshot = [...descendants(p.pid), ...groupMembers(p.pid), ...this.leftovers(accountId)].filter((r) => r.pid !== p.pid);
     const cgroup = p.cgroup ?? scopeOf(p.pid);
     signalRef({ pid: p.pid, start: p.start ?? '' }, 'SIGTERM');
     const gone = () => (p.proc ? p.proc.exitCode !== null || p.proc.signalCode !== null : !procAlive(p.pid, p.start));
@@ -478,26 +554,27 @@ export class Supervisor {
     if (!gone()) {
       if (p.start !== undefined) signalRef({ pid: p.pid, start: p.start }, 'SIGKILL');
       else p.proc?.kill('SIGKILL');
-      await until(3000);
+      await until(2000);
     }
-    await this.endLeft(accountId, cgroup, [...tree, ...groupMembers(p.pid)]);
+    // Its old scope and process group hold nothing new; its environment is not looked at again.
+    await this.endLeft(accountId, cgroup, [...snapshot, ...groupMembers(p.pid)], false);
   }
 
   /** What is left of an account's extractor: ended (SIGTERM, then SIGKILL). */
-  private async endLeft(accountId: string, cgroup: string | undefined, known: ProcRef[] = []) {
+  private async endLeft(accountId: string, cgroup: string | undefined, known: ProcRef[] = [], lookAgain = true) {
     const seen = new Map<string, ProcRef>();
     const add = (rs: ProcRef[]) => {
       for (const r of rs) if (r.pid !== process.pid) seen.set(`${r.pid}:${r.start}`, r);
     };
     add(known);
     if (cgroup && OUR_SCOPE.test(cgroup)) add(cgroupMembers(cgroup));
-    add(this.leftovers(accountId));
+    if (lookAgain) add(this.leftovers(accountId));
     const left = [...seen.values()].filter((r) => procAlive(r.pid, r.start));
     this.cleanedAt.set(accountId, Date.now());
     if (!left.length) return;
     const acc = this.store.account(accountId);
     if (acc) appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} ending ${left.length} process(es) its extractor left: ${left.map((r) => r.pid).join(', ')}\n`);
-    await endAll(left);
+    await endAll(left, 2000);
     this.cleanedAt.set(accountId, Date.now());
   }
 
@@ -509,13 +586,19 @@ export class Supervisor {
       if (!why) continue;
       console.error(`[${f.accountId}] stopping pid ${f.pid}, left running by an earlier manager: its account is ${why}`);
       if (acc) appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} dither-accounts stopping pid ${f.pid}, left running by an earlier manager (the account is ${why})\n`);
-      void this.end(f.accountId, { pid: f.pid, start: f.start });
+      // In the account's line, so a start of it (an enabled account whose token changed) waits for this.
+      void this.serially(f.accountId, () => this.end(f.accountId, { pid: f.pid, start: f.start }));
     }
   }
 
   start(id: string) {
     this.halted.delete(id);
     if (this.inProcess.has(id) || this.closing) return;
+    // A stop of it is under way: this start follows it.
+    if (this.stops.has(id)) {
+      this.startAfter.add(id);
+      return;
+    }
     const acc = this.store.account(id);
     if (!acc || !acc.enabled) return;
     const cur = this.running.get(id);
@@ -550,6 +633,8 @@ export class Supervisor {
       r.logFrom = fileSize(log);
       this.watch();
       if (changed) this.queueRestart(id);
+      // Back already (it connected before startAll got to it): what it said on its return counts now.
+      if (r.resumedHeld !== undefined) this.opts.onResumed?.(id, r.resumedHeld);
       this.opts.onChange(id);
       return;
     }
@@ -610,6 +695,8 @@ export class Supervisor {
           DITHER_EXTRACTOR_LAUNCH: launch,
           DITHER_EXTRACTOR_FINGERPRINT: fingerprint,
           ...(launch === 'child' ? {} : { DITHER_MANAGER_GONE_EXIT_S: String(this.opts.managerGoneExitS ?? MANAGER_GONE_EXIT_S) }),
+          // Started after an app heard of a gap: what it kept from before (Discord's backfill memory) is not trusted.
+          ...(this.resync.delete(id) ? { DITHER_RESYNC: '1' } : {}),
         },
         stdin: 'ignore',
         stdout: fd,
@@ -697,7 +784,10 @@ export class Supervisor {
       if (acc) releaseLock(acc.dir);
       return;
     }
-    if ((code !== null && code !== 0) || sig != null) this.opts.onFailedExit?.(id, acc.kind, { code, signal: sig, stderr: lines });
+    if ((code !== null && code !== 0) || sig != null) {
+      this.opts.onFailedExit?.(id, acc.kind, { code, signal: sig, stderr: lines });
+      if (this.rolled.has(id)) this.rolledCrashes.set(id, (this.rolledCrashes.get(id) ?? 0) + 1);
+    }
     if (Date.now() - r.lastStart > 120_000) r.restarts = 0;
     const delay = BACKOFF[Math.min(r.restarts, BACKOFF.length - 1)]!;
     r.restarts++;
@@ -716,10 +806,15 @@ export class Supervisor {
   /** Stops an account's extractor on purpose (a stop, a disable, a removal): a staggered restart leaves it stopped. */
   async stop(id: string) {
     this.halted.add(id);
+    this.startAfter.delete(id);
     await this.stopProcess(id);
   }
 
-  private async stopProcess(id: string) {
+  private stopProcess(id: string): Promise<void> {
+    return this.serially(id, () => this.stopNow(id));
+  }
+
+  private async stopNow(id: string) {
     const r = this.running.get(id);
     if (!r) return;
     r.stopping = true;
@@ -833,7 +928,8 @@ export class Supervisor {
           // Stopped on purpose meanwhile (the page, an app): it stays stopped.
           if (this.halted.has(id) || this.closing) continue;
           this.start(id);
-          this.rolled.set(id, this.running.get(id)?.starts ?? 0);
+          this.rolled.add(id);
+          this.rolledCrashes.delete(id);
           const end = Date.now() + 60_000;
           while (!this.closing && Date.now() < end && !this.running.get(id)?.ws) await Bun.sleep(250);
         } finally {
@@ -904,6 +1000,14 @@ export class Supervisor {
     if (ev.t === 'holding') {
       this.holding.get(id)?.();
       this.holding.delete(id);
+      return;
+    }
+    if (ev.t === 'resumed') {
+      // A link back after its manager went: whether it held everything since (it had heard manager-going) or events
+      // may have been lost on the old socket.
+      const r = this.running.get(id);
+      if (r) r.resumedHeld = ev.held === true;
+      if (r?.adopted) this.opts.onResumed?.(id, ev.held === true);
       return;
     }
     if (ev.t === 'reply') {

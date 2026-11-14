@@ -170,7 +170,7 @@ export async function endAll(procs: ProcRef[], graceMs = 3000): Promise<void> {
   };
   await until(graceMs);
   for (const p of left()) signalRef(p, 'SIGKILL');
-  await until(2000);
+  await until(1000);
 }
 
 // ---------------------------------------------------------------- systemd
@@ -209,7 +209,8 @@ export function restartQueued(unit: string, jobs: () => string = listJobs): bool
 
 function listJobs(): string {
   try {
-    const r = Bun.spawnSync(['systemctl', '--user', 'list-jobs', '--no-legend', '--plain'], { stdout: 'pipe', stderr: 'ignore', timeout: 10_000 });
+    // Bounded: it runs inside the unit's stop, which systemd gives TimeoutStopSec (30 s) in all.
+    const r = Bun.spawnSync(['systemctl', '--user', 'list-jobs', '--no-legend', '--plain'], { stdout: 'pipe', stderr: 'ignore', timeout: 3000 });
     return r.exitCode === 0 ? r.stdout.toString() : '';
   } catch {
     return '';

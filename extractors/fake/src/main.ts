@@ -1,4 +1,6 @@
 /** A fake account for the manager's tests: the `test.echo` interface over the real extractor wire. */
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { linkManager, StatusError } from '@dither-accounts/link';
 
 /**
@@ -30,10 +32,21 @@ function crashWith(message: string): never {
  * one in a session of its own, as a sandbox or a browser's zygote may be. A stop must end both (docs/supervisor.md).
  */
 const children: number[] = [];
-if (process.env.DITHER_ACCOUNT_CONFIG?.includes('"children":true')) {
+const startConfig = JSON.parse(process.env.DITHER_ACCOUNT_CONFIG || '{}') as { children?: boolean; tick?: number; slowExit?: number };
+if (startConfig.children) {
   for (const detached of [false, true]) children.push(Bun.spawn(['sleep', '3600'], { stdio: ['ignore', 'ignore', 'ignore'], detached }).pid);
+  // A third with no environment at all, in a session of its own, as bubblewrap starts a native app's Xvfb: only its
+  // sandbox.json (packages/sandbox) says it is this account's.
+  const bare = Bun.spawn(['env', '-i', 'sleep', '3601'], { stdio: ['ignore', 'ignore', 'ignore'], detached: true, env: {} });
+  children.push(bare.pid);
+  const dir = join(process.env.DITHER_ACCOUNT_DIR!, 'app');
+  mkdirSync(dir, { recursive: true });
+  await Bun.sleep(100); // env has exec'd sleep by then
+  const stat = readFileSync(`/proc/${bare.pid}/stat`, 'utf8');
+  writeFileSync(join(dir, 'sandbox.json'), JSON.stringify({ procs: [{ name: 'sleep', pid: bare.pid, start: stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19], match: 'sleep 3601' }] }), { mode: 0o600 });
 }
 
+let ticks = 0;
 const link = linkManager({
   onConnect: () => {
     link.emit({ t: 'hello', version: '1', label: link.label });
@@ -47,6 +60,10 @@ const link = linkManager({
     const at = typeof link.config.attention === 'string' ? { status: String(link.config.attentionStatus ?? 'attention'), attention: { kind: String(link.config.attentionKind ?? 'login'), message: link.config.attention } } : { status: 'online' };
     link.emit({ t: 'status', ...at, self: { displayName: 'Fake', handle: 'fake-one' }, ...lv, ...layers(link.config) });
     link.log('info', 'fake extractor up');
+  },
+    // config.slowExit: a shutdown takes that long (an extractor closing its browser).
+  onShutdown: async () => {
+    if (startConfig.slowExit) await Bun.sleep(startConfig.slowExit);
   },
   async onCommand(cmd) {
     switch (cmd.t) {
@@ -75,3 +92,6 @@ const link = linkManager({
     }
   },
 });
+
+// config.tick: a note every that many ms, numbered from 0, whether a manager is there or not (they wait in the link).
+if (startConfig.tick) setInterval(() => link.emit({ t: 'note', n: ticks++ }), startConfig.tick);

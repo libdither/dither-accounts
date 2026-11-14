@@ -14,7 +14,7 @@
 
 import { join } from 'node:path';
 import { PROTOCOL_VERSION, type AdapterCommand, type AdapterEvent } from './adapter.ts';
-import { exitWhenManagerGone, reconnectDelay, recordExitCode } from './outlive.ts';
+import { exitWhenManagerGone, managerHandshake, reconnectDelay, recordExitCode } from './outlive.ts';
 import { readSecretFile, writeSecretFile } from './secret-file.ts';
 
 export interface HubLink {
@@ -52,14 +52,14 @@ export function linkHub(opts: LinkOptions): HubLink {
   const queue: string[] = [];
   let ws: WebSocket | null = null;
   let open = false;
-  /** The manager said it is going (a restart): hold everything for the next one. */
-  let going = false;
+  /** A manager's restart: events held for the next one (outlive.ts). */
+  const handshake = managerHandshake();
   let closed = false;
   let attempt = 0;
 
   const send = (s: string) => {
     // After the manager said it is going, everything waits for the next one.
-    if (open && ws && !going) ws.send(s);
+    if (open && ws && !handshake.holding) ws.send(s);
     else {
       queue.push(s);
       if (queue.length > MAX_QUEUE) queue.splice(0, queue.length - MAX_QUEUE);
@@ -74,9 +74,9 @@ export function linkHub(opts: LinkOptions): HubLink {
     ws = new WebSocket(url);
     ws.onopen = () => {
       open = true;
-      going = false;
       attempt = 0;
       gone.up();
+      handshake.opened(ws!);
       while (queue.length) ws!.send(queue.shift()!);
       opts.onConnect?.();
     };
@@ -87,12 +87,7 @@ export function linkHub(opts: LinkOptions): HubLink {
       } catch {
         return;
       }
-      if ((cmd as { t: string }).t === 'manager-going') {
-        // dither-accounts restarting: events wait for the next manager; the answer follows every frame sent before.
-        going = true;
-        ws?.send(JSON.stringify({ t: 'holding' }));
-        return;
-      }
+      if (handshake.message(cmd as { t: string }, ws)) return;
       if (cmd.t === 'shutdown') {
         await opts.onShutdown?.();
         process.exit(0);
@@ -106,6 +101,7 @@ export function linkHub(opts: LinkOptions): HubLink {
     };
     ws.onclose = () => {
       open = false;
+      handshake.closed();
       gone.down();
       if (closed) return;
       setTimeout(connect, reconnectDelay(attempt++));

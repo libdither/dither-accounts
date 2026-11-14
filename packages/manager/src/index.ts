@@ -8,7 +8,8 @@ import { type Kind, loadKinds } from './kinds.ts';
 import { type NoticeTimes, Notices, NOTICES_KIND, noticesKind } from './notices.ts';
 import { providers as factories, type Provider } from './providers/index.ts';
 import { Router } from './router.ts';
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { procAlive, procStat } from './procs.ts';
 import { acquireManagerLock, chooseLaunch, type CodeRestarts, type Launch, releaseManagerLock, Supervisor } from './supervisor.ts';
 import { NdjsonFile, setTraceSink, StallWatch } from './trace.ts';
 
@@ -61,8 +62,16 @@ export interface ManagerOpts {
 
 /** What a manager that goes on a restart leaves the next one (docs/supervisor.md "Handing over"). */
 export const HANDOVER = 'handover.json';
+/** A handover older than this is not trusted: the extractors it speaks of have moved on (or the restart failed). */
+const HANDOVER_MAX_AGE_MS = 5 * 60_000;
 interface Handover {
+  v: 1;
+  writer: 'dither-accounts';
+  /** The manager that wrote it: its pid and start (procs.ts), its release, its data directory. */
   pid: number;
+  start: string | null;
+  release: string;
+  dataDir: string;
   at: string;
   /** Extractors that said they hold their events from then on: nothing of theirs was lost. */
   holding: string[];
@@ -111,6 +120,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
   const publicUrl = (o.publicUrl ?? `http://localhost:${o.port}`).replace(/\/$/, '');
   const approvers = new Approvers(store, { dataDir: o.dataDir, publicUrl, pushHttp: o.approverPushHttp === true, requestMs: o.approverRequestMs, onChange: () => router?.accountsChanged(), count: (account, op, outcome) => router?.count('approver', account, op, outcome), onNoDevice: (account, rpId, op) => notices?.noDevice(account, rpId, op) });
   const launch = chooseLaunch(o.launch ?? 'child');
+  let handoverNow: Handover | null = null;
   const sup = new Supervisor(store, kinds, {
     extractorUrl: () => `ws://127.0.0.1:${http.server.port}/extractor`,
     repoRoot,
@@ -139,6 +149,10 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
       else errors?.record({ source: 'uncaught', where, name: 'Exit', message: exit.signal ? `ended by signal ${exit.signal}` : `exited with code ${exit.code}`, extra });
     },
     onExit: (id) => router?.processGone(id),
+    // An adopted extractor back after a handover that did not name it: a gap only if it says it did not hold its events.
+    onResumed: (id, held) => {
+      if (!held && handoverNow && !handoverNow.holding?.includes(id)) router.markGap(id);
+    },
     // The approver's questions, for kinds that hold passkeys; the manager names the account itself.
     onAsk: async (id, what, input) => {
       const a = store.account(id);
@@ -147,7 +161,8 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
       throw new Error(`the manager answers no "${what}"`);
     },
   });
-  router = new Router(store, kinds, sup, { dataDir: o.dataDir });
+  // An app that hears of a gap restarts the account: that start must not trust what the extractor kept (DITHER_RESYNC).
+  router = new Router(store, kinds, sup, { dataDir: o.dataDir, onGap: (id) => sup.markResync(id) });
   // Links to an account's page only when the page has an address of its own (localhost is not one a phone can open).
   const pageUrl = /^https?:\/\/(localhost|127\.[\d.]+|\[::1\])(:\d+)?$/.test(publicUrl) ? null : publicUrl;
   notices = new Notices(store, router, sup, { dataDir: o.dataDir, publicUrl: pageUrl, times: o.noticeTimes });
@@ -165,13 +180,16 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
   // What the manager before handed over (a restart): its held events first, before anything new comes.
   const handover = takeHandover(o.dataDir);
   if (handover) router.restoreHeld(handover.held ?? {});
+  handoverNow = handover;
   http.notices = notices;
   http.codeRestarts = () => sup.codeRestarts();
   http.start();
   if (o.startAccounts !== false) {
     sup.startAll();
     // An adopted extractor whose events the manager before may have lost: apps hear of a gap and start it over.
-    for (const id of sup.adopted()) if (!handover?.holding?.includes(id)) router.markGap(id);
+    // Without a handover (the manager before crashed) that is every adopted one; with one, an extractor that says on
+    // its return that it did not hold its events (onResumed).
+    if (!handover) for (const id of sup.adopted()) router.markGap(id);
   }
   return {
     store,
@@ -191,7 +209,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
       const { holding } = await sup.stopAll({ leave: so.leaveExtractors === true });
       // What apps have not had yet: sent now, and what waits for absent ones goes to the next manager.
       router.flushNow();
-      if (so.leaveExtractors) writeHandover(o.dataDir, { pid: process.pid, at: new Date().toISOString(), holding, held: router.heldForHandover() });
+      if (so.leaveExtractors) writeHandover(o.dataDir, { v: 1, writer: 'dither-accounts', pid: process.pid, start: procStat(process.pid)?.start ?? null, release: realOr(repoRoot), dataDir: realOr(o.dataDir), at: new Date().toISOString(), holding, held: router.heldForHandover() });
       releaseManagerLock(o.dataDir);
       approvers.stop();
       router.stop();
@@ -216,18 +234,53 @@ function writeHandover(dataDir: string, h: Handover) {
   }
 }
 
-/** The handover an earlier manager left, read once (it holds message events, so it does not stay on disk). */
+const realOr = (p: string) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+};
+
+/**
+ * The handover an earlier manager left, read once (it holds message events, so it does not stay on disk; nor does a
+ * half-written one). Only one written by a manager of this data directory, by this user, a few minutes ago at most,
+ * whose writer has ended; anything else is set aside as if there were none (apps then hear of gaps).
+ */
 function takeHandover(dataDir: string): Handover | null {
   const p = join(dataDir, HANDOVER);
-  try {
-    const h = JSON.parse(readFileSync(p, 'utf8')) as Handover;
-    unlinkSync(p);
-    return h && typeof h === 'object' ? h : null;
-  } catch {
+  const drop = (f: string) => {
     try {
-      unlinkSync(p);
+      unlinkSync(f);
     } catch {}
+  };
+  drop(`${p}.tmp`);
+  if (!existsSync(p)) return null;
+  try {
+    const st = statSync(p);
+    const h = JSON.parse(readFileSync(p, 'utf8')) as Handover;
+    const why =
+      st.uid !== process.getuid?.()
+        ? 'not written by this user'
+        : h?.v !== 1 || h.writer !== 'dither-accounts'
+          ? 'not a handover'
+          : h.dataDir !== realOr(dataDir)
+            ? 'from another data directory'
+            : !(Date.now() - Date.parse(h.at) < HANDOVER_MAX_AGE_MS)
+              ? `older than ${HANDOVER_MAX_AGE_MS / 60_000} minutes`
+              : typeof h.pid === 'number' && h.pid !== process.pid && procAlive(h.pid, h.start ?? undefined)
+                ? 'its writer still runs'
+                : null;
+    if (why) {
+      console.error(`${HANDOVER} set aside: ${why}`);
+      return null;
+    }
+    return h;
+  } catch (e) {
+    console.error(`${HANDOVER} set aside: ${(e as Error).message}`);
     return null;
+  } finally {
+    drop(p);
   }
 }
 

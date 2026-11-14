@@ -5,7 +5,7 @@
  * (no systemd in tests); the `scope` launch differs only in the systemd-run prefix.
  */
 import { afterAll, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { AccountsClient, register } from '@dither-accounts/client';
@@ -55,7 +55,7 @@ async function manager(dir: string, opts: { port?: number; code?: string; pause?
   return m;
 }
 
-function addAccount(m: Manager, dir: string, id: string) {
+function addAccount(m: Manager, dir: string, id: string, config: Record<string, unknown> = {}) {
   const accDir = join(dir, 'accounts', id);
   mkdirSync(accDir, { recursive: true, mode: 0o700 });
   const now = Date.now();
@@ -64,7 +64,7 @@ function addAccount(m: Manager, dir: string, id: string) {
     id,
     'fake',
     'Fake',
-    '{}',
+    JSON.stringify(config),
     newToken(),
     accDir,
     now,
@@ -77,12 +77,12 @@ const online = (m: Manager, id: string) => m.sup.state(id).online;
 const pidOf = async (m: Manager, id: string) => ((await m.sup.command(id, { t: 'pid' })) as { pid: number }).pid;
 
 /** A data directory with one fake account whose extractor runs under a first manager. */
-async function world(name: string, opts: { code?: string } = {}) {
+async function world(name: string, opts: { code?: string; config?: Record<string, unknown> } = {}) {
   const dir = mkdtempSync(join(tmpdir(), `dacc-adopt-${name}-`));
   dirs.push(dir);
   const m1 = await manager(dir, opts);
   const id = `acc-${name}-1`;
-  const accDir = addAccount(m1, dir, id);
+  const accDir = addAccount(m1, dir, id, opts.config);
   m1.sup.start(id);
   await until(() => online(m1, id), 15_000, 'the extractor online');
   const pid = await pidOf(m1, id);
@@ -238,22 +238,44 @@ function listen(m: Manager, a: { app: string; token: string }) {
   return { c, got, gaps };
 }
 
-test('a restart hands over: events held for an absent app reach it from the next manager, and events emitted meanwhile wait in the extractor', async () => {
-  const { dir, m1, id, port } = await world('handover');
+test('a restart hands over: events held for an absent app, and those emitted while no manager ran, reach it from the next manager, all in order', async () => {
+  // A note every 20 ms, before, during and after the restart.
+  const { dir, m1, id, port } = await world('handover', { config: { tick: 20 } });
   const a = await app(m1);
-  // The app is away: three notes wait in the manager.
-  await m1.sup.command(id, { t: 'emit', n: 3 });
-  await Bun.sleep(100);
+  await Bun.sleep(300);
   await m1.stop({ leaveExtractors: true });
   const h = JSON.parse(readFileSync(join(dir, 'handover.json'), 'utf8'));
-  expect(h.holding).toEqual([id]);
+  expect(h).toMatchObject({ v: 1, writer: 'dither-accounts', holding: [id] });
+  expect(h.held[a.app].frames.length).toBeGreaterThan(5);
+  // No manager for a while: the notes wait in the extractor's link.
+  await Bun.sleep(500);
   const m2 = await manager(dir, { port });
   expect(existsSync(join(dir, 'handover.json'))).toBe(false);
   await until(() => online(m2, id), 15_000, 'adopted and back');
+  await Bun.sleep(300);
   const l = listen(m2, a);
-  await until(() => l.got.length >= 3, 5000, 'the held notes');
-  expect(l.got.slice(0, 3)).toEqual([0, 1, 2]);
+  await until(() => l.got.length > 50, 10_000, 'the notes');
+  // Every note from the first on, none missing, none twice, in order.
+  expect(l.got).toEqual(l.got.map((_, i) => i));
   expect(l.gaps).toEqual([]);
+  l.c.close();
+  await m2.stop();
+});
+
+test('a handover too old, or a half-written one, is set aside: apps hear of a gap instead', async () => {
+  const { dir, m1, id, port } = await world('stale');
+  const a = await app(m1);
+  await m1.stop({ leaveExtractors: true });
+  const file = join(dir, 'handover.json');
+  const h = JSON.parse(readFileSync(file, 'utf8'));
+  writeFileSync(file, JSON.stringify({ ...h, at: new Date(Date.now() - 10 * 60_000).toISOString() }));
+  writeFileSync(`${file}.tmp`, '{"half');
+  const m2 = await manager(dir, { port });
+  expect(existsSync(file)).toBe(false);
+  expect(existsSync(`${file}.tmp`)).toBe(false);
+  await until(() => online(m2, id), 15_000, 'adopted and back');
+  const l = listen(m2, a);
+  await until(() => l.gaps.length === 1, 5000, 'a gap');
   l.c.close();
   await m2.stop();
 });

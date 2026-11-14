@@ -12,7 +12,9 @@ import { createManager, kindOf, type Manager } from '@dither-accounts/manager';
 import { newToken, Store } from '../packages/manager/src/db.ts';
 import { cgroupMembers, cgroupOf, ownService, procAlive, procsWithEnv, restartQueued } from '../packages/manager/src/procs.ts';
 import { chooseLaunch } from '../packages/manager/src/supervisor.ts';
+import chatFakeManifest from '../extractors/chat-fake/manifest.ts';
 import fakeManifest from '../extractors/fake/manifest.ts';
+import { managerHandshake } from '../packages/chat-protocol/src/outlive.ts';
 
 const ROOT = resolve(import.meta.dir, '..');
 const MAIN = join(ROOT, 'packages/manager/src/main.ts');
@@ -88,11 +90,13 @@ async function started(m: Manager, dir: string, id: string, config: Record<strin
   return pidsOf(m, id);
 }
 
-test('a stopped account ends its extractor and everything it started, in its process group or a session of its own', async () => {
+test('a stopped account ends its extractor and everything it started: its process group, a session of its own, one with no environment (by its sandbox.json)', async () => {
   const dir = tempDir('children');
   const m = await manager(dir);
   const p = await started(m, dir, 'acc-children-1');
-  expect(p.children).toHaveLength(2);
+  expect(p.children).toHaveLength(3);
+  // The third carries no environment: no account id to find it by.
+  expect(readFileSync(`/proc/${p.children[2]}/environ`, 'utf8')).toBe('');
   expect(p.children.every((c) => procAlive(c))).toBe(true);
   await m.sup.stop('acc-children-1');
   await until(() => allGone([p.pid, ...p.children]), 10_000, 'the extractor and its children gone');
@@ -161,8 +165,47 @@ test('an account stopped while staggered restarts wait stays stopped; the others
   expect(m2.sup.codeRestarts()).toEqual({ queued: 0, active: false, restarted: 1, online: 1, crashed: 0 });
   const health = (await (await fetch(`${m2.url}/api/health`)).json()) as any;
   expect(health.codeRestarts).toEqual({ queued: 0, active: false, restarted: 1, online: 1, crashed: 0 });
+  // A restart asked for (the page, an app after a gap) is no crash of the new code.
+  await m2.sup.restart('acc-stagger-b');
+  await until(() => online(m2, 'acc-stagger-b'), 15_000, 'b back after its restart');
+  expect(m2.sup.codeRestarts().crashed).toBe(0);
+  // An exit nobody asked for is.
+  process.kill((await pidsOf(m2, 'acc-stagger-b')).pid, 'SIGKILL');
+  await until(() => m2.sup.codeRestarts().crashed === 1, 10_000, 'the crash counted');
   await m2.stop();
 });
+
+test('a start right after a stop waits for it: the new extractor is the one that runs, and nothing it started is ended', async () => {
+  const dir = tempDir('race');
+  // Its shutdown takes a while (a browser closing), so the start comes while the stop is still under way.
+  const m = await manager(dir);
+  const p = await started(m, dir, 'acc-race-1', { children: true, slowExit: 1500 });
+  const stopping = m.sup.stop('acc-race-1');
+  await Bun.sleep(20);
+  m.sup.start('acc-race-1');
+  await stopping;
+  expect(allGone([p.pid, ...p.children])).toBe(true);
+  await until(() => online(m, 'acc-race-1'), 15_000, 'the new one online');
+  const q = await pidsOf(m, 'acc-race-1');
+  expect(q.pid).not.toBe(p.pid);
+  // Still there a moment later, with what it started, and the manager knows it runs.
+  await Bun.sleep(1500);
+  expect([q.pid, ...q.children].every((c) => procAlive(c))).toBe(true);
+  expect(m.sup.state('acc-race-1')).toMatchObject({ running: true, online: true });
+  await m.stop();
+  expect(allGone([q.pid, ...q.children])).toBe(true);
+  expect(ofDir(dir)).toEqual([]);
+}, 30_000);
+
+test('a stop of the whole manager fits well inside systemd\'s TimeoutStopSec (30 s), even for an extractor slow to go', async () => {
+  const dir = tempDir('slowstop');
+  const m = await manager(dir, { launch: 'child' });
+  const p = await started(m, dir, 'acc-slowstop-1', { children: true, slowExit: 60_000 });
+  const t0 = Date.now();
+  await m.stop();
+  expect(Date.now() - t0).toBeLessThan(15_000);
+  expect(allGone([p.pid, ...p.children])).toBe(true);
+}, 30_000);
 
 test('an extractor with no manager for DITHER_MANAGER_GONE_EXIT_S ends itself, and says how', async () => {
   const dir = tempDir('gone');
@@ -302,3 +345,39 @@ test('main.ts without systemd: SIGTERM leaves a detached launch running, and sto
     }
   }
 }, 60_000);
+
+test("both links answer a going manager and say on their return whether they held their events (a sync of dither-chat's protocol copy must not drop it)", async () => {
+  // The chat extractors' link (packages/chat-protocol adapter-client.ts) and the others' (packages/link).
+  const dir = tempDir('handshake');
+  const both = new Map([...kinds(), ['chat-fake', kindOf(chatFakeManifest, join(ROOT, 'extractors/chat-fake'))]]);
+  const m1 = await manager(dir, { kinds: both });
+  const ids = ['acc-hs-fake', 'acc-hs-chat'];
+  insertAccount(m1.store, dir, ids[0]!);
+  insertAccount(m1.store, dir, ids[1]!);
+  m1.store.run('UPDATE account SET kind = ? WHERE id = ?', 'chat-fake', ids[1]);
+  for (const id of ids) m1.sup.start(id);
+  await until(() => ids.every((id) => online(m1, id)), 15_000, 'both online');
+  const port = m1.http.server.port!;
+  await m1.stop({ leaveExtractors: true });
+  expect(JSON.parse(readFileSync(join(dir, 'handover.json'), 'utf8')).holding.sort()).toEqual([...ids].sort());
+  const m2 = await manager(dir, { kinds: both, port });
+  await until(() => ids.every((id) => online(m2, id) && m2.sup.details(id).adopted), 15_000, 'both adopted and back');
+  await m2.stop();
+
+  // The handshake itself: holding after manager-going, and `resumed` says so on the next socket.
+  const sent: string[] = [];
+  const ws = { send: (x: string) => sent.push(x) };
+  const h = managerHandshake();
+  h.opened(ws);
+  expect(sent).toEqual([]);
+  expect(h.message({ t: 'manager-going' }, ws)).toBe(true);
+  expect(h.holding).toBe(true);
+  h.closed();
+  h.opened(ws);
+  expect(sent.map((x) => JSON.parse(x))).toEqual([{ t: 'holding' }, { t: 'resumed', held: true }]);
+  expect(h.holding).toBe(false);
+  h.closed();
+  h.opened(ws);
+  expect(JSON.parse(sent.at(-1)!)).toEqual({ t: 'resumed', held: false });
+  expect(h.message({ t: 'shutdown' }, ws)).toBe(false);
+}, 30_000);

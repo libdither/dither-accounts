@@ -8,8 +8,11 @@
  * - In each package those files belong to, every file that is not TypeScript (a browser extension's scripts, a hook's
  *   page script, a proto, a manifest.json): extractors read those as files, not as imports. TypeScript is only ever run
  *   through an import, so the TypeScript that is not reached does not count.
- * - The name and installed version of each npm package imported directly, the repo's bun.lock, package.json and
- *   tsconfig.json, and Bun's version.
+ * - The name and installed version of each npm package imported directly, and bun.lock's entries (version and
+ *   integrity) for those and every package they depend on, not the whole lock: a dependency added for another
+ *   extractor restarts only that one. Of the root package.json only what changes what is installed for everyone
+ *   (overrides, resolutions, patches, trusted dependencies); of tsconfig.json only what Bun reads at run time (paths,
+ *   JSX, decorators); and Bun's version.
  * - The environment the manager gives it that is not per account (its kind's `env`, PATH, DITHER_* settings such as
  *   DITHER_TELEGRAM_DESKTOP), as a hash only.
  * Not seen: a file read at run time from outside the packages it imports.
@@ -22,8 +25,53 @@ import { dirname, join, relative, sep } from 'node:path';
 const SKIP_DIRS = new Set(['node_modules', 'test', 'tests', '.git', 'dist', '.cache']);
 const SCAN = /\.(ts|tsx|js|mjs|cjs|jsx)$/;
 const TYPESCRIPT = /\.(ts|tsx|mts|cts)$/;
-/** The repo's files that change what every extractor runs. */
-const ROOT_FILES = ['bun.lock', 'package.json', 'tsconfig.json'];
+/** Of the root package.json, what changes what is installed for every package. */
+const ROOT_PACKAGE_FIELDS = ['overrides', 'resolutions', 'patchedDependencies', 'trustedDependencies'];
+/** Of tsconfig.json's compilerOptions, what Bun reads when it runs TypeScript. */
+const TSCONFIG_FIELDS = ['baseUrl', 'paths', 'jsx', 'jsxFactory', 'jsxFragmentFactory', 'jsxImportSource', 'experimentalDecorators', 'emitDecoratorMetadata', 'useDefineForClassFields', 'verbatimModuleSyntax'];
+
+/** JSON with trailing commas (bun.lock, tsconfig.json), or null. */
+function looseJson(file: string): any {
+  try {
+    const text = readFileSync(file, 'utf8')
+      .replace(/^\s*\/\/.*$/gm, '')
+      .replace(/,(\s*[}\]])/g, '$1');
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * bun.lock's entries for these npm packages and everything they depend on: "ident@version integrity" each. A nested
+ * version (a dependency's own copy) is the key "<parent>/<name>", looked for before the top-level one.
+ */
+export function lockEntries(lock: any, direct: string[]): string[] {
+  const pkgs = (lock?.packages ?? {}) as Record<string, unknown[]>;
+  const out = new Set<string>();
+  const seen = new Set<string>();
+  const todo = direct.map((n) => (pkgs[n] ? n : null)).filter((k): k is string => !!k);
+  while (todo.length) {
+    const key = todo.pop()!;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const e = pkgs[key];
+    if (!Array.isArray(e)) continue;
+    const integrity = e.find((x, i) => i > 0 && typeof x === 'string' && /^sha\d+-/.test(x)) ?? '';
+    out.add(`${String(e[0])} ${integrity}`);
+    const info = (e.find((x) => x && typeof x === 'object' && !Array.isArray(x)) ?? {}) as Record<string, Record<string, string> | undefined>;
+    for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+      for (const dep of Object.keys(info[field] ?? {})) {
+        const nested = `${key}/${dep}`;
+        if (pkgs[nested]) todo.push(nested);
+        else if (pkgs[dep]) todo.push(dep);
+      }
+    }
+  }
+  return [...out].sort();
+}
+
+const pick = (o: any, fields: string[]) => Object.fromEntries(fields.filter((f) => o?.[f] !== undefined).map((f) => [f, o[f]]));
 /** Set by the supervisor per account or per start: not part of the code. */
 const PER_START = /^DITHER_(ACCOUNT_|HUB_URL$|ACCOUNTS_URL$|ADAPTER_TOKEN$|MARKER_KEY$|MANAGER_|EXTRACTOR_)/;
 
@@ -142,7 +190,8 @@ export function fingerprintEntry(root: string, entry: string, env: Record<string
   // The files reached, and the packages' assets; the repo root as a package would be everything, so only its own files.
   const files = new Set([...seen].filter((f) => inside(f, root)));
   for (const d of packages) if (d !== root) for (const a of assetsOf(d)) files.add(a);
-  for (const f of ROOT_FILES) if (existsSync(join(root, f))) files.add(join(root, f));
+  // The root package.json is no package's asset here (everything is under the root): only its install fields count.
+  files.delete(join(root, 'package.json'));
   const rel = [...files].map((f) => relative(root, f)).sort();
   const h = createHash('sha256');
   h.update('dither-accounts extractor fingerprint 2\n');
@@ -159,6 +208,10 @@ export function fingerprintEntry(root: string, entry: string, env: Record<string
   }
   const ext = [...external].map(([n, v]) => `${n}@${v}`).sort();
   for (const e of ext) h.update(`x ${e}\n`);
+  const lock = looseJson(join(root, 'bun.lock'));
+  for (const e of lockEntries(lock, [...external.keys()])) h.update(`l ${e}\n`);
+  h.update(`r ${JSON.stringify(pick(looseJson(join(root, 'package.json')), ROOT_PACKAGE_FIELDS))}\n`);
+  h.update(`t ${JSON.stringify(pick(looseJson(join(root, 'tsconfig.json'))?.compilerOptions, TSCONFIG_FIELDS))}\n`);
   const ce = codeEnv(env);
   for (const k of Object.keys(ce).sort()) h.update(`e ${k}=${ce[k]}\n`);
   return { hash: h.digest('hex').slice(0, 32), packages: [...packages].map((d) => relative(root, d) || '.').sort(), files: rel, external: ext };

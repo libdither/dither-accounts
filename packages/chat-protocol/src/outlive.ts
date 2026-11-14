@@ -47,3 +47,40 @@ export function recordExitCode(accountDir: string) {
     } catch {}
   });
 }
+
+/**
+ * The link's side of a manager's restart (dither-accounts docs/supervisor.md "Handing over"):
+ * - `manager-going` from the manager: from then on every event waits in the link's queue for the next manager, and
+ *   `holding` goes back at once (after every frame sent before it, so the going manager has them all);
+ * - back on a new socket: `resumed` first, saying whether it was holding when the old socket closed (nothing lost)
+ *   or not (events sent on the old socket may not have arrived: the manager has apps hear of a gap).
+ * Kept here, not in adapter-client.ts (a copy of dither-chat's protocol package), so a sync of that copy does not
+ * drop it; test/outlive.test.ts fails if a link stops answering.
+ */
+export function managerHandshake() {
+  let going = false;
+  let opened = false;
+  let heldAtClose = false;
+  return {
+    /** Events wait for the next manager. */
+    get holding() {
+      return going;
+    },
+    /** A socket opened: call before flushing the queue. */
+    opened(ws: { send(s: string): void }) {
+      if (opened) ws.send(JSON.stringify({ t: 'resumed', held: heldAtClose }));
+      opened = true;
+      going = false;
+    },
+    closed() {
+      heldAtClose = going;
+    },
+    /** A message from the manager: true when it was the handshake's (and is answered). */
+    message(m: { t?: unknown } | null | undefined, ws: { send(s: string): void } | null): boolean {
+      if (m?.t !== 'manager-going') return false;
+      going = true;
+      ws?.send(JSON.stringify({ t: 'holding' }));
+      return true;
+    },
+  };
+}

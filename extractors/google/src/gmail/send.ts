@@ -4,7 +4,7 @@
  * files, saves a draft and sends it through the Gmail page (write.ts).
  */
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { basename, isAbsolute, relative } from 'node:path';
+import { basename, isAbsolute, relative, sep } from 'node:path';
 import type { MailAddress, OutgoingFile, OutgoingMail } from '@dither-accounts/interfaces';
 import { StatusError } from '@dither-accounts/link';
 import { DECIMAL_ID } from './protocol.ts';
@@ -37,7 +37,8 @@ export function checkOutgoing(m: OutgoingMail, accountDir: string): OutgoingChec
     if (!Array.isArray(l)) throw bad(`${what} is a list of { name, email }`);
     return l.map((a, i) => {
       if (!a || typeof a !== 'object' || typeof a.email !== 'string' || !EMAIL.test(a.email.trim()) || (a.name != null && typeof a.name !== 'string')) throw bad(`${what}[${i}] is not an address`);
-      return { name: typeof a.name === 'string' && a.name.trim() ? a.name.trim().slice(0, 200) : null, email: a.email.trim() };
+      const name = typeof a.name === 'string' ? a.name.replace(/[\x00-\x1f\x7f]+/g, ' ').trim().slice(0, 200) : '';
+      return { name: name || null, email: a.email.trim() };
     });
   };
   const to = list(m.to, 'to');
@@ -79,6 +80,7 @@ function outgoingFile(a: OutgoingFile, i: number, accountDir: string) {
   let bytes: Buffer;
   if (typeof a.base64 === 'string' && a.path === undefined) {
     if (a.base64.length > Math.ceil((SEND_CAP * 4) / 3) + 4) throw bad('over 25 MB', 413);
+    if (!/^[A-Za-z0-9+/_-]*={0,2}$/.test(a.base64.replace(/\s+/g, ''))) throw bad('base64 is not base64');
     bytes = Buffer.from(a.base64, 'base64');
   } else if (typeof a.path === 'string' && a.base64 === undefined) {
     if (!isAbsolute(a.path)) throw bad('the path must be absolute');
@@ -93,7 +95,7 @@ function outgoingFile(a: OutgoingFile, i: number, accountDir: string) {
       acct = realpathSync(accountDir);
     } catch {}
     const rel = relative(acct, real);
-    if (!rel.startsWith('..') && !isAbsolute(rel)) throw bad("that is one of the account's own files", 403);
+    if (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)) throw bad("that is one of the account's own files", 403);
     if (/^secret\.json/.test(basename(real))) throw bad('that file is a secret', 403);
     const st = statSync(real);
     if (!st.isFile()) throw bad('not a regular file');

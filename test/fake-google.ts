@@ -497,6 +497,7 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
   const uploaded = new Map<string, { name: string; mime: string; data: Buffer }>();
   const pendingUploads = new Map<string, { name: string; mime: string; meta: string }>();
   let refuse = 0;
+  let refuseSend = 0;
   let uploadSeq = 0;
   const newId = () => (box.messages.filter((x) => !x.pending).map((x) => BigInt(x.id)).reduce((a, b) => (a > b ? a : b)) + 1000n).toString();
   const addr = (p: unknown): FakeAddress => ({ email: String((p as unknown[])[1]), ...((p as unknown[])[2] ? { name: String((p as unknown[])[2]) } : {}) });
@@ -533,6 +534,10 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
     m.files = (Array.isArray(rec[11]) ? rec[11] : []).map((f: any[]) => uploaded.get(String(f[9]))).filter((f: unknown): f is { name: string; mime: string; data: Buffer } => !!f);
     if (Array.isArray(d[13])) {
       if (!sending) return 3;
+      if (refuseSend > 0) {
+        refuseSend--;
+        return 3;
+      }
       m.labels = ['^all', '^f'];
       sent.push({ id: m.id, aId: m.aId!, thread: m.thread, from: m.from.email, to: m.to.map((a) => a.email), cc: m.cc.map((a) => a.email), bcc: (m.bcc ?? []).map((a) => a.email), subject: m.subject, html: m.html ?? '', files: m.files, inReplyTo: m.inReplyTo ?? null, messageId: m.messageId });
     } else m.labels = ['^all', '^r'];
@@ -587,6 +592,10 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
     /** The next `n` changes answer a non-zero status (refused). */
     refuseNext(n: number) {
       refuse = n;
+    },
+    /** The next `n` sends answer a non-zero status (their drafts were taken). */
+    refuseSends(n: number) {
+      refuseSend = n;
     },
     history: () => history,
     layout(mode: 'normal' | 'swapped') {

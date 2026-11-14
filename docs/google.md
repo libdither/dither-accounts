@@ -719,8 +719,10 @@ change is a label added or taken off, so making it twice changes nothing more.
   and named in `unknown`; none placed is 404. One change per thread and kind of change, at most 100 a call.
 - **Answers**: `{}` when every change applied; otherwise the ids Gmail answered a non-zero status for are `refused`
   (and null in `mail.move`'s `ids`); 422 `refused` when nothing applied. `mail.move` answers the same ids (a message
-  keeps its id in Gmail). A call that fails is 503 `unavailable` when nothing reached Gmail (the page not synced yet)
-  and 502 when it may have (harmless to send again).
+  keeps its id in Gmail). A call that fails is 503 when nothing can have reached Gmail (the browser not attached, the
+  page not synced yet), 504 when the page did not answer in time and 502 when Gmail's answer was not one known (both
+  may have made the change; label changes are harmless to send again), and 500 when the page refused the body (an
+  older extension, or a body not one of the known writes; trying again will not help).
 - **Not written**: Spam (`mail.move` to `^s` is 501: Gmail's "Report spam" may report the sender to Google, and its
   call was never recorded), and nothing can be moved into Sent, Drafts, Scheduled, Chats, Starred, Important or
   Snoozed (400). `answered` is Gmail's to set (400). Deleting for ever, emptying the trash, muting, snoozing and
@@ -736,8 +738,14 @@ of the message answered) goes in that message's thread with In-Reply-To its Mess
 saw, else from the message's original); Gmail adds References. The answer is `{ messageId, sentId }`: the sent
 message's Message-ID and Gmail's id, from the send's answer.
 
-A draft Gmail refuses is 422 `refused`, nothing sent. Once the draft is saved, a send that fails or is refused leaves
-the draft in Drafts and says so; nothing is retried here, since a send may have gone.
+A draft Gmail refuses is 422 `refused`, nothing sent; a draft call that fails is 503 (nothing reached Gmail) or 502
+(nothing sent, a draft may be in Drafts). Once the draft is saved, a send Gmail refuses is 422 `refused` with the
+draft left in Drafts, and a send call that fails or whose answer does not say is **504** (`timeout`): it may have gone,
+so the caller must not send it again unseen (the hub shows it as "may have been sent"). Nothing is retried here. The
+original is marked replied only after the send is acknowledged, in a call of its own. And since the caller gives up at
+the op's 120 s, nothing new starts late (`SEND_LIMITS`): no upload past 60 s, no draft past 80 s (503, nothing sent),
+no send past 90 s (502, the draft left in Drafts). A file is handed to the page in pieces; a piece for an upload the
+page no longer holds (it reloaded) is refused rather than started anew, and the upload checks the size it got.
 
 
 

@@ -658,15 +658,23 @@
   const recordOk = (r, sending) => Array.isArray(r) && r.length === 78 && typeof r[0] === 'string' && W_MSG_A.test(r[0]) && Array.isArray(r[10]) && r[10].join(',') === (sending ? SENT_LABELS : DRAFT_LABELS);
 
   /**
-   * Why an s body is not one of the writes the extractor makes, or null: label changes (detail[6]: labels from
-   * WRITE_LABEL, messages Gmail has), a draft's first save (detail[1] a reply's, detail[2] a new thread's) and its
-   * send (detail[13], with the sent labels, in a call whose head says it sends). One part per change, at most 100.
+   * Why an s body is not one of the writes the extractor makes, or null. A call is one of three: label changes only
+   * (detail[6]: labels from WRITE_LABEL, messages Gmail has, nothing else in it; at most 100), one draft's first save
+   * (detail[1] a reply's, detail[2] a new thread's), or one send (detail[13], with the sent labels, in a call whose
+   * head says it sends). The parts around the changes as write.ts lays them out.
    */
   function writeRefusal(body) {
     if (!Array.isArray(body) || body.length !== 5 || body[4] !== 2) return 'not a write';
     const sending = Array.isArray(body[0]) && body[0].length === 3 && body[0][0] === null && body[0][1] === null && body[0][2] === 2;
     if (body[0] !== null && !sending) return 'a head not known';
+    const c = body[2];
+    if (sending ? c !== null : !(Array.isArray(c) && c.length === 7 && c[0] === 1 && (c[1] === null || Number.isInteger(c[1])) && c[2] === null && c[3] === null && Array.isArray(c[4]) && c[4][0] === null && c[4][1] === 0 && c[5] === null && c[6] === 1)) return 'a client part not known';
+    const t = body[3];
+    if (!Array.isArray(t) || t.length !== 5 || !Number.isInteger(t[0]) || !Number.isInteger(t[1]) || !Number.isInteger(t[2]) || t[3] !== (sending ? 1 : 0) || t[4] !== 49) return 'a time part not known';
     if (!Array.isArray(body[1]) || body[1].length !== 1 || !Array.isArray(body[1][0]) || !body[1][0].length || body[1][0].length > 100) return 'no changes, or too many';
+    const kinds = body[1][0].map((ch) => (Array.isArray(ch) && Array.isArray(ch[1]) && Array.isArray(ch[1][1]) ? ch[1][1].findIndex((x) => x !== null) : -1));
+    if (sending ? kinds.length !== 1 || kinds[0] !== 13 : kinds.some((k) => k !== 6) && (kinds.length !== 1 || (kinds[0] !== 1 && kinds[0] !== 2))) return 'changes of kinds not made together';
+    if (t[1] !== kinds.length) return 'a count that is not the changes';
     for (const ch of body[1][0]) {
       if (!Array.isArray(ch) || ch.length !== 2 || !Number.isInteger(ch[0]) || !Array.isArray(ch[1]) || typeof ch[1][0] !== 'string' || !W_THREAD.test(ch[1][0]) || !Array.isArray(ch[1][1])) return 'a change not laid out as known';
       const d = ch[1][1];
@@ -675,7 +683,7 @@
       if (parts.length !== 1) return 'a change of more than one part';
       const v = d[parts[0]];
       if (parts[0] === 6) {
-        if (!ch[1][0].startsWith('thread-f:') || !Array.isArray(v) || !labelsOk(v[0], true) || !labelsOk(v[1], false) || (v[0] === null && v[1] === null)) return 'a label change not made here';
+        if (!ch[1][0].startsWith('thread-f:') || d.length !== 7 || !Array.isArray(v) || v.length !== 12 || !v.slice(3).every((x) => x === null) || !labelsOk(v[0], true) || !labelsOk(v[1], false) || (v[0] === null && v[1] === null)) return 'a label change not made here';
         if (!Array.isArray(v[2]) || !v[2].length || v[2].length > 1000 || !v[2].every((m) => typeof m === 'string' && W_MSG_F.test(m))) return 'a label change on messages Gmail has not got';
       } else if (parts[0] === 1) {
         if (sending || !ch[1][0].startsWith('thread-f:') || !Array.isArray(v) || !recordOk(v[0], false) || !W_MSG_F.test(String(v[1]))) return 'a reply draft not laid out as known';
@@ -717,9 +725,11 @@
   const uploads = new Map();
   let uploadSeq = 0;
   function uploadChunk(c) {
-    let u = typeof c.token === 'string' ? uploads.get(c.token) : null;
+    for (const [k, v] of uploads) if (Date.now() - v.at > 120000) uploads.delete(k);
+    // A piece of an upload this page does not hold (it reloaded since the first piece) starts nothing: the file would go short.
+    if (c.token !== undefined && c.token !== null && !uploads.has(c.token)) throw new Error('gmail.uploadChunk: no such upload (the page was reloaded?)');
+    let u = c.token ? uploads.get(c.token) : null;
     if (!u) {
-      for (const [k, v] of uploads) if (Date.now() - v.at > 120000) uploads.delete(k);
       if (uploads.size >= 4) throw new Error('gmail.uploadChunk: too many uploads at once');
       u = { token: 'u' + ++uploadSeq + '.' + Date.now(), parts: [], size: 0, at: Date.now() };
       uploads.set(u.token, u);
@@ -739,6 +749,7 @@
     const u = uploads.get(c.token);
     uploads.delete(c.token);
     if (!u) throw new Error('gmail.upload: no such upload');
+    if (u.size !== c.size) throw new Error('gmail.upload: the file came over short');
     const name = String(c.name || '');
     const mime = String(c.mime || '');
     if (!name || name.length > 255 || /[\r\n]/.test(name) || !/^[\w.+-]+\/[\w.+-]+$/.test(mime) || !/^[A-Za-z0-9_-]{8,8000}$/.test(String(c.meta || ''))) throw new Error('gmail.upload: not an attachment');

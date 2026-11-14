@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { MailSummary } from '@dither-accounts/interfaces';
-import { type BackgroundRules, GmailMail, parseState, type Transport } from '../extractors/google/src/gmail/mail.ts';
+import { type BackgroundRules, GmailMail, parseState, SEND_LIMITS, type Transport } from '../extractors/google/src/gmail/mail.ts';
 import { parseMessage } from '../extractors/google/src/gmail/mime.ts';
 import { bvRequest, categoryOf, fdThreadsRequest, flagsOf, isUserLabel, LayoutError, labelsOf, notAMessage, operatorsOnly, parseBv, parseFd, parseS, readOnlySync, sRequest } from '../extractors/google/src/gmail/protocol.ts';
 import { checkOutgoing } from '../extractors/google/src/gmail/send.ts';
@@ -1023,4 +1023,33 @@ test("checkOutgoing: addresses, body, files and sizes checked before anything re
   writeFileSync(join(tmp, 'x.txt'), 'the account\'s own');
   expect(() => checkOutgoing({ ...ok, attachments: [{ filename: 'a', mime: 'text/plain', path: join(tmp, 'x.txt') }] } as any, tmp)).toThrow(expect.objectContaining({ status: 403 }));
   expect(checkOutgoing({ ...ok, subject: 'a\r\nBcc: x@example.org' } as any, tmp).subject).toBe('a Bcc: x@example.org');
+});
+
+test("a send Gmail refuses after taking its draft: 422, the draft left in Drafts, the original not marked replied; a send late in its op's time is not started", async () => {
+  const mail = mailOf();
+  const orig = fake.gmail.messages.find((x) => !x.pending && !x.localId && x.labels.includes('^i') && !x.labels.includes('^io_re'))!;
+  const me = { email: fake.gmail.me.email, name: null };
+  const n = fake.gmail.sent.length;
+  fake.gmail.refuseSends(1);
+  await expect(mail.send({ to: [{ email: orig.from.email, name: null }], cc: [], bcc: [], subject: 'Re', text: `Not sent ${MARK}`, replyTo: orig.id, files: [] }, me)).rejects.toMatchObject({ status: 422, callCode: 'refused', message: expect.stringContaining('Drafts') });
+  expect(fake.gmail.sent.length).toBe(n);
+  expect(orig.labels).not.toContain('^io_re');
+  const draft = fake.gmail.messages.find((x) => x.body === `Not sent ${MARK}`)!;
+  expect(draft.labels).toEqual(['^all', '^r']);
+  // Past the time a draft may still be started: 503, nothing written.
+  const was = { ...SEND_LIMITS };
+  const writes = fake.gmail.writes;
+  try {
+    SEND_LIMITS.draft = -1;
+    await expect(mail.send({ to: [{ email: 'ann@example.org', name: null }], cc: [], bcc: [], subject: 's', text: 't', files: [] }, me)).rejects.toMatchObject({ status: 503 });
+    expect(fake.gmail.writes).toBe(writes);
+    SEND_LIMITS.draft = was.draft;
+    SEND_LIMITS.send = -1;
+    await expect(mail.send({ to: [{ email: 'ann@example.org', name: null }], cc: [], bcc: [], subject: 's', text: `Late ${MARK}`, files: [] }, me)).rejects.toMatchObject({ status: 502, message: expect.stringContaining('Drafts') });
+    expect(fake.gmail.sent.length).toBe(n);
+  } finally {
+    Object.assign(SEND_LIMITS, was);
+  }
+  await expect(mail.flag({ ids: [orig.id], seen: 'yes' })).rejects.toMatchObject({ status: 400 });
+  await expect(mail.flag({ ids: undefined, seen: true })).rejects.toMatchObject({ status: 400 });
 });

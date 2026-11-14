@@ -114,7 +114,7 @@ type GmailCmd = { page?: Role } & (
   // Writing (src/gmail/write.ts): one of the page's own kinds of write, and an attachment's upload in pieces.
   | { kind: 'gmail.write'; body: unknown }
   | { kind: 'gmail.uploadChunk'; token?: string; base64: string }
-  | { kind: 'gmail.upload'; token: string; name: string; mime: string; meta: string }
+  | { kind: 'gmail.upload'; token: string; size: number; name: string; mime: string; meta: string }
 );
 type PageCmd = Gfetch | GmailCmd;
 /** What gmail.shapes answers: per method and path template, a count and up to 6 samples of shapes (no values). */
@@ -423,7 +423,7 @@ function details(): Record<string, string | number | boolean | null | string[]> 
     bvLayout: gmail?.evidence.bvLayout ?? null,
     // Writing: label changes and sending, as the page makes them (src/gmail/write.ts). Spam is not written.
     writes: mailOn ? ['seen', 'flagged', 'move', 'trash'] : [],
-    canSend: !!sendNote() === false,
+    canSend: sendNote() === null,
     sendNote: sendNote(),
     ...(mailOn ? { sendCap: SEND_CAP, maxRecipients: MAX_RECIPIENTS } : {}),
     gmailWatch: !mailOn ? null : !pollMs ? 'off' : !watchOn ? 'starts with the first mail call' : watchInfo.error ? `failed at ${hhmm(watchInfo.at)}: ${watchInfo.error}` : watchInfo.at ? `looked at ${hhmm(watchInfo.at)}` : 'starting',
@@ -1005,6 +1005,19 @@ async function collectShapes(): Promise<number> {
 /** What the hook said a non-mail answer reads as: only its two words pass. */
 const pageKindOf = (v: unknown): PageKind | null => (v === 'signin' || v === 'challenge' ? v : null);
 
+/**
+ * A write's failure in the page, as what it says of Gmail: 503 only when nothing can have reached Gmail (the browser
+ * not attached); a page that did not answer in time may have made it (504); the hook refusing the body, or not knowing
+ * the command (an older extension), is ours (500), and trying again will not help.
+ */
+function writeError(e: unknown): StatusError {
+  const err = e as StatusError;
+  const msg = String(err?.message ?? e);
+  if (/not attached/.test(msg)) return err instanceof StatusError ? err : new StatusError(msg, 503);
+  if (/did not answer/.test(msg)) return new StatusError(`${msg}; the change may have been made`, 504);
+  return new StatusError(`the Gmail page would not make it (${msg.slice(0, 160)})`, 500);
+}
+
 /** The Gmail tab, as GmailMail needs it: every call through the hook in that page (docs/google.md, "Gmail mail"). */
 const gmailTransport: Transport = {
   async info() {
@@ -1035,8 +1048,12 @@ const gmailTransport: Transport = {
     }
   },
   async write(body) {
-    const r = await pageRequest<SyncAnswer>('gmail', { kind: 'gmail.write', body });
-    return { ...r, page: pageKindOf(r?.page) };
+    try {
+      const r = await pageRequest<SyncAnswer>('gmail', { kind: 'gmail.write', body });
+      return { ...r, page: pageKindOf(r?.page) };
+    } catch (e) {
+      throw writeError(e);
+    }
   },
   async upload(file, meta) {
     let token: string | undefined;
@@ -1046,7 +1063,9 @@ const gmailTransport: Transport = {
       if (!token) return { status: 0, error: 'the page did not take the file' };
       if (!file.bytes.length) break;
     }
-    const r = await pageRequest<{ status?: number; token?: unknown; error?: string; page?: unknown }>('gmail', { kind: 'gmail.upload', token: token!, name: file.name, mime: file.mime, meta }, RAW_ANSWER_MS);
+    const r = await pageRequest<{ status?: number; token?: unknown; error?: string; page?: unknown }>('gmail', { kind: 'gmail.upload', token: token!, size: file.bytes.length, name: file.name, mime: file.mime, meta }, RAW_ANSWER_MS).catch((e) => {
+      throw writeError(e);
+    });
     return { status: typeof r?.status === 'number' ? r.status : 0, token: typeof r?.token === 'string' ? r.token : undefined, error: r?.error, page: pageKindOf(r?.page) };
   },
 };

@@ -114,6 +114,12 @@ const BV_POINT_GAP = 1_000_000n;
 /** Label names that could not be had are not asked for again (unless a call needs them) for this long. */
 const NAMES_RETRY = 60_000;
 
+/**
+ * How long into mail.send (whose op time is 120 s) each step may still start: the uploads, the draft, the send. Past
+ * them it stops (nothing sent, or the draft left in Drafts) rather than send after the caller gave up.
+ */
+export const SEND_LIMITS = { upload: 60_000, draft: 80_000, send: 90_000 };
+
 /** Which lane a call goes in: the foreground (default) or the background (`background: true`). */
 export type LaneName = 'fg' | 'bg';
 type Kind = 'list' | 'message';
@@ -1161,6 +1167,7 @@ export class GmailMail {
     if (unread) await this.guardCheck(id, lane);
     const p = await parseMessage(raw);
     const k = await this.locate(id, p.messageId, lane);
+    if (k && p.messageId && k.messageId !== p.messageId) this.keep(id, { ...k, messageId: p.messageId });
     await this.ensureNames(false, lane);
     const labels = k?.labels ?? [];
     const flags: MailFlags = k ? flagsOf(labels) : { seen: true, flagged: false, answered: false, draft: false };
@@ -1301,7 +1308,9 @@ export class GmailMail {
    * Gmail, 502 when it may have (label changes are harmless to send again).
    */
   private async writeCall(changes: unknown[], sending = false): Promise<{ acks: Map<number, number>; changed: unknown }> {
-    const history = this.history ?? (await this.t.info()).history;
+    // The newest sync point known, ours or the page's: Gmail answers a write with what changed since it.
+    const page = (await this.t.info()).history;
+    const history = this.history && page ? (BigInt(this.history) > BigInt(page) ? this.history : page) : (this.history ?? page);
     const body = writeRequest(changes, { history, now: this.now(), sending });
     const r = await this.paced('fg', 'list', () => this.t.write(body));
     const what = ENDPOINT_NAMES.write;
@@ -1389,6 +1398,8 @@ export class GmailMail {
   /** mail.flag: read or unread, starred or not, as the page's toolbar marks them. `answered` is Gmail's own to set. */
   async flag(input: { ids: unknown; threadIds?: unknown; seen?: unknown; flagged?: unknown; answered?: unknown }): Promise<MailWriteAnswer> {
     if (input.answered !== undefined) throw new StatusError('Gmail marks a message answered itself when a reply to it is sent; mail.flag cannot set it', 400);
+    for (const k of ['seen', 'flagged'] as const) if (input[k] !== undefined && typeof input[k] !== 'boolean') throw new StatusError(`${k} is true or false`, 400);
+    if (!Array.isArray(input.ids)) throw new StatusError('ids is a list of 1 to 1000 message ids', 400);
     const edits: LabelEdit[] = [];
     if (input.seen === true) edits.push(EDITS.read);
     else if (input.seen === false) edits.push(EDITS.unread);
@@ -1434,6 +1445,10 @@ export class GmailMail {
    */
   async send(m: OutgoingChecked, me: { email: string; name: string | null }): Promise<{ messageId: string; sentId: string | null }> {
     if (m.from && m.from.toLowerCase() !== me.email.toLowerCase()) throw new StatusError(`${m.from} is not an address this Gmail account sends as`, 422, 'from');
+    // The caller gives up at its op's time (mail.send: 120 s); nothing new starts past these, so a send the caller
+    // heard as timed out is not made afterwards.
+    const t0 = Date.now();
+    const late = (ms: number) => Date.now() - t0 > ms;
     let reply: { thread: string; message: string } | null = null;
     let inReplyTo: string | null = null;
     if (m.replyTo) {
@@ -1441,14 +1456,16 @@ export class GmailMail {
       if (k?.thread && k.messageId) [reply, inReplyTo] = [{ thread: k.thread, message: m.replyTo }, k.messageId];
       else {
         const orig = await this.get({ id: m.replyTo });
-        inReplyTo = orig.messageId;
-        if (orig.threadId) reply = { thread: orig.threadId, message: m.replyTo };
+        const thread = orig.threadId ?? this.known.get(m.replyTo)?.thread ?? null;
+        if (!thread) throw new StatusError("the thread of the message answered could not be found in Gmail; nothing was sent", 502);
+        [reply, inReplyTo] = [{ thread, message: m.replyTo }, orig.messageId];
       }
     }
     const msgId = newMessageId();
     const recipients = [...m.to, ...m.cc, ...m.bcc].map((a) => a.email);
     const files: DraftFile[] = [];
     for (const [i, f] of m.files.entries()) {
+      if (late(SEND_LIMITS.upload)) throw new StatusError('the files took too long to hand to Gmail; nothing was sent', 503, 'unavailable');
       const r = await this.paced('fg', 'message', () => this.t.upload({ name: f.filename, mime: f.mime, bytes: f.bytes }, uploadMeta(msgId, me.email, recipients)));
       if (r.status !== 200 || typeof r.token !== 'string' || !UPLOAD_TOKEN.test(r.token)) {
         const why = r.page ? `the answer is ${r.page === 'signin' ? 'a sign-in page' : 'a verification page'}` : r.status === 0 ? String(r.error ?? 'the page could not make the call').slice(0, 80) : `answered ${r.status}${r.status === 200 ? ' with no token' : ''}`;
@@ -1460,32 +1477,50 @@ export class GmailMail {
     }
     const w: Writing = { msgId, from: { email: me.email, name: me.name }, to: m.to, cc: m.cc, bcc: m.bcc, subject: m.subject, html: m.html ?? htmlOfText(m.text ?? ''), files, inReplyTo, session: newSession(msgId) };
     const thread = newThreadId();
+    if (late(SEND_LIMITS.draft)) throw new StatusError('it took too long to get this far; nothing was sent', 503, 'unavailable');
     const draftOp = ++this.op;
-    const d = await this.writeCall([draftChange(draftOp, w, this.now(), reply, thread)]);
+    let d: { acks: Map<number, number>; changed: unknown };
+    try {
+      d = await this.writeCall([draftChange(draftOp, w, this.now(), reply, thread)]);
+    } catch (e) {
+      // Nothing was sent either way: 503 (nothing reached Gmail) and 500 (refused in the page) stand; else a draft may be saved.
+      const err = e as StatusError;
+      if (err.status === 503 || err.status === 500) throw err;
+      throw new StatusError(`${err.message}. Nothing was sent, though a draft of it may be in Gmail's Drafts`, 502);
+    }
     const ds = d.acks.get(draftOp);
-    if (ds !== 0) throw new StatusError(ds === undefined ? "Gmail's answer did not say whether it saved the draft; nothing was sent" : `Gmail did not take the message (status ${ds}); nothing was sent`, ds === undefined ? 502 : 422, ds === undefined ? undefined : 'refused');
+    if (ds !== 0) throw new StatusError(ds === undefined ? "Gmail's answer did not say whether it saved the draft; look in Drafts" : `Gmail did not take the message (status ${ds}); nothing was sent`, ds === undefined ? 502 : 422, ds === undefined ? undefined : 'refused');
+    if (late(SEND_LIMITS.send)) throw new StatusError("it took too long to get this far; it was not sent, and a draft of it is in Gmail's Drafts", 502);
     const sendOp = ++this.op;
-    const changes = [sendChange(sendOp, w, this.now(), reply, thread)];
-    if (reply) changes.push(labelChange(++this.op, reply.thread, [reply.message], EDITS.replied));
     let s: { acks: Map<number, number>; changed: unknown };
     try {
-      s = await this.writeCall(changes, true);
+      s = await this.writeCall([sendChange(sendOp, w, this.now(), reply, thread)], true);
     } catch (e) {
+      // The send may have gone (504, as a caller hears a send it may not resend), unless the page refused it outright.
       const err = e as StatusError;
-      throw new StatusError(`${err.message}. A draft of it is in Gmail's Drafts; look in Sent before sending it again`, err.status === 503 ? 502 : (err.status ?? 502));
+      if (err.status === 500) throw new StatusError(`${err.message}. It was not sent; a draft of it is in Gmail's Drafts`, 500);
+      throw new StatusError(`${err.message}. It may have been sent: look in Sent before sending it again (a draft of it may be in Drafts)`, 504, 'timeout');
     }
     const ss = s.acks.get(sendOp);
-    if (ss === undefined) throw new StatusError("Gmail's answer did not say whether it sent the message; look in Sent before sending it again", 502);
+    if (ss === undefined) throw new StatusError("Gmail's answer did not say whether it sent the message; look in Sent before sending it again", 504, 'timeout');
     if (ss !== 0) throw new StatusError(`Gmail did not send it (status ${ss}); it is in Drafts`, 422, 'refused');
     const rec = sentRecord(s.changed, msgId);
     this.o.log('info', `gmail: sent a message to ${recipients.length} recipient${recipients.length === 1 ? '' : 's'}${files.length ? ` with ${files.length} file${files.length === 1 ? '' : 's'}` : ''}${reply ? ', a reply' : ''}${rec?.messageId ? '' : '; its Message-ID was not in the answer'}`);
-    if (reply && s.acks.get(sendOp + 1) === 0) this.applied(reply.message, EDITS.replied);
+    // Only once it went: the original marked replied, as the page does. Sent either way; a failure here is only logged.
+    if (reply) {
+      const op = ++this.op;
+      await this.writeCall([labelChange(op, reply.thread, [reply.message], EDITS.replied)])
+        .then((r) => r.acks.get(op) === 0 && this.applied(reply!.message, EDITS.replied))
+        .catch((e) => this.o.log('warn', 'gmail: the message answered was not marked replied', String((e as Error).message ?? e).slice(0, 120)));
+    }
     return { messageId: rec?.messageId ?? '', sentId: rec?.id ?? null };
   }
 
   layer(): { name: string; state: 'ok' | 'waiting' | 'failed'; note: string } {
     const name = 'Gmail protocol';
-    const failed = ENDPOINTS.filter((e) => this.fp[e].last === false);
+    // A write or an upload that failed counts for 15 minutes (they are rare: a read heals its endpoint on the next call).
+    const now = this.now();
+    const failed = ENDPOINTS.filter((e) => this.fp[e].last === false && !((e === 'write' || e === 'upload') && now - this.fp[e].at > 15 * 60_000));
     if (failed.length) return { name, state: 'failed', note: failed.map((e) => `${e}: ${this.fp[e].note}`).join('; ') };
     const ok = ENDPOINTS.filter((e) => this.fp[e].last === true);
     if (ok.length) return { name, state: 'ok', note: `${ok.join(', ')} answered as expected${this.evidence.bvLayout ? ` (bv in its ${this.evidence.bvLayout} layout)` : ''}` };

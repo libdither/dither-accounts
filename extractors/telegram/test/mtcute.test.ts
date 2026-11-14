@@ -7,6 +7,7 @@ import { afterAll, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Long } from '@mtcute/bun';
 import { MtcuteBackend, updatesIn } from '../src/mtcute.ts';
 import { clientProfile, ownProfile, TELEGRAM_DESKTOP } from '../src/profile.ts';
 
@@ -71,3 +72,28 @@ test("on Telegram Desktop's api_id, every initConnection field is Telegram Deskt
   expect(JSON.stringify(initSent(own))).not.toMatch(/mtcute|0\.32/);
   await own.close();
 });
+
+// mtcute 0.32.7 (highlevel/methods/files/download-iterable.js) asks for a file's parts with maxRetryCount Infinity and
+// floodSleepThreshold Infinity: a DC that never answers, or a file Telegram keeps answering FLOOD_WAIT or -503 for,
+// held fetchMedia forever, and the manager gave up on it after 120 s with "no answer to fetchMedia".
+test('a download no part of which arrives fails after the stall time, not never', async () => {
+  const d = mkdtempSync(join(tmpdir(), 'dacc-tgdl-'));
+  const b = new MtcuteBackend({ apiId: 1, apiHash: '0'.repeat(32), dir: d, testMode: true, initConnection: ownProfile('test'), log: () => {}, logLevel: 0, downloadStallMs: 1500 });
+  try {
+    const client = (b as unknown as { client: { importSession(s: unknown, f?: boolean): Promise<void> } }).client;
+    // A DC on a port nothing listens on: every attempt to reach it fails, and mtcute keeps trying.
+    const dc = { id: 2, ipAddress: '127.0.0.1', port: 1, testMode: true };
+    await client.importSession({ primaryDcs: { main: dc, media: dc }, authKey: new Uint8Array(256).fill(7), self: { userId: 4242, isBot: false, isPremium: false, usernames: [] } }, true);
+    const started = Date.now();
+    const location = { _: 'inputDocumentFileLocation', id: Long.fromInt(1), accessHash: Long.fromInt(2), fileReference: new Uint8Array(0), thumbSize: '' } as const;
+    const err = await Promise.race([
+      b.download(location as never, { dcId: 2, size: 1 << 20 }).then(() => null, (e: Error) => e),
+      Bun.sleep(10_000).then(() => new Error('still waiting after 10 s')),
+    ]);
+    expect(err?.message).toBe('Telegram sent no more of the file for 2 s (from DC 2)');
+    expect(Date.now() - started).toBeLessThan(5_000);
+  } finally {
+    await b.close().catch(() => {});
+    rmSync(d, { recursive: true, force: true });
+  }
+}, 15_000);

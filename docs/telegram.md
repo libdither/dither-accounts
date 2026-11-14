@@ -321,7 +321,8 @@ Telegram's apps), `pin`, `role` (admins given and taken), `identity`, `conversat
 Commands: `send` (Markdown to entities, replies, into a topic, one file as a photo or document, several as an
 album), `edit`, `redact` (deleted for everyone), `react` (one reaction each without Premium, as REACTION_RULES says),
 `reactionContext`, `reactors`, `markRead` (topics too), `typing`, `history` (paged back by date), `fetchMedia` (up to
-64 MB), `openDirect` (@username, +phone, or a user id it knows; a public group's @name gives that group),
+64 MB; a download that gets no part of the file for 20 s fails rather than waiting on), `openDirect` (@username,
++phone, or a user id it knows; a public group's @name gives that group),
 `forward` (with a note first, as Telegram's apps send one; a chat that forbids forwarding answers with a fallback),
 `about` and `configure` (name, description, slow mode, join requests on public groups, the invite link, pins, a
 topic's name), `profile` (bio, username, phone where shown, groups in common, birthday; for you, your contacts).

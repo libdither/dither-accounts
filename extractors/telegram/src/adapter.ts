@@ -63,6 +63,7 @@ import {
   usernameOf,
 } from './mapping.ts';
 import { FloodError, Pacer, type PacerOptions } from './pacer.ts';
+import { TELEGRAM_DESKTOP } from './profile.ts';
 import { type ApprovedSession, approvedSession, approveRefusal, bySessionOrder, HASH_UNKNOWN, isTooFresh, NOT_ENDED, NOT_SIGNED_IN, parseLoginLink, parseSessionHash, SessionError, type SessionInfo, sessionInfo, tooFreshMessage } from './sessions.ts';
 import { inDates, SEARCH_PAGE, SEARCH_REQUESTS, type SearchCommand, searchDates, searchFilter, searchWords } from './search.ts';
 import { State } from './state.ts';
@@ -82,8 +83,8 @@ export interface Host {
 }
 
 export interface AdapterOptions {
-  /** A new client for these credentials (after a sign-out, a fresh one); 'desktop': as Telegram Desktop, for its key. */
-  backend: (creds: { apiId: number; apiHash: string }, profile?: 'desktop') => TgBackend;
+  /** A new client for these credentials (after a sign-out, a fresh one); on TELEGRAM_DESKTOP's, it says it is Telegram Desktop. */
+  backend: (creds: { apiId: number; apiHash: string }) => TgBackend;
   /** Signed in through Telegram Desktop in the account's sandbox. */
   desktop?: DesktopOptions;
   /** The backend is the fake (status says so). */
@@ -103,13 +104,8 @@ export interface AdapterOptions {
   relations?: { everyMs?: number; soonMs?: number; gapMs?: number };
 }
 
-/**
- * Telegram Desktop's own app, as nixpkgs and Telegram's Linux packages build it (TDESKTOP_API_ID/HASH, published in
- * both). Telegram's terms ask every client for an app of its own, so a QR sign-in uses it only when the account asks
- * (config.app = "desktop"), or when it already signed in with it before that was a choice (a session and no app of
- * its own). The sign-in through Telegram Desktop itself (signIn = "desktop") is that app, so it always does.
- */
-export const TELEGRAM_DESKTOP = { apiId: 611335, apiHash: 'd524b414d21f4d37f08684c1df41ac9c' } as const;
+/** Telegram Desktop's own app (profile.ts says when a session uses it, and how it then describes itself). */
+export { TELEGRAM_DESKTOP };
 
 export interface DesktopOptions {
   session: DesktopHost;
@@ -344,7 +340,7 @@ export class TelegramAdapter {
         await this.backend.start(null).catch(() => null);
         return this.awaitDesktop();
       }
-      this.backend ??= this.opts.backend({ ...TELEGRAM_DESKTOP }, 'desktop');
+      this.backend ??= this.opts.backend({ ...TELEGRAM_DESKTOP });
       session = await d.sharedSession(s.key);
     }
     this.backend ??= this.opts.backend(creds);
@@ -779,7 +775,7 @@ export class TelegramAdapter {
   private async importShared(key: DesktopKey) {
     const d = this.opts.desktop!;
     await this.backend?.close().catch(() => {});
-    this.backend = this.opts.backend({ ...TELEGRAM_DESKTOP }, 'desktop');
+    this.backend = this.opts.backend({ ...TELEGRAM_DESKTOP });
     const user = await this.backend.start(await d.sharedSession(key));
     if (!user) throw new Error("Telegram Desktop's session is not signed in");
     const { session: _s, desktopEnded: _e, ...rest } = this.host.secret();

@@ -15,8 +15,9 @@ links and downloads ([below](#signed-in-through-telegram-desktop)).
    and App api_hash. One without the other is refused. Or choose **App** `desktop` to use **Telegram Desktop's**
    instead (611335, the one nixpkgs and Telegram's own Linux packages build Telegram Desktop with, `TDESKTOP_API_ID`,
    published in both): nothing to make first, but it is one client presenting another's app, which Telegram may
-   hold against the account. An account that signed in with Telegram Desktop's app before this was a choice (a session
-   and neither api_id nor api_hash) keeps it.
+   hold against the account. On that app the session then describes itself as Telegram Desktop too
+   ([below](#what-a-session-says-it-is)). An account that signed in with Telegram Desktop's app before this was a
+   choice (a session and neither api_id nor api_hash) keeps it.
 2. On the manager's page, **Add account → Telegram**: your app's api_id and api_hash, or App `desktop`. Leave
    "Telegram's test servers" empty (`yes` is for a test account on the test DCs, below).
 3. The pane shows a QR code. On your phone: **Telegram → Settings → Devices → Link Desktop Device**, and scan it.
@@ -71,7 +72,7 @@ What it refuses, in words an app can show as they are:
   token: two messages, both saying to scan the code the other device shows;
 - `endSession` from a session **less than a day old** (`FRESH_RESET_AUTHORISATION_FORBIDDEN`): Telegram lets only a
   session that has been signed in for a day end others. The message names the session that is too new (this
-  account's own, e.g. "Telegram Desktop on dither-accounts, signed in 3 hours ago") and about when it can; until then,
+  account's own, e.g. "Telegram Desktop on Desktop, signed in 3 hours ago") and about when it can; until then,
   end it from an older device. Should Telegram ever refuse `approveLogin` the same way (`SESSION_TOO_FRESH_…`), the
   message is the same, for approving;
 - a hash with no session behind it (`HASH_INVALID`): it may have ended already; list the sessions again;
@@ -115,11 +116,12 @@ itself, so it uses its app).
 3. As soon as Telegram Desktop's tdata says it is signed in, the account makes **a session of its own** from it: this
    account's client asks Telegram for a login token (`auth.exportLoginToken`, as for a QR code), and a short-lived
    client on Telegram Desktop's key accepts it (`auth.acceptLoginToken`), as your phone would by scanning. That client
-   presents itself exactly as Telegram Desktop does from the sandbox (its api_id, "Desktop", "Linux X11 glibc 2.44",
-   "7.2.9", lang pack `tdesktop`), makes that one call without updates, and closes without signing anything out.
+   presents itself exactly as Telegram Desktop does from the sandbox ([below](#what-a-session-says-it-is)), makes that
+   one call without updates, and closes without signing anything out.
    If the account has a two-step password, Telegram asks the new session for it too: the pane's password form, once.
-4. Online. The two sessions are separate entries in **Settings → Devices** ("dither-accounts", and Telegram Desktop),
-   each revocable alone; they never share an auth key, so there is no fight over updates.
+4. Online. The two sessions are separate entries in **Settings → Devices**, each revocable alone; they never share an
+   auth key, so there is no fight over updates. Both are on Telegram Desktop's app, so both describe themselves as
+   Telegram Desktop ("Desktop", the same system and version): the newer one is this account's.
 
 **If Telegram refuses `acceptLoginToken`** (a session younger than a day may not be allowed to sign in others; the
 error is shown), the account **shares Telegram Desktop's key** instead: its own MTProto session id on the same
@@ -132,14 +134,14 @@ the action `importDesktop {"mode": "own" | "shared"}` makes one now.
 The chain: **sandbox → Telegram Desktop → signed in (Telegram Desktop) → session imported → connection → updates**.
 
 **Signing out in Telegram Desktop** (in the live view): with its own session, the account carries on; the third link
-turns grey ("signed out in the live view; this account keeps its own session"), and a new sign-in there is not
-imported unless this account has no session. With the shared key, the account's session ends with Telegram Desktop's,
-and it waits for you to sign in there again. **Ending this account's session** (logout, or removing "dither-accounts"
-under Settings → Devices) does not make another from the same Telegram Desktop sign-in by itself: `importDesktop`
-does, or a new sign-in there. With the shared key, `logout` signs out that key, which is Telegram Desktop's: it goes
-back to its sign-in screen too. If Telegram Desktop is signed in as another account than this one, the chain says so
-and this account stays who it was. Closing Telegram Desktop's window quits it (there is no tray); it is started again
-within seconds (backing off to a minute if it keeps exiting), and `restartDesktop` restarts it.
+turns grey ("signed out in the live view; this account keeps its own session"), and a new sign-in there is not imported
+unless this account has no session. With the shared key, the account's session ends with Telegram Desktop's, and it
+waits for you to sign in there again. **Ending this account's session** (logout, or removing its entry, the newer
+"Desktop" one, under Settings → Devices) does not make another from the same Telegram Desktop sign-in by itself:
+`importDesktop` does, or a new sign-in there. With the shared key, `logout` signs out that key, which is Telegram
+Desktop's: it goes back to its sign-in screen too. If Telegram Desktop is signed in as another account than this one,
+the chain says so and this account stays who it was. Closing Telegram Desktop's window quits it (there is no tray); it
+is started again within seconds (backing off to a minute if it keeps exiting), and `restartDesktop` restarts it.
 
 **A local passcode** (Telegram Desktop → Settings → Privacy → Local passcode) encrypts its tdata: the pane asks for it
 (`desktopPasscode {"passcode": "…"}`), which is used in memory to read the session and never written. Or turn it off.
@@ -158,6 +160,48 @@ Actions here: `importDesktop {mode?}`, `desktopPasscode {passcode}`, `restartDes
 session's two-step password), `logout`, `resync`, `status`, and `approveLogin`, `sessions`, `endSession` as above (with
 the shared key, "this account's own session" is Telegram Desktop's). `refreshLink`, `sendCode` and `signIn` say to use
 the live view.
+
+## What a session says it is
+
+Every MTProto client describes itself once per connection, in `initConnection`, and Telegram keeps that description
+with the session: it is what **Settings → Devices** lists. The fields are the device model, the system version, the
+app version, the system's language, the language pack, the app's language and a JSON object of extra params; the
+app's name and platform come from the api_id. One definition decides it, `extractors/telegram/src/profile.ts`:
+
+- **On Telegram Desktop's api_id (611335), always as Telegram Desktop**: QR or phone sign-ins with App `desktop`, the
+  account's own session from the sign-in through Telegram Desktop, the short-lived client that accepts its login
+  token, and the shared key. The fields are what Telegram Desktop itself sends from inside the sandbox (its
+  `SessionPrivate` in `mtproto/session_private.cpp` and lib_base's `base_info_linux.cpp`): device model `Desktop`
+  (there is no `/sys/class/dmi` to name the machine), system `Linux X11 glibc <version>` (no desktop environment or
+  window manager is set), app version its own (`7.2.9`; on ARM it adds the architecture), system language `en-US` (the
+  sandbox's `LANG`), language pack `tdesktop`, language `en`, and params with only `tz_offset` (seconds east of UTC,
+  rounded to a quarter hour, as it rounds it). The version is read from the Telegram Desktop the sandbox runs (its
+  nix store path), the glibc from that binary's loader; where there is no binary (App `desktop` on a manager without
+  `DITHER_TELEGRAM_DESKTOP=1`) the version is the one `tdata.ts` is written for (`TDESKTOP_VERSION`) and the glibc is
+  the one the extractor runs on. A test (`test/profile.test.ts`) fails when the Telegram Desktop on the machine and
+  `TDESKTOP_VERSION` differ.
+  **Why**: Telegram Desktop's app id describing itself as "dither-accounts 0.1.0" is a mismatch no real Telegram
+  Desktop makes, easy for Telegram to notice. Matched, the session looks like one more Telegram Desktop.
+- **On any other api_id (your own app)**: what it is, honestly: device model the account's `deviceName` (default
+  "dither-accounts"), app version `0.1.0`, system `Linux`, languages `en`, no language pack (those are for official
+  apps), no params.
+
+Nothing else in the request names this project or mtcute: each of mtcute's own defaults ("mtcute on Linux", its
+version) is replaced. What still differs from Telegram Desktop is below the description: the API layer the request is
+wrapped in is mtcute's (232) where Telegram Desktop 7.2.9 says 229 (its `scheme/api.tl`), and the transport and timing
+are mtcute's. The layer can't simply be lowered: mtcute reads answers in its own layer's shapes.
+
+**Existing sessions change on their next connect.** Telegram's docs say `initConnection` must be sent after each
+restart and "in case the value of one of the parameters could have changed", and that the client's information is
+saved with the authorization key ([Saving client info](https://core.telegram.org/api/invoking#saving-client-info));
+mtcute sends it again on every new connection. Telegram Desktop's own "rename this device" works exactly that way: it
+re-sends `initConnection` on the same key with the new device model (`reInitConnection` in
+[`mtproto/mtp_instance.cpp`](https://github.com/telegramdesktop/tdesktop/blob/v7.2.9/Telegram/SourceFiles/mtproto/mtp_instance.cpp#L337-L345)),
+and so does Telegram for macOS since late 2026
+([telegram-macos #157](https://github.com/TelegramMessenger/telegram-macos/pull/157)). So a session made before this
+change shows "Desktop … 7.2.9" instead of "dither-accounts 0.1.0" once the extractor restarts, without signing in again
+(fairly sure: that is how Telegram's own apps rename a device, though it has not been watched on a real account here).
+Its sign-in date stays the old one, and Telegram already saw the old description: this hides nothing from before.
 
 ## What it stores
 
@@ -221,13 +265,13 @@ Nothing of this has met a real account yet. When you try it:
 4. Within seconds the chain should read all green, with `session imported` "its own session (auth.acceptLoginToken)".
    If it says "shares Telegram Desktop's session (auth.acceptLoginToken refused: …)", note the error: that is the one
    thing only a real account can tell. Try `importDesktop {"mode": "own"}` again a day later.
-5. On your phone, Settings → Devices should list Telegram Desktop ("Desktop", Linux) and "dither-accounts" separately,
-   and Telegram Desktop's entry should still say Telegram Desktop.
+5. On your phone, Settings → Devices should list two Telegram Desktop entries ("Desktop", Linux X11, the same version),
+   the newer one this account's, and neither should mention dither-accounts or mtcute.
 6. Send yourself a message from the phone while Telegram Desktop shows another chat: an app with `notifications`
    should get `notify.new`; `notify.markRead` should mark it read on the phone.
 7. Open a link in a message in the live view: `desktop.link`, nothing opens. Download a file: `desktop.download`.
-8. Sign out in the live view: the account should stay online (own session). Remove "dither-accounts" on the phone:
-   the account should wait, and not come back by itself.
+8. Sign out in the live view: the account should stay online (own session). Remove this account's (newer) entry on the
+   phone: the account should wait, and not come back by itself.
 
 What only that can show: whether Telegram lets a fresh Telegram Desktop session accept a login token (and how soon);
 whether it treats the short-lived client on Telegram Desktop's key as Telegram Desktop; with the shared key, how many

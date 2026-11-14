@@ -8,12 +8,13 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MtcuteBackend, updatesIn } from '../src/mtcute.ts';
+import { clientProfile, ownProfile, TELEGRAM_DESKTOP } from '../src/profile.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'dacc-tgmt-'));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 test('the session string goes in and out whole; telegram.sqlite never holds the auth key', async () => {
-  const b = new MtcuteBackend({ apiId: 1, apiHash: '0'.repeat(32), dir, testMode: true, deviceModel: 'test', appVersion: '0', log: () => {} });
+  const b = new MtcuteBackend({ apiId: 1, apiHash: '0'.repeat(32), dir, testMode: true, initConnection: ownProfile('test'), log: () => {} });
   const client = (b as unknown as { client: { importSession(s: unknown, f?: boolean): Promise<void> } }).client;
   const authKey = new Uint8Array(256).map((_, i) => (i * 37 + 11) & 0xff);
   const dc = { id: 2, ipAddress: '127.0.0.1', port: 1, testMode: true };
@@ -31,7 +32,7 @@ test('the session string goes in and out whole; telegram.sqlite never holds the 
   for (const t of tables.filter((n) => /auth/i.test(n))) expect((db.query(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n).toBe(0);
   db.close();
   // A second client on the same directory starts from the string alone, and exports the same.
-  const again = new MtcuteBackend({ apiId: 1, apiHash: '0'.repeat(32), dir, testMode: true, deviceModel: 'test', appVersion: '0', log: () => {} });
+  const again = new MtcuteBackend({ apiId: 1, apiHash: '0'.repeat(32), dir, testMode: true, initConnection: ownProfile('test'), log: () => {} });
   await (again as unknown as { client: { importSession(s: string, f?: boolean): Promise<void> } }).client.importSession(session, true);
   expect(await again.exportSession()).toBe(session);
   expect(again.info()).toMatchObject({ library: 'mtcute 0.32', layer: 232, testMode: true });
@@ -49,4 +50,24 @@ test("the updates inside an answer are mtcute's to count: bare, a join's, and me
   expect(updatesIn({ _: 'messages.invitedUsers', updates: { _: 'updateShortSentMessage' }, missingInvitees: [] })).toBeNull();
   expect(updatesIn({ _: 'updateShortSentMessage', pts: 1, ptsCount: 1 })).toBeNull();
   expect(updatesIn(true)).toBeNull();
+});
+
+/** The initConnection mtcute will wrap the first call in: its defaults, then ours over them. */
+function initSent(b: MtcuteBackend): Record<string, unknown> {
+  return (b as unknown as { client: { _client: { mt: { network: { _initConnectionParams: Record<string, unknown> } } } } }).client._client.mt.network._initConnectionParams;
+}
+
+test("on Telegram Desktop's api_id, every initConnection field is Telegram Desktop's; on your own app, nothing says mtcute", async () => {
+  const desk = new MtcuteBackend({ ...TELEGRAM_DESKTOP, dir: mkdtempSync(join(tmpdir(), 'dacc-tgmt-')), testMode: true, initConnection: clientProfile(TELEGRAM_DESKTOP.apiId, { deviceName: 'my laptop' }), log: () => {} });
+  const sent = initSent(desk);
+  expect(sent).toMatchObject({ _: 'initConnection', apiId: 611335, deviceModel: 'Desktop', langPack: 'tdesktop', systemLangCode: 'en-US', langCode: 'en' });
+  expect(String(sent.systemVersion)).toMatch(/^Linux X11( glibc \d+\.\d+)?$/);
+  expect(Object.keys(sent).sort()).toEqual(['_', 'apiId', 'appVersion', 'deviceModel', 'langCode', 'langPack', 'params', 'query', 'systemLangCode', 'systemVersion']);
+  expect(JSON.stringify(sent)).not.toMatch(/dither|mtcute|my laptop|0\.32/);
+  await desk.close();
+
+  const own = new MtcuteBackend({ apiId: 1234567, apiHash: '0'.repeat(32), dir: mkdtempSync(join(tmpdir(), 'dacc-tgmt-')), testMode: true, initConnection: clientProfile(1234567, { deviceName: 'my laptop' }), log: () => {} });
+  expect(initSent(own)).toMatchObject({ apiId: 1234567, deviceModel: 'my laptop', appVersion: '0.1.0', systemVersion: 'Linux', langPack: '' });
+  expect(JSON.stringify(initSent(own))).not.toMatch(/mtcute|0\.32/);
+  await own.close();
 });

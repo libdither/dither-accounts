@@ -1096,10 +1096,17 @@ export class GmailMail {
 
   /**
    * Whether Gmail's own listing has this message with no sender (a message with no headers): as last seen, else its
-   * thread fetched again (fd). Not seen in a listing since this started: false (refused, as before).
+   * thread fetched again (fd). Not seen in a listing since this started (an app asking for a message by an id it
+   * kept, after a restart): the thread its id names, fetched (a Gmail thread's id is its first message's, and a
+   * message with no headers has no reply headers to join another's thread by). Only Gmail's answer for that id
+   * counts: a thread that does not hold it leaves it unknown, and it is refused.
    */
   private async listedWithoutSender(id: string, lane: LaneName): Promise<boolean> {
-    const k = await this.locate(id, null, lane).catch(() => null);
+    let k = await this.locate(id, null, lane).catch(() => null);
+    if (!k) {
+      await this.fd([id], lane).catch(() => null);
+      k = this.known.get(id) ?? null;
+    }
     return !!k && !k.from;
   }
 

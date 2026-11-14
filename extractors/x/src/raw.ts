@@ -231,6 +231,7 @@ export type Down =
   | { kind: 'postAct'; post: string; act: 'like' | 'unlike' | 'repost' | 'unrepost' }
   | { kind: 'publish'; text: string; replyTo?: string; quote?: string }
   | { kind: 'reactors'; post: string; of: 'like' | 'repost'; cursor?: string }
+  | { kind: 'translate'; post: string; to: string; lang?: string }
   | { kind: 'selftest' }
   | { kind: 'diagnose' }
   | { kind: 'inbox' }
@@ -251,3 +252,10 @@ export type Down =
   | { kind: 'editGroup'; conv: string; title?: string; description?: string }
   | { kind: 'typing'; conv: string }
   | { kind: 'forward'; conv: string; message: string; to: string; peer?: string; query?: string; note?: string };
+
+/** What the hook's `translate` answers: X's translation, its source language and who made it (X, Google, Papago). */
+export interface TranslateReply {
+  text?: unknown;
+  from?: unknown;
+  source?: unknown;
+}

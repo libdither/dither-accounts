@@ -230,6 +230,21 @@ export const ATTACHMENT_LIMITS: Record<Network, { bytes: number; files: number }
   t3: { bytes: 0, files: 0 },
 };
 
+/**
+ * More files than a network takes in one message go as several messages, in order, each with as many as it takes; the
+ * words and the reply go with the first (docs/uploads.md, "More files than a message takes"). Mail does not split:
+ * one letter carries its files, or the ones over the count are refused.
+ */
+export const splitsFiles = (n: Network): boolean => n !== 'email' && ATTACHMENT_LIMITS[n].files > 0;
+
+/** `items` in runs of at most `per`, in order: one run when they fit (or `per` is not a count). */
+export function fileBatches<T>(items: T[], per: number): T[][] {
+  if (!(per >= 1) || items.length <= per) return [items];
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += per) out.push(items.slice(i, i + per));
+  return out;
+}
+
 /** Brand colours used to annotate the source of every object in the UI. */
 export const NETWORK_META: Record<Network, { name: string; color: string; spaceNoun: string; sectionNoun: string }> = {
   discord: { name: 'Discord', color: '#5865F2', spaceNoun: 'server', sectionNoun: 'category' },

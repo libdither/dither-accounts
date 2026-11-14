@@ -45,6 +45,8 @@ export interface PostFact {
   root?: string;
   /** What the account that read it has done to it (X: legacy.favorited, legacy.retweeted). */
   viewer?: PostViewer;
+  /** The language it is written in, as the network says (X: legacy.lang; 'und' when it cannot tell). */
+  lang?: string;
 }
 
 /** What you have done to a post. */

@@ -92,11 +92,14 @@ describe('posts', () => {
   test('a reply: its leading @name not shown, entities unescaped, replyTo with the author; the author noted', () => {
     const c = ctx();
     const p = parsePost(tweet({ id: '1800000000000000101', by: CARA, text: 'love this & want some', ts: NOW - MIN, replyTo: { id: '1800000000000000001', by: ME }, counts: { likes: 2, views: 40 } }), c)!;
-    expect(p).toEqual({ id: '1800000000000000101', url: 'https://x.com/cara_c/status/1800000000000000101', ts: Math.floor((NOW - MIN) / 1000) * 1000, author: CARA.id, text: 'love this & want some', replyTo: { id: '1800000000000000001', author: ME.id }, root: '1800000000000000001', counts: { replies: 0, reposts: 0, likes: 2, quotes: 0, views: 40 }, viewer: { liked: false, reposted: false } });
+    expect(p).toEqual({ id: '1800000000000000101', url: 'https://x.com/cara_c/status/1800000000000000101', ts: Math.floor((NOW - MIN) / 1000) * 1000, author: CARA.id, text: 'love this & want some', replyTo: { id: '1800000000000000001', author: ME.id }, root: '1800000000000000001', counts: { replies: 0, reposts: 0, likes: 2, quotes: 0, views: 40 }, viewer: { liked: false, reposted: false }, lang: 'en' });
     expect(c.users.get(CARA.id)).toMatchObject({ handle: 'cara_c' });
   });
   test('TweetWithVisibilityResults is the post inside; a long post is its note text; links and media urls', () => {
     const c = ctx();
+    // The language X says it is in, for translation; a tag that is no tag is left out.
+    expect(parsePost(tweet({ id: '1800000000000000102', by: CARA, text: 'おはよう', ts: NOW, lang: 'ja' }), c)!.lang).toBe('ja');
+    expect(parsePost(tweet({ id: '1800000000000000103', by: CARA, text: 'x', ts: NOW, lang: '<b>' }), c)!.lang).toBeUndefined();
     const long = parsePost(withVisibility(myLong), c)!;
     expect(long.text).toBe(`A long one. ${'word '.repeat(80)}the end`);
     const pic = parsePost(tweet({ id: '1800000000000000201', by: DEV, layout: 'old', text: 'see https://t.co/l1nk', ts: NOW - H, urls: [{ url: 'https://t.co/l1nk', expanded: 'https://dev.example/x', display: 'dev.example/x' }], media: [{ url: 'https://t.co/m3d1a', type: 'photo', img: 'https://pbs.twimg.com/media/AbC1.jpg', w: 1200, h: 800, alt: 'a red tomato' }] }), c)!;

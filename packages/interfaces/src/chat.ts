@@ -6,7 +6,7 @@
  * Runtime checks stay shallow (an object): the extractors are this repo's own code and check their commands
  * themselves, and the types here keep apps honest at build time.
  */
-import type { About, AdapterCommand, AdapterEvent, AddMembersResult, AddPreview, AddResult, AppAutocompleteResult, AppCommandsResult, BansResult, CreateGroupResult, DirectVoiceSession, GateResult, HistoryResult, InteractResult, LeaveResult, NativeMute, NativeScheduledResult, NetworkSearchResult, OpenDirectResult, OwnPresence, PersonAbout, PostFact, PostThread, PostViewer, ReactionContext, ReactorsPage, SavedFact, SavedListResult, ScheduledEventFact, ScheduledEventsResult, SessionsResult, SpaceGate, ThreadsResult } from '@dither-chat/protocol';
+import type { About, AdapterCommand, AdapterEvent, AddMembersResult, AddPreview, AddResult, AppAutocompleteResult, AppCommandsResult, BansResult, CreateGroupResult, DirectVoiceSession, GateResult, HistoryResult, InteractResult, LeaveResult, NativeMute, NativeScheduledResult, NetworkSearchResult, OpenDirectResult, NetworkTranslation, OwnPresence, PersonAbout, PostFact, PostThread, PostViewer, ReactionContext, ReactorsPage, SavedFact, SavedListResult, ScheduledEventFact, ScheduledEventsResult, SessionsResult, SpaceGate, ThreadsResult } from '@dither-chat/protocol';
 import type { StickerPackFact, StickerPage } from '@dither-chat/protocol';
 import type { CreateThreadResult, ThreadFact } from '@dither-chat/protocol';
 import { ev, iface, op, type Schema, s } from '@dither-accounts/spec';
@@ -43,6 +43,7 @@ export const chat = iface({
     profile: op('read', 'What the network says about a person', input('profile'), out<PersonAbout>(), 60_000),
     post: op('read', "A post's thread: what it answers and its replies", input('post'), out<PostThread>(), 120_000),
     postReactors: op('read', 'Who liked or reposted a post', input('postReactors'), out<ReactorsPage>(), 120_000),
+    translate: op('read', "A post translated by its network, as its own Translate post does", input('translate'), out<NetworkTranslation>(), 60_000),
     resolve: op('read', 'What an invite, address, name or handle is, without acting on it', input('resolve'), out<AddPreview>(), 60_000),
     scheduledEvents: op('read', "A server's scheduled events as the network has them now, with counts and your answers", input('scheduledEvents'), out<ScheduledEventsResult>(), 60_000),
     gate: op('read', 'What a server asks of you before you are in: its rules, an application, onboarding', input('gate'), out<SpaceGate | null>(), 60_000),

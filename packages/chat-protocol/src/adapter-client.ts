@@ -6,12 +6,15 @@
  *     onCommand: async (cmd) => { ...; return result },   // auto-replied if cmd has an id
  *   });
  *
- * Events emitted while disconnected are queued (bounded) and flushed on reconnect.
+ * Events emitted while disconnected are queued (bounded) and flushed on reconnect. Under dither-accounts the adapter
+ * outlives a manager that restarts (its docs/supervisor.md): this reconnects within seconds and onConnect says hello
+ * again; without a manager for DITHER_MANAGER_GONE_EXIT_S it shuts down.
  * Throwing from onCommand sends { ok: false, error }.
  */
 
 import { join } from 'node:path';
 import { PROTOCOL_VERSION, type AdapterCommand, type AdapterEvent } from './adapter.ts';
+import { exitWhenManagerGone, reconnectDelay, recordExitCode } from './outlive.ts';
 import { readSecretFile, writeSecretFile } from './secret-file.ts';
 
 export interface HubLink {
@@ -60,12 +63,16 @@ export function linkHub(opts: LinkOptions): HubLink {
     }
   };
 
+  const gone = exitWhenManagerGone(() => open, () => void stop());
+  recordExitCode(accountDir);
+
   const connect = () => {
     if (closed) return;
     ws = new WebSocket(url);
     ws.onopen = () => {
       open = true;
       attempt = 0;
+      gone.up();
       while (queue.length) ws!.send(queue.shift()!);
       opts.onConnect?.();
     };
@@ -89,9 +96,9 @@ export function linkHub(opts: LinkOptions): HubLink {
     };
     ws.onclose = () => {
       open = false;
+      gone.down();
       if (closed) return;
-      const delay = Math.min(30_000, 500 * 2 ** attempt++);
-      setTimeout(connect, delay);
+      setTimeout(connect, reconnectDelay(attempt++));
     };
     ws.onerror = () => {};
   };
@@ -122,10 +129,10 @@ export function linkHub(opts: LinkOptions): HubLink {
     },
   };
 
-  const stop = async () => {
+  async function stop() {
     await opts.onShutdown?.();
     process.exit(0);
-  };
+  }
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
   return link;

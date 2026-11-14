@@ -8,7 +8,7 @@ import { type Kind, loadKinds } from './kinds.ts';
 import { type NoticeTimes, Notices, NOTICES_KIND, noticesKind } from './notices.ts';
 import { providers as factories, type Provider } from './providers/index.ts';
 import { Router } from './router.ts';
-import { Supervisor } from './supervisor.ts';
+import { chooseLaunch, type Launch, Supervisor } from './supervisor.ts';
 import { NdjsonFile, setTraceSink, StallWatch } from './trace.ts';
 
 export interface ManagerOpts {
@@ -41,6 +41,15 @@ export interface ManagerOpts {
   errors?: boolean;
   /** Tests only: the manager's notices' hold times, debounce and sweep (notices.ts NOTICE_TIMES). */
   noticeTimes?: Partial<NoticeTimes>;
+  /**
+   * How extractors are started (supervisor.ts Launch, docs/supervisor.md): `scope` and `detached` ones outlive the
+   * manager when it stops with `leaveExtractors`, and the next manager adopts them. Default `child`; main.ts `auto`.
+   */
+  launch?: Launch | 'auto';
+  /** Tests only: the fingerprint of a kind's code (default: fingerprint.ts over the repo). */
+  fingerprint?: (kind: Kind) => string;
+  /** Tests only: the pause between restarts of adopted extractors whose code changed (20 s). */
+  restartPauseMs?: number;
 }
 
 export interface Manager {
@@ -55,7 +64,11 @@ export interface Manager {
   kinds: Map<string, Kind>;
   providers: Provider[];
   url: string;
-  stop(): Promise<void>;
+  /**
+   * Stops the manager. With `leaveExtractors`, extractors that can outlive it are left running for the next manager
+   * to adopt (main.ts on SIGTERM: a restart keeps every session); without it every extractor stops.
+   */
+  stop(o?: { leaveExtractors?: boolean }): Promise<void>;
 }
 
 export async function createManager(o: ManagerOpts): Promise<Manager> {
@@ -77,6 +90,10 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
   const sup = new Supervisor(store, kinds, {
     extractorUrl: () => `ws://127.0.0.1:${http.server.port}/extractor`,
     repoRoot,
+    dataDir: o.dataDir,
+    launch: chooseLaunch(o.launch ?? 'child'),
+    fingerprint: o.fingerprint,
+    restartPauseMs: o.restartPauseMs,
     onEvent: (id, ev) => {
       router.event(id, ev);
       if (ev.t === 'status') notices?.poke();
@@ -132,10 +149,10 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     kinds,
     providers,
     url: `http://127.0.0.1:${http.server.port}`,
-    async stop() {
+    async stop(so = {}) {
       for (const p of providers) p.stop?.();
       notices!.stop();
-      await sup.stopAll();
+      await sup.stopAll({ leave: so.leaveExtractors === true });
       approvers.stop();
       router.stop();
       http.stop();
@@ -151,4 +168,4 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
 
 export type { Kind, Manifest } from './kinds.ts';
 export { kindOf, loadKinds } from './kinds.ts';
-export { acquireLock, releaseLock, LOCK } from './supervisor.ts';
+export { acquireLock, releaseLock, LOCK, type Launch } from './supervisor.ts';

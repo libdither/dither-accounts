@@ -45,6 +45,8 @@ export interface SnapshotResult {
   events: P.AdapterEvent[];
   /** Channels worth a bounded recent-message backfill (DMs + unread-mention channels). */
   backfillTargets: string[];
+  /** Each channel's newest message id, as the snapshot has it: a backfill done before is skipped while it holds (backfill.ts). */
+  newest: Record<string, string>;
 }
 
 export function translateSnapshot(data: RawSnapshot, st: AdapterState): SnapshotResult {
@@ -100,7 +102,10 @@ export function translateSnapshot(data: RawSnapshot, st: AdapterState): Snapshot
   for (const c of data.privateChannels ?? []) backfillTargets.push(c.id);
   for (const id of mentionChannels) if (!backfillTargets.includes(id)) backfillTargets.push(id);
 
-  return { events, backfillTargets };
+  const newest: Record<string, string> = {};
+  for (const c of [...(data.channels ?? []), ...(data.threads ?? []), ...(data.privateChannels ?? [])]) if (c.last_message_id) newest[c.id] = c.last_message_id;
+
+  return { events, backfillTargets, newest };
 }
 
 /** What the hook answered to openDirect. The gateway's CHANNEL_CREATE says the same again later, harmlessly. */

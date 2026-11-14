@@ -11,6 +11,7 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { linkHub } from '@dither-chat/protocol/client';
 import type * as P from '@dither-chat/protocol';
 import { createGroupProblem, STICKER_PAGE_PACKS } from '@dither-chat/protocol';
@@ -23,6 +24,7 @@ import { checkBio, mapProfile, profileUsers } from './profile.ts';
 import { bansOutcome, clearPlan, moderatePlan, withModeration } from './moderation.ts';
 import { PICTURE_MAX, PICTURE_TYPES } from '@dither-chat/protocol';
 import { addedFacts, changedFacts, messageEvents, newState, openedDirect, routeChannel, seenMembers, translateDispatch, translateSnapshot, userFacts } from './ingest.ts';
+import { BACKFILL_FILE, BackfillMemory } from './backfill.ts';
 import { duePins, PIN_HOLD_MS } from './changes.ts';
 import { CHANNEL_TYPE, customEmoji, DISCORD_EPOCH, guildIconUrl, mapUser, refreshable } from './map.ts';
 import { BridgeServer, PaceQueue } from './server.ts';
@@ -436,7 +438,7 @@ function evaluateHealth(): boolean {
 function ingestSnapshot(data: Parameters<typeof translateSnapshot>[0]) {
   snapshotReceived = true;
   if (data.self) selfUser = data.self;
-  const { events, backfillTargets } = translateSnapshot(data, st);
+  const { events, backfillTargets, newest } = translateSnapshot(data, st);
   for (const ev of events) hub.emit(ev);
   // Message requests and spam DMs, and where mutes start from (attention.ts); then recent mentions, soon.
   emitFacts(attentionSnapshot(data, st, att));
@@ -447,13 +449,23 @@ function ingestSnapshot(data: Parameters<typeof translateSnapshot>[0]) {
   emitFacts(snapshotRelationships(data, st));
   setStatus('online', null);
   log('info', 'snapshot ingested', { guilds: st.guilds.size, conversations: st.known.size, friends: st.friends.size });
-  void startupBackfill(backfillTargets);
+  void startupBackfill(backfillTargets, newest);
 }
 
 const backfilled = new Set<string>();
+/** What earlier starts fetched (backfill.ts), in the account's directory. */
+let backfillMemory: BackfillMemory | null = null;
 
-/** Fetch only recent messages for the given channels (DMs + unread mentions); everything else loads lazily. Every reconnect re-sends the snapshot, so each channel only once. */
-async function startupBackfill(targets: string[]) {
+/**
+ * Fetch only recent messages for the given channels (DMs + unread mentions); everything else loads lazily. Every
+ * reconnect re-sends the snapshot, so each channel only once per process; and a channel fetched by an earlier start
+ * whose newest message has not changed since (`newest`, from the snapshot) is skipped (backfill.ts).
+ */
+async function startupBackfill(targets: string[], newest: Record<string, string>) {
+  backfillMemory ??= new BackfillMemory(join(hub.accountDir, BACKFILL_FILE));
+  const memory = backfillMemory;
+  const fresh = targets.filter((id) => !backfilled.has(id) && memory.fresh(id, newest[id]));
+  for (const id of fresh) backfilled.add(id);
   const todo = targets.filter((id) => !backfilled.has(id)).slice(0, 40);
   for (const id of todo) backfilled.add(id);
   for (const channelId of todo) {
@@ -461,12 +473,13 @@ async function startupBackfill(targets: string[]) {
       await historyPace.run('backfill', async () => {
         const res = await bridge.request<{ messages: any[] }>({ kind: 'history', channelId, limit: 20 }, 30_000);
         for (const raw of res.messages ?? []) for (const ev of messageEvents(raw, st, false)) hub.emit(ev);
+        memory.record(channelId, (res.messages ?? []).map((m) => m?.id).filter((id): id is string => typeof id === 'string'), newest[channelId]);
       });
     } catch (e) {
       log('debug', 'backfill failed', { channelId, error: String(e) });
     }
   }
-  if (todo.length) log('info', 'startup backfill complete', { channels: todo.length });
+  if (todo.length || fresh.length) log('info', 'startup backfill complete', { channels: todo.length, unchanged: fresh.length });
 }
 
 // ------------------------------------------------------------- hub -> adapter

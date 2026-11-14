@@ -198,7 +198,7 @@ the app to carry on to its own page, from this machine and never a browser.
 |---|---|
 | `packages/spec` | schemas, interfaces, levels, consent lines, the consumer wire |
 | `packages/interfaces` | `chat`, `google.calendar`, `calendar`, `contacts`, `mail`, `notifications` (with the manager's own notices about its accounts: [docs/notifications.md](docs/notifications.md)), `desktop`, `exchange`, `privacy.session`, `statements` (financial accounts' pulled files, read only), `monero.view`, `test.echo` |
-| `packages/manager` | the service: registry (`db.ts`), extractor supervisor with the per-account lock (`supervisor.ts`), router (`router.ts`), its error file (`errors.ts`, read by `bugwatch`), HTTP and sockets (`http.ts`), providers (`providers/google.ts`, the OAuth way in), CLI (`cli.ts`), page (`web/`) |
+| `packages/manager` | the service: registry (`db.ts`), extractor supervisor with the per-account lock, whose extractors outlive a restart and are adopted by the next manager (`supervisor.ts`, `fingerprint.ts`, [docs/supervisor.md](docs/supervisor.md)), router (`router.ts`), its error file (`errors.ts`, read by `bugwatch`), HTTP and sockets (`http.ts`), providers (`providers/google.ts`, the OAuth way in), CLI (`cli.ts`), page (`web/`) |
 | `packages/browser` | a sandboxed browser for extractors: Xvfb, an ordinary Chromium with a persistent profile and an extension, x11vnc for the live view, the extension's loopback bridge, the names the extension leaves in pages, made per install and account when it is copied (`src/markers.ts`), what every hook shares to keep out of the page's sight (`src/page`, docs/page-traces.md), and the profile's service workers cleared before a launch whose extension worker changed, since Chromium otherwise keeps running the first one (`src/worker.ts`) |
 | `packages/sandbox` | a sandboxed native app for extractors: bubblewrap with its own network (pasta), Xvfb and x11vnc, a private session bus whose notifications and portals are ours, `xdg-open` shims, a watched downloads folder ([docs/native-sandbox.md](docs/native-sandbox.md)) |
 | `packages/client` | an app's side: `register`, `AccountsClient` with typed calls, admin actions |
@@ -253,7 +253,9 @@ Restart=always
 ```
 
 The sockets and app registration answer only this machine; the page answers this machine and the tailnet, after the
-login. Restarting the service restarts every extractor.
+login. Restarting the service does not restart the accounts: under systemd each extractor runs in a scope of its own,
+keeps its session while the manager is away, and the next manager adopts it, restarting only those whose code changed,
+one at a time ([docs/supervisor.md](docs/supervisor.md)).
 
 ```sh
 bun packages/manager/src/cli.ts accounts            # what runs, where

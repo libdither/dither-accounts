@@ -52,6 +52,12 @@ const link = linkManager({
       case 'slow':
         await Bun.sleep(Number(cmd.ms));
         return { slept: cmd.ms };
+      case 'pid':
+        return { pid: process.pid };
+      case 'exit':
+        // End with that code soon after answering (an adopted extractor's exit code: docs/supervisor.md).
+        setTimeout(() => process.exit(Number(cmd.code ?? 0)), 50);
+        return { exiting: true };
       case 'emit':
         for (let i = 0; i < Number(cmd.n); i++) link.emit({ t: 'note', n: i });
         return { emitted: cmd.n };

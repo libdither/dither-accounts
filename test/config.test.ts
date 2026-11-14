@@ -51,3 +51,10 @@ test('a flag or the environment wins over the file', async () => {
   expect(pageOf(await start(toml, ['--public-url', 'https://from-flag.example.net']))).toBe('https://from-flag.example.net');
   expect(pageOf(await start(toml, [], { DITHER_ACCOUNTS_PUBLIC_URL: 'https://from-env.example.net' }))).toBe('https://from-env.example.net');
 }, 30_000);
+
+test('launch: auto is a child outside systemd; the flag or the file picks another (docs/supervisor.md)', async () => {
+  const launchOf = (line: string) => line.match(/ launch=(\S+)/)![1]!;
+  expect(launchOf(await start(null, ['--port', '0'], { INVOCATION_ID: '' }))).toBe('child');
+  expect(launchOf(await start(null, ['--port', '0', '--launch', 'detached']))).toBe('detached');
+  expect(launchOf(await start('[manager]\nport = 0\nlaunch = "child"\n'))).toBe('child');
+}, 30_000);

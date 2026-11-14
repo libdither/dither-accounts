@@ -11,6 +11,10 @@
  * DITHER_ADAPTER_TOKEN, DITHER_ACCOUNT_DIR, DITHER_ACCOUNT_CONFIG and DITHER_ACCOUNT_LABEL. Events emitted while
  * disconnected are queued (bounded) and sent on reconnect.
  *
+ * The extractor outlives a manager that restarts (docs/supervisor.md): the link reconnects within seconds, keeping
+ * everything, and onConnect says hello and status again to the new manager. Without one for
+ * DITHER_MANAGER_GONE_EXIT_S, it shuts down.
+ *
  * The other way round, `ask` puts a question to the manager itself and waits for its answer: `{t:'ask', aid, what,
  * input}` up, `{t:'answer', aid, ok, result | error}` down. The manager answers for this account only (it knows which
  * one the socket is); `approver.request` is the approver's (docs/approver.md).
@@ -19,6 +23,7 @@
  * when the page changes it (Keep new passkeys on), and the object is updated in place.
  */
 import { join } from 'node:path';
+import { exitWhenManagerGone, reconnectDelay, recordExitCode } from '@dither-chat/protocol/outlive';
 import { readSecretFile, writeSecretFile } from '@dither-chat/protocol/secret-file';
 
 /** An op's input with `t`, its name. The manager's call id comes as `rid` and is taken off before onCommand. */
@@ -93,6 +98,8 @@ export function linkManager(opts: LinkOptions): Link {
     await opts.onShutdown?.();
     process.exit(0);
   };
+  const gone = exitWhenManagerGone(() => open, () => void shutdown());
+  recordExitCode(accountDir);
 
   const connect = () => {
     if (closed) return;
@@ -100,6 +107,7 @@ export function linkManager(opts: LinkOptions): Link {
     ws.onopen = () => {
       open = true;
       attempt = 0;
+      gone.up();
       while (queue.length) ws!.send(queue.shift()!);
       opts.onConnect?.();
     };
@@ -144,8 +152,9 @@ export function linkManager(opts: LinkOptions): Link {
     };
     ws.onclose = () => {
       open = false;
+      gone.down();
       if (closed) return;
-      setTimeout(connect, Math.min(30_000, 500 * 2 ** attempt++));
+      setTimeout(connect, reconnectDelay(attempt++));
     };
     ws.onerror = () => {};
   };

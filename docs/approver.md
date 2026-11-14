@@ -244,8 +244,8 @@ Passkeys kept on this machine meet none of this: their sign-ins try three times 
   runner's retry window, Schwab's tick, a restart and the next day's pull, and a pull you start asks once more; an
   unanswered request is one prompt per scheduled pull; each reason's rule; a passkey kept here still gets its three
   tries. `extractors/privacy/test/approver.test.ts` (where Chromium is): the privacy kind in its sandbox with its
-  passkey on the fake phone: denied at start (one request), nothing at a restart, a pull from the page asks once more,
-  expired, then approved and pulled.
+  passkey on the fake phone: denied at start (`signInOnStart` on; one request), nothing at a restart, a pull from the
+  page asks once more, expired, then approved and pulled.
 
 ## Moving a passkey to the phone
 

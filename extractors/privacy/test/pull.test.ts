@@ -3,9 +3,10 @@
  * (fake-privacy.ts), with a stand-in for the manager's /extractor socket. The account starts with a checked passkey
  * (as after you enrolled it) and a seed from pcom.py's file (test/fixtures):
  *
- *   - at start, signed out: it signs itself in with the passkey (the sign-in page's button, the authenticator);
- *   - the session expires: still online, nothing asked; a refresh signs in again (counter + 1), loads /transactions,
- *     pages the app's own request from the page and spools pcom.py's file byte for byte, request for request;
+ *   - at start, signed out: no sign-in (no pull follows it), still online, nothing asked;
+ *   - a refresh signs in with the passkey (the sign-in page's button, the authenticator), loads /transactions, pages
+ *     the app's own request from the page and spools pcom.py's file byte for byte, request for request;
+ *   - the session expires: still online, nothing asked;
  *   - Privacy asks for an emailed code after the passkey: the pull stops, the account holds with the attention, later
  *     pulls are refused, nothing is typed; once the live view shows Privacy signed in, the hold lifts;
  *   - the counter only went up, and no key, credential id, user handle or bearer token went to the manager.
@@ -130,29 +131,26 @@ afterAll(async () => {
 }, 30_000);
 
 it(
-  'signs itself in, pulls pcom.py’s file after the session expired, and stops at a code it may not answer',
+  'signs itself in for a pull (not at start), pulls pcom.py’s file, and stops at a code it may not answer',
   async () => {
-    // 1. At start Privacy is signed out: the account signs in with its passkey by itself.
+    // 1. At start Privacy is signed out, and no pull follows: no sign-in (its sessions end within minutes), still
+    //    online, nothing asked of you.
     await until(() => events.some((e) => e.t === 'hello'), 20_000, 'hello');
-    await until(() => signIns().length === 1 && lastStatus()?.details?.signedIn === true && lastStatus()?.details?.autoSignIn === 'ready', 60_000, 'the sign-in at start');
+    await until(() => events.some((e) => e.t === 'log' && /no sign-in at start/.test(e.msg)), 60_000, 'the start that signs nothing');
+    expect(signIns()).toEqual([]);
     expect(fake.errors).toEqual([]);
     expect(lastStatus()).toMatchObject({ status: 'online', attention: null });
-    expect(lastStatus().details).toMatchObject({ autoSignIn: 'ready', autoSignInsThisRun: 1, seedFile: 'privacy-20261109T000000.json', seedCheck: 'pending: the first pull' });
-    expect(lastStatus().details.lastAutoSignIn).toBeString();
-
-    // 2. The session ends (Privacy's are short): still online, nothing asked of you.
-    fake.expire();
-    await until(() => lastStatus()?.details?.signedIn === false, 15_000, 'signed out');
-    await Bun.sleep(1500);
-    expect(lastStatus()).toMatchObject({ status: 'online', attention: null });
     expect(lastStatus().layers.find((l: any) => l.name === 'signed in')).toEqual({ name: 'signed in', state: 'ok', note: SIGNS_ITSELF_IN });
+    expect(lastStatus().details).toMatchObject({ signedIn: false, autoSignInsThisRun: 0, seedFile: 'privacy-20261109T000000.json', seedCheck: 'pending: the first pull' });
 
-    // 3. A pull: signs in again, then pcom.py's requests and file.
+    // 2. A pull: signs in with the passkey by itself, then pcom.py's requests and file.
     fake.resetTxns();
     expect((await call('statements.refresh')).result).toEqual({ started: true });
     await until(() => pulled().length === 1, 120_000, 'the pull');
     expect(pulled()[0]).toMatchObject({ ok: true, saved: 1 });
-    expect(signIns()).toEqual(['passkey:1', 'passkey:2']);
+    expect(signIns()).toEqual(['passkey:1']);
+    expect(lastStatus().details).toMatchObject({ autoSignInsThisRun: 1 });
+    expect(lastStatus().details.lastAutoSignIn).toBeString();
     expect(fake.txnRequests.map((r) => [r.query, r.ok])).toEqual(meta.requests);
     const list = (await call('statements.list')).result;
     expect(list.files).toHaveLength(1);
@@ -167,15 +165,20 @@ it(
     expect(lastStatus().details).toMatchObject({ lastPullOk: true, lastPullSaved: 1, lastPullTransactions: 231 });
     expect(lastStatus().layers.at(-1)).toMatchObject({ name: 'pull', state: 'ok' });
 
-    // 4. Privacy wants an emailed code after the passkey: stop, hold, ask you; never answer it.
+    // 3. The session ends (Privacy's are short): still online, nothing asked of you.
     fake.expire();
+    await until(() => lastStatus()?.details?.signedIn === false, 15_000, 'signed out');
+    await Bun.sleep(1500);
+    expect(lastStatus()).toMatchObject({ status: 'online', attention: null });
+    expect(lastStatus().layers.find((l: any) => l.name === 'signed in')).toEqual({ name: 'signed in', state: 'ok', note: SIGNS_ITSELF_IN });
+
+    // 4. Privacy wants an emailed code after the passkey: stop, hold, ask you; never answer it.
     fake.tfa = true;
-    await until(() => lastStatus()?.details?.signedIn === false, 15_000, 'signed out again');
     expect((await call('statements.refresh')).result).toEqual({ started: true });
     await until(() => pulled().length === 2, 90_000, 'the stopped pull');
     expect(pulled()[1]).toMatchObject({ ok: false, saved: 0, needs: CODE_MESSAGE });
     expect(fake.log).toContain('tfa-asked');
-    expect(signIns()).toEqual(['passkey:1', 'passkey:2', 'passkey:3']);
+    expect(signIns()).toEqual(['passkey:1', 'passkey:2']);
     await until(() => lastStatus()?.attention?.message === CODE_MESSAGE, 5000, 'the hold attention');
     expect(lastStatus()).toMatchObject({ status: 'attention', attention: { kind: 'login', liveView: true } });
     expect(lastStatus().details.autoSignIn).toMatch(/^held \(code\)/);
@@ -183,7 +186,7 @@ it(
     expect(JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8')).hold).toMatchObject({ what: 'code' });
     // Nothing tried again by itself, and no code was typed (the fake would only take the test's approval anyway).
     await Bun.sleep(3000);
-    expect(signIns()).toHaveLength(3);
+    expect(signIns()).toHaveLength(2);
     expect(fake.log).not.toContain('tfa');
 
     // 5. You enter the code in the live view: signed in, the hold lifts, online.
@@ -195,8 +198,8 @@ it(
 
     // The counter went up with every sign-in, and nothing secret went to the manager.
     const secret = JSON.parse(readFileSync(join(dir, 'secret.json'), 'utf8'));
-    expect(secret.passkeys[0].signCount).toBe(3);
-    expect(fake.rp.creds.get(cred.id)!.counter).toBe(3);
+    expect(secret.passkeys[0].signCount).toBe(2);
+    expect(fake.rp.creds.get(cred.id)!.counter).toBe(2);
     const wire = raw.join('\n');
     for (const s of [cred.privateKey, cred.id, cred.userHandle, ...fake.tokens]) expect(wire).not.toContain(s);
     expect(wire).not.toContain('Bearer');

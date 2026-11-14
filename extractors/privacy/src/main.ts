@@ -10,7 +10,8 @@
  * counter saved before each assertion goes out. The private key never enters the browser.
  *
  * Statements (docs/statements.md): dither-finance's privacy/pcom.py `pull`, ported (pcom.ts). Privacy's sessions are
- * short, so before each pull (and once at start) the account signs itself in when it finds itself signed out: it
+ * short, so before each pull the account signs itself in when it finds itself signed out (not at start: a session
+ * nothing pulls with ends within minutes, and every restart would ask Privacy again): it
  * loads the app, clicks the sign-in page's passkey button (as you would) and the authenticator answers; a few tries
  * with backoff. Anything only you can give (a code, a captcha, a password) stops it: the account holds every pull
  * until the live view shows Privacy signed in again. A passkey on a paired phone that the phone refuses stops it too,
@@ -19,7 +20,8 @@
  * transactions request; the page hook keeps that request's URL and headers (in the page) and pages it as pcom.py did,
  * from the page, and the file is pcom.py's privacy-<stamp>.json byte for byte.
  *
- * Config: { testOrigin?, noSandbox?, pullAt?, jitterMinutes?, schedule?, signInOnStart? (true), paceScale? (tests) }.
+ * Config: { testOrigin?, noSandbox?, pullAt?, jitterMinutes?, schedule?, signInOnStart? (false: sign in at start
+ * too, when signed out), paceScale? (tests) }.
  * secret.json: { passkeys: StoredCredential[] }. state.json: pcom.ts PrivacyState (seeded once by seed.ts). Logs ids'
  * first 8 characters, counts, page paths and statuses: never a key, a full credential id, a user handle, a challenge,
  * a counter, a header or an amount.
@@ -544,15 +546,16 @@ async function boot() {
 
   timers.push(setInterval(() => bridge.ping(), 20_000));
   timers.push(setInterval(() => settle(), 5_000));
-  // The daily pull starts once the extension is up; at start, sign in once if Privacy is signed out.
+  // The daily pull starts once the extension is up (a missed one is caught up now, and signs in itself). Signing in
+  // at start with no pull after it is only for signInOnStart: Privacy ends a session nothing uses within minutes.
   void until(() => bridge.connected, 60_000).then(async (up) => {
     if (!up) return;
     statements.start();
-    if (cfg.signInOnStart === false) return;
     await until(() => signedIn || kind === 'signin', 30_000 * Math.max(scale, 0.2));
     if (signedIn || kind !== 'signin' || statements.pulling) return;
     const b = statementsBlocked({ attached: bridge.connected, passkey: auth.summary(), hold: st.hold ?? null });
     if (b) return;
+    if (cfg.signInOnStart !== true) return void log('info', 'no sign-in at start: each pull signs in by itself');
     // A refusal from the phone stands: the start asks nothing (the attention says what does).
     if (signin.blocked('start')) return void log('info', 'no sign-in at start: the last approval on the phone was not given');
     await ensureSignedIn('start').catch((e) => log('warn', 'automatic sign-in at start did not go through', String((e as Error)?.message ?? e).slice(0, 200)));

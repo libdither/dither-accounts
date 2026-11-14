@@ -8,7 +8,7 @@ another browser) stays separate, never shares its counter, and nothing here read
 What it does: the sign-in, the passkey, a session check (`privacy.session`), and the `statements` interface
 ([statements.md](statements.md)): a pull that writes `privacy-<stamp>.json` files, the names and bytes
 dither-finance's parser expects. Privacy's web sessions are short, so the account **signs itself in with its
-passkey** whenever a pull finds it signed out (and once when it starts); you are asked only when Privacy wants
+passkey** whenever a pull finds it signed out (not when it starts); you are asked only when Privacy wants
 something a passkey cannot give. **Read only**: nothing here changes a card, pays, or moves money.
 
 ## Adding it, and what you do
@@ -98,7 +98,7 @@ privacy.com page ──navigator.credentials.create/get──▶ hook.js (MAIN w
 ## Statements: signing in by itself, and the pull
 
 **Signing in** (`src/main.ts` `signIn`): when a pull (daily at `pullAt`, 05:30 + jitter, or `statements.refresh`)
-finds Privacy signed out, and once at start (config `signInOnStart`, default on), the extension loads the app in the
+finds Privacy signed out, the extension loads the app in the
 account's tab (`tab.go`, in the service worker; the page hook does it for its own origin when the worker passes it
 on, which keeps it working while a profile still runs an older sw.js, see Service workers above;
 the app goes to its home when signed in, to `/login` when not), and on the sign-in page the
@@ -109,10 +109,16 @@ Privacy's modal `get` is answered by the authenticator as when you click it: cou
 the app settled for 6 s, as above. At most **three tries**, 0 s, 20 s and 60 s apart; then the attention `login`
 ("Signing in to Privacy with the passkey did not work (why)…").
 
+**Not at start.** A start signs nothing in: a session no pull uses ends within minutes, and every restart (each deploy
+restarts every extractor) would ask Privacy for the passkey again. A daily pull missed while the extractor was down
+is caught up shortly after start, and signs in like any pull. The log says "no sign-in at start: each pull signs in by
+itself". Config `signInOnStart: true` brings back a sign-in at every start that finds Privacy signed out.
+
 **What stops it** (`status.ts` `challengeOf`, from the page hook's `page.state`, booleans only): a visible captcha
 (reCAPTCHA, hCaptcha, Turnstile, Arkose; the invisible reCAPTCHA badge does not count); any sign-in step that is not
 the plain sign-in page (`/login/tfa`, Privacy's emailed code; `/verify…`, other `/login/…`
-paths); a code field once the passkey has answered. The email and password fields of the plain sign-in page are not a
+paths; a page of the app itself, such as `/home` loading right after the passkey answered, is not a step); a code
+field once the passkey has answered. The email and password fields of the plain sign-in page are not a
 question (they are always there). Then the account **holds**: `state.json` `hold` (what, message, since), the
 attention `login` with the message ("Privacy asks for the code it sent you: enter it in the live view…"), and every
 pull is refused with "Privacy is waiting for you in the live view: …", the daily one too. Nothing is typed or tried
@@ -122,7 +128,8 @@ three of those ask for you.
 
 **A passkey on your phone** ([approver.md](approver.md#what-a-refusal-does)): a refusal from the phone ends the
 sign-in at once (no second click, no second try) with the attention `approval`, kept in `state.json` `approval`.
-Denied (or refused by the phone's checks): no automatic sign-in at all, neither the daily pull nor the start, until a
+Denied (or refused by the phone's checks): no automatic sign-in at all, neither the daily pull nor the start (with
+`signInOnStart`), until a
 pull you start from the page (it asks once) or you sign in by hand in the live view. Not answered in time: the next
 scheduled pull asks once more, and nothing in between.
 
@@ -182,14 +189,14 @@ The statements half: `test/pcom.test.ts` runs the port against the fake Privacy 
 rows past the allowlist, a row that lands mid-pull, a `total` with four rows never listed) and matches, request for
 request and byte for byte, what the Python puller itself wrote against the same fake (`test/fixtures`, made by
 `test/make-fixtures.ts`, which runs that puller's own source with its DevTools virtual authenticator: test tooling
-only). `test/pull.test.ts`: the extractor in its real sandbox signs itself in at start, stays online after the session
-expires, signs in again for a pull and spools that same file, then stops and holds at an emailed-code step (nothing
-typed, later pulls refused) until the page is signed in; counter 3 after three sign-ins; no key, credential id, user
-handle or bearer token to the manager. `test/approver.test.ts`: the same with the passkey on the fake phone
-(packages/passkey/test/fake-device.ts) answering the extractor's `approver.request` asks: denied at start (one request,
-no second click or try, the attention `approval`), a restart that asks nothing, a pull from the page that asks once
-more, one left unanswered, then approved and pulled (counter 1 on the phone and the relying party); the rules across the
-daily pull and its retries are the repo's `test/approver-signin.test.ts` (CI).
+only). `test/pull.test.ts`: the extractor in its real sandbox signs nothing in at start and stays online signed out,
+signs in for a pull and spools that same file, stays online after the session expires, then stops and holds at an
+emailed-code step (nothing typed, later pulls refused) until the page is signed in; counter 2 after two sign-ins; no
+key, credential id, user handle or bearer token to the manager. `test/approver.test.ts`: the same with the passkey on
+the fake phone (packages/passkey/test/fake-device.ts) answering the extractor's `approver.request` asks: denied at start
+(`signInOnStart` on; one request, no second click or try, the attention `approval`), a restart that asks nothing, a pull
+from the page that asks once more, one left unanswered, then approved and pulled (counter 1 on the phone and the relying
+party); the rules across the daily pull and its retries are the repo's `test/approver-signin.test.ts` (CI).
 
 The enrollment half:
 

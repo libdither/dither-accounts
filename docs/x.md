@@ -684,6 +684,12 @@ Papago>),…/translation/service/translateTweet` (X picks the service from its f
 service's own `sourceLanguage` and `translationSource`. The t.co links in it are put back as their addresses
 (`entities.urls`). `lang` (X's `legacy.lang`, now on every `PostFact` as `lang`) only steers Papago for Korean.
 
+X translates only into the language the account shows X in: its call asks for no other destination (but for Korean
+through Papago), so asked for another it hands the post back unchanged (seen live 2026-11-14: a post asked for in
+Japanese came back in English, "Google"). The hook compares the target with the page's `<html lang>` and refuses
+otherwise, so the hub asks its other provider. `lang` is among the fields the hook keeps of X's answers (FEED_KEYS):
+without it every post came without its language (seen live the same day).
+
 Not checked live: the answer's field names beyond `translation` (`sourceLanguage`, `translationSource`) are from
 memory of X's answers; without them the hub labels it "X" and takes the language X tagged the post with.
 

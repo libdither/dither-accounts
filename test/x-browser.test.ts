@@ -419,6 +419,10 @@ it(
     // A post X will not translate: its words.
     await expect(call('translate', { post: '1856000000000009999', to: 'en' })).rejects.toThrow('This post cannot be translated.');
     await expect(call('translate', { post: focal, to: 'english!' })).rejects.toThrow('not a language');
+    // X translates only into the language the account shows X in (the page's lang): asked for another, it says so.
+    await expect(call('translate', { post: focal, to: 'ja' })).rejects.toThrow('X translates only into the language your X account is set to (en)');
+    // A post read carries the language X tags it with (the hook keeps legacy.lang).
+    expect((await call('post', { post: focal })).focal.lang).toBe('en');
   },
   60_000,
 );

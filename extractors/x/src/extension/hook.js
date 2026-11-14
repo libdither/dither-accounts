@@ -2649,6 +2649,11 @@
     if (!POST_ID.test(String(cmd.post))) throw new Error('not a post id');
     const a = actionsApi();
     if (!fn(get(a, 'fetchTranslation'))) throw new Error('X changed: its post translation (fetchTranslation) was not found');
+    // X translates into the language the account shows X in (its call asks for no other, but for Korean through
+    // Papago): asked for another, it would hand the post back as it is. Said, so the hub can ask its other provider.
+    const ui = String(document.documentElement.getAttribute('lang') || '').toLowerCase().split('-')[0];
+    const want = String(cmd.to).toLowerCase().split('-')[0];
+    if (ui && ui !== want) throw new Error(`X translates only into the language your X account is set to (${ui})`);
     let r;
     try {
       r = await a.fetchTranslation({ id: String(cmd.post), lang: String(cmd.lang || 'und'), userLanguage: String(cmd.to) });
@@ -2819,7 +2824,9 @@
       'threaded_conversation_with_injections_v2 ' +
       // What you did to a post; a made post (sendTweet's normalized answer, a post read back alone); who liked or
       // reposted (Favoriters, Retweeters: user entries).
-      'favorited retweeted tweets tweetResult user_id_str userDisplayType verification'
+      'favorited retweeted tweets tweetResult user_id_str userDisplayType verification ' +
+      // The language X says a post is in (translation: docs/x.md "Translating a post").
+      'lang'
     ).split(' '),
   );
   const FEED_MAX_NODES = 60_000;

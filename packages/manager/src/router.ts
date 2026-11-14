@@ -13,7 +13,8 @@
  */
 import type { ServerWebSocket } from 'bun';
 import { isAbsolute } from 'node:path';
-import { type AccountView, type AdminAction, type CallError, type ConsumerIn, type ConsumerOut, covers, type Iface, type Level, levelRank } from '@dither-accounts/spec';
+import { type AccountView, type AdminAction, type AppKind, type CallError, type ConsumerIn, type ConsumerOut, covers, type Iface, type Level, levelRank } from '@dither-accounts/spec';
+import { addForm } from './addform.ts';
 import { accountDir, ExtractorError, releaseLock, type Supervisor, writeSecret } from './supervisor.ts';
 import { type GrantRow, newId, newToken, type Row, type Store } from './db.ts';
 import { logTail, purgeDir } from './files.ts';
@@ -127,6 +128,13 @@ export class Router {
   /** Kinds an app may create and run accounts of. */
   manages(appId: string, kind: string, grants = this.store.grants(appId)): boolean {
     return grants.some((g) => g.interface === 'accounts' && g.level === 'manage' && (!g.kinds || g.kinds.includes(kind)));
+  }
+
+  /** Every kind an extractor runs (not the manager's own), as `appId` sees it: what it offers, its form, whether it may add one. */
+  kindsFor(appId: string, grants = this.store.grants(appId)): AppKind[] {
+    return [...this.kinds.values()]
+      .filter((k) => !k.builtin)
+      .map((k) => ({ kind: k.kind, name: k.name, interfaces: [...k.interfaces], add: k.add ?? null, manages: this.manages(appId, k.kind, grants) }));
   }
 
   accountsFor(appId: string): AccountView[] {
@@ -331,6 +339,8 @@ export class Router {
 
   async admin(appId: string, a: AdminAction): Promise<unknown> {
     const grants = this.store.grants(appId);
+    // Any app may list the kinds (nothing in it is about an account), to offer adding those it may add.
+    if (a.do === 'kinds') return { kinds: this.kindsFor(appId, grants) };
     const target = 'account' in a ? this.store.account(a.account) : null;
     const kind = a.do === 'create' ? a.kind : target?.kind;
     if (!kind) return fail('unknown-account', 'no such account');
@@ -339,16 +349,27 @@ export class Router {
     const now = Date.now();
     switch (a.do) {
       case 'create': {
-        if (!this.kinds.has(a.kind) || this.kinds.get(a.kind)!.builtin) return fail('invalid', `no extractor for kind "${a.kind}"`);
+        const k = this.kinds.get(a.kind);
+        if (!k || k.builtin) return fail('invalid', `no extractor for kind "${a.kind}"`);
         const id = a.id && /^[\w-]{4,64}$/.test(a.id) ? a.id : newId('acc');
         if (this.store.account(id)) return fail('invalid', `account ${id} exists`);
+        // Answers to the kind's add form: split and checked as the page's own form is (addform.ts).
+        let config = a.config ?? {};
+        let secret = a.secret;
+        if (a.form !== undefined) {
+          if (!k.add) return fail('invalid', `${k.name} accounts have no add form`);
+          const f = addForm(k.add.fields ?? [], { ...a.config, ...a.form }, a.form);
+          if (typeof f === 'string') return fail('invalid', f);
+          config = f.config;
+          if (f.secret) secret = f.secret;
+        }
         const dir = accountDir(this.opts.dataDir, id);
         this.store.run(
           'INSERT INTO account (id, kind, label, config, token, dir, enabled, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
           id,
           a.kind,
-          String(a.label ?? a.kind).slice(0, 200),
-          JSON.stringify(a.config ?? {}),
+          String(a.label?.trim() || k.name).slice(0, 200),
+          JSON.stringify(config),
           newToken(),
           dir,
           a.enabled === false ? 0 : 1,
@@ -357,7 +378,7 @@ export class Router {
           now,
         );
         const acc = this.store.account(id)!;
-        if (a.secret !== undefined) writeSecret(acc, a.secret);
+        if (secret !== undefined) writeSecret(acc, secret);
         this.sup.start(id);
         this.accountsChanged();
         return { id };

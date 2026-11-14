@@ -18,9 +18,10 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { linkHub } from '@dither-chat/protocol/client';
-import { TELEGRAM_DESKTOP, TelegramAdapter } from './adapter.ts';
+import { TelegramAdapter } from './adapter.ts';
 import type { TgBackend } from './backend.ts';
 import type { DesktopSession } from './desktop.ts';
+import { clientProfile, TELEGRAM_DESKTOP } from './profile.ts';
 
 const dir = process.env.DITHER_ACCOUNT_DIR ?? '.';
 const accountId = process.env.DITHER_ACCOUNT_ID ?? '';
@@ -98,6 +99,7 @@ if (desktopWanted && desktopOn) {
   });
 }
 const testMode = yes(hub.config.testDc);
+const profileFor = (apiId: number) => clientProfile(apiId, { deviceName: String(hub.config.deviceName || 'dither-accounts'), bin: desktop?.bin });
 const mtLogLevel = Number(process.env.TELEGRAM_LOG_LEVEL) || 2;
 
 adapter = new TelegramAdapter(
@@ -113,20 +115,18 @@ adapter = new TelegramAdapter(
     fake,
     maxDialogs: Number(hub.config.maxDialogs) || undefined,
     healthEveryMs: Number(process.env.TELEGRAM_HEALTH_MS) || undefined,
-    backend: (creds, profile): TgBackend => {
+    backend: (creds): TgBackend => {
       if (fake) return fakeTelegram();
-      const { MtcuteBackend, desktopProfile } = require('./mtcute.ts') as typeof import('./mtcute.ts');
+      const { MtcuteBackend } = require('./mtcute.ts') as typeof import('./mtcute.ts');
       return new MtcuteBackend({
         apiId: creds.apiId,
         apiHash: creds.apiHash,
         dir: hub.accountDir,
         testMode,
-        deviceModel: String(hub.config.deviceName || 'dither-accounts'),
-        appVersion: '0.1.0',
+        // On Telegram Desktop's api_id, as Telegram Desktop (whose app id it is); on the account's own, its device name.
+        initConnection: profileFor(creds.apiId),
         log: (l, m) => log(l, m),
         logLevel: mtLogLevel,
-        // On Telegram Desktop's own key (the shared fallback): as Telegram Desktop, so its device entry stays its own.
-        ...(profile === 'desktop' ? { initConnection: desktopProfile(desktop?.bin) } : {}),
       });
     },
     ...(desktop
@@ -135,8 +135,8 @@ adapter = new TelegramAdapter(
             session: desktop,
             deskClient: (key) => {
               if (fake) return fakeTelegram().desktopClient(key);
-              const { MtcuteDeskClient, desktopProfile } = require('./mtcute.ts') as typeof import('./mtcute.ts');
-              return new MtcuteDeskClient(key, { ...TELEGRAM_DESKTOP, testMode, profile: desktopProfile(desktop?.bin), log: (l, m) => log(l, m), logLevel: mtLogLevel });
+              const { MtcuteDeskClient } = require('./mtcute.ts') as typeof import('./mtcute.ts');
+              return new MtcuteDeskClient(key, { ...TELEGRAM_DESKTOP, testMode, profile: profileFor(TELEGRAM_DESKTOP.apiId), log: (l, m) => log(l, m), logLevel: mtLogLevel });
             },
             sharedSession: async (key) => {
               if (fake) return (require('./fake.ts') as typeof import('./fake.ts')).FakeTelegram.keySession(key);

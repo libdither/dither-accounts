@@ -137,6 +137,8 @@ export interface AccountDetail {
     /** Starts since the manager started. */
     starts: number;
     lastExit: { code: number | null; signal: string | null; at: number } | null;
+    /** Started by an earlier manager and taken over by this one at its start (docs/supervisor.md). */
+    adopted: boolean;
     /** Who holds the directory's lock, from extractor.lock. */
     lock: { pid: number; owner: string; at: string | null } | null;
   };

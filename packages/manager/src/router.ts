@@ -99,7 +99,7 @@ export class Router {
     private store: Store,
     private kinds: Map<string, Kind>,
     private sup: Supervisor,
-    private opts: { dataDir: string },
+    private opts: { dataDir: string; onGap?: (account: string) => void },
   ) {
     this.handlers = [this.checkInput, this.limit, this.audit, this.dryRun];
     for (const a of store.all('SELECT DISTINCT app_id FROM grant_')) this.buffers.set(a.app_id, { frames: [], bytes: 0, dropped: new Map() });
@@ -465,6 +465,53 @@ export class Router {
       setTimeout(() => this.flushOutbox(), 5);
     }
   }
+  /** Sends what waits in the outbox now (a manager about to go). */
+  flushNow() {
+    this.flushOutbox();
+  }
+
+  /**
+   * What waits for apps that are away, for the next manager (a restart, docs/supervisor.md "Handing over"): each app's
+   * held frames in order, and the accounts it already missed events of.
+   */
+  heldForHandover(): Record<string, { frames: { account: string; data: string }[]; dropped: Record<string, number> }> {
+    const out: Record<string, { frames: { account: string; data: string }[]; dropped: Record<string, number> }> = {};
+    for (const [appId, b] of this.buffers) if (b.frames.length || b.dropped.size) out[appId] = { frames: b.frames, dropped: Object.fromEntries(b.dropped) };
+    return out;
+  }
+
+  /** What an earlier manager handed over, before anything new: for apps that still have a grant. */
+  restoreHeld(held: Record<string, { frames?: { account: string; data: string }[]; dropped?: Record<string, number> }>) {
+    for (const [appId, h] of Object.entries(held)) {
+      const b = this.buffers.get(appId);
+      if (!b) continue;
+      const frames = (h.frames ?? []).filter((f) => typeof f?.account === 'string' && typeof f?.data === 'string');
+      b.frames = [...frames, ...b.frames];
+      b.bytes += frames.reduce((n, f) => n + f.data.length, 0);
+      for (const [a, n] of Object.entries(h.dropped ?? {})) if (typeof n === 'number') b.dropped.set(a, (b.dropped.get(a) ?? 0) + n);
+    }
+  }
+
+  /**
+   * Events of this account may have been lost (a manager that went without handing over, an extractor that did not
+   * say it held its events): every app with a grant on it hears of a gap, now or when it is back, and starts over.
+   */
+  markGap(accountId: string) {
+    const account = this.store.account(accountId);
+    const kind = account && this.kinds.get(account.kind);
+    if (!account || !kind) return;
+    this.opts.onGap?.(accountId);
+    for (const appId of new Set([...this.buffers.keys(), ...this.sockets.keys()])) {
+      if (!kind.ifaces.some((i) => this.grantFor(appId, account, i.name))) continue;
+      const socks = this.sockets.get(appId);
+      if (socks?.size) for (const ws of socks) ws.send(JSON.stringify({ t: 'gap', account: accountId, dropped: 1 } satisfies ConsumerOut));
+      else {
+        const b = this.buffers.get(appId);
+        if (b) b.dropped.set(accountId, (b.dropped.get(accountId) ?? 0) + 1);
+      }
+    }
+  }
+
   private flushOutbox() {
     this.flushing = false;
     for (const [ws, box] of this.outbox) {
@@ -486,6 +533,7 @@ export class Router {
       let n = 0;
       b.frames = b.frames.filter((f) => (f.account === account ? (n++, (b.bytes -= f.data.length), false) : true));
       b.dropped.set(account, n + 1);
+      this.opts.onGap?.(account);
       return;
     }
     b.frames.push({ account, data });

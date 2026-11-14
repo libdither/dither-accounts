@@ -157,6 +157,8 @@ export class Http {
 
   /** The manager's own notices (notices.ts), for POST /api/notices/local: set by createManager. */
   notices: Notices | null = null;
+  /** Restarts for changed code (supervisor.ts), for /api/health. */
+  codeRestarts: (() => import('./supervisor.ts').CodeRestarts) | null = null;
 
   constructor(
     private store: Store,
@@ -360,7 +362,8 @@ export class Http {
     }
 
     if (!isLoopback(ip) && !isTailnet(ip)) return new Response('tailnet only', { status: 403 });
-    if (path === '/api/health') return json({ ok: true });
+    // Only counts: restarts for changed code after a deploy (docs/supervisor.md), which the deployer waits for.
+    if (path === '/api/health') return json({ ok: true, ...(this.codeRestarts ? { codeRestarts: this.codeRestarts() } : {}) });
 
     // The approver app (docs/approver.md): pairing with a one-time code, and its link, authenticated by its own key.
     // Not behind the login, and not for browsers: a request with an Origin is refused.

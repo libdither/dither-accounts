@@ -12,6 +12,10 @@ web_dist = ""                       # where the built page is; empty: packages/m
 trace = 1                           # 0: don't write the trace files under <data>/traces
 errors = 1                          # 0: don't write <data>/traces/errors.ndjson (the manager's crashes and its
                                     # extractors', which the bugwatch extractor reads: docs/bugwatch.md)
+launch = "auto"                     # how extractors start: "scope" (a systemd user scope each, so they outlive a
+                                    # restart and the next manager adopts them), "detached", "child" (stopped with the
+                                    # manager); auto: scope when it is a systemd service's main process, else child
+                                    # (docs/supervisor.md)
 
 # Extractors take their own settings from each account's config (on the page: Add account → More options), not here.
 # A few environment variables change how the sandboxes run, for machines that need it:

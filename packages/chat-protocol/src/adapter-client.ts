@@ -6,12 +6,15 @@
  *     onCommand: async (cmd) => { ...; return result },   // auto-replied if cmd has an id
  *   });
  *
- * Events emitted while disconnected are queued (bounded) and flushed on reconnect.
+ * Events emitted while disconnected are queued (bounded) and flushed on reconnect. Under dither-accounts the adapter
+ * outlives a manager that restarts (its docs/supervisor.md): this reconnects within seconds and onConnect says hello
+ * again; without a manager for DITHER_MANAGER_GONE_EXIT_S it shuts down.
  * Throwing from onCommand sends { ok: false, error }.
  */
 
 import { join } from 'node:path';
 import { PROTOCOL_VERSION, type AdapterCommand, type AdapterEvent } from './adapter.ts';
+import { exitWhenManagerGone, managerHandshake, reconnectDelay, recordExitCode } from './outlive.ts';
 import { readSecretFile, writeSecretFile } from './secret-file.ts';
 
 export interface HubLink {
@@ -49,16 +52,25 @@ export function linkHub(opts: LinkOptions): HubLink {
   const queue: string[] = [];
   let ws: WebSocket | null = null;
   let open = false;
+  /** A manager's restart: events held for the next one (outlive.ts). */
+  const handshake = managerHandshake();
   let closed = false;
   let attempt = 0;
 
   const send = (s: string) => {
-    if (open && ws) ws.send(s);
+    // After the manager said it is going, everything waits for the next one.
+    if (open && ws && !handshake.holding) ws.send(s);
     else {
       queue.push(s);
-      if (queue.length > MAX_QUEUE) queue.splice(0, queue.length - MAX_QUEUE);
+      if (queue.length > MAX_QUEUE) {
+        queue.splice(0, queue.length - MAX_QUEUE);
+        handshake.dropped();
+      }
     }
   };
+
+  const gone = exitWhenManagerGone(() => open, () => void stop());
+  recordExitCode(accountDir);
 
   const connect = () => {
     if (closed) return;
@@ -66,6 +78,8 @@ export function linkHub(opts: LinkOptions): HubLink {
     ws.onopen = () => {
       open = true;
       attempt = 0;
+      gone.up();
+      handshake.opened(ws!);
       while (queue.length) ws!.send(queue.shift()!);
       opts.onConnect?.();
     };
@@ -76,6 +90,7 @@ export function linkHub(opts: LinkOptions): HubLink {
       } catch {
         return;
       }
+      if (handshake.message(cmd as { t: string }, ws)) return;
       if (cmd.t === 'shutdown') {
         await opts.onShutdown?.();
         process.exit(0);
@@ -89,9 +104,10 @@ export function linkHub(opts: LinkOptions): HubLink {
     };
     ws.onclose = () => {
       open = false;
+      handshake.closed();
+      gone.down();
       if (closed) return;
-      const delay = Math.min(30_000, 500 * 2 ** attempt++);
-      setTimeout(connect, delay);
+      setTimeout(connect, reconnectDelay(attempt++));
     };
     ws.onerror = () => {};
   };
@@ -122,10 +138,10 @@ export function linkHub(opts: LinkOptions): HubLink {
     },
   };
 
-  const stop = async () => {
+  async function stop() {
     await opts.onShutdown?.();
     process.exit(0);
-  };
+  }
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
   return link;

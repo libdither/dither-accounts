@@ -3,7 +3,7 @@
  * session; apps (dither-chat, dither-calendar) ask for interfaces on accounts, you approve, and the manager routes
  * their calls and the accounts' events between them, keeping none of it.
  *
- *   bun packages/manager/src/main.ts [--data .data] [--port 8486] [--host 127.0.0.1] [--public-url http://localhost:8486] [--web-dist dir] [--trace 1] [--errors 1]
+ *   bun packages/manager/src/main.ts [--data .data] [--port 8486] [--host 127.0.0.1] [--public-url http://localhost:8486] [--web-dist dir] [--trace 1] [--errors 1] [--launch auto]
  *
  * Each setting comes from its flag, else DITHER_ACCOUNTS_<FLAG>, else the [manager] table of <data>/config.toml
  * (config.example.toml lists every key), else the default above. The data directory itself comes only from the flag,
@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { installProcessHandlers } from './errors.ts';
 import { createManager } from './index.ts';
+import { restartQueued } from './procs.ts';
 
 const args = process.argv.slice(2);
 const given = (n: string): string | undefined => {
@@ -41,14 +42,26 @@ const host = opt('host', '127.0.0.1');
 const publicUrl = opt('public-url', `http://localhost:${port}`);
 const webDist = opt('web-dist', '');
 const on = (n: string) => !['0', 'false'].includes(opt(n, '1'));
+// How extractors start (supervisor.ts Launch, docs/supervisor.md): auto is a systemd scope of their own when this runs
+// as a systemd service, so a restart (a deploy) leaves them running and the next manager adopts them; else children.
+const launch = opt('launch', 'auto');
+if (!['auto', 'scope', 'detached', 'child'].includes(launch)) throw new Error(`launch must be auto, scope, detached or child, not "${launch}"`);
 // trace = 0 (DITHER_ACCOUNTS_TRACE=0) turns the trace files off (trace.ts); errors = 0 the error file (errors.ts).
-const m = await createManager({ dataDir, port, hostname: host, publicUrl, ...(webDist ? { webDist: resolve(webDist) } : {}), trace: on('trace'), errors: on('errors') });
+const m = await createManager({ dataDir, port, hostname: host, publicUrl, ...(webDist ? { webDist: resolve(webDist) } : {}), trace: on('trace'), errors: on('errors'), launch: launch as 'auto' });
 // Its own uncaught exceptions and rejections into <data>/traces/errors.ndjson; it still ends as the crash would have.
 if (m.errors) installProcessHandlers(m.errors);
-console.log(`dither-accounts on ${m.url.replace('127.0.0.1', host)}  page=${publicUrl}  kinds=${[...m.kinds.keys()].join(',')}  data=${dataDir}`);
+console.log(`dither-accounts on ${m.url.replace('127.0.0.1', host)}  page=${publicUrl}  kinds=${[...m.kinds.keys()].join(',')}  data=${dataDir}  launch=${m.sup.launch}`);
 
+// A restart (a deploy, `systemctl --user restart`) leaves the extractors that can outlive the manager running: the next
+// one adopts them. A stop (`systemctl --user stop`, a shutdown) stops them, as does stopping one account. Under systemd,
+// which it is comes from the unit's job; a `detached` launch outside systemd always leaves them (docs/supervisor.md).
+let stopping = false;
 const shutdown = async () => {
-  await m.stop();
+  if (stopping) return;
+  stopping = true;
+  const leave = m.sup.launch === 'detached' || (m.sup.launch === 'scope' && !!m.service && restartQueued(m.service));
+  console.log(`dither-accounts going: ${leave ? 'a restart, extractors left running for the next manager' : 'stopping its extractors'}`);
+  await m.stop({ leaveExtractors: leave });
   process.exit(0);
 };
 process.on('SIGINT', shutdown);

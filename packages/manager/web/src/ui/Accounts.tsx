@@ -290,7 +290,7 @@ function AccountOverview({ a, d, reload }: { a: AccountInfo; d: AccountDetail | 
           rows={[
             ['State', `${(a.status?.status as string | undefined) ?? (a.online ? 'online' : a.running ? 'starting' : 'not running')}${a.error ? ` · ${a.error}` : ''}`],
             ['Online for', a.online && p?.onlineSince ? since(p.onlineSince) : null],
-            ['Process', a.builtin ? 'part of the manager' : p?.pid ? `pid ${p.pid}, running ${since(p.startedAt)}` : 'not running'],
+            ['Process', a.builtin ? 'part of the manager' : p?.pid ? `pid ${p.pid}, running ${since(p.startedAt)}${p.adopted ? ', kept running through the manager\'s restart' : ''}` : 'not running'],
             [
               'Memory',
               p?.tree.length ? (

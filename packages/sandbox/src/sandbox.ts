@@ -529,9 +529,21 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
     return proc;
   }
 
-  /** What runs, so a later start can end what an extractor killed outright left behind. */
+  /**
+   * What runs, so a later start can end what an extractor killed outright left behind, and so can the manager (its
+   * supervisor reads this file: bubblewrap clears the environment, so these processes carry no account id). Each with
+   * its start time (/proc/<pid>/stat field 22), so a pid handed on is never taken for it.
+   */
   private savePids() {
-    writeFileSync(join(this.o.dir, 'sandbox.json'), JSON.stringify({ procs: this.procs.map((p) => ({ name: p.name, pid: p.proc.pid, match: p.match })) }), { mode: 0o600 });
+    const startOf = (pid: number) => {
+      try {
+        const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+        return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] ?? null;
+      } catch {
+        return null;
+      }
+    };
+    writeFileSync(join(this.o.dir, 'sandbox.json'), JSON.stringify({ procs: this.procs.map((p) => ({ name: p.name, pid: p.proc.pid, start: startOf(p.proc.pid), match: p.match })) }), { mode: 0o600 });
   }
 
   private killStale() {

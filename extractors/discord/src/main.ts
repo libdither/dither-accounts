@@ -34,7 +34,7 @@ import { Sandbox, pickDisplay } from './sandbox.ts';
 import { callCapabilities, callEvents, CALL_EVENTS, newCallMemory } from './calls.ts';
 import { SERVER_DISPATCHES, ServerOps, serverCapabilities, serverDispatch } from './servers.ts';
 import { pollCapabilities, PollOps } from './polls.ts';
-import { historyBefore, oldestId, oldestOf, searchCommand, searchOutcome, walkCommand, walkOutcome, type RawSearch, type RawWalk } from './search.ts';
+import { historyBefore, oldestId, oldestOf, pageDone, searchCommand, searchOutcome, walkCommand, walkOutcome, type RawSearch, type RawWalk } from './search.ts';
 import { nativeScheduledOutcome, savedListOutcome, SENDING_DISPATCHES, sendingCapabilities, sendingDispatch, sendingHookCommand } from './sending.ts';
 import { contactNote, moreThanBio, noteFact, presenceCommand, presenceOf, profileCommand, selfCapabilities, selfEvents, sessionsOf, type RawSelfState, type RawSelfUp, type RawSession } from './self.ts';
 import { forumFact as mapForum, ThreadOps, threadCapabilities, threadDispatch, THREAD_DISPATCHES, withThreads } from './threads.ts';
@@ -531,11 +531,13 @@ async function onCommand(cmd: P.AdapterCommand): Promise<unknown> {
       const read = cmd.pace === 'read';
       const limit = read ? Math.min(cmd.limit, BROWSE_PAGE) : cmd.limit;
       const beforeId = historyBefore(cmd, Date.now());
-      const page = (messages: any[]): P.HistoryResult => {
+      // `more`: whether older messages are left, when the client said (a browse page); else a short page is the start.
+      const page = (messages: any[], more?: boolean | null): P.HistoryResult => {
         for (const raw of messages) for (const ev of messageEvents(raw, st, false)) hub.emit(ev);
         const oldest = oldestOf(messages);
         const next = oldestId(messages);
-        return { count: messages.length, done: messages.length < limit, ...(oldest !== undefined ? { oldest } : {}), ...(next ? { next } : {}) };
+        const done = pageDone(messages.length, limit, more);
+        return { count: messages.length, done, ...(oldest !== undefined ? { oldest } : {}), ...(next ? { next } : {}) };
       };
       if (read) {
         // As a person reads it (hook.js browse): opened in the page, older pages by the client's own loader.
@@ -547,8 +549,8 @@ async function onCommand(cmd: P.AdapterCommand): Promise<unknown> {
         if (r?.messages) {
           // The first pages of each process at info, so a deploy's first job shows how it read; then now and then.
           readPages++;
-          if (readPages <= 20 || readPages % 50 === 0) log('info', 'read a page as a person', { channel: cmd.conversation, count: r.messages.length, opened: !!r.opened, heldAcks: r.held ?? null, before: beforeId ?? null });
-          return page(r.messages);
+          if (readPages <= 20 || readPages % 50 === 0) log('info', 'read a page as a person', { channel: cmd.conversation, count: r.messages.length, opened: !!r.opened, more: r.more ?? null, heldAcks: r.held ?? null, before: beforeId ?? null });
+          return page(r.messages, r.more);
         }
         if (r?.plain && !plainWhy.has(r.plain)) {
           plainWhy.add(r.plain);
@@ -1144,7 +1146,7 @@ async function fetchMedia(url: string): Promise<{ mime: string; base64: string }
 
 /** What a page reads at most when it reads like a person: what the client loads on each scroll up. */
 const BROWSE_PAGE = 50;
-type BrowseReply = { messages?: any[]; defer?: number; why?: string; plain?: string; opened?: boolean; held?: number };
+type BrowseReply = { messages?: any[]; defer?: number; why?: string; plain?: string; opened?: boolean; held?: number; more?: boolean | null };
 /** Pages read as a person by this process. */
 let readPages = 0;
 /** Why reading fell back to plain requests, each said once. */

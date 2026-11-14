@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createManager, kindOf, type Manager } from '@dither-accounts/manager';
 import { newToken, Store } from '../packages/manager/src/db.ts';
-import { cgroupMembers, cgroupOf, ownService, procAlive, procsWithEnv, restartQueued } from '../packages/manager/src/procs.ts';
+import { cgroupMembers, cgroupOf, ownService, procAlive, procsWithEnv, restartQueued, serviceOf } from '../packages/manager/src/procs.ts';
 import { chooseLaunch } from '../packages/manager/src/supervisor.ts';
 import chatFakeManifest from '../extractors/chat-fake/manifest.ts';
 import fakeManifest from '../extractors/fake/manifest.ts';
@@ -225,19 +225,25 @@ test('an extractor with no manager for DITHER_MANAGER_GONE_EXIT_S ends itself, a
   expect(JSON.parse(readFileSync(join(accDir, 'extractor.exit'), 'utf8'))).toMatchObject({ pid: p.pid, code: 0 });
 });
 
-test('launch: a process that only inherited INVOCATION_ID is not a service; scope needs the main process of one', () => {
+test('launch: a process that only inherited INVOCATION_ID is not a service; scope needs the main process of one, and the reason is said', () => {
   const was = process.env.INVOCATION_ID;
   process.env.INVOCATION_ID = 'inherited-from-a-service';
   try {
-    expect(chooseLaunch('auto')).toEqual({ launch: 'child', unit: null });
+    const c = chooseLaunch('auto');
+    expect(c).toMatchObject({ launch: 'child', unit: null });
+    expect(c.why).toMatch(/^(not a systemd service|in .+\.service, whose main process is)/);
   } finally {
     if (was === undefined) delete process.env.INVOCATION_ID;
     else process.env.INVOCATION_ID = was;
   }
-  expect(ownService(process.pid, () => 1)).toBe(null);
-  expect(chooseLaunch('auto', { service: () => 'dither-accounts.service', probe: () => true })).toEqual({ launch: 'scope', unit: 'dither-accounts.service' });
-  expect(chooseLaunch('auto', { service: () => 'dither-accounts.service', probe: () => false }).launch).toBe('child');
+  expect(ownService(process.pid, () => 1, 1)).toBe(null);
+  expect(chooseLaunch('auto', { service: () => 'dither-accounts.service', probe: () => true })).toMatchObject({ launch: 'scope', unit: 'dither-accounts.service' });
+  expect(chooseLaunch('auto', { service: () => 'dither-accounts.service', probe: () => 'systemd-run --user --scope failed (1): no bus' })).toEqual({ launch: 'child', unit: 'dither-accounts.service', why: 'systemd-run --user --scope failed (1): no bus' });
   expect(chooseLaunch('detached', { service: () => null }).launch).toBe('detached');
+  // Right at a service's start systemd may not have its MainPID yet (0): asked again, then it is this process.
+  let asked = 0;
+  const unitOfThis = cgroupOf(process.pid)?.split('/').pop() ?? '';
+  if (unitOfThis.endsWith('.service')) expect(serviceOf(process.pid, () => (++asked < 3 ? null : process.pid), 5)).toEqual({ unit: unitOfThis, why: `the main process of ${unitOfThis}` });
   // systemd's job for the unit says restart or stop.
   expect(restartQueued('dither-accounts.service', () => '1026808 dither-accounts.service restart running\n')).toBe(true);
   expect(restartQueued('dither-accounts.service', () => '1026833 dither-accounts.service stop running\n')).toBe(false);
@@ -296,8 +302,11 @@ test.skipIf(!systemd)('real systemd: main.ts as a service: a restart leaves its 
   free.stop(true);
   const unit = `dacc-test-${process.pid}-${Date.now().toString(36)}.service`;
   units.push(unit);
-  const run = Bun.spawnSync(['systemd-run', '--user', '--quiet', `--unit=${unit}`, '--collect', `--setenv=PATH=${process.env.PATH}`, `--working-directory=${ROOT}`, process.execPath, MAIN, '--data', dir, '--port', String(port), '--trace', '0', '--errors', '0'], { stdout: 'pipe', stderr: 'pipe' });
+  // Its output to a file: the start line says which launch it chose, and why.
+  const out = join(dir, 'manager.out');
+  const run = Bun.spawnSync(['systemd-run', '--user', '--quiet', `--unit=${unit}`, '--collect', `--setenv=PATH=${process.env.PATH}`, `--working-directory=${ROOT}`, `--property=StandardOutput=append:${out}`, `--property=StandardError=append:${out}`, process.execPath, MAIN, '--data', dir, '--port', String(port), '--trace', '0', '--errors', '0'], { stdout: 'pipe', stderr: 'pipe' });
   expect(run.exitCode).toBe(0);
+  const said = () => (existsSync(out) ? readFileSync(out, 'utf8') : '');
   const health = async () => {
     try {
       return (await fetch(`http://127.0.0.1:${port}/api/health`)).ok;
@@ -305,11 +314,19 @@ test.skipIf(!systemd)('real systemd: main.ts as a service: a restart leaves its 
       return false;
     }
   };
-  const extractors = () => procsWithEnv((env) => env.DITHER_ACCOUNT_ID === 'acc-svc-1' && env.DITHER_MANAGER_DATA === dir).filter((r) => readFileSync(`/proc/${r.pid}/cmdline`, 'utf8').includes('/src/main.ts'));
+  // Bun running the extractor: not systemd-run, which for a moment carries its environment and entry in the service's
+  // own control group before its scope exists (CI caught it there once).
+  const extractors = () =>
+    procsWithEnv((env) => env.DITHER_ACCOUNT_ID === 'acc-svc-1' && env.DITHER_MANAGER_DATA === dir).filter((r) => {
+      const c = readFileSync(`/proc/${r.pid}/cmdline`, 'utf8').split('\0');
+      return /(^|\/)bun[^/]*$/.test(c[0] ?? '') && c.slice(1).some((a) => a.endsWith('/src/main.ts'));
+    });
   await until(health, 20_000, 'the manager up');
-  await until(() => extractors().length === 1, 20_000, 'its extractor');
+  // Which launch it chose: a clear failure, with its reason, if not scope.
+  await until(() => /launch=\w+: /.test(said()), 10_000, 'the manager to say its launch');
+  expect(said().match(/launch=(\w+): (.*)/)?.slice(1)).toEqual(['scope', `the main process of ${unit}, and systemd-run --user --scope works`]);
+  await until(() => extractors().length === 1 && /dither-accounts-x-acc-svc-1-/.test(cgroupOf(extractors()[0]!.pid) ?? ''), 20_000, 'its extractor running in a scope of its own');
   const [x] = extractors();
-  expect(cgroupOf(x!.pid)).toMatch(/dither-accounts-x-acc-svc-1-/);
 
   Bun.spawnSync(['systemctl', '--user', 'restart', unit]);
   await until(health, 20_000, 'the manager back');

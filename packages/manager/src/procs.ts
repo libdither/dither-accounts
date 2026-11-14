@@ -180,11 +180,27 @@ export async function endAll(procs: ProcRef[], graceMs = 3000): Promise<void> {
  * MainPID is this pid), or null: a shell or a script started from inside a service, which inherits its INVOCATION_ID,
  * is not it.
  */
-export function ownService(pid = process.pid, mainPid: (unit: string) => number | null = systemdMainPid): string | null {
+export function ownService(pid = process.pid, mainPid: (unit: string) => number | null = systemdMainPid, tries = 10): string | null {
+  return serviceOf(pid, mainPid, tries).unit;
+}
+
+/**
+ * ownService, with why not when it is none (the manager logs it: a service that ends up with `child` should say why).
+ * systemd may not have recorded the main process yet right at its start (MainPID 0), so that is asked again a few times.
+ */
+export function serviceOf(pid = process.pid, mainPid: (unit: string) => number | null = systemdMainPid, tries = 10): { unit: string | null; why: string } {
   const cg = cgroupOf(pid);
   const unit = cg?.split('/').pop() ?? '';
-  if (!unit.endsWith('.service')) return null;
-  return mainPid(unit) === pid ? unit : null;
+  if (!unit.endsWith('.service')) return { unit: null, why: `not a systemd service (its control group is ${cg ?? 'unknown'})` };
+  let main: number | null = null;
+  for (let i = 0; i < tries; i++) {
+    main = mainPid(unit);
+    if (main === pid) return { unit, why: `the main process of ${unit}` };
+    // Another process is its main one (this is a child of the service): no point asking again.
+    if (main) break;
+    if (i + 1 < tries) Bun.sleepSync(300);
+  }
+  return { unit: null, why: `in ${unit}, whose main process is ${main ?? 'unknown'}, not this one (${pid})` };
 }
 
 function systemdMainPid(unit: string): number | null {

@@ -22,7 +22,7 @@ import type { Row, Store } from './db.ts';
 import { fingerprintEntry, sameCode } from './fingerprint.ts';
 import { LOG } from './files.ts';
 import type { Kind } from './kinds.ts';
-import { allPids, cgroupMembers, cgroupOf, descendants, endAll, groupMembers, ownService, procAlive, procCmdline, procEnv, type ProcRef, procsWithEnv, procStartedAt, procStat, signalRef } from './procs.ts';
+import { allPids, cgroupMembers, cgroupOf, descendants, endAll, groupMembers, serviceOf, procAlive, procCmdline, procEnv, type ProcRef, procsWithEnv, procStartedAt, procStat, signalRef } from './procs.ts';
 import { spanRecordOf, writeSpan } from './trace.ts';
 
 export interface ExtractorSocketData {
@@ -48,20 +48,26 @@ export type Launch = 'scope' | 'detached' | 'child';
  * script that only inherited a service's INVOCATION_ID is not) and `systemd-run --user --scope` works; else `child`.
  * With the service's name, which main.ts asks on SIGTERM whether it is being restarted or stopped.
  */
-export function chooseLaunch(want: Launch | 'auto', o: { service?: () => string | null; probe?: () => boolean } = {}): { launch: Launch; unit: string | null } {
-  const unit = (o.service ?? ownService)();
-  if (want !== 'auto') return { launch: want, unit };
-  if (!unit) return { launch: 'child', unit };
+export function chooseLaunch(
+  want: Launch | 'auto',
+  o: { service?: () => string | null; probe?: () => true | string } = {},
+): { launch: Launch; unit: string | null; why: string } {
+  const svc = o.service ? { unit: o.service(), why: 'given' } : serviceOf();
+  const unit = svc.unit;
+  if (want !== 'auto') return { launch: want, unit, why: `set to ${want}` };
+  if (!unit) return { launch: 'child', unit, why: svc.why };
   const probe =
     o.probe ??
-    (() => {
+    ((): true | string => {
       try {
-        return Bun.spawnSync(['systemd-run', '--user', '--scope', '--quiet', '--collect', 'true'], { stdout: 'ignore', stderr: 'ignore', timeout: 10_000 }).exitCode === 0;
-      } catch {
-        return false;
+        const r = Bun.spawnSync(['systemd-run', '--user', '--scope', '--quiet', '--collect', 'true'], { stdout: 'ignore', stderr: 'pipe', timeout: 10_000 });
+        return r.exitCode === 0 ? true : `systemd-run --user --scope failed (${r.exitCode ?? 'timed out'}): ${r.stderr.toString().trim().slice(0, 200)}`;
+      } catch (e) {
+        return `systemd-run --user --scope did not run: ${(e as Error).message}`;
       }
     });
-  return { launch: probe() ? 'scope' : 'child', unit };
+  const ok = probe();
+  return ok === true ? { launch: 'scope', unit, why: `the main process of ${unit}, and systemd-run --user --scope works` } : { launch: 'child', unit, why: ok };
 }
 
 interface Running {
@@ -137,7 +143,12 @@ const GOING_MS = 5000;
 const OUR_SCOPE = /\/dither-accounts-x-[^/]+\.scope$/;
 
 /** An extractor's own process, not what it started (Chromium, signal-cli, the WhatsApp bridge inherit its environment). */
-const isExtractorCmd = (pid: number) => procCmdline(pid).some((a) => a.endsWith('/src/main.ts'));
+// Bun running an extractor's entry: not systemd-run on its way to it (for a moment, in the manager's control group,
+// with the extractor's environment and its entry among its own arguments, until its scope exists).
+const isExtractorCmd = (pid: number) => {
+  const c = procCmdline(pid);
+  return /(^|\/)bun[^/]*$/.test(c[0] ?? '') && c.slice(1).some((a) => a.endsWith('/src/main.ts'));
+};
 
 /**
  * Processes on this machine that run an account: any live process with DITHER_ACCOUNT_ID=<id> in its environment,

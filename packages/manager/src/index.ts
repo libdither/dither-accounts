@@ -94,6 +94,8 @@ export interface Manager {
   url: string;
   /** The systemd user service this manager is the main process of, or null (procs.ts ownService). */
   service: string | null;
+  /** Why its launch is what it is (supervisor.ts chooseLaunch): logged at start. */
+  launchWhy: string;
   /**
    * Stops the manager. With `leaveExtractors`, extractors that can outlive it are left running for the next manager
    * to adopt (main.ts on SIGTERM: a restart keeps every session); without it every extractor stops.
@@ -210,6 +212,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     providers,
     url: `http://127.0.0.1:${http.server.port}`,
     service: launch.unit,
+    launchWhy: launch.why,
     async stop(so = {}) {
       for (const p of providers) p.stop?.();
       notices!.stop();

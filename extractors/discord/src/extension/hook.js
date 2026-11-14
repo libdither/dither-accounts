@@ -3164,6 +3164,10 @@
     if (BROWSE_NO_OPEN.has(c.type)) return { plain: 'a voice channel is not opened' };
     holdAcks(channelId);
     let landing = null;
+    let landingMore = null;
+    // Whether older messages are left, as the client's own load says (hasMoreBefore): the page's size does not say it,
+    // since opening a channel loads fewer than a scroll does.
+    let more = null;
     if (mod.SelectedChannelStore.getChannelId() !== channelId) {
       const prev = browsing.channelId;
       if (!prev) browsing.home = location.pathname;
@@ -3178,12 +3182,15 @@
       // Opening it loaded its newest page, unless the client had it already.
       const a = await Promise.race([landed, browseSleep(3000).then(() => null)]);
       landing = a && Array.isArray(a.messages) ? a.messages : null;
+      landingMore = a && typeof a.hasMoreBefore === 'boolean' ? a.hasMoreBefore : null;
       // A look at what opened.
       await browseSleep(between([800, 2000]));
     }
     let raw = null;
-    if (!cmd.beforeId && landing) raw = landing;
-    else {
+    if (!cmd.beforeId && landing) {
+      raw = landing;
+      more = landingMore;
+    } else {
       const before = cmd.beforeId ? String(cmd.beforeId) : undefined;
       const got = nextAction(['LOAD_MESSAGES_SUCCESS', 'LOAD_MESSAGES_FAILURE'], (a) => String(a.channelId) === channelId && (a.type === 'LOAD_MESSAGES_FAILURE' || (String(a.before ?? '') === String(before ?? '') && a.after == null)), BROWSE_LOAD_MS);
       const sent = ma.fetchMessages({ channelId, before, limit: BROWSE_PAGE, truncate: true });
@@ -3195,6 +3202,7 @@
         if (!a) throw new Error('Discord did not answer in time');
         if (a.type === 'LOAD_MESSAGES_FAILURE') throw new Error('Discord did not load the messages');
         raw = Array.isArray(a.messages) ? a.messages : [];
+        more = typeof a.hasMoreBefore === 'boolean' ? a.hasMoreBefore : null;
       }
     }
     armLeave();
@@ -3203,7 +3211,7 @@
       log('warn', 'browse: the read state moved while a channel was open for reading; reading plainly for six hours', { channelId });
       leave(true);
     }
-    return { messages: raw.map(pickMessage).filter(Boolean), opened: !!landing, held: ackHeldCount };
+    return { messages: raw.map(pickMessage).filter(Boolean), opened: !!landing, held: ackHeldCount, more };
   }
 
   /**

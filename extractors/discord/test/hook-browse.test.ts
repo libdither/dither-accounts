@@ -13,7 +13,7 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { markerName, stampMarkers } from '@dither-accounts/browser/markers';
-import { historyBefore, oldestId } from '../src/search.ts';
+import { historyBefore, oldestId, pageDone } from '../src/search.ts';
 
 const KEY = 'discord-hook-browse-test-key';
 const UP = markerName(KEY, 'up');
@@ -101,7 +101,9 @@ function client(opts: { unread?: string[] } = {}) {
       if (!loaded.has(channel)) {
         loaded.add(channel);
         // As MessageManager's initial fetch: a jump with how to scroll, and no message.
-        dispatcher.dispatch({ type: 'LOAD_MESSAGES_SUCCESS', channelId: channel, messages: loadPage(channel), isBefore: false, isAfter: false, limit: 50, jump: { jumpType: 'ANIMATED' } });
+        // Fewer than a scroll loads (seen: 10 on the live client), and whether there are more, as the client says.
+        const page = loadPage(channel).slice(0, 10);
+        dispatcher.dispatch({ type: 'LOAD_MESSAGES_SUCCESS', channelId: channel, messages: page, isBefore: false, isAfter: false, limit: 10, hasMoreBefore: history[channel].length > 10, jump: { jumpType: 'ANIMATED' } });
       }
       mount(channel);
     }, 1);
@@ -113,7 +115,8 @@ function client(opts: { unread?: string[] } = {}) {
       calls.push(['fetchMessages', o]);
       return new Promise((r) =>
         setTimeout(() => {
-          dispatcher.dispatch({ type: 'LOAD_MESSAGES_SUCCESS', channelId: o.channelId, messages: loadPage(o.channelId, o.before), before: o.before, isBefore: o.before != null, isAfter: false, limit: o.limit, truncate: o.truncate });
+          const page = loadPage(o.channelId, o.before);
+          dispatcher.dispatch({ type: 'LOAD_MESSAGES_SUCCESS', channelId: o.channelId, messages: page, before: o.before, isBefore: o.before != null, isAfter: false, limit: o.limit, hasMoreBefore: page.length === o.limit, truncate: o.truncate });
           r(true);
         }, 1),
       );
@@ -219,7 +222,9 @@ describe("hook.js's reading like a person", () => {
     expect(first.ok).toBe(true);
     expect(c.calls.filter((x) => x[0] === 'transitionTo')).toEqual([['transitionTo', `/channels/${GUILD}/${CHAN}`]]);
     expect(first.result.opened).toBe(true);
-    expect(first.result.messages.length).toBe(50);
+    // Opening it loaded 10, with more before them: not the start of the channel.
+    expect(first.result.messages.length).toBe(10);
+    expect(first.result.more).toBe(true);
     // The newest page came from opening it: no loader call, one request with no `before`.
     expect(c.calls.filter((x) => x[0] === 'fetchMessages')).toEqual([]);
     expect(c.calls.filter((x) => x[0] === 'GET')).toEqual([['GET', `/channels/${CHAN}/messages`, { before: undefined, limit: 50 }]]);
@@ -233,6 +238,7 @@ describe("hook.js's reading like a person", () => {
     const second = await p.cmd({ kind: 'browse', channelId: CHAN, beforeId: oldest });
     expect(c.calls.filter((x) => x[0] === 'fetchMessages').map((x) => x[1])).toEqual([{ channelId: CHAN, before: oldest, limit: 50, truncate: true }]);
     expect(second.result.messages.length).toBe(50);
+    expect(second.result.more).toBe(true);
     expect(second.result.opened).toBe(false);
     expect(BigInt(oldestId(second.result.messages)!) < BigInt(oldest)).toBe(true);
     // Not opened again; still nothing acked.
@@ -335,5 +341,14 @@ describe('where a page goes back from', () => {
     // A plain (not read) page from the top keeps its time.
     expect(historyBefore({ beforeTs: now + 1 }, now)).toBeDefined();
     expect(oldestId([{ id: '300000000000000200150' }, { id: '300000000000000200099' }, { id: 'x' }])).toBe('300000000000000200099');
+  });
+
+  test('the start of the channel: as the client says when it said, else a short page', () => {
+    // Opening a channel loaded 10 with more before them (seen live): not the start.
+    expect(pageDone(10, 50, true)).toBe(false);
+    expect(pageDone(10, 50, false)).toBe(true);
+    expect(pageDone(0, 50, true)).toBe(true);
+    expect(pageDone(10, 50)).toBe(true);
+    expect(pageDone(50, 50, null)).toBe(false);
   });
 });

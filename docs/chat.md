@@ -82,7 +82,9 @@ pages a channel. The hook's `browse` (hook.js, "reading like a person"), read in
 
 - **Open, then scroll.** The channel is opened in the sandbox's page with the client's own navigation (`transitionTo`,
   found by its log line "transitionTo - Transitioning to"; a DM under `/channels/@me/`), which loads the newest 50
-  itself: that is the first page (`opened: true`). Older pages come from the loader the client's scroll-up calls,
+  itself: that is the first page (`opened: true`). That load can be shorter than a scroll's (10 on the live client,
+  2026-11-14), so whether the start of the channel was reached is the client's own `hasMoreBefore` (`more`), never
+  the page's size (`search.ts` `pageDone`). Older pages come from the loader the client's scroll-up calls,
   `MessageActions.fetchMessages({ channelId, before, limit: 50, truncate: true })`, and are taken from its
   `LOAD_MESSAGES_SUCCESS`. So the requests (`GET /channels/{id}/messages?before=…&limit=50`), the page's address and
   the gateway's subscriptions for the channel are those of someone reading there. Answered from the client's own

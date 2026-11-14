@@ -179,6 +179,16 @@ export function historyBefore(cmd: { beforeTs?: number; cursor?: string; pace?: 
   return snowflakeAt(cmd.beforeTs).toString();
 }
 
+/**
+ * Whether a history page reached the start of the channel. A page read as a person (browse) says whether older
+ * messages are left, as the client's own load does (`more`, its hasMoreBefore): opening a channel loads fewer than a
+ * scroll does, so a short page is not the start. Otherwise, a page shorter than asked for is.
+ */
+export function pageDone(count: number, limit: number, more?: boolean | null): boolean {
+  if (typeof more === 'boolean') return !more || count === 0;
+  return count < limit;
+}
+
 /** The id of a page's oldest message: where the next page goes back from. */
 export function oldestId(messages: { id?: unknown }[]): string | undefined {
   let best: bigint | null = null;

@@ -243,6 +243,10 @@
     InviteActions: (m) => typeof m.resolveInvite === 'function' && typeof m.acceptInvite === 'function',
     InviteStore: isStore('InviteStore'),
     RelationshipActions: (m) => typeof m.sendRequest === 'function' && typeof m.addRelationship === 'function' && typeof m.removeRelationship === 'function',
+    // Reading like a person (browse): the client's own navigation (transitionTo, found by its log line) and the store
+    // that knows which window has focus.
+    Router: (m) => !!exportedFn(m, 64, isTransitionTo),
+    WindowStore: isStore('WindowStore'),
     // Member search (walkMembers): what the client's own mention autocomplete and member search call to ask the
     // gateway for members by name (op 8). Without it, the action it dispatches, which the client's gateway store sends.
     MemberActions: (m) => typeof m.requestMembers === 'function' && typeof m.requestMembersById === 'function' && !storeName(m),
@@ -1081,6 +1085,8 @@
         return openDirect(cmd.userId);
       case 'history':
         return history(cmd);
+      case 'browse':
+        return browse(cmd);
       case 'search':
         return search(cmd);
       case 'walkMembers':
@@ -2963,6 +2969,239 @@
     const res = await rest('get', `/channels/${cmd.channelId}/messages`, query);
     const arr = (res && res.body) || [];
     return { messages: arr.map(pickMessage).filter(Boolean) };
+  }
+
+  // ------------------------------------------------------------ reading like a person
+  /**
+   * An index job's page, read as you would read it (docs/chat.md "Reading like a person"): the channel opened in this page with the client's own navigation, which loads its newest page by
+   * itself, then older pages with the loader its scrolling calls (MessageActions.fetchMessages, 50 before the oldest
+   * message, truncating as it goes), so the requests, the page's address and the gateway's subscriptions for the
+   * channel are a person's. Read in the web client of 2026-11-14.
+   *
+   * It never marks anything read. The client acks an open channel by itself only when you are not idle, its window has
+   * focus (this page's always does) and its message list registered the channel for automatic acks
+   * (ENABLE_AUTOMATIC_ACK, in ReadStateStore's shouldAutomaticallyAck). So that registration is held back for a channel
+   * opened here (a dispatcher interceptor), and one made before is undone (DISABLE_AUTOMATIC_ACK). If the channel's
+   * read state moves anyway, reading this way is off for six hours and the extractor fetches plainly.
+   *
+   * It yields to you: while you use the live view (a click, a key or a scroll in the last eleven minutes: the client
+   * calls itself idle ten minutes after one, and an idle client acks nothing either) or a call is on, nothing is opened
+   * and the answer is { defer: ms }. Input while a channel is open for reading hands the page to you there and then:
+   * nothing held back, no going back. A few minutes after the last page, the page goes back to where it was, or to
+   * the friends list if that was a channel (opening one again could ack it). Voice and stage channels are never
+   * opened (opening one is how you join it): { plain }.
+   */
+  const BROWSE_QUIET_MS = 11 * 60_000;
+  const BROWSE_LEAVE_MS = [2 * 60_000, 5 * 60_000];
+  const BROWSE_OFF_MS = 6 * 3_600_000;
+  const BROWSE_LOAD_MS = 45_000;
+  const BROWSE_PAGE = 50;
+  const BROWSE_NO_OPEN = new Set([2, 13]);
+  const browsing = { channelId: null, home: null, leaveTimer: null };
+  /**
+   * Channels whose automatic acks are held back, each with its read state when it was held (moved on by acks from your
+   * other devices, MESSAGE_ACK), and the windows each channel was registered for (to undo).
+   */
+  const ackHeld = new Map();
+  const ackWindows = new Map();
+  let ackInterceptor = false;
+  /** Registrations held back, all told: said with each page, so the log shows the hold at work. */
+  let ackHeldCount = 0;
+  let browseOff = null;
+  let lastInputAt = 0;
+  function tookOver(e) {
+    if (!e || !e.isTrusted) return;
+    lastInputAt = Date.now();
+    if (!browsing.channelId && !ackHeld.size) return;
+    clearTimeout(browsing.leaveTimer);
+    browsing.leaveTimer = null;
+    browsing.channelId = null;
+    browsing.home = null;
+    ackHeld.clear();
+  }
+  for (const type of ['pointerdown', 'keydown', 'wheel', 'touchstart']) {
+    try {
+      window.addEventListener(type, tookOver, { capture: true, passive: true });
+    } catch (e) {
+      /* no window events: nothing to yield to */
+    }
+  }
+  function isTransitionTo(f) {
+    try {
+      return f.length <= 2 && /transitionTo - Transitioning to/.test(Function.prototype.toString.call(f));
+    } catch (e) {
+      return false;
+    }
+  }
+  const browseSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const between = ([lo, hi]) => lo + Math.random() * (hi - lo);
+
+  /** The interceptor, once: holds back automatic-ack registrations of held channels, and keeps track of the others. */
+  function watchAcks() {
+    if (ackInterceptor) return true;
+    const d = mod.Dispatcher;
+    if (!d || typeof d.addInterceptor !== 'function') return false;
+    d.addInterceptor((a) => {
+      try {
+        if (!a || (a.type !== 'ENABLE_AUTOMATIC_ACK' && a.type !== 'DISABLE_AUTOMATIC_ACK')) return false;
+        const id = String(a.channelId);
+        if (a.type === 'DISABLE_AUTOMATIC_ACK') {
+          const w = ackWindows.get(id);
+          if (w) w.delete(a.windowId);
+          if (w && !w.size) ackWindows.delete(id);
+          return false;
+        }
+        if (ackHeld.has(id)) return (ackHeldCount++, true);
+        if (!ackWindows.has(id)) ackWindows.set(id, new Set());
+        ackWindows.get(id).add(a.windowId);
+        return false;
+      } catch (e) {
+        return false;
+      }
+    });
+    // Read on another device: the read state moves, and that is not this page's doing.
+    try {
+      d.subscribe('MESSAGE_ACK', (a) => {
+        const id = a && String(a.channelId);
+        if (id && ackHeld.has(id)) setTimeout(() => ackHeld.has(id) && ackHeld.set(id, ackOf(id)), 0);
+      });
+    } catch (e) {
+      /* then any move turns reading off */
+    }
+    ackInterceptor = true;
+    return true;
+  }
+  function holdAcks(channelId) {
+    if (!ackHeld.has(channelId)) ackHeld.set(channelId, ackOf(channelId));
+    const windows = new Set(ackWindows.get(channelId) || []);
+    // Registered before the interceptor was there: the window that has focus, if the channel is registered for it.
+    try {
+      const w = mod.WindowStore && mod.WindowStore.getFocusedWindowId();
+      if (w != null && mod.ReadStateStore && typeof mod.ReadStateStore.getChannelIdsForWindowId === 'function' && mod.ReadStateStore.getChannelIdsForWindowId(w).map(String).includes(channelId)) windows.add(w);
+    } catch (e) {
+      /* only what the interceptor saw */
+    }
+    for (const windowId of windows) mod.Dispatcher.dispatch({ type: 'DISABLE_AUTOMATIC_ACK', channelId, windowId });
+  }
+  const ackOf = (channelId) => {
+    try {
+      return mod.ReadStateStore ? mod.ReadStateStore.ackMessageId(channelId) ?? null : null;
+    } catch (e) {
+      return null;
+    }
+  };
+  /** The next action of these types that matches, or null after `ms`. */
+  function nextAction(types, match, ms) {
+    const d = mod.Dispatcher;
+    return new Promise((resolve) => {
+      const subs = [];
+      let timer = null;
+      const done = (v) => {
+        clearTimeout(timer);
+        for (const [ev, fn] of subs) d.unsubscribe(ev, fn);
+        resolve(v);
+      };
+      for (const ev of types) {
+        const fn = (a) => {
+          let hit = false;
+          try {
+            hit = match(a);
+          } catch (e) {
+            /* not it */
+          }
+          if (hit) setTimeout(() => done(a), 0);
+        };
+        subs.push([ev, fn]);
+        d.subscribe(ev, fn);
+      }
+      timer = setTimeout(() => done(null), ms);
+    });
+  }
+  async function browseUntil(f, ms) {
+    for (const end = Date.now() + ms; Date.now() < end; await browseSleep(100)) if (f()) return true;
+    return false;
+  }
+  const messagesReady = (channelId) => {
+    try {
+      const m = mod.MessageStore.getMessages(channelId);
+      return !!m && !!m.ready && !m.loadingMore;
+    } catch (e) {
+      return false;
+    }
+  };
+  /** A few minutes after the last page, back to where the page was, unless you took it over meanwhile. */
+  function armLeave() {
+    clearTimeout(browsing.leaveTimer);
+    browsing.leaveTimer = setTimeout(() => leave(false), between(BROWSE_LEAVE_MS));
+  }
+  function leave(now) {
+    clearTimeout(browsing.leaveTimer);
+    browsing.leaveTimer = null;
+    const was = browsing.channelId;
+    const home = browsing.home;
+    browsing.channelId = null;
+    browsing.home = null;
+    if (!was) return;
+    const transition = mod.Router && exportedFn(mod.Router, 64, isTransitionTo);
+    const stillThere = mod.SelectedChannelStore && mod.SelectedChannelStore.getChannelId() === was;
+    const back = home && home !== location.pathname && !/^\/channels\/[^/]+\/\d+/.test(home) ? home : '/channels/@me';
+    if (transition && stillThere && (now || Date.now() - lastInputAt > BROWSE_QUIET_MS)) transition(back);
+    // Its list is gone once the page has moved on: its acks are the client's own again.
+    setTimeout(() => browsing.channelId !== was && ackHeld.delete(was), 5000);
+  }
+
+  async function browse(cmd) {
+    const channelId = String(cmd.channelId);
+    const now = Date.now();
+    if (browseOff && now < browseOff.until) return { plain: browseOff.why };
+    if (now - lastInputAt < BROWSE_QUIET_MS) return { defer: BROWSE_QUIET_MS - (now - lastInputAt) + 5000, why: 'the live view is in use' };
+    if (call.channelId) return { defer: 5 * 60_000, why: 'a call is on' };
+    const transition = mod.Router && exportedFn(mod.Router, 64, isTransitionTo);
+    const ma = mod.MessageActions;
+    if (!transition || !ma || typeof ma.fetchMessages !== 'function' || !mod.SelectedChannelStore || !mod.MessageStore || !watchAcks()) return { plain: 'the hook cannot open channels in this client build' };
+    const c = mod.ChannelStore.getChannel(channelId);
+    if (!c) return { plain: 'the client has not loaded this channel' };
+    if (BROWSE_NO_OPEN.has(c.type)) return { plain: 'a voice channel is not opened' };
+    holdAcks(channelId);
+    let landing = null;
+    if (mod.SelectedChannelStore.getChannelId() !== channelId) {
+      const prev = browsing.channelId;
+      if (!prev) browsing.home = location.pathname;
+      const landed = nextAction(['LOAD_MESSAGES_SUCCESS'], (a) => String(a.channelId) === channelId && a.before == null && a.after == null && !a.jump, 10_000);
+      const guildId = c.guild_id ?? c.guildId ?? null;
+      transition(`/channels/${guildId || '@me'}/${channelId}`);
+      browsing.channelId = channelId;
+      if (prev && prev !== channelId) setTimeout(() => browsing.channelId !== prev && ackHeld.delete(prev), 5000);
+      if (!(await browseUntil(() => mod.SelectedChannelStore.getChannelId() === channelId && messagesReady(channelId), 15_000))) throw new Error('the channel did not open');
+      // Opening it loaded its newest page, unless the client had it already.
+      const a = await Promise.race([landed, browseSleep(3000).then(() => null)]);
+      landing = a && Array.isArray(a.messages) ? a.messages : null;
+      // A look at what opened.
+      await browseSleep(between([800, 2000]));
+    }
+    let raw = null;
+    if (!cmd.beforeId && landing) raw = landing;
+    else {
+      const before = cmd.beforeId ? String(cmd.beforeId) : undefined;
+      const got = nextAction(['LOAD_MESSAGES_SUCCESS', 'LOAD_MESSAGES_FAILURE'], (a) => String(a.channelId) === channelId && (a.type === 'LOAD_MESSAGES_FAILURE' || (String(a.before ?? '') === String(before ?? '') && a.after == null)), BROWSE_LOAD_MS);
+      const sent = ma.fetchMessages({ channelId, before, limit: BROWSE_PAGE, truncate: true });
+      if (sent === undefined || sent === false) {
+        // The client answered from what it holds (or would not load): the page as a plain request instead.
+        raw = (await rest('get', `/channels/${channelId}/messages`, before ? { limit: BROWSE_PAGE, before } : { limit: BROWSE_PAGE }))?.body ?? [];
+      } else {
+        const a = await got;
+        if (!a) throw new Error('Discord did not answer in time');
+        if (a.type === 'LOAD_MESSAGES_FAILURE') throw new Error('Discord did not load the messages');
+        raw = Array.isArray(a.messages) ? a.messages : [];
+      }
+    }
+    armLeave();
+    if (ackOf(channelId) !== ackHeld.get(channelId)) {
+      browseOff = { until: Date.now() + BROWSE_OFF_MS, why: 'the client marked a channel read while it was open for reading' };
+      log('warn', 'browse: the read state moved while a channel was open for reading; reading plainly for six hours', { channelId });
+      leave(true);
+    }
+    return { messages: raw.map(pickMessage).filter(Boolean), opened: !!landing, held: ackHeldCount };
   }
 
   /**

@@ -33,7 +33,8 @@ dither-chat's network search and index jobs (its `netsearch.ts` and `jobs.ts`) a
 own servers (`search`, capability `search`), to list a channel's threads (`threads`, capability `listThreads`) and to
 list a server's members (`walkMembers`, capability `walkMembers`). Hits come first as message facts (live=false) after
 the conversations, threads and people they need, then the reply names them; a walk is a `members` event with source
-`walk`, then `{ count, total?, next? }`. `history`'s reply carries `oldest`, the ts of the page's oldest message.
+`walk`, then `{ count, total?, next? }`. `history`'s reply carries `oldest`, the ts of the page's oldest message, and
+on Discord `next`, its id (see "Reading like a person").
 
 - **Discord** (`extractors/discord/src/search.ts`, hook.js `search`, `threads` and `walkMembers`). Checked on a live
   client with a test account (its own test server, and a large public server, as an ordinary member).
@@ -71,6 +72,42 @@ the conversations, threads and people they need, then the reply names them; a wa
   (scope `all`), a space's rooms, or one room; `in:` narrows the rooms, authors are `senders`, relevance is
   `order_by: rank`; dates are kept to after the fact. The hub's numeric offsets stand for the server's `next_batch`
   tokens, remembered per search. Encrypted rooms are not searched by the server. No member walks.
+
+## Reading like a person (Discord)
+
+dither-chat's index jobs and gap fill ask for history at a person's reading pace (its `docs/indexing.md` "Reading
+pace": in your hours, in sessions with breaks, a few thousand messages a day). Such a `history` command says
+`pace: 'read'`; the Discord extractor then reads the page the way the client's own scrolling would, not as an exporter
+pages a channel. The hook's `browse` (hook.js, "reading like a person"), read in the web client of 2026-11-14:
+
+- **Open, then scroll.** The channel is opened in the sandbox's page with the client's own navigation (`transitionTo`,
+  found by its log line "transitionTo - Transitioning to"; a DM under `/channels/@me/`), which loads the newest 50
+  itself: that is the first page (`opened: true`). Older pages come from the loader the client's scroll-up calls,
+  `MessageActions.fetchMessages({ channelId, before, limit: 50, truncate: true })`, and are taken from its
+  `LOAD_MESSAGES_SUCCESS`. So the requests (`GET /channels/{id}/messages?before=…&limit=50`), the page's address and
+  the gateway's subscriptions for the channel are those of someone reading there. Answered from the client's own
+  cache instead (no request), the page is fetched plainly.
+- **Real ids.** `before` is the oldest message of the page before, by its id: the reply's `next`, which the hub sends
+  back as `cursor` (`search.ts` `historyBefore`, `oldestId`). Only a page the hub starts mid-way without a cursor (a
+  restart's first page, or after a span it skipped) goes back from a time made into an id, as plain history always did.
+- **Nothing marked read.** The client acks an open channel by itself only when it isn't idle, its window has focus,
+  and its message list has registered the channel for automatic acks (`ENABLE_AUTOMATIC_ACK`; ReadStateStore's
+  `shouldAutomaticallyAck`). The sandbox's window always has focus (Chromium on a bare Xvfb), so the hook holds that
+  registration back with a dispatcher interceptor for each channel opened to read, and undoes one made before
+  (`DISABLE_AUTOMATIC_ACK`, the window from `WindowStore`). It reads only after 11 minutes without your input, when
+  the client calls itself idle as well (10 minutes after a click, scroll or key). If a held channel's read state
+  moves anyway, other than by your other devices (`MESSAGE_ACK`), reading this way is off for six hours (a warning in
+  the log) and pages are fetched plainly.
+- **Yields to you.** Input in the page in the last 11 minutes (a click, a key, a scroll: the live view), or a call,
+  answers `{ defer }` and the hub asks again later (`deferMs`, not a failure). Input while a channel is open for
+  reading hands the page over at once: nothing held back, no going back. Voice and stage channels are never opened
+  (opening one is how you join it), and a channel the client has not loaded isn't either: `{ plain }`, fetched with
+  plain `history`.
+- **Going back.** Two to five minutes after the last page (a break between sessions, the end of a job), the page goes
+  back to where it was before reading, or to the friends list if that was a channel.
+
+Members: the hub no longer walks a Discord server by name ("a", "b", "c" in the member search), only the recent
+members' list, the one behind the Members page. `walkMembers` by name stays for the @mention picker.
 
 ## Adding: joining, friends and requests
 

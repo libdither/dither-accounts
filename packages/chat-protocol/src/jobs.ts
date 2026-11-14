@@ -63,6 +63,11 @@ export interface JobView {
   /** Places it could not reach: no account of yours with the capability, or none online. */
   skipped: number;
   error: string | null;
+  /**
+   * Waiting on the reading pace (docs/indexing.md "Reading pace") rather than working: out of the account's hours,
+   * its messages for the day read, or a break between sessions. Null while it reads.
+   */
+  resting?: { until: number; why: 'hours' | 'cap' | 'break' } | null;
 }
 
 /** One place a network search asks, in the order it asks them. */

@@ -168,6 +168,28 @@ export function walkOutcome(raw: RawWalk, cmd: WalkCommand, st: AdapterState): {
   return { events, result: { count: members.length, ...(total !== undefined ? { total } : {}), ...(next !== undefined ? { next } : {}) } };
 }
 
+/**
+ * Where a history page goes back from: the hub's cursor (a message id an earlier page ended on) when it gave one;
+ * else its time as an id. A page read from the top (its time is now) has none, as opening the channel loads it.
+ */
+export function historyBefore(cmd: { beforeTs?: number; cursor?: string; pace?: string }, now: number): string | undefined {
+  if (cmd.cursor && /^\d{15,21}$/.test(cmd.cursor)) return cmd.cursor;
+  if (!cmd.beforeTs) return undefined;
+  if (cmd.pace === 'read' && cmd.beforeTs > now - 60_000) return undefined;
+  return snowflakeAt(cmd.beforeTs).toString();
+}
+
+/** The id of a page's oldest message: where the next page goes back from. */
+export function oldestId(messages: { id?: unknown }[]): string | undefined {
+  let best: bigint | null = null;
+  for (const m of messages) {
+    if (typeof m?.id !== 'string' || !/^\d{15,21}$/.test(m.id)) continue;
+    const v = BigInt(m.id);
+    if (best === null || v < best) best = v;
+  }
+  return best === null ? undefined : best.toString();
+}
+
 /** The ts of a history page's oldest message, when it had one. */
 export function oldestOf(messages: RawMessage[]): number | undefined {
   let oldest: number | undefined;

@@ -2973,8 +2973,7 @@
 
   // ------------------------------------------------------------ reading like a person
   /**
-   * An index job's page, read as you would read it (dither-chat docs/indexing.md "Reading pace", docs/chat.md "Reading
-   * like a person"): the channel opened in this page with the client's own navigation, which loads its newest page by
+   * An index job's page, read as you would read it (docs/chat.md "Reading like a person"): the channel opened in this page with the client's own navigation, which loads its newest page by
    * itself, then older pages with the loader its scrolling calls (MessageActions.fetchMessages, 50 before the oldest
    * message, truncating as it goes), so the requests, the page's address and the gateway's subscriptions for the
    * channel are a person's. Read in the web client of 2026-11-14.

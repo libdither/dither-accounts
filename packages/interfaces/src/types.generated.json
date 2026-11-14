@@ -2,8 +2,8 @@
  "chat": {
   "ops": {
    "history": {
-    "input": "{ conversation: string; beforeTs?: number; limit: number }",
-    "output": "{\n  count: number;\n  /** The start of the conversation was reached. */\n  done: boolean;\n  /** The ts of the page's oldest message, when there was one. */\n  oldest?: number;\n}",
+    "input": "{ conversation: string; beforeTs?: number; limit: number; cursor?: string; pace?: \"read\" }",
+    "output": "{\n  count: number;\n  /** The start of the conversation was reached. */\n  done: boolean;\n  /** The ts of the page's oldest message, when there was one. */\n  oldest?: number;\n  /** Where the next page starts, in the network's own terms (Discord: the oldest message's id): sent back as `cursor`. */\n  next?: string;\n  /** Nothing was fetched: the adapter cannot read this way just now (on Discord: the owner is using the live view, or a call is on). Ask again after this many ms; not a failure. */\n  deferMs?: number;\n}",
     "example": {
      "conversation": "",
      "limit": 0

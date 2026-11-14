@@ -98,6 +98,11 @@ export interface FakeMessage {
   headerless?: boolean;
   /** The sync point (history id) of its last change. */
   history: number;
+  /** Written through the page's own writes (a draft, or sent): the id the page made for it (msg-a:r-…), its record's [0]. */
+  aId?: string;
+  bcc?: FakeAddress[];
+  html?: string;
+  files?: { name: string; mime: string; data: Buffer }[];
 }
 export interface FakeLabel {
   id: string;
@@ -304,18 +309,22 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
     return [...latest].map(([thread, date]) => ({ thread, date })).sort((a, b) => b.date - a.date);
   }
   const threadOf = (t: string) => visible().filter((m) => m.thread === t).sort((a, b) => a.date - b.date);
-  const idOf = (m: FakeMessage) => (m.pending ? `msg-a:${m.id}` : m.localId ? (Number(m.id.slice(-1)) % 2 ? `msg-a:r-${m.id.slice(-9)}` : `msg-a:r${m.id.slice(-9)}.${m.id.slice(-3)}`) : `msg-f:${m.id}`);
+  const idOf = (m: FakeMessage) => (m.aId ? m.aId : m.pending ? `msg-a:${m.id}` : m.localId ? (Number(m.id.slice(-1)) % 2 ? `msg-a:r-${m.id.slice(-9)}` : `msg-a:r${m.id.slice(-9)}.${m.id.slice(-3)}`) : `msg-f:${m.id}`);
   const hex = (dec: string) => BigInt(dec).toString(16).padStart(16, '0');
 
   // ---- the recorded layout
-  /** A message in a thread row: bv's has no recipients; s's has them at 2 (to) and 5 (cc). */
+  /** A message in a thread row: bv's has no recipients or headers; s's has to, cc and bcc at 2, 3 and 4, and Message-ID, References and In-Reply-To at 13, 14 and 15. */
   function msgRec(m: FakeMessage, withRecipients: boolean) {
     const r: unknown[] = Array(31).fill(null);
     r[0] = idOf(m);
     r[1] = [1, m.from.email, m.from.name ?? m.from.email];
     if (withRecipients) {
       r[2] = m.to.map((a) => [1, a.email, a.name ?? a.email]);
-      r[5] = m.cc.length ? m.cc.map((a) => [1, a.email, a.name ?? a.email]) : null;
+      r[3] = m.cc.length ? m.cc.map((a) => [1, a.email, a.name ?? a.email]) : null;
+      r[4] = m.bcc?.length ? m.bcc.map((a) => [1, a.email, a.name ?? a.email]) : null;
+      r[13] = m.messageId;
+      r[14] = m.inReplyTo ? [m.inReplyTo] : [];
+      r[15] = m.inReplyTo ?? null;
     }
     r[6] = m.date;
     r[9] = m.body.slice(0, 60);
@@ -324,7 +333,6 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
     const details: unknown[] = Array(31).fill(null);
     details[27] = idOf(m);
     r[12] = details;
-    r[15] = box.me.email;
     r[17] = m.date;
     r[30] = m.date;
     // Gmail's own id in hex at [55], on every message Gmail has (a pending one has none yet).
@@ -459,7 +467,7 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
       if (ep === 'fd') return xssi(fd(body));
       if (body?.[1] !== null && body?.[1] !== undefined) {
         writes++;
-        return xssi([['er', 400]], 400);
+        return write(body);
       }
       return xssi(sAnswer(body));
     }
@@ -480,7 +488,86 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
       return new Response(fakeEml(msg), { headers: { 'content-type': 'message/rfc822', 'content-disposition': `attachment; filename="original_msg.eml"` } });
     }
     if (req.method === 'POST' && url.pathname === '/mail/u/0/') return xssi([[['v', null, '1']], '0123456789abcdef']);
+    if (req.method === 'POST' && url.pathname === '/_/upload') return upload(req, url);
     return null;
+  }
+
+  // ---- the page's own writes (write.ts): label changes, a draft and its send, and the attachments' uploads
+  const sent: { id: string; aId: string; thread: string; from: string; to: string[]; cc: string[]; bcc: string[]; subject: string; html: string; files: { name: string; mime: string; data: Buffer }[]; inReplyTo: string | null; messageId: string }[] = [];
+  const uploaded = new Map<string, { name: string; mime: string; data: Buffer }>();
+  const pendingUploads = new Map<string, { name: string; mime: string; meta: string }>();
+  let refuse = 0;
+  let refuseSend = 0;
+  let uploadSeq = 0;
+  const newId = () => (box.messages.filter((x) => !x.pending).map((x) => BigInt(x.id)).reduce((a, b) => (a > b ? a : b)) + 1000n).toString();
+  const addr = (p: unknown): FakeAddress => ({ email: String((p as unknown[])[1]), ...((p as unknown[])[2] ? { name: String((p as unknown[])[2]) } : {}) });
+  const list = (v: unknown) => (Array.isArray(v) ? v.map(addr) : []);
+  /** One change: its status (0 applied, 3 refused: a message it does not have, or `refuseNext`). */
+  function change(threadId: string, d: any[], touched: Set<string>, sending: boolean): number {
+    if (refuse > 0) {
+      refuse--;
+      return 3;
+    }
+    if (Array.isArray(d[6])) {
+      const [add, remove, msgs] = d[6] as [string[] | null, string[] | null, string[]];
+      const found = msgs.map((m) => visible().find((x) => !x.pending && `msg-f:${x.id}` === m && `thread-f:${x.thread}` === threadId));
+      if (found.some((x) => !x)) return 3;
+      for (const x of found as FakeMessage[]) {
+        x.labels = [...x.labels.filter((l) => !(remove ?? []).includes(l)), ...(add ?? []).filter((l) => !x.labels.includes(l))];
+        bump(x);
+        touched.add(x.thread);
+      }
+      return 0;
+    }
+    const rec: any[] | undefined = Array.isArray(d[1]) ? d[1][0] : Array.isArray(d[2]) ? d[2][0][4][0] : Array.isArray(d[13]) ? d[13][0] : undefined;
+    if (!rec) return 3;
+    let m = visible().find((x) => x.aId === rec[0]);
+    if (!m) {
+      if (Array.isArray(d[13])) return 3; // a send of a draft never saved
+      const id = newId();
+      const thread = threadId.startsWith('thread-f:') ? threadId.slice(9) : id;
+      if (threadId.startsWith('thread-f:') && !threadOf(thread).length) return 3;
+      m = { id, thread, aId: rec[0], from: addr(rec[1]), to: [], cc: [], subject: '', body: '', date: Date.now(), labels: [], messageId: `<fake.${id}.${mark.replace(/\W/g, '')}@mail.gmail.example>`, history: 0 };
+      box.messages.push(m);
+    }
+    Object.assign(m, { to: list(rec[2]), cc: list(rec[3]), bcc: list(rec[4]), subject: String(rec[7]), html: String(rec[8]?.[1]?.[0]?.[1] ?? ''), body: String(rec[8]?.[1]?.[0]?.[1] ?? '').replace(/<[^>]*>/g, ''), date: rec[6], ...(rec[15] ? { inReplyTo: rec[15] } : {}) });
+    m.files = (Array.isArray(rec[11]) ? rec[11] : []).map((f: any[]) => uploaded.get(String(f[9]))).filter((f: unknown): f is { name: string; mime: string; data: Buffer } => !!f);
+    if (Array.isArray(d[13])) {
+      if (!sending) return 3;
+      if (refuseSend > 0) {
+        refuseSend--;
+        return 3;
+      }
+      m.labels = ['^all', '^f'];
+      sent.push({ id: m.id, aId: m.aId!, thread: m.thread, from: m.from.email, to: m.to.map((a) => a.email), cc: m.cc.map((a) => a.email), bcc: (m.bcc ?? []).map((a) => a.email), subject: m.subject, html: m.html ?? '', files: m.files, inReplyTo: m.inReplyTo ?? null, messageId: m.messageId });
+    } else m.labels = ['^all', '^r'];
+    bump(m);
+    touched.add(m.thread);
+    return 0;
+  }
+  function write(body: any): Response {
+    const changes = body?.[1]?.[0];
+    if (!Array.isArray(changes) || !Number.isInteger(body?.[3]?.[1])) return xssi([['er', null, null, null, null, 400, null, null, null, 3]], 400);
+    const sending = Array.isArray(body[0]) && body[0][2] === 2;
+    const touched = new Set<string>();
+    const acks = changes.map((ch: any) => [ch[0], change(String(ch[1][0]), ch[1][1], touched, sending), null, history]);
+    const updates = [...touched].map((t) => [[`thread-f:${t}`, null, [null, null, null, null, null, null, [threadRec(t, threadOf(t).at(-1)!.date, true), 7777]]]]);
+    return xssi([[acks], [0, null, null, null, [], updates, 0, history], counts(), [history]]);
+  }
+  /** Google's resumable upload, as the page uses it: a start (metadata), then the bytes; the answer the token. */
+  async function upload(req: Request, url: URL): Promise<Response> {
+    if (!authorized(req, false)) return new Response('<html><body>Sign in</body></html>', { status: 401, headers: { 'content-type': 'text/html' } });
+    const command = req.headers.get('x-goog-upload-command');
+    if (command === 'start') {
+      const id = `up${++uploadSeq}`;
+      pendingUploads.set(id, { name: decodeURIComponent(req.headers.get('x-goog-upload-file-name') ?? ''), mime: req.headers.get('x-goog-upload-header-content-type') ?? '', meta: await req.text() });
+      return new Response('', { headers: { 'x-goog-upload-url': `${url.origin}/_/upload?authuser=0&dcp=asu-n&upload_id=${id}`, 'x-goog-upload-status': 'active' } });
+    }
+    const p = pendingUploads.get(url.searchParams.get('upload_id') ?? '');
+    if (command !== 'upload, finalize' || !p) return new Response('bad upload', { status: 400 });
+    const token = Buffer.from(`fake-upload:${url.searchParams.get('upload_id')}:${p.name}`).toString('base64');
+    uploaded.set(token, { name: p.name, mime: p.mime, data: Buffer.from(await req.arrayBuffer()) });
+    return new Response(token, { headers: { 'x-goog-upload-status': 'final' } });
   }
 
   const bump = (m: FakeMessage) => {
@@ -498,6 +585,17 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
     rawFetched,
     get writes() {
       return writes;
+    },
+    /** What was sent through the page's writes, in order. */
+    sent,
+    uploaded,
+    /** The next `n` changes answer a non-zero status (refused). */
+    refuseNext(n: number) {
+      refuse = n;
+    },
+    /** The next `n` sends answer a non-zero status (their drafts were taken). */
+    refuseSends(n: number) {
+      refuseSend = n;
     },
     history: () => history,
     layout(mode: 'normal' | 'swapped') {

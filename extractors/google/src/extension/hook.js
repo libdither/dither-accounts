@@ -26,7 +26,10 @@
  * only reads; gmail.raw, the page's own "Download message" route (view=att&disp=comp) for one message, kept here and
  * handed over in pieces (gmail.rawChunk, gmail.rawDrop); and gmail.syncInfo (what is known: counts and yes/no, the
  * sync point, never a header's value or the key). An answer to either that is not what was asked for (not JSON, an
- * HTML page, a 429) goes up only as what it reads as (pageKind: a sign-in or verification page, or neither).
+ * HTML page, a 429) goes up only as what it reads as (pageKind: a sign-in or verification page, or neither). (i) For
+ * writing (docs/google.md, "Writing to Gmail"): gmail.write, an s call that is one of the page's own kinds of write
+ * (label changes from a fixed set, a draft and its send; writeRefusal says why any other is refused), and
+ * gmail.upload, an attachment handed over in pieces (gmail.uploadChunk) and uploaded as the page uploads one.
  *
  * It never sees the extractor's token; it only talks to content.js, over the channel in main-world.js (put in below
  * when the extension is copied), which also keeps its fetch and XMLHttpRequest wrappers looking native to the page.
@@ -597,7 +600,8 @@
         if (Number.isInteger(c) && c > sync.c) sync.c = c;
         if (m[2] === 's' && typeof body === 'string') {
           const j = jsonParse(body);
-          const point = Array.isArray(j) && Array.isArray(j[3]) ? j[3][4] : null;
+          // Only a read's: the page's own writes (label changes, drafts, sends) carry a small number there instead.
+          const point = Array.isArray(j) && readOnlySync(j) && Array.isArray(j[3]) ? j[3][4] : null;
           if (typeof point === 'number' && Number.isInteger(point) && point >= 0) sync.history = String(point);
         }
         return;
@@ -640,6 +644,144 @@
     // Not JSON: what it reads as (a sign-in or verification page, or neither), never what it says.
     if (json === undefined) return { status: res.status, error: 'not-json', page: learn.pageKind(res.status, res.headers.get('content-type'), text, res.url) };
     return { status: res.status, json };
+  }
+
+  // gmail.write: the page's own kinds of write, and nothing else (write.ts builds them; this checks them again).
+  const WRITE_LABEL = /^\^(?:u|us|o|t|ss_[a-z]{2}|i|a|k|s|t_z|ri_hl|iim|t_p|t_rd|afw|pr_i_u|io_re|io_fwd|x_\d{1,24})$/;
+  const DRAFT_LABELS = '^all,^r,^r_bt';
+  const SENT_LABELS = '^all,^pfg,^f_bt,^f_btns,^f_cl';
+  const W_THREAD = /^thread-(?:f:\d{1,20}|a:r-\d{1,20})$/;
+  const W_MSG_F = /^msg-f:\d{1,20}$/;
+  const W_MSG_A = /^msg-a:r-\d{1,20}$/;
+  // A label list to add (never Spam: marking spam is not built) or to take off.
+  const labelsOk = (l, adding) => l === null || (Array.isArray(l) && l.length > 0 && l.length <= 24 && l.every((x) => typeof x === 'string' && WRITE_LABEL.test(x) && !(adding && x === '^s')));
+  const recordOk = (r, sending) => Array.isArray(r) && r.length === 78 && typeof r[0] === 'string' && W_MSG_A.test(r[0]) && Array.isArray(r[10]) && r[10].join(',') === (sending ? SENT_LABELS : DRAFT_LABELS);
+
+  /**
+   * Why an s body is not one of the writes the extractor makes, or null. A call is one of three: label changes only
+   * (detail[6]: labels from WRITE_LABEL, messages Gmail has, nothing else in it; at most 100), one draft's first save
+   * (detail[1] a reply's, detail[2] a new thread's), or one send (detail[13], with the sent labels, in a call whose
+   * head says it sends). The parts around the changes as write.ts lays them out.
+   */
+  function writeRefusal(body) {
+    if (!Array.isArray(body) || body.length !== 5 || body[4] !== 2) return 'not a write';
+    const sending = Array.isArray(body[0]) && body[0].length === 3 && body[0][0] === null && body[0][1] === null && body[0][2] === 2;
+    if (body[0] !== null && !sending) return 'a head not known';
+    const c = body[2];
+    if (sending ? c !== null : !(Array.isArray(c) && c.length === 7 && c[0] === 1 && (c[1] === null || Number.isInteger(c[1])) && c[2] === null && c[3] === null && Array.isArray(c[4]) && c[4][0] === null && c[4][1] === 0 && c[5] === null && c[6] === 1)) return 'a client part not known';
+    const t = body[3];
+    if (!Array.isArray(t) || t.length !== 5 || !Number.isInteger(t[0]) || !Number.isInteger(t[1]) || !Number.isInteger(t[2]) || t[3] !== (sending ? 1 : 0) || t[4] !== 49) return 'a time part not known';
+    if (!Array.isArray(body[1]) || body[1].length !== 1 || !Array.isArray(body[1][0]) || !body[1][0].length || body[1][0].length > 100) return 'no changes, or too many';
+    const kinds = body[1][0].map((ch) => (Array.isArray(ch) && Array.isArray(ch[1]) && Array.isArray(ch[1][1]) ? ch[1][1].findIndex((x) => x !== null) : -1));
+    if (sending ? kinds.length !== 1 || kinds[0] !== 13 : kinds.some((k) => k !== 6) && (kinds.length !== 1 || (kinds[0] !== 1 && kinds[0] !== 2))) return 'changes of kinds not made together';
+    if (t[1] !== kinds.length) return 'a count that is not the changes';
+    for (const ch of body[1][0]) {
+      if (!Array.isArray(ch) || ch.length !== 2 || !Number.isInteger(ch[0]) || !Array.isArray(ch[1]) || typeof ch[1][0] !== 'string' || !W_THREAD.test(ch[1][0]) || !Array.isArray(ch[1][1])) return 'a change not laid out as known';
+      const d = ch[1][1];
+      const parts = [];
+      d.forEach((x, i) => x !== null && parts.push(i));
+      if (parts.length !== 1) return 'a change of more than one part';
+      const v = d[parts[0]];
+      if (parts[0] === 6) {
+        if (!ch[1][0].startsWith('thread-f:') || d.length !== 7 || !Array.isArray(v) || v.length !== 12 || !v.slice(3).every((x) => x === null) || !labelsOk(v[0], true) || !labelsOk(v[1], false) || (v[0] === null && v[1] === null)) return 'a label change not made here';
+        if (!Array.isArray(v[2]) || !v[2].length || v[2].length > 1000 || !v[2].every((m) => typeof m === 'string' && W_MSG_F.test(m))) return 'a label change on messages Gmail has not got';
+      } else if (parts[0] === 1) {
+        if (sending || !ch[1][0].startsWith('thread-f:') || !Array.isArray(v) || !recordOk(v[0], false) || !W_MSG_F.test(String(v[1]))) return 'a reply draft not laid out as known';
+      } else if (parts[0] === 2) {
+        if (sending || !Array.isArray(v) || v.length !== 1 || !Array.isArray(v[0]) || v[0][3] !== ch[1][0] || !Array.isArray(v[0][4]) || v[0][4].length !== 1 || !recordOk(v[0][4][0], false)) return 'a draft not laid out as known';
+      } else if (parts[0] === 13) {
+        if (!sending || !Array.isArray(v) || !recordOk(v[0], true) || (v[1] !== null && !W_MSG_F.test(String(v[1])))) return 'a send not laid out as known';
+      } else return 'a change of a kind not made here';
+    }
+    return null;
+  }
+
+  /** gmail.write: one of the writes writeRefusal knows, POSTed to the page's own s as the page posts its writes. */
+  async function writeCall(body) {
+    const no = writeRefusal(body);
+    if (no) throw new Error('gmail.write: refused, ' + no);
+    if (!sync.seen || !sync.base) return { status: 0, error: 'no-sync-yet' };
+    const q = new URLSearchParams();
+    if (sync.query.hl !== undefined) q.set('hl', sync.query.hl);
+    q.set('c', String(++sync.c));
+    if (sync.query.rt !== undefined) q.set('rt', sync.query.rt);
+    if (sync.query.pt !== undefined) q.set('pt', sync.query.pt);
+    const headers = {};
+    for (const [n, v] of sync.headers || []) headers[n] = v;
+    if (!headers['content-type']) headers['content-type'] = 'application/json';
+    const res = await cloak.apply(nativeFetch, window, [location.origin + sync.base + 's?' + q.toString(), { method: 'POST', headers, body: jsonStringify(body), credentials: 'include', cache: 'no-store' }]);
+    const text = await res.text();
+    let json;
+    try {
+      json = jsonParse(text.replace(/^\s*\)\]\}'[^\n]*(?:\n|$)/, ''));
+    } catch (e) {}
+    if (json === undefined) return { status: res.status, error: 'not-json', page: learn.pageKind(res.status, res.headers.get('content-type'), text, res.url) };
+    return { status: res.status, json };
+  }
+
+  // gmail.upload: an attachment, handed over in pieces (gmail.uploadChunk), then uploaded as the page uploads one: a
+  // resumable start to /_/upload with its metadata, then the bytes; Gmail's answer is the token a draft names it by.
+  const UPLOAD_MAX = 26 * 1024 * 1024;
+  const uploads = new Map();
+  let uploadSeq = 0;
+  function uploadChunk(c) {
+    for (const [k, v] of uploads) if (Date.now() - v.at > 120000) uploads.delete(k);
+    // A piece of an upload this page does not hold (it reloaded since the first piece) starts nothing: the file would go short.
+    if (c.token !== undefined && c.token !== null && !uploads.has(c.token)) throw new Error('gmail.uploadChunk: no such upload (the page was reloaded?)');
+    let u = c.token ? uploads.get(c.token) : null;
+    if (!u) {
+      if (uploads.size >= 4) throw new Error('gmail.uploadChunk: too many uploads at once');
+      u = { token: 'u' + ++uploadSeq + '.' + Date.now(), parts: [], size: 0, at: Date.now() };
+      uploads.set(u.token, u);
+    }
+    const bin = atob(String(c.base64 || ''));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    u.parts.push(bytes);
+    u.size += bytes.length;
+    if (u.size > UPLOAD_MAX) {
+      uploads.delete(u.token);
+      throw new Error('gmail.uploadChunk: over the size an attachment may have');
+    }
+    return { token: u.token, size: u.size };
+  }
+  async function uploadSend(c) {
+    const u = uploads.get(c.token);
+    uploads.delete(c.token);
+    if (!u) throw new Error('gmail.upload: no such upload');
+    if (u.size !== c.size) throw new Error('gmail.upload: the file came over short');
+    const name = String(c.name || '');
+    const mime = String(c.mime || '');
+    if (!name || name.length > 255 || /[\r\n]/.test(name) || !/^[\w.+-]+\/[\w.+-]+$/.test(mime) || !/^[A-Za-z0-9_-]{8,8000}$/.test(String(c.meta || ''))) throw new Error('gmail.upload: not an attachment');
+    // Header values are bytes: a name outside ASCII goes percent-encoded.
+    const fileName = /^[\x20-\x7e]*$/.test(name) ? name : encodeURIComponent(name);
+    const base = location.origin + '/_/upload?authuser=' + encodeURIComponent(String(settings.authuser)) + '&dcp=asu-n';
+    const start = await cloak.apply(nativeFetch, window, [base, {
+      method: 'POST',
+      credentials: 'include',
+      cache: 'no-store',
+      headers: { 'X-Goog-Upload-File-Name': fileName, 'X-Goog-Metadata-Proto-Format': 'b', 'X-Goog-Upload-Header-Content-Length': String(u.size), 'X-Goog-Upload-Header-Content-Type': mime, 'X-Goog-Upload-Protocol': 'resumable', 'X-Goog-Upload-Command': 'start', 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' },
+      body: c.meta,
+    }]);
+    const startType = learn.mediaType(start.headers.get('content-type'));
+    if (start.status !== 200) return { status: start.status, page: learn.pageKind(start.status, startType, await textUpTo(start, 512 * 1024), start.url) };
+    quiet(start.text());
+    const next = start.headers.get('x-goog-upload-url');
+    let to = null;
+    try {
+      to = next ? new URL(next, location.href) : null;
+    } catch (e) {}
+    if (!to || to.origin !== location.origin) return { status: 0, error: 'no-upload-url' };
+    const fin = await cloak.apply(nativeFetch, window, [to.href, {
+      method: 'POST',
+      credentials: 'include',
+      cache: 'no-store',
+      headers: { 'Content-Type': mime, 'X-Goog-Upload-File-Name': fileName, 'X-Goog-Metadata-Proto-Format': 'b', 'X-Goog-Upload-Command': 'upload, finalize', 'X-Goog-Upload-Offset': '0' },
+      body: new Blob(u.parts, { type: mime }),
+    }]);
+    const text = await textUpTo(fin, 64 * 1024);
+    if (fin.status !== 200 || fin.headers.get('x-goog-upload-status') !== 'final') return { status: fin.status || 0, error: 'not-final', page: learn.pageKind(fin.status, learn.mediaType(fin.headers.get('content-type')), text, fin.url) };
+    return { status: 200, token: text.trim() };
   }
 
   /** A response's text, up to max characters (the rest is not read). */
@@ -897,6 +1039,12 @@
       case 'gmail.rawDrop':
         raws.delete(c.token);
         return {};
+      case 'gmail.write':
+        return writeCall(c.body);
+      case 'gmail.uploadChunk':
+        return uploadChunk(c);
+      case 'gmail.upload':
+        return uploadSend(c);
     }
     throw new Error(`no command ${c.kind}`);
   }
@@ -914,19 +1062,23 @@
     const m = document.cookie.match(new RegExp('(?:^|;\\s*)' + name.replace(/[-.]/g, '\\$&') + '=([^;]*)'));
     return m ? m[1] : null;
   }
-  /** The account button's label reads "Google Account: Name (email)". Null until the page has drawn it. */
-  function email() {
+  /** The account button's label reads "Google Account: Name (email)". Nulls until the page has drawn it. */
+  function account() {
     try {
       for (const el of document.querySelectorAll('[aria-label*="Google Account:"]')) {
-        const m = (el.getAttribute('aria-label') || '').match(/\(([^()\s]+@[^()\s]+)\)/);
-        if (m) return m[1];
+        const label = el.getAttribute('aria-label') || '';
+        const m = label.match(/\(([^()\s]+@[^()\s]+)\)/);
+        if (!m) continue;
+        const n = label.match(/Google Account:\s*([^()]*?)\s*\(/);
+        return { email: m[1], name: n && n[1] ? n[1].replace(/\s+/g, ' ').slice(0, 200) : null };
       }
     } catch (e) {}
-    return null;
+    return { email: null, name: null };
   }
   let lastSession = '';
   function session(force) {
-    const s = { t: 'session', signedIn: !!cookie('SAPISID'), email: email() };
+    const a = account();
+    const s = { t: 'session', signedIn: !!cookie('SAPISID'), email: a.email, name: a.name };
     const k = JSON.stringify(s);
     if (k === lastSession && !force) return;
     lastSession = k;

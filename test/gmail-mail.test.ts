@@ -1,18 +1,20 @@
 /**
- * Gmail mail, read-only (extractors/google/src/gmail/): the protocol module's bodies against the shapes recorded on the
+ * Gmail mail (extractors/google/src/gmail/): the protocol module's bodies against the shapes recorded on the
  * live page, its readers and fingerprints, the category rule, and GmailMail end to end against the fake Gmail's sync
  * endpoints (test/fake-google.ts), reached as the Gmail tab's hook reaches them (the page's cookie, its XSRF header,
  * its account key). The browser side, through the manager and a real Chromium, is in google-browser.test.ts.
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { MailSummary } from '@dither-accounts/interfaces';
-import { type BackgroundRules, GmailMail, parseState, type Transport } from '../extractors/google/src/gmail/mail.ts';
+import { type BackgroundRules, GmailMail, parseState, SEND_LIMITS, type Transport } from '../extractors/google/src/gmail/mail.ts';
 import { parseMessage } from '../extractors/google/src/gmail/mime.ts';
 import { bvRequest, categoryOf, fdThreadsRequest, flagsOf, isUserLabel, LayoutError, labelsOf, notAMessage, operatorsOnly, parseBv, parseFd, parseS, readOnlySync, sRequest } from '../extractors/google/src/gmail/protocol.ts';
+import { checkOutgoing } from '../extractors/google/src/gmail/send.ts';
 import { selfCheck } from '../extractors/google/src/gmail/selfcheck.ts';
+import { EDITS, htmlOfText, intoLabel, labelChange, messageRecord, uploadMeta, writeRequest } from '../extractors/google/src/gmail/write.ts';
 import { pageKind, shape } from '../extractors/google/src/gmail-learn.js';
 import { type FakeGoogle, type FakeMessage, fakeEml, startFakeGoogle } from './fake-google.ts';
 
@@ -58,6 +60,18 @@ function transport(o: { calls?: { ep: string; at: number; hex?: string }[]; page
       const bytes = Buffer.from(await r.arrayBuffer());
       if (bytes.length > max) return { status: 200, tooBig: bytes.length };
       return { status: r.status, bytes, type: r.headers.get('content-type') };
+    },
+    async write(body) {
+      o.calls?.push({ ep: 'write', at: Date.now() });
+      return this.sync('s', body);
+    },
+    async upload(file, meta) {
+      o.calls?.push({ ep: 'upload', at: Date.now() });
+      const start = await fetch(`${fake.mailUrl}/_/upload?authuser=0&dcp=asu-n`, { method: 'POST', headers: { cookie, 'x-goog-upload-command': 'start', 'x-goog-upload-protocol': 'resumable', 'x-goog-upload-file-name': file.name, 'x-goog-upload-header-content-type': file.mime }, body: meta });
+      const next = start.headers.get('x-goog-upload-url');
+      if (start.status !== 200 || !next) return { status: start.status };
+      const fin = await fetch(next, { method: 'POST', headers: { cookie, 'x-goog-upload-command': 'upload, finalize', 'x-goog-upload-offset': '0', 'content-type': file.mime }, body: new Uint8Array(file.bytes) });
+      return { status: fin.status, token: (await fin.text()).trim() };
     },
   };
 }
@@ -135,6 +149,7 @@ test('categories: at most one, receipt first, then the inbox tab, then the class
   const names = new Map([['^x_1', 'Work']]);
   expect(labelsOf(['^all', '^i', '^t', '^io_im', '^u', '^o', '^x_1', '^x_9', '^smartlabel_promo', '^sq_ig_i_promo', '^io_lr', '^unsub'], names)).toEqual(['Category/Promotions', 'Important', 'Inbox', 'Starred', 'Work', '^x_9']);
   expect(flagsOf(['^all', '^u', '^t'])).toEqual({ seen: false, flagged: true, answered: false, draft: false });
+  expect(flagsOf(['^all', '^io_re'])).toMatchObject({ answered: true });
   expect(flagsOf(['^all', '^r'])).toEqual({ seen: true, flagged: false, answered: false, draft: true });
 });
 
@@ -849,4 +864,192 @@ test('a message Gmail keeps with no headers: its blank-line-first original is re
   expect((await mail.raw({ id: bare.id })).size).toBe(Buffer.byteLength(fakeEml(bare)));
   // Listed with a sender, the same shape is not a message with no headers: refused.
   await expect(mail.get({ id: posing.id })).rejects.toMatchObject({ status: 502, message: expect.stringContaining('(a blank line first)') });
+});
+
+// ------------------------------------------------------------------ writing (write.ts, GmailMail's writes and send)
+/** The page's own writes, recorded on the live page (2026-11-13): type tags and anchors only. */
+const RECORDED_WRITES = {
+  // The page's star: ^t and the yellow style on, the other styles off; it adds what it knows of the message at [11].
+  star: [null, [[[1, ['id:thread-f', [null, null, null, null, null, null, [['^t', '^ss_sy'], ['^ss_so', '^ss_sr', '^ss_sp', '^ss_sb', '^ss_sg', '^ss_cr', '^ss_co', '^ss_cy', '^ss_cg', '^ss_cb', '^ss_cp'], ['id:msg-f'], null, null, null, null, null, null, null, null, ['^sq_ig_i_personal', ['s0'], ['^smartlabel_personal']]]]]]]], [1, 'n', null, null, [null, 0], null, 1], ['n:ms', 1, 'n:ms', 0, 'n'], 2],
+  archive: [['^a'], ['^ri_hl', '^i', '^iim', '^t_p', '^t_rd', '^us', '^k', '^s', '^t_z', '^afw']],
+  inbox: [['^i'], ['^a', '^t_z', '^us', '^k', '^s', '^pr_i_u']],
+  trash: [['^k'], ['^ri_hl', '^i', '^iim', '^t_p', '^t_rd', '^us', '^s', '^a', '^t_z', '^afw', '^pr_i_u']],
+  read: [null, ['^u', '^us']],
+  unread: [['^u'], null],
+  unstar: [null, ['^t', '^ss_sy', '^ss_so', '^ss_sr', '^ss_sp', '^ss_sb', '^ss_sg', '^ss_cr', '^ss_co', '^ss_cy', '^ss_cg', '^ss_cb', '^ss_cp']],
+  moveToLabel: [['^x_1'], ['^ri_hl', '^i', '^iim', '^t_p', '^t_rd', '^us', '^k', '^s']],
+};
+
+test("the writes built are the page's own: its label changes, without what it adds of the message (Gmail takes them without)", () => {
+  const now = Date.now();
+  const body = writeRequest([labelChange(1, '1700000000000000000', ['1700000000000000000'], EDITS.star)], { history: '4000123', now });
+  const star = structuredClone(RECORDED_WRITES.star) as any[];
+  star[1][0][0][1][1][6][11] = null; // what the page adds of the message
+  star[3][4] = 49; // the page's own number there in its writes
+  expect(shape(body)).toEqual(star);
+  const edit = (e: { add: string[]; remove: string[] }) => [e.add.length ? e.add : null, e.remove.length ? e.remove : null];
+  expect(edit(EDITS.archive)).toEqual(RECORDED_WRITES.archive);
+  expect(edit(EDITS.inbox)).toEqual(RECORDED_WRITES.inbox);
+  expect(edit(EDITS.trash)).toEqual(RECORDED_WRITES.trash);
+  expect(edit(EDITS.read)).toEqual(RECORDED_WRITES.read);
+  expect(edit(EDITS.unread)).toEqual(RECORDED_WRITES.unread);
+  expect(edit(EDITS.unstar)).toEqual(RECORDED_WRITES.unstar);
+  expect(edit(intoLabel('^x_1'))).toEqual(RECORDED_WRITES.moveToLabel);
+  // A send's head and client part, as the page's.
+  const sending = writeRequest([1], { history: '4000123', now, sending: true });
+  expect([sending[0], sending[2], (sending[3] as number[])[3]]).toEqual([[null, null, 2], null, 1]);
+  // The upload's start, laid out as the page's: 1 the draft's id, 3 and 4 zero, 7 the sender, 8 each recipient, 11 zero.
+  const str = (field: number, v: string) => [(field << 3) | 2, v.length, ...Buffer.from(v)];
+  const want = [...str(1, 'msg-a:r-700000000000000001'), 0x18, 0, 0x20, 0, ...str(7, 'pat@example.com'), ...str(8, 'ann@example.org'), ...str(8, 'bo@example.org'), 0x58, 0];
+  expect([...Buffer.from(uploadMeta('msg-a:r-700000000000000001', 'pat@example.com', ['ann@example.org', 'bo@example.org']), 'base64url')]).toEqual(want);
+  expect(htmlOfText('a < b & "c"\nnext')).toBe('<div dir="ltr">a &lt; b &amp; &quot;c&quot;<br>next</div>');
+  expect(messageRecord({ msgId: 'msg-a:r-1', from: { email: 'pat@example.com', name: 'Pat' }, to: [{ email: 'a@example.org', name: null }], cc: [], bcc: [{ email: 'b@example.org', name: null }], subject: 's', html: '<div>x</div>', files: [], inReplyTo: '<o@example.org>', session: 's:0|#msg-a:r-1|0' }, now, true)).toHaveLength(78);
+});
+
+test('mail.flag: read and unread, starred and not, as Gmail applied them; the labels kept follow', async () => {
+  const mail = mailOf();
+  await mail.list({ mailboxId: '^i', limit: 50 });
+  const m = fake.gmail.messages.find((x) => !x.pending && !x.localId && x.labels.includes('^i') && x.labels.includes('^u'))!;
+  const before = fake.gmail.writes;
+  expect(await mail.flag({ ids: [m.id], seen: true, flagged: true })).toEqual({});
+  expect(m.labels).not.toContain('^u');
+  expect(m.labels).toEqual(expect.arrayContaining(['^t', '^ss_sy']));
+  expect(fake.gmail.writes).toBe(before + 1); // both changes in one call
+  expect((await mail.list({ mailboxId: '^t', limit: 200 })).messages.map((x) => x.id)).toContain(m.id);
+  expect(await mail.flag({ ids: [m.id], seen: false, flagged: false })).toEqual({});
+  expect(m.labels).toContain('^u');
+  expect(m.labels.filter((l) => l === '^t' || l.startsWith('^ss_'))).toEqual([]);
+  await expect(mail.flag({ ids: [m.id], answered: true })).rejects.toMatchObject({ status: 400 });
+  expect(await mail.flag({ ids: [m.id] })).toEqual({});
+});
+
+test("mail.move and mail.trash: archive, back to the inbox, into a label, the trash and out; ids kept; Spam not written, Sent not a destination", async () => {
+  const mail = mailOf();
+  await mail.list({ mailboxId: '^i', limit: 50 });
+  const m = fake.gmail.messages.find((x) => !x.pending && !x.localId && x.labels.includes('^i') && !x.labels.includes('^x_3'))!;
+  expect(await mail.move({ ids: [m.id], mailboxId: 'all' })).toEqual({ ids: [m.id] });
+  expect(m.labels).not.toContain('^i');
+  expect(m.labels).toContain('^a');
+  expect(await mail.move({ ids: [m.id], mailboxId: '^i' })).toEqual({ ids: [m.id] });
+  expect(m.labels).toContain('^i');
+  expect(await mail.move({ ids: [m.id], mailboxId: '^x_3' })).toEqual({ ids: [m.id] });
+  expect([m.labels.includes('^x_3'), m.labels.includes('^i')]).toEqual([true, false]);
+  expect(await mail.trash({ ids: [m.id] })).toEqual({});
+  expect([m.labels.includes('^k'), m.labels.includes('^x_3')]).toEqual([true, true]); // your labels stay, as in Gmail
+  expect((await mail.list({ mailboxId: '^k', limit: 200 })).messages.map((x) => x.id)).toContain(m.id);
+  expect(await mail.move({ ids: [m.id], mailboxId: '^i' })).toEqual({ ids: [m.id] });
+  expect([m.labels.includes('^k'), m.labels.includes('^i')]).toEqual([false, true]);
+  fake.gmail.relabel(m.id, [], ['^x_3']);
+  const writes = fake.gmail.writes;
+  await expect(mail.move({ ids: [m.id], mailboxId: '^s' })).rejects.toMatchObject({ status: 501 });
+  for (const to of ['^f', '^r', '^scheduled', '^t', '^b']) await expect(mail.move({ ids: [m.id], mailboxId: to })).rejects.toMatchObject({ status: 400 });
+  await expect(mail.move({ ids: [m.id], mailboxId: '^x_999' })).rejects.toMatchObject({ status: 404 });
+  expect(fake.gmail.writes).toBe(writes);
+});
+
+test("writes in part: ids Gmail refused or whose thread is not known come back named; the caller's threadIds place the rest; none known is 404, all refused 422", async () => {
+  const fresh = mailOf(); // nothing listed yet: it knows no thread
+  const inbox = fake.gmail.messages.filter((x) => !x.pending && !x.localId && x.labels.includes('^i'));
+  const a = inbox[0]!;
+  const b = inbox.find((x) => x.thread !== a.thread)!;
+  await expect(fresh.flag({ ids: [a.id], flagged: true })).rejects.toMatchObject({ status: 404 });
+  // Placed by threadIds (decimal, or thread-f:), one unknown.
+  expect(await fresh.flag({ ids: [a.id, b.id, '42'], threadIds: [a.thread, `thread-f:${b.thread}`, null], flagged: true })).toEqual({ unknown: ['42'] });
+  expect([a.labels.includes('^t'), b.labels.includes('^t')]).toEqual([true, true]);
+  // Gmail refusing one of two threads' changes: that one named, the other applied.
+  fake.gmail.refuseNext(1);
+  const r = await fresh.move({ ids: [a.id, b.id], threadIds: [a.thread, b.thread], mailboxId: 'all' });
+  expect(r.refused).toHaveLength(1);
+  const [no, yes] = r.refused![0] === a.id ? [a, b] : [b, a];
+  expect(r.ids).toEqual([a, b].map((x) => (x === no ? null : x.id)));
+  expect([no.labels.includes('^i'), yes.labels.includes('^i')]).toEqual([true, false]);
+  // Every change refused: 422, nothing changed.
+  fake.gmail.refuseNext(2);
+  await expect(fresh.flag({ ids: [a.id, b.id], threadIds: [a.thread, b.thread], flagged: false })).rejects.toMatchObject({ status: 422, callCode: 'refused' });
+  expect([a.labels.includes('^t'), b.labels.includes('^t')]).toEqual([true, true]);
+  await fresh.flag({ ids: [a.id, b.id], threadIds: [a.thread, b.thread], flagged: false });
+  await fresh.move({ ids: [yes.id], threadIds: [yes.thread], mailboxId: '^i' });
+  await expect(fresh.flag({ ids: 'x' as any, seen: true })).rejects.toMatchObject({ status: 400 });
+});
+
+test('mail.send: a new message with Cc, Bcc and a file, as the page sends one (upload, draft, send); its Message-ID and Gmail id back', async () => {
+  const mail = mailOf();
+  const me = { email: fake.gmail.me.email, name: 'Pat Example' };
+  const file = { filename: 'notes.txt', mime: 'text/plain', bytes: Buffer.from(`Notes ${MARK}\n`) };
+  const n = fake.gmail.sent.length;
+  const r = await mail.send({ to: [{ email: 'ann@example.org', name: 'Ann Lee' }], cc: [{ email: 'cy@example.org', name: null }], bcc: [{ email: 'bo@example.org', name: null }], subject: `Hello ${MARK}`, text: `Hi Ann,\nsee the notes & all ${MARK}`, files: [file] }, me);
+  const s = fake.gmail.sent[n]!;
+  expect(s).toMatchObject({ from: me.email, to: ['ann@example.org'], cc: ['cy@example.org'], bcc: ['bo@example.org'], subject: `Hello ${MARK}`, inReplyTo: null });
+  expect(s.html).toBe(`<div dir="ltr">Hi Ann,<br>see the notes &amp; all ${MARK}</div>`);
+  expect(s.files.map((f) => [f.name, f.mime, f.data.toString()])).toEqual([['notes.txt', 'text/plain', `Notes ${MARK}\n`]]);
+  expect(r).toEqual({ messageId: s.messageId, sentId: s.id });
+  const msg = fake.gmail.messages.find((x) => x.id === s.id)!;
+  expect(msg.labels).toEqual(['^all', '^f']);
+  // From must be the account's own address.
+  await expect(mail.send({ from: 'other@example.org', to: [{ email: 'ann@example.org', name: null }], cc: [], bcc: [], subject: 's', text: 't', files: [] }, me)).rejects.toMatchObject({ status: 422, callCode: 'from' });
+  // A draft Gmail refuses: 422, nothing sent.
+  fake.gmail.refuseNext(1);
+  await expect(mail.send({ to: [{ email: 'ann@example.org', name: null }], cc: [], bcc: [], subject: 's', text: 't', files: [] }, me)).rejects.toMatchObject({ status: 422, callCode: 'refused' });
+  expect(fake.gmail.sent.length).toBe(n + 1);
+});
+
+test("mail.send a reply: in the answered message's thread, In-Reply-To its Message-ID, the original marked replied (answered)", async () => {
+  const mail = mailOf();
+  const orig = fake.gmail.messages.find((x) => !x.pending && !x.localId && x.labels.includes('^i') && !x.attachment)!;
+  const me = { email: fake.gmail.me.email, name: null };
+  const r = await mail.send({ to: [{ email: orig.from.email, name: orig.from.name ?? null }], cc: [], bcc: [], subject: `Re: ${orig.subject}`, html: `<div dir="ltr">Yes ${MARK}</div>`, replyTo: orig.id, files: [] }, me);
+  const s = fake.gmail.sent.at(-1)!;
+  expect([s.thread, s.inReplyTo, s.html, r.sentId]).toEqual([orig.thread, orig.messageId, `<div dir="ltr">Yes ${MARK}</div>`, s.id]);
+  expect(orig.labels).toContain('^io_re');
+  // Gmail's sync now carries the reply's headers, and the original reads as answered.
+  const c = await mail.changes({ mailboxId: 'all', state: `g1.${fake.gmail.history() - 3}.${Date.now() - 60_000}` });
+  const reply = [...c.added, ...c.changed].find((x) => x.id === s.id);
+  expect(reply).toMatchObject({ messageId: s.messageId, inReplyTo: orig.messageId, references: [orig.messageId], threadId: orig.thread });
+  expect([...c.added, ...c.changed].find((x) => x.id === orig.id)?.flags.answered).toBe(true);
+  // A reply to a message that is not there: 404 before anything is written.
+  const writes = fake.gmail.writes;
+  await expect(mail.send({ to: [{ email: orig.from.email, name: null }], cc: [], bcc: [], subject: 'Re', text: 'x', replyTo: '42', files: [] }, me)).rejects.toMatchObject({ status: 404 });
+  expect(fake.gmail.writes).toBe(writes);
+});
+
+test("checkOutgoing: addresses, body, files and sizes checked before anything reaches Gmail", () => {
+  const ok = { to: [{ email: 'ann@example.org', name: null }], subject: 'Hi', text: 'x' };
+  expect(checkOutgoing(ok as any, tmp)).toMatchObject({ to: [{ email: 'ann@example.org', name: null }], cc: [], bcc: [], files: [] });
+  expect(() => checkOutgoing({ ...ok, to: [{ email: 'not an address' }] } as any, tmp)).toThrow(expect.objectContaining({ status: 400 }));
+  expect(() => checkOutgoing({ ...ok, to: [], cc: [] } as any, tmp)).toThrow(expect.objectContaining({ status: 400 }));
+  expect(() => checkOutgoing({ ...ok, text: undefined } as any, tmp)).toThrow(expect.objectContaining({ status: 400 }));
+  expect(() => checkOutgoing({ ...ok, replyTo: 'not-ours' } as any, tmp)).toThrow(expect.objectContaining({ status: 404 }));
+  expect(() => checkOutgoing({ ...ok, attachments: [{ filename: 'a.bin', mime: 'application/octet-stream', base64: Buffer.alloc(26 * 1024 * 1024).toString('base64') }] } as any, tmp)).toThrow(expect.objectContaining({ status: 413 }));
+  writeFileSync(join(tmp, 'x.txt'), 'the account\'s own');
+  expect(() => checkOutgoing({ ...ok, attachments: [{ filename: 'a', mime: 'text/plain', path: join(tmp, 'x.txt') }] } as any, tmp)).toThrow(expect.objectContaining({ status: 403 }));
+  expect(checkOutgoing({ ...ok, subject: 'a\r\nBcc: x@example.org' } as any, tmp).subject).toBe('a Bcc: x@example.org');
+});
+
+test("a send Gmail refuses after taking its draft: 422, the draft left in Drafts, the original not marked replied; a send late in its op's time is not started", async () => {
+  const mail = mailOf();
+  const orig = fake.gmail.messages.find((x) => !x.pending && !x.localId && x.labels.includes('^i') && !x.labels.includes('^io_re'))!;
+  const me = { email: fake.gmail.me.email, name: null };
+  const n = fake.gmail.sent.length;
+  fake.gmail.refuseSends(1);
+  await expect(mail.send({ to: [{ email: orig.from.email, name: null }], cc: [], bcc: [], subject: 'Re', text: `Not sent ${MARK}`, replyTo: orig.id, files: [] }, me)).rejects.toMatchObject({ status: 422, callCode: 'refused', message: expect.stringContaining('Drafts') });
+  expect(fake.gmail.sent.length).toBe(n);
+  expect(orig.labels).not.toContain('^io_re');
+  const draft = fake.gmail.messages.find((x) => x.body === `Not sent ${MARK}`)!;
+  expect(draft.labels).toEqual(['^all', '^r']);
+  // Past the time a draft may still be started: 503, nothing written.
+  const was = { ...SEND_LIMITS };
+  const writes = fake.gmail.writes;
+  try {
+    SEND_LIMITS.draft = -1;
+    await expect(mail.send({ to: [{ email: 'ann@example.org', name: null }], cc: [], bcc: [], subject: 's', text: 't', files: [] }, me)).rejects.toMatchObject({ status: 503 });
+    expect(fake.gmail.writes).toBe(writes);
+    SEND_LIMITS.draft = was.draft;
+    SEND_LIMITS.send = -1;
+    await expect(mail.send({ to: [{ email: 'ann@example.org', name: null }], cc: [], bcc: [], subject: 's', text: `Late ${MARK}`, files: [] }, me)).rejects.toMatchObject({ status: 502, message: expect.stringContaining('Drafts') });
+    expect(fake.gmail.sent.length).toBe(n);
+  } finally {
+    Object.assign(SEND_LIMITS, was);
+  }
+  await expect(mail.flag({ ids: [orig.id], seen: 'yes' })).rejects.toMatchObject({ status: 400 });
+  await expect(mail.flag({ ids: undefined, seen: true })).rejects.toMatchObject({ status: 400 });
 });

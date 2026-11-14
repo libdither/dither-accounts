@@ -28,8 +28,10 @@ import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync }
 import { join } from 'node:path';
 import { BridgeServer, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
+import type { OutgoingMail } from '@dither-accounts/interfaces';
 import { GmailMail, type PageKind, stateOf, type SyncAnswer, type Transport } from './gmail/mail.ts';
 import { DECIMAL_ID } from './gmail/protocol.ts';
+import { checkOutgoing, MAX_RECIPIENTS, SEND_CAP } from './gmail/send.ts';
 import { selfCheck } from './gmail/selfcheck.ts';
 import { checkLearnScript, describeStep, type LearnStep } from './learn.ts';
 
@@ -109,6 +111,10 @@ type GmailCmd = { page?: Role } & (
   | { kind: 'gmail.raw'; hex: string; max: number }
   | { kind: 'gmail.rawChunk'; token: string; offset: number; length: number }
   | { kind: 'gmail.rawDrop'; token: string }
+  // Writing (src/gmail/write.ts): one of the page's own kinds of write, and an attachment's upload in pieces.
+  | { kind: 'gmail.write'; body: unknown }
+  | { kind: 'gmail.uploadChunk'; token?: string; base64: string }
+  | { kind: 'gmail.upload'; token: string; size: number; name: string; mime: string; meta: string }
 );
 type PageCmd = Gfetch | GmailCmd;
 /** What gmail.shapes answers: per method and path template, a count and up to 6 samples of shapes (no values). */
@@ -147,7 +153,7 @@ type Up =
   | { t: 'log'; level: 'debug' | 'info' | 'warn' | 'error'; msg: string; data?: unknown; role?: Role | null }
   | { t: 'tabs'; tabs: TabInfo[] }
   | { t: 'hook'; page: string; role?: Role | null }
-  | { t: 'session'; signedIn: boolean; email: string | null; role?: Role | null }
+  | { t: 'session'; signedIn: boolean; email: string | null; name?: string | null; role?: Role | null }
   | { t: 'seen'; endpoints: Endpoint[]; keys: { key: string; source: KeySource }[]; role?: Role | null };
 type Attention = { kind: string; message: string; liveView: boolean };
 /** One link of the account's dependency chain (status.layers, as in chat-protocol's StatusLayer). */
@@ -231,7 +237,7 @@ interface Page {
   /** Its tabs with our hook in them. */
   hooked: number;
   /** What its hook last said; it counts only while a tab has the hook. */
-  session: { signedIn: boolean; email: string | null } | null;
+  session: { signedIn: boolean; email: string | null; name?: string | null } | null;
   endpoints: Endpoint[];
   keys: { key: string; source: KeySource }[];
   lane: Lane;
@@ -376,7 +382,7 @@ function tabsSummary(): string | null {
   return parts.join(', ');
 }
 
-function details(): Record<string, string | number | boolean | null> {
+function details(): Record<string, string | number | boolean | null | string[]> {
   const shapes = [...new Set(cal.endpoints.filter((e) => e.auth).map((e) => `${e.auth!.schemes.join('+')}${e.auth!.u ? ' _u' : ''}`))];
   const s = current();
   const g = gm.hooked ? gm.session : null;
@@ -415,12 +421,25 @@ function details(): Record<string, string | number | boolean | null> {
     backgroundStopped: gmail ? gmail.background().stopped : null,
     readsMarkRead: gmail ? gmail.readsMarkRead : false,
     bvLayout: gmail?.evidence.bvLayout ?? null,
-    canSend: false,
-    sendNote: mailOn ? 'Sending from Gmail is not built yet' : 'This account reads no mail (mail: false in its config)',
+    // Writing: label changes and sending, as the page makes them (src/gmail/write.ts). Spam is not written.
+    writes: mailOn ? ['seen', 'flagged', 'move', 'trash'] : [],
+    canSend: sendNote() === null,
+    sendNote: sendNote(),
+    ...(mailOn ? { sendCap: SEND_CAP, maxRecipients: MAX_RECIPIENTS } : {}),
     gmailWatch: !mailOn ? null : !pollMs ? 'off' : !watchOn ? 'starts with the first mail call' : watchInfo.error ? `failed at ${hhmm(watchInfo.at)}: ${watchInfo.error}` : watchInfo.at ? `looked at ${hhmm(watchInfo.at)}` : 'starting',
     gmailSelfCheckAt: gmailSelfCheck ? new Date(gmailSelfCheck.at).toISOString() : null,
     gmailSelfCheck: gmailSelfCheck?.summary ?? null,
   };
+}
+
+/** Why mail.send cannot send now, in a sentence for a person; null when it can (the Gmail page up, signed in, as itself). */
+function sendNote(): string | null {
+  if (!mailOn) return 'This account reads no mail (mail: false in its config)';
+  const s = gm.hooked ? gm.session : null;
+  if (!bridge.connected || !s) return 'Gmail is not open in the sandbox yet';
+  if (!s.signedIn) return 'Google is not signed in; sign in in the live view';
+  if (!s.email) return "Gmail has not shown which address it is signed in as yet";
+  return null;
 }
 
 /** What is wrong with how a page answers, if anything: a reload under way or failed, silence, a reload not yet answered. */
@@ -513,7 +532,9 @@ let lastSent = '';
 function status(force = false) {
   const st = state();
   const email = current()?.email;
-  const ev = { t: 'status', status: st.status, attention: st.attention, liveView, ...(email ? { self: { email } } : {}), details: details(), layers: layers() };
+  const g = gm.hooked ? gm.session : null;
+  const name = g?.email && g.email === email ? (g.name ?? null) : null;
+  const ev = { t: 'status', status: st.status, attention: st.attention, liveView, ...(email ? { self: { email, ...(mailOn ? { addresses: [{ email, name }] } : {}) } } : {}), details: details(), layers: layers() };
   const s = JSON.stringify(ev);
   if (s === lastSent && !force) return;
   lastSent = s;
@@ -556,7 +577,7 @@ function onBridge(msg: Up) {
     case 'session': {
       const p = pages[roleOf(msg)];
       const was = p.session?.signedIn;
-      p.session = { signedIn: !!msg.signedIn, email: typeof msg.email === 'string' ? msg.email.slice(0, 200) : null };
+      p.session = { signedIn: !!msg.signedIn, email: typeof msg.email === 'string' ? msg.email.slice(0, 200) : null, name: typeof msg.name === 'string' && msg.name.trim() ? msg.name.slice(0, 200) : null };
       if (p.session.signedIn !== was) log('info', `${p.role} page: ${p.session.signedIn ? 'signed in' : 'not signed in'}`);
       if (p.role === 'gmail') gmail?.notePage(p.session.signedIn);
       if (p.role !== 'calendar') break;
@@ -984,6 +1005,19 @@ async function collectShapes(): Promise<number> {
 /** What the hook said a non-mail answer reads as: only its two words pass. */
 const pageKindOf = (v: unknown): PageKind | null => (v === 'signin' || v === 'challenge' ? v : null);
 
+/**
+ * A write's failure in the page, as what it says of Gmail: 503 only when nothing can have reached Gmail (the browser
+ * not attached); a page that did not answer in time may have made it (504); the hook refusing the body, or not knowing
+ * the command (an older extension), is ours (500), and trying again will not help.
+ */
+function writeError(e: unknown): StatusError {
+  const err = e as StatusError;
+  const msg = String(err?.message ?? e);
+  if (/not attached/.test(msg)) return err instanceof StatusError ? err : new StatusError(msg, 503);
+  if (/did not answer/.test(msg)) return new StatusError(`${msg}; the change may have been made`, 504);
+  return new StatusError(`the Gmail page would not make it (${msg.slice(0, 160)})`, 500);
+}
+
 /** The Gmail tab, as GmailMail needs it: every call through the hook in that page (docs/google.md, "Gmail mail"). */
 const gmailTransport: Transport = {
   async info() {
@@ -1012,6 +1046,27 @@ const gmailTransport: Transport = {
     } finally {
       void pageRequest('gmail', { kind: 'gmail.rawDrop', token: r.token }).catch(() => {});
     }
+  },
+  async write(body) {
+    try {
+      const r = await pageRequest<SyncAnswer>('gmail', { kind: 'gmail.write', body });
+      return { ...r, page: pageKindOf(r?.page) };
+    } catch (e) {
+      throw writeError(e);
+    }
+  },
+  async upload(file, meta) {
+    let token: string | undefined;
+    for (let at = 0; at < file.bytes.length || at === 0; at += RAW_PIECE) {
+      const c = await pageRequest<{ token?: string }>('gmail', { kind: 'gmail.uploadChunk', token, base64: file.bytes.subarray(at, at + RAW_PIECE).toString('base64') });
+      token = typeof c?.token === 'string' ? c.token : undefined;
+      if (!token) return { status: 0, error: 'the page did not take the file' };
+      if (!file.bytes.length) break;
+    }
+    const r = await pageRequest<{ status?: number; token?: unknown; error?: string; page?: unknown }>('gmail', { kind: 'gmail.upload', token: token!, size: file.bytes.length, name: file.name, mime: file.mime, meta }, RAW_ANSWER_MS).catch((e) => {
+      throw writeError(e);
+    });
+    return { status: typeof r?.status === 'number' ? r.status : 0, token: typeof r?.token === 'string' ? r.token : undefined, error: r?.error, page: pageKindOf(r?.page) };
   },
 };
 const gmail = mailOn ? new GmailMail(gmailTransport, { log, onChange: () => status(), stateFile: join(link.accountDir, READS_FILE) }) : null;
@@ -1271,11 +1326,19 @@ async function onCommand(cmd: Command): Promise<unknown> {
     case 'mail.changes':
       return mailOp((g) => g.changes({ mailboxId: cmd.mailboxId, state: cmd.state }));
     case 'mail.flag':
+      return mailOp((g) => g.flag({ ids: cmd.ids, threadIds: cmd.threadIds, seen: cmd.seen, flagged: cmd.flagged, answered: cmd.answered }));
     case 'mail.move':
+      return mailOp((g) => g.move({ ids: cmd.ids, threadIds: cmd.threadIds, mailboxId: cmd.mailboxId }));
     case 'mail.trash':
-      throw new StatusError('this account reads Gmail only for now: marking, moving and trashing are not built yet', 501);
-    case 'mail.send':
-      throw new StatusError('Sending from Gmail is not built yet', 501);
+      return mailOp((g) => g.trash({ ids: cmd.ids, threadIds: cmd.threadIds }));
+    case 'mail.send': {
+      const m = checkOutgoing(cmd as unknown as OutgoingMail, link.accountDir);
+      return mailOp((g) => {
+        const s = gm.hooked ? gm.session : null;
+        if (!s?.email) throw new StatusError("Gmail has not shown which address it is signed in as yet; try again in a moment", 503, 'unavailable');
+        return g.send(m, { email: s.email, name: s.name ?? null });
+      });
+    }
     default:
       throw new Error(`google has no operation "${cmd.t}"`);
   }

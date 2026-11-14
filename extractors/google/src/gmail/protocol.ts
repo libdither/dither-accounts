@@ -12,14 +12,15 @@
  * refuses the call rather than answer with mail it may have misread.
  *
  * Read-only: no body built here changes anything. The sync call (s) carries label changes when the page writes; the
- * one built here never does, and the hook refuses any that would.
+ * one built here never does, and the hook refuses any that would on the reading path (gmail.sync). Writes are built in
+ * write.ts and go through the hook's own path for them (gmail.write).
  */
 import type { MailAddress, MailboxRole, MailFlags } from '@dither-accounts/interfaces';
 
-export type Endpoint = 'bv' | 'fd' | 's' | 'raw';
-export const ENDPOINTS: Endpoint[] = ['bv', 'fd', 's', 'raw'];
+export type Endpoint = 'bv' | 'fd' | 's' | 'raw' | 'write' | 'upload';
+export const ENDPOINTS: Endpoint[] = ['bv', 'fd', 's', 'raw', 'write', 'upload'];
 /** What each call is, for sentences. */
-export const ENDPOINT_NAMES: Record<Endpoint, string> = { bv: 'list and search (bv)', fd: 'thread fetch (fd)', s: 'sync (s)', raw: 'message download' };
+export const ENDPOINT_NAMES: Record<Endpoint, string> = { bv: 'list and search (bv)', fd: 'thread fetch (fd)', s: 'sync (s)', raw: 'message download', write: 'change (s with changes)', upload: 'attachment upload' };
 
 /** A Gmail answer not laid out as this module knows it: where, what was expected there, and what kind of thing was there instead. */
 export class LayoutError extends Error {
@@ -107,7 +108,7 @@ export const SYSTEM: SystemBox[] = [
   { id: '^s', name: 'Spam', role: 'junk', query: 'in:spam', label: '^s' },
   { id: '^k', name: 'Trash', role: 'trash', query: 'in:trash', label: '^k' },
 ];
-export const L = { INBOX: '^i', ALL: '^all', UNREAD: '^u', STARRED: '^t', SENT: '^f', DRAFTS: '^r', SPAM: '^s', TRASH: '^k', IMPORTANT: '^io_im' } as const;
+export const L = { INBOX: '^i', ALL: '^all', UNREAD: '^u', STARRED: '^t', SENT: '^f', DRAFTS: '^r', SPAM: '^s', TRASH: '^k', IMPORTANT: '^io_im', REPLIED: '^io_re' } as const;
 /** System labels a summary names, readably. Every other ^ id (^all, ^u, ^o, ^io_lr, ^smartlabel_*, …) is Gmail's own bookkeeping. */
 const READABLE: Record<string, string> = Object.fromEntries(SYSTEM.filter((b) => b.label).map((b) => [b.label!, b.name]));
 
@@ -155,8 +156,11 @@ export function isUserLabel(l: { id: string; type: number | null }): boolean {
   return l.type === 2 || (l.type === null && /^\^x_\w{1,64}$/.test(l.id));
 }
 
-/** seen: no ^u (unread); flagged: ^t (starred); draft: ^r. Gmail keeps no answered mark among a message's labels: false. */
-export const flagsOf = (labels: string[]): MailFlags => ({ seen: !labels.includes(L.UNREAD), flagged: labels.includes(L.STARRED), answered: false, draft: labels.includes(L.DRAFTS) });
+/**
+ * seen: no ^u (unread); flagged: ^t (starred); draft: ^r; answered: ^io_re, the label the page puts on a message when it
+ * sends a reply to it (seen live, 2026-11-13; a reply sent from elsewhere may not leave it).
+ */
+export const flagsOf = (labels: string[]): MailFlags => ({ seen: !labels.includes(L.UNREAD), flagged: labels.includes(L.STARRED), answered: labels.includes(L.REPLIED), draft: labels.includes(L.DRAFTS) });
 
 /** The mailbox a message found by a search is in: Trash, Spam, Drafts, Inbox, Sent, else All Mail. */
 export function homeOf(labels: string[]): string {
@@ -238,6 +242,10 @@ export interface GMessage {
   record?: unknown;
   /** A msg-a message's [55] in decimal, taken as its id once a whole answer has been read (resolveLocalIds). */
   hex55?: string;
+  /** Message-ID [13], References [14] and In-Reply-To [15]: s's rows carry them, bv's and fd's do not (null, []). */
+  messageId: string | null;
+  inReplyTo: string | null;
+  references: string[];
 }
 export interface ThreadRow {
   /** Gmail's thread id, decimal (from `thread-f:`, else from the row's hex id); null when neither is there. */
@@ -323,8 +331,9 @@ function address(v: unknown): MailAddress | null {
 const addresses = (v: unknown): MailAddress[] => (Array.isArray(v) ? v.map(address).filter((a): a is MailAddress => !!a) : []);
 
 /**
- * A message in a thread row (bv and s): [0] its id, [1] [1, address, name] the sender, [2] and [5] lists of those
- * (to and cc: in s's rows; bv's have none), [6] its date in ms, [9] the snippet, [10] its labels, [11] its attachments.
+ * A message in a thread row (bv and s): [0] its id, [1] [1, address, name] the sender, [2], [3] and [4] lists of those
+ * (to, cc and bcc: in s's rows; bv's have none), [6] its date in ms, [9] the snippet, [10] its labels, [11] its
+ * attachments, [13] its Message-ID, [14] References and [15] In-Reply-To (s's rows only).
  */
 /**
  * A message's own Gmail id in hex sits at [55] (seen on a msg-a message, 2026-11-13). It is used for a msg-a message
@@ -367,7 +376,9 @@ function message(ep: Endpoint, m: unknown, where: string): GMessage {
     id,
     from: address(m[1]),
     to: addresses(m[2]),
-    cc: addresses(m[5]),
+    // [3] is Cc and [4] Bcc (a sent message's record, live, 2026-11-13; [5] was a guess and is empty).
+    cc: addresses(m[3]),
+    ...headerIds(m),
     date: m[6],
     labels: m[10],
     snippet: typeof m[9] === 'string' ? m[9] : null,
@@ -386,6 +397,14 @@ function row(ep: Endpoint, r: unknown[], where: string): ThreadRow {
     messages: msgs.map((m, i) => message(ep, m, `${where}[4][${i}]`)),
   };
 }
+
+/** A Message-ID as Gmail's records carry them, with its brackets. */
+const MESSAGE_ID = /^<[^<>\s]{3,900}>$/;
+const headerIds = (m: unknown[]) => ({
+  messageId: typeof m[13] === 'string' && MESSAGE_ID.test(m[13]) ? m[13] : null,
+  inReplyTo: typeof m[15] === 'string' && MESSAGE_ID.test(m[15]) ? m[15] : null,
+  references: Array.isArray(m[14]) ? m[14].filter((r): r is string => typeof r === 'string' && MESSAGE_ID.test(r)).slice(0, 100) : [],
+});
 
 const trailerOf = (v: unknown) => (Array.isArray(v) && typeof v[0] === 'number' ? v[0] : null);
 
@@ -490,7 +509,7 @@ export function parseFd(json: unknown): FdAnswer {
         if (!Array.isArray(m) || !isMsgId(m[0])) throw new LayoutError(ep, `${mw}[0]`, 'a message id (msg-f:…)', kindOf(Array.isArray(m) ? m[0] : m));
         if (!isMs(m[2])) throw new LayoutError(ep, `${mw}[2]`, "the message's date in ms (13 digits)", kindOf(m[2]));
         if (!isLabelList(m[3])) throw new LayoutError(ep, `${mw}[3]`, "the message's labels (^…)", kindOf(m[3]));
-        messages.push({ id: fDecimal(m[0]), from: address(m[1]), to: [], cc: [], date: m[2], labels: m[3], snippet: typeof m[10] === 'string' ? m[10] : null, attachments: 0 });
+        messages.push({ id: fDecimal(m[0]), from: address(m[1]), to: [], cc: [], date: m[2], labels: m[3], snippet: typeof m[10] === 'string' ? m[10] : null, attachments: 0, messageId: null, inReplyTo: null, references: [] });
       }
     }
     threads.push({ thread: fDecimal(e[0]), messages });

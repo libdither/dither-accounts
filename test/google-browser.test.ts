@@ -101,7 +101,7 @@ beforeAll(async () => {
   fake.addCalendar({ id: PRIMARY, summary: PRIMARY, timeZone: LA, accessRole: 'owner', primary: true, selected: true, backgroundColor: '#9fe1e7' });
   dir = mkdtempSync(join(tmpdir(), 'dacc-gweb-'));
   m = await createManager({ openPage: true, dataDir: dir, port: 0 });
-  const reg = await register(m.url, { name: 'gweb-app', requests: [{ interface: 'accounts', level: 'manage', kinds: ['google'] }, { interface: 'google.calendar', level: 'write' }, { interface: 'mail', level: 'read' }] });
+  const reg = await register(m.url, { name: 'gweb-app', requests: [{ interface: 'accounts', level: 'manage', kinds: ['google'] }, { interface: 'google.calendar', level: 'write' }, { interface: 'mail', level: 'write' }] });
   for (const r of reg.requests) expect((await fetch(`${m.url}/api/requests/${r.id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status).toBe(200);
   app = new AccountsClient({ url: m.url, app: reg.app, token: reg.token, onEvents: (a, evs) => (events[a] ??= []).push(...evs) });
   await until(() => app.connected, 5000, 'the app connected');
@@ -140,7 +140,8 @@ it(
     expect(st.liveView).toEqual({ width: 1280, height: 800 });
     const lv = m!.router.liveView(signedIn)!;
     expect(lv).toEqual({ vncSocket: join(m!.store.account(signedIn)!.dir, 'vnc.sock'), width: 1280, height: 800 });
-    expect(st.self).toEqual({ email: WEB.email });
+    // The address it sends as, with the name the page's account button shows.
+    expect(st.self).toEqual({ email: WEB.email, addresses: [{ email: WEB.email, name: 'Pat Example' }] });
     expect(st.details).toMatchObject({
       email: WEB.email,
       authuser: '0',
@@ -163,13 +164,16 @@ it(
       calendarReloads: 0,
       gmailReloads: 0,
       gmailProbe: null,
-      // To a mail client: Gmail, read through its page; not sending yet.
+      // To a mail client: Gmail, read and written through its page (no Spam), and sending.
       idPerMessage: true,
       summaryHeaders: false,
       raw: 'original',
       searchIds: true,
-      canSend: false,
-      sendNote: 'Sending from Gmail is not built yet',
+      writes: ['seen', 'flagged', 'move', 'trash'],
+      canSend: true,
+      sendNote: null,
+      sendCap: 25 * 1024 * 1024,
+      maxRecipients: 100,
       gmailWatch: 'starts with the first mail call',
       gmailSelfCheck: null,
       // The background lane (an app's archive sends background: true), not stopped; reads have not been seen to mark mail read.
@@ -542,7 +546,7 @@ const mailCall = (op: string, input: Record<string, unknown>) => app.call(mailIf
 let bvRefused = 0;
 
 it(
-  'Gmail mail through the manager, read-only: mailboxes, list paging, get, attachment, raw, search, changes; Calendar alongside',
+  'Gmail mail through the manager: mailboxes, list paging, get, attachment, raw, search, changes; writes and a send through the hook; Calendar alongside',
   async () => {
     await until(() => layerOf(signedIn, 'Gmail page')?.state === 'ok', 30_000, 'the Gmail page up');
     const writes = fake.gmail.writes;
@@ -607,18 +611,31 @@ it(
     } finally {
       fake.gmail.relabel(fresh.id, ['^k'], ['^i', '^all']);
     }
-    // Writes are not built, and nothing above wrote.
-    for (const [op, input] of [
-      ['mail.flag', { ids: [src.id], seen: true }],
-      ['mail.move', { ids: [src.id], mailboxId: '^k' }],
-      ['mail.trash', { ids: [src.id] }],
-    ] as const) {
-      const e = (await mailCall(op, input).catch((x) => x)) as CallFailed;
-      expect(e.code === 'denied' || e.status === 501).toBe(true);
-    }
+    // Nothing above wrote. Then writes through the page's hook (its own write path, which checks each body): read and
+    // back to unread, a star and off, the trash and back; Spam is not written.
     expect(fake.gmail.writes).toBe(writes);
+    expect(await mailCall('mail.flag', { ids: [src.id], threadIds: [src.thread], seen: true, flagged: true })).toEqual({});
+    expect([src.labels.includes('^u'), src.labels.includes('^t')]).toEqual([false, true]);
+    expect(await mailCall('mail.flag', { ids: [src.id], seen: false, flagged: false })).toEqual({});
+    expect([src.labels.includes('^u'), src.labels.includes('^t')]).toEqual([true, false]);
+    expect(await mailCall('mail.trash', { ids: [src.id] })).toEqual({});
+    expect([src.labels.includes('^k'), src.labels.includes('^i')]).toEqual([true, false]);
+    expect(await mailCall('mail.move', { ids: [src.id], mailboxId: '^i' })).toEqual({ ids: [src.id] });
+    expect([src.labels.includes('^k'), src.labels.includes('^i')]).toEqual([false, true]);
+    const spam = (await mailCall('mail.move', { ids: [src.id], mailboxId: '^s' }).catch((x) => x)) as CallFailed;
+    expect(spam.status).toBe(501);
+    // A reply with a file: the bytes handed to the page in pieces and uploaded as the page uploads, a draft, the send.
+    const sentBefore = fake.gmail.sent.length;
+    const file = Buffer.from(`File ${WEB.mailMark}\n`.repeat(50));
+    const out = await mailCall('mail.send', { to: [{ email: src.from.email, name: null }], subject: `Re: ${src.subject}`, text: `Thanks ${WEB.mailMark}`, replyTo: src.id, attachments: [{ filename: 'notes.txt', mime: 'text/plain', base64: file.toString('base64') }] });
+    const sent = fake.gmail.sent[sentBefore]!;
+    expect(sent).toMatchObject({ from: WEB.email, to: [src.from.email], subject: `Re: ${src.subject}`, thread: src.thread, inReplyTo: src.messageId });
+    expect(sent.files.map((f) => [f.name, f.mime, f.data.equals(file)])).toEqual([['notes.txt', 'text/plain', true]]);
+    expect(out).toEqual({ messageId: sent.messageId, sentId: sent.id });
+    expect(src.labels).toContain('^io_re');
+    fake.gmail.relabel(src.id, [], ['^io_re']);
     await until(() => layerOf(signedIn, 'Gmail protocol')?.state === 'ok', 5000, 'the Gmail protocol layer ok');
-    expect(layerOf(signedIn, 'Gmail protocol').note).toMatch(/^(bv|fd|s|raw)(, (bv|fd|s|raw))* answered as expected \(bv in its own layout\)$/);
+    expect(layerOf(signedIn, 'Gmail protocol').note).toMatch(/^(bv|fd|s|raw|write|upload)(, (bv|fd|s|raw|write|upload))* answered as expected \(bv in its own layout\)$/);
   },
   120_000,
 );
@@ -706,7 +723,7 @@ it(
     expect(layerOf(mailOff, 'Gmail protocol')).toEqual({ name: 'Gmail protocol', state: 'off', note: 'no Gmail tab' });
     expect(layerOf(mailOff, 'Gmail background')).toEqual({ name: 'Gmail background', state: 'off', note: 'no Gmail tab' });
     expect(statusOf(mailOff).details.backgroundLane).toBeUndefined();
-    expect(statusOf(mailOff).details).toMatchObject({ canSend: false, sendNote: 'This account reads no mail (mail: false in its config)' });
+    expect(statusOf(mailOff).details).toMatchObject({ writes: [], canSend: false, sendNote: 'This account reads no mail (mail: false in its config)' });
     expect(fake.pageLoads('gmail', 2)).toBe(0);
     expect(logOf(mailOff)).not.toContain('Gmail tab');
     await app.admin({ do: 'stop', account: mailOff });

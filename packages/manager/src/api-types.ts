@@ -1,5 +1,5 @@
 /** What the manager's own page reads (GET /api/state) and sends. */
-import type { Level } from '@dither-accounts/spec';
+import type { AddInfo, Level } from '@dither-accounts/spec';
 
 export interface OpInfo {
   name: string;
@@ -14,27 +14,9 @@ export interface InterfaceInfo {
   ops: OpInfo[];
   events: { name: string; describe: string }[];
 }
-/** One field of a kind's add form (Manifest.add): a config key, or a key of secret.json when `secret`. */
-export interface AddField {
-  key: string;
-  label: string;
-  placeholder?: string;
-  /** Goes to secret.json (0600, where the extractor reads credentials), never to the config or the page. */
-  secret?: boolean;
-  optional?: boolean;
-  /** Used when it is left empty. */
-  default?: string;
-  /** A regular expression the value must match, and what to say when it does not. */
-  pattern?: string;
-  hint?: string;
-}
-/** How a kind is added on the page: what it is, what to fill in, and what happens next. */
-export interface AddInfo {
-  blurb: string;
-  fields?: AddField[];
-  /** What the page says once it is added (scan a code, sign in in the live view). */
-  next?: string;
-}
+/** A kind's add form (Manifest.add): the same shapes apps get from the `kinds` admin action. */
+export type { AddField, AddInfo } from '@dither-accounts/spec';
+
 export interface KindInfo {
   kind: string;
   name: string;
@@ -52,6 +34,12 @@ export interface StatusLayer {
   name: string;
   state: 'ok' | 'waiting' | 'failed' | 'off';
   note?: string;
+  /**
+   * Only this interface rests on it, not the account's others: under a Google account Gmail's layers say `mail` and
+   * Calendar's `google.calendar`, so an app reading mail is not told it stops at a failed Calendar API. Absent: all of
+   * its interfaces rest on it.
+   */
+  interface?: string;
 }
 export interface AccountInfo {
   id: string;

@@ -222,12 +222,55 @@ export type ConsumerIn =
   | { t: 'admin'; id: string; action: AdminAction }
   | { t: 'ping' };
 
+/** One field of a kind's add form (a manifest's `add`): a config key, or a key of secret.json when `secret`. */
+export interface AddField {
+  key: string;
+  label: string;
+  placeholder?: string;
+  /** Goes to secret.json (0600, where the extractor reads credentials), never to the config or the page. */
+  secret?: boolean;
+  optional?: boolean;
+  /** Used when it is left empty. */
+  default?: string;
+  /** A regular expression the value must match, and what to say when it does not. */
+  pattern?: string;
+  hint?: string;
+}
+
+/** How a kind is added: what it is, what to fill in, and what happens next. */
+export interface AddInfo {
+  blurb: string;
+  fields?: AddField[];
+  /** What to say once it is added (scan a code, sign in in the live view). */
+  next?: string;
+}
+
+/**
+ * A kind of account as an app sees it (the `kinds` admin action): what it is called, the interfaces its accounts
+ * offer, its add form, and whether this app may add accounts of it. Any app may ask; nothing here is about an account.
+ */
+export interface AppKind {
+  kind: string;
+  name: string;
+  interfaces: string[];
+  /** Accounts of it can be added with this form (null: they come some other way, or not at all). */
+  add: AddInfo | null;
+  /** This app may create and run accounts of it (an `accounts` grant at manage for the kind). */
+  manages: boolean;
+}
+
 /**
  * Account administration, for apps with an `accounts` grant at manage on the account's kind. The manager does it; the
- * extractor is not asked.
+ * extractor is not asked. `kinds` is the exception: any app may list the kinds, to offer adding them.
  */
 export type AdminAction =
-  | { do: 'create'; kind: string; label: string; config?: Record<string, unknown>; secret?: unknown; id?: string; enabled?: boolean }
+  | { do: 'kinds' }
+  /**
+   * `form`: answers to the kind's add form (AppKind.add), keyed by field: the manager splits them into config and
+   * secret.json and checks them as its own page does (needed fields, patterns, defaults). Without it, `config` and
+   * `secret` go in as given. An empty label takes the kind's name.
+   */
+  | { do: 'create'; kind: string; label: string; config?: Record<string, unknown>; secret?: unknown; form?: Record<string, string>; id?: string; enabled?: boolean }
   | { do: 'update'; account: string; label?: string; config?: Record<string, unknown>; enabled?: boolean }
   /** Replace its secret.json (what the extractor reads its credentials from). */
   | { do: 'secret'; account: string; secret: unknown }
@@ -238,7 +281,9 @@ export type AdminAction =
   | { do: 'log'; account: string; lines?: number };
 
 /** What each admin action answers. */
-export type AdminResult<A extends AdminAction> = A extends { do: 'create' }
+export type AdminResult<A extends AdminAction> = A extends { do: 'kinds' }
+  ? { kinds: AppKind[] }
+  : A extends { do: 'create' }
   ? { id: string }
   : A extends { do: 'delete' }
     ? { ok: true; purged: boolean; dir: string; why?: string }

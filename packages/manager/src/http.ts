@@ -21,7 +21,8 @@ import { consent, type Level, LEVELS } from '@dither-accounts/spec';
 import { IFACES } from '@dither-accounts/interfaces';
 import TYPES from '@dither-accounts/interfaces/types';
 import { ALG_NAMES, validCredentials } from '@dither-accounts/passkey';
-import type { AccessRequest, AccountDetail, AccountInfo, AccountPasskeys, AddField, AppInfo, ApproversState, GrantMatrix, ManagerState, MatrixCell, PageCallResult, StatusLayer } from './api-types.ts';
+import { addForm } from './addform.ts';
+import type { AccessRequest, AccountDetail, AccountInfo, AccountPasskeys, AppInfo, ApproversState, GrantMatrix, ManagerState, MatrixCell, PageCallResult, StatusLayer } from './api-types.ts';
 import type { Approvers, ApproverSocketData } from './approvers.ts';
 import { Auth, CLI_HEADER, cookieOf, fromOwnPage, loginPage, safeNext, sessionCookie } from './auth.ts';
 import { hashToken, newId, newToken, type Row, type Store } from './db.ts';
@@ -87,33 +88,7 @@ const json = (x: unknown, status = 200) => Response.json(x, { status });
 const bad = (msg: string, status = 400) => Response.json({ error: msg }, { status });
 const body = async <T>(req: Request) => (await req.json().catch(() => ({}))) as T;
 
-/**
- * An add form's answers, split by its fields (Manifest.add.fields): config keys the kind does not name are passed on
- * (tests and kinds without fields send their own config), secret ones never land in the config. A string says what is
- * wrong.
- */
-export function addForm(fields: AddField[], config: unknown, secret: unknown): { config: Record<string, unknown>; secret: Record<string, string> | null } | string {
-  const c: Record<string, unknown> = config && typeof config === 'object' && !Array.isArray(config) ? { ...(config as Record<string, unknown>) } : {};
-  const given: Record<string, unknown> = secret && typeof secret === 'object' && !Array.isArray(secret) ? (secret as Record<string, unknown>) : {};
-  const sec: Record<string, string> = {};
-  for (const f of fields) {
-    const raw = f.secret ? given[f.key] : c[f.key];
-    const v = typeof raw === 'string' ? raw.trim() : '';
-    if (f.secret) delete c[f.key];
-    if (!v) {
-      if (f.secret) continue;
-      if (f.default !== undefined) c[f.key] = f.default;
-      else if (!f.optional) return `${f.label} is needed`;
-      else delete c[f.key];
-      continue;
-    }
-    if (f.pattern && !new RegExp(f.pattern).test(v)) return `${f.label}: ${f.hint ?? 'that does not look right'}`;
-    if (f.secret) sec[f.key] = v;
-    else c[f.key] = v;
-  }
-  for (const f of fields) if (f.secret && !f.optional && !sec[f.key]) return `${f.label} is needed`;
-  return { config: c, secret: Object.keys(sec).length ? sec : null };
-}
+export { addForm };
 
 /** Who an account is signed in as, from its status's `self` (a chat identity, or a Google `{ email }`). */
 function selfOf(v: unknown): AccountInfo['self'] {
@@ -133,9 +108,14 @@ export function layersOf(v: unknown): StatusLayer[] | null {
   const out: StatusLayer[] = [];
   for (const l of v.slice(0, 24)) {
     if (!l || typeof l !== 'object') continue;
-    const { name, state, note } = l as Record<string, unknown>;
+    const { name, state, note, interface: iface } = l as Record<string, unknown>;
     if (typeof name !== 'string' || !name.trim() || !LAYER_STATES.has(state as StatusLayer['state'])) continue;
-    out.push({ name: name.trim().slice(0, 60), state: state as StatusLayer['state'], ...(typeof note === 'string' && note.trim() ? { note: note.trim().slice(0, 400) } : {}) });
+    out.push({
+      name: name.trim().slice(0, 60),
+      state: state as StatusLayer['state'],
+      ...(typeof note === 'string' && note.trim() ? { note: note.trim().slice(0, 400) } : {}),
+      ...(typeof iface === 'string' && /^[\w.-]{1,60}$/.test(iface) ? { interface: iface } : {}),
+    });
   }
   return out.length ? out : null;
 }

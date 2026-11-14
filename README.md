@@ -173,6 +173,10 @@ the pane lists), `layers` (what the account rests on) and `attention` (what it n
   layer the account does not use (Matrix encryption not set up), so it is never the stop. An extractor builds it
   from what it already knows, with no calls of its own; one that sends none shows none. The fakes take
   `failLayer`/`failNote` (and `noLayers`) in their config for tests.
+- A layer only one of the account's interfaces rests on says which, `interface: 'mail'`: a Google account's `API key`
+  and `Calendar API` are `google.calendar`'s, its Gmail layers `mail`'s. An app then reads the account's state per
+  interface (the first layer not ok among those with no `interface` or with its own), so mail is not called broken
+  for a failed Calendar API. The overview shows the interface under such a layer.
 - Apps get each status's `liveView` as its width and height only, never the socket (so an app knows there is one): an
   app that runs the account opens the live view through the manager (`liveViewPath`). The page and `/api/liveview`
   keep the socket.
@@ -184,13 +188,16 @@ the pane lists), `layers` (what the account rests on) and `attention` (what it n
 
 ## Apps that run accounts
 
-An app with an `accounts` grant at manage for a kind runs accounts of that kind (`AccountsClient.admin`): create them
-(with config and a secret), rename, enable, disable, start, stop, restart, replace their secret, read the tail of their
-log (`do: 'log'`), and remove them (`do: 'delete'`, with `purge` to delete a directory the manager made). Its account
-list says, per account, why it is not running (`error`), whether it may run it (`manages`), whether it has a live view
-(`liveView`) and who made it (`origin`: this app, another app, the page, or an import). The live view of an account it
-manages is a WebSocket on its own token, `client.liveViewUrl(account)` (spec `liveViewPath`): the raw VNC stream, for
-the app to carry on to its own page, from this machine and never a browser.
+Any app may list the kinds (`do: 'kinds'`): each kind's name, the interfaces its accounts offer, its add form (the
+page's own, from its manifest) and whether this app may add one (`manages`), so an app can offer adding accounts beside
+the page. An app with an `accounts` grant at manage for a kind runs accounts of that kind (`AccountsClient.admin`):
+create them (with config and a secret, or with `form`, the answers to the kind's add form, which the manager splits into
+config and secret.json and checks as its page does), rename, enable, disable, start, stop, restart, replace their
+secret, read the tail of their log (`do: 'log'`), and remove them (`do: 'delete'`, with `purge` to delete a directory
+the manager made). Its account list says, per account, why it is not running (`error`), whether it may run it
+(`manages`), whether it has a live view (`liveView`) and who made it (`origin`: this app, another app, the page, or an
+import). The live view of an account it manages is a WebSocket on its own token, `client.liveViewUrl(account)` (spec
+`liveViewPath`): the raw VNC stream, for the app to carry on to its own page, from this machine and never a browser.
 
 ## Layout
 

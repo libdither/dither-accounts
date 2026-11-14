@@ -155,6 +155,11 @@ function Chain({ layers }: { layers: StatusLayer[] }) {
               <span class="link-name">{l.name}</span>
               <span class="sr-only">, {LAYER_WORD[l.state]}</span>
             </span>
+            {l.interface && (
+              <span class="link-iface" data-iface={l.interface} title={`Only ${l.interface} rests on it`}>
+                {l.interface}
+              </span>
+            )}
             {l.note && <span class="link-note">{l.note}</span>}
             {i === stop && (
               <span class="link-stop" data-stop>

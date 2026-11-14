@@ -19,11 +19,12 @@ settings that sign outside mail) is refused before anything is made, with a 422 
 
 ## Adding it, and what you do
 
-On the accounts page, **Add → Proton Mail** (no fields). Its extractor starts a sandbox, and the account says **Sign in
-to Proton in the live view (tick "Keep me signed in")**. Open the live view and sign in as on your desktop: password,
-second factor, any human check Proton shows (those are yours to do; nothing here answers them). Tick **Keep me signed
-in**, so the session survives the browser restarting; without it the account works until the extractor restarts, and
-its "signed in" layer says the session is not kept. Leave the browser on Proton Mail. The account goes online once
+On the accounts page, **Add → Proton Mail** (no fields), or from an app that may add `proton` accounts (dither-chat's
+Add account, once you approve its `accounts` request for the kind). Its extractor starts a sandbox, and the account says
+**Sign in to Proton in the live view (tick "Keep me signed in")**. Open the live view and sign in as on your desktop:
+password, second factor, any human check Proton shows (those are yours to do; nothing here answers them). Tick **Keep me
+signed in**, so the session survives the browser restarting; without it the account works until the extractor restarts,
+and its "signed in" layer says the session is not kept. Leave the browser on Proton Mail. The account goes online once
 your keys open.
 
 ## What runs

@@ -129,6 +129,12 @@ test('layers: only well-formed ones are kept', () => {
     { name: 'c', state: 'off' },
     { name: 'd', state: 'waiting', note: 'x'.repeat(400) },
   ]);
+  // The interface a layer serves alone is kept when it reads as an interface name.
+  expect(layersOf([{ name: 'Gmail page', state: 'ok', interface: 'mail' }, { name: 'API key', state: 'failed', interface: 'google.calendar' }, { name: 'e', state: 'ok', interface: 'no spaces <b>' }])).toEqual([
+    { name: 'Gmail page', state: 'ok', interface: 'mail' },
+    { name: 'API key', state: 'failed', interface: 'google.calendar' },
+    { name: 'e', state: 'ok' },
+  ]);
 });
 
 // ---------------------------------------------------------------- the live view's socket stays here

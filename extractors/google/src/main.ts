@@ -157,7 +157,9 @@ type Up =
   | { t: 'seen'; endpoints: Endpoint[]; keys: { key: string; source: KeySource }[]; role?: Role | null };
 type Attention = { kind: string; message: string; liveView: boolean };
 /** One link of the account's dependency chain (status.layers, as in chat-protocol's StatusLayer). */
-type Layer = { name: string; state: 'ok' | 'waiting' | 'failed' | 'off'; note?: string };
+type Layer = { name: string; state: 'ok' | 'waiting' | 'failed' | 'off'; note?: string; interface?: string };
+/** A layer only one of the account's interfaces rests on (StatusLayer.interface). */
+const only = (iface: 'mail' | 'google.calendar', l: Layer): Layer => ({ ...l, interface: iface });
 
 const link = linkManager({ onConnect, onCommand, onShutdown: () => cleanup() });
 const log = (level: 'debug' | 'info' | 'warn' | 'error', msg: string, data?: unknown) => link.log(level, msg, data);
@@ -474,7 +476,9 @@ function gmailLayer(): Layer {
 /**
  * What the account rests on, outermost first (status.layers): the display, the browser on it, our extension in the
  * browser, the Google sign-in, an API key that works, and the Calendar API answering with it. From what the details
- * already say; the first layer not ok is where it stops. Then the Gmail page, which Calendar does not rest on.
+ * already say; the first layer not ok is where it stops. Then the Gmail page, which Calendar does not rest on. The key
+ * and the Calendar API are Calendar's alone, and the Gmail layers mail's (`interface`), so an app reading mail is not
+ * told it stops at Calendar.
  */
 function layers(): Layer[] {
   const s = current();
@@ -525,7 +529,7 @@ function layers(): Layer[] {
       : { name: 'Calendar API', state: 'waiting', note: probe && !probe.ok ? `waits for a key (it answered ${probe.status ?? 'nothing'})` : 'waits for a key' };
   const protocol: Layer = gmail ? gmail.layer() : { name: 'Gmail protocol', state: 'off', note: 'no Gmail tab' };
   const background: Layer = gmail ? gmail.backgroundLayer() : { name: 'Gmail background', state: 'off', note: 'no Gmail tab' };
-  return [screen, browser, extension, signedIn, key, calendar, gmailLayer(), protocol, background];
+  return [screen, browser, extension, signedIn, only('google.calendar', key), only('google.calendar', calendar), only('mail', gmailLayer()), only('mail', protocol), only('mail', background)];
 }
 
 let lastSent = '';

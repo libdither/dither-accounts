@@ -1312,7 +1312,7 @@
   // the call's media and encryption. Its remote audio is mixed and sent to the device over a
   // second peer connection, and the device's microphone comes back over it and is what the
   // client gets from getUserMedia. Patches exist only while a bridge call does.
-  const call = { id: null, mode: null, channelId: null, pc: null, ctx: null, mix: null, mic: null, mixMeter: null, micMeter: null, micSrc: null, unpatch: null, unsub: null, timer: null, joinedAt: 0 };
+  const call = { id: null, mode: null, channelId: null, pc: null, ctx: null, mix: null, mic: null, mixMeter: null, micMeter: null, micSrc: null, unpatch: null, unsub: null, timer: null, joinedAt: 0, push: null, viewOpen: false };
   const ourPCs = new WeakSet();
   const tapped = new WeakSet();
 
@@ -1347,9 +1347,11 @@
     call.unpatch = patchMedia();
     call.unsub = watchCall();
     if (cmd.input) applyInput(cmd.input);
+    // The client keeps its own mute across sessions (its saved settings): a client left muted would join muted and never
+    // send the device's microphone. The device's choice wins, before it connects, so it joins as the device asked.
+    await syncMute(cmd);
     mod.VoiceActions.selectVoiceChannel(cmd.channelId);
     ringOthers(cmd);
-    if (cmd.muted || cmd.deafened) setTimeout(() => callMute(!!cmd.muted, !!cmd.deafened), 500);
     return {};
   }
 
@@ -1357,6 +1359,11 @@
     if (!call.id) return { ok: true };
     const id = call.id;
     const wasDirect = call.mode === 'direct';
+    try {
+      stopVideo();
+    } catch (e) {
+      log('warn', 'stopping video failed', String(e));
+    }
     try {
       if (!fromClient && mod.SelectedChannelStore && mod.SelectedChannelStore.getVoiceChannelId() === call.channelId) mod.VoiceActions.disconnect();
     } catch (e) {
@@ -1377,7 +1384,7 @@
     if (wasDirect) setTimeout(() => (external.active = false), 3000);
     mixed.clear();
     if (fromClient) up({ t: 'call', call: id, ended: fromClient });
-    Object.assign(call, { id: null, mode: null, channelId: null, pc: null, ctx: null, mix: null, mic: null, mixMeter: null, micMeter: null, micSrc: null, unpatch: null, unsub: null, timer: null });
+    Object.assign(call, { id: null, mode: null, channelId: null, pc: null, ctx: null, mix: null, mic: null, mixMeter: null, micMeter: null, micSrc: null, unpatch: null, unsub: null, timer: null, viewOpen: false });
     return { ok: true };
   }
 
@@ -1388,7 +1395,38 @@
     if (!!me.isSelfDeaf() !== !!deafened) act.toggleSelfDeaf();
     // Undeafening restores the previous mute, so read it again.
     if (!!me.isSelfMute() !== !!muted) act.toggleSelfMute();
+    if (call.push) call.push();
     return { ok: true };
+  }
+
+  /**
+   * The device's mute and deafen at the start of a call, whatever the client kept from its last one. A client whose audio
+   * was never enabled (no microphone ever granted in its sandbox) only answers its unmute by enabling audio: it asks
+   * getUserMedia, which in bridge mode now hands it the device's microphone, and unmutes once that worked. In direct
+   * mode the device sends, so only the gateway's flags matter: set them as they are, without enabling anything.
+   */
+  async function syncMute(cmd) {
+    const ms = mod.MediaEngineStore;
+    const act = mod.AudioActions;
+    try {
+      if (ms && act && typeof ms.isEnabled === 'function' && !ms.isEnabled()) {
+        if (call.mode === 'bridge' && typeof act.enable === 'function') {
+          // Its getUserMedia is ours by now, so this takes a moment; never more than 3 s of the join.
+          const enabled = Promise.resolve(act.enable(!cmd.muted)).catch((e) => log('warn', 'the client did not enable its audio', String(e)));
+          await Promise.race([enabled, new Promise((r) => setTimeout(r, 3000))]);
+          callMute(!!cmd.muted, !!cmd.deafened);
+          return;
+        }
+        if (typeof act.setSelfMute === 'function') {
+          if (!!ms.isSelfMute() !== !!cmd.muted) act.setSelfMute('default', !!cmd.muted);
+          if (!!ms.isSelfDeaf() !== !!cmd.deafened) act.toggleSelfDeaf();
+          return;
+        }
+      }
+      callMute(!!cmd.muted, !!cmd.deafened);
+    } catch (e) {
+      log('warn', 'could not set the client\'s mute at the start of the call', String(e));
+    }
   }
 
   /** Participants from the client's own stores, pushed whenever they change (at most every 150 ms). */
@@ -1415,12 +1453,27 @@
         participants.push({ id, muted: !!(v.selfMute || v.mute), deafened: !!(v.selfDeaf || v.deaf), speaking, video: !!v.selfVideo, ...inCallExtras(id, v, stage) });
         users.push(resolveUser(id));
       }
-      const key = JSON.stringify([participants, stage]);
+      const self = selfState();
+      // Its call view is what asks the voice server for people's video: opened, as clicking the channel would, once
+      // there is video to see (an audio call never pays for drawing it), and after the join has answered.
+      if (call.mode === 'bridge' && !call.viewOpen && (participants.some((x) => x.video || x.streaming) || watching.size)) {
+        call.viewOpen = true;
+        const ch = mod.ChannelStore.getChannel(call.channelId);
+        if (ch) openCallView(ch);
+      }
+      const video = call.mode === 'bridge' ? assignSlots() : [];
+      const key = JSON.stringify([participants, stage, self, video]);
       if (key === last) return;
       last = key;
       // The client's per-person volumes may have changed: the bridge's mix follows them.
       regain();
-      callUp({ state: { channelId: call.channelId, participants, ...(stage ? { stage } : {}) }, users: users.filter((u) => u && u.username) });
+      callUp({ state: { channelId: call.channelId, participants, ...(stage ? { stage } : {}), self, ...(call.mode === 'bridge' ? { video } : {}) }, users: users.filter((u) => u && u.username) });
+    };
+    call.push = () => {
+      if (!queued) {
+        queued = true;
+        setTimeout(push, 50);
+      }
     };
     const onChange = () => {
       if (!queued) {
@@ -1433,12 +1486,15 @@
         if (call.id && Date.now() - call.joinedAt > 5000 && now !== call.channelId) void callLeave(now ? 'moved to another channel' : 'disconnected');
       } catch (e) {}
     };
-    const stores = [mod.VoiceStateStore, mod.SpeakingStore, mod.SelectedChannelStore, mod.MediaEngineStore, mod.StageInstanceStore].filter(Boolean);
+    const stores = [mod.VoiceStateStore, mod.SpeakingStore, mod.SelectedChannelStore, mod.MediaEngineStore, mod.StageInstanceStore, mod.StreamStore, mod.RTCConnectionStore].filter(Boolean);
     for (const st of stores) st.addChangeListener(onChange);
     onChange();
     // What the client's own voice connection is doing, for the adapter log (and comparing the modes).
     call.timer = setInterval(() => void logRtc(), 10_000);
-    return () => stores.forEach((st) => st.removeChangeListener(onChange));
+    return () => {
+      call.push = null;
+      stores.forEach((st) => st.removeChangeListener(onChange));
+    };
   }
 
 
@@ -1493,6 +1549,7 @@
     Object.assign(external, { active: true, channelId: cmd.channelId, guildId });
     Object.assign(call, { id: cmd.call, mode: 'direct', channelId: cmd.channelId, joinedAt: Date.now() });
     call.unsub = watchCall();
+    syncMute(cmd);
     let server;
     try {
       server = await new Promise((resolve, reject) => {
@@ -1506,7 +1563,6 @@
       await callLeave(false);
       throw e;
     }
-    if (cmd.muted || cmd.deafened) setTimeout(() => callMute(!!cmd.muted, !!cmd.deafened), 200);
     return { direct: { network: 'discord', endpoint: server.endpoint, token: server.token, serverId: guildId || cmd.channelId, channelId: cmd.channelId, userId: me.id, sessionId } };
   }
 
@@ -1515,18 +1571,47 @@
    * audio. The patches go where the natives are (the prototypes), read like them, and come off as they were.
    */
   function patchMedia() {
-    const restore = [
-      cloak.replace(Object.getPrototypeOf(navigator.mediaDevices), 'getUserMedia', (gum) => ({
+    // The device's camera and microphone in place of the browser's. The page wraps getUserMedia on navigator.mediaDevices
+    // itself (an own property over the prototype's, holding the original it took at load), so both are replaced: the
+    // prototype alone was bypassed, and the client then found no microphone, never enabled audio and stayed muted.
+    const gumPatch = (gum) => ({
         getUserMedia(constraints) {
-          if (!call.id || !constraints || !constraints.audio || constraints.video) return cloak.apply(gum, this, arguments);
+          if (!call.id || !constraints) return cloak.apply(gum, this, arguments);
+          // Its camera: the device's, as the bridge carries it (only once the device turned it on).
+          if (constraints.video && !constraints.audio && bridgeIn.camera && wantVideo.camera) {
+            log('debug', 'the client asked for the camera; it gets the device\'s');
+            return Promise.resolve(new MediaStream([bridgeIn.camera.clone()]));
+          }
+          if (!constraints.audio || constraints.video) return cloak.apply(gum, this, arguments);
           log('debug', 'the client asked for the microphone; it gets the device\'s');
           return Promise.resolve(new MediaStream([call.mic.stream.getAudioTracks()[0].clone()]));
         },
-      }).getUserMedia),
+      }).getUserMedia;
+    const md = navigator.mediaDevices;
+    const restore = [
+      cloak.replace(Object.getPrototypeOf(md), 'getUserMedia', gumPatch),
+      ...(cloak.apply(hasOwn, md, ['getUserMedia']) ? [cloak.replace(md, 'getUserMedia', gumPatch)] : []),
+      // Its Go Live: the device's screen (and the screen's sound when the device shares one).
+      cloak.replace(Object.getPrototypeOf(navigator.mediaDevices), 'getDisplayMedia', (gdm) => ({
+        getDisplayMedia() {
+          if (!call.id || !bridgeIn.screen || !wantVideo.screen) return cloak.apply(gdm, this, arguments);
+          log('debug', 'the client asked for a screen; it gets the device\'s');
+          const tracks = [bridgeIn.screen.clone()];
+          if (wantVideo.screenAudio && bridgeIn.screenAudio) tracks.push(bridgeIn.screenAudio.clone());
+          return Promise.resolve(new MediaStream(tracks));
+        },
+      }).getDisplayMedia),
       // With no sound card the list is empty, and the client then refuses to join with a microphone.
       cloak.replace(Object.getPrototypeOf(navigator.mediaDevices), 'enumerateDevices', (enumerate) => ({
         enumerateDevices() {
-          return cloak.apply(promiseThen, cloak.apply(enumerate, this, arguments), [(list) => (list.some((d) => d.kind === 'audioinput') ? list : [...list, standInMic()])]);
+          return cloak.apply(promiseThen, cloak.apply(enumerate, this, arguments), [
+            (list) => {
+              let out = list.some((d) => d.kind === 'audioinput') ? list : [...list, standInMic()];
+              // And with no camera the client never asks for one: while the device sends its camera, there is one.
+              if (bridgeIn.camera && !out.some((d) => d.kind === 'videoinput')) out = [...out, standInMic('videoinput')];
+              return out;
+            },
+          ]);
         },
       }).enumerateDevices),
       cloak.replace(RTCPeerConnection.prototype, 'setRemoteDescription', (srd) => ({
@@ -1546,8 +1631,8 @@
    * InputDeviceInfo to instanceof and Object.prototype.toString, has no own properties, and its fields, toJSON and
    * getCapabilities answer as a real one's do. (Its prototype's getters, called on it directly, still refuse it.)
    */
-  function standInMic() {
-    const fields = { deviceId: 'default', kind: 'audioinput', label: 'Default', groupId: '__MARKHEX_audioGroup__' };
+  function standInMic(kind) {
+    const fields = kind === 'videoinput' ? { deviceId: 'default', kind: 'videoinput', label: 'Camera', groupId: '__MARKHEX_audioGroup__' } : { deviceId: 'default', kind: 'audioinput', label: 'Default', groupId: '__MARKHEX_audioGroup__' };
     const Info = window.InputDeviceInfo || window.MediaDeviceInfo;
     const proto = Info ? Info.prototype : Object.prototype;
     const base = window.MediaDeviceInfo ? window.MediaDeviceInfo.prototype : {};
@@ -1582,7 +1667,10 @@
     if (tapped.has(pc)) return;
     tapped.add(pc);
     discordPCs.add(pc);
-    pc.addEventListener('track', (e) => mixIn(e.track));
+    pc.addEventListener('track', (e) => {
+      mixIn(e.track);
+      if (e.track.kind === 'video') videoIn(pc, e.track, e.streams && e.streams[0]);
+    });
     for (const r of pc.getReceivers()) if (r.track) mixIn(r.track);
   }
 
@@ -1665,11 +1753,18 @@
     if (call.mode !== 'bridge') return { ignored: true };
     if (data && data.sdp && data.type === 'offer') {
       if (call.pc) call.pc.close();
+      bridgeIn.camera = bridgeIn.screen = bridgeIn.screenAudio = null;
       const pc = new RTCPeerConnection({ iceServers: data.iceServers || [] });
       ourPCs.add(pc);
       call.pc = pc;
       pc.onicecandidate = (e) => callUp({ signal: { candidate: e.candidate ? e.candidate.toJSON() : null } });
       pc.ontrack = (e) => {
+        // The device's camera, screen and the screen's sound come on their own m-lines (protocol BRIDGE_MIDS).
+        const mid = e.transceiver && e.transceiver.mid;
+        if (mid === BRIDGE.camera || mid === BRIDGE.screen || mid === BRIDGE.screenAudio) {
+          bridgeIn[mid === BRIDGE.camera ? 'camera' : mid === BRIDGE.screen ? 'screen' : 'screenAudio'] = e.track;
+          return;
+        }
         if (e.track.kind !== 'audio') return;
         const stream = new MediaStream([e.track]);
         const el = new Audio();
@@ -1685,12 +1780,20 @@
       };
       pc.onconnectionstatechange = () => log('info', 'bridge ' + pc.connectionState);
       await pc.setRemoteDescription({ type: 'offer', sdp: data.sdp });
-      const t = pc.getTransceivers().find((x) => x.receiver.track && x.receiver.track.kind === 'audio');
+      const ts = pc.getTransceivers();
+      const t = ts.find((x) => x.mid === BRIDGE.audio) || ts.find((x) => x.receiver.track && x.receiver.track.kind === 'audio');
       const mixTrack = call.mix.stream.getAudioTracks()[0];
       if (t) {
         t.direction = 'sendrecv';
         await t.sender.replaceTrack(mixTrack);
       } else pc.addTrack(mixTrack, call.mix.stream);
+      // Others' video goes back on the receive slots the device offered, filled as video arrives (assignSlots).
+      bridgeOut.clear();
+      for (const x of ts) {
+        if (!BRIDGE.video.includes(x.mid)) continue;
+        x.direction = 'sendonly';
+        bridgeOut.set(x.mid, { sender: x.sender, key: null });
+      }
       await pc.setLocalDescription(await pc.createAnswer());
       callUp({ signal: { type: 'answer', sdp: pc.localDescription.sdp } });
       return { ok: true };
@@ -5944,7 +6047,237 @@
     }
   }
 
-  const IN_CALL = { local: callLocal, input: (cmd) => applyInput(cmd.input), stage: callStage, sounds: callSounds, sound: callSound };
+  // ------------------------------------------------------------ video over the bridge
+  // Bridge mode only (docs/calls.md "Video"). The device's camera and screen come up the bridge on their own m-lines
+  // (protocol BRIDGE_MIDS) and become the client's camera and Go Live: getUserMedia and getDisplayMedia hand them out,
+  // and the client's own camera button (setVideoEnabled) and Share Your Screen (its web Go Live start) send them. Others'
+  // video is what the client's own connections receive (its call view asks for it): each remote video track is put on one
+  // of the bridge's receive slots, and the call's state says whose is where. Read from build 673764 (2026-11-14).
+  Object.assign(FINDERS, {
+    // Watching and stopping a Go Live: the streaming actions (watch dispatches STREAM_WATCH, stop STREAM_STOP).
+    StreamActions: (m) => !!exportedFn(m, 24, (f) => /type:"STREAM_WATCH"/.test(fnSource(f))) && !!exportedFn(m, 24, (f) => /type:"STREAM_STOP"/.test(fnSource(f))),
+    // Share Your Screen on the web: picks the quality, asks the browser for a screen (getDesktopSource), starts the stream.
+    GoLiveStart: (m) => !!exportedFn(m, 4, (f) => /getDesktopSource\(/.test(fnSource(f)) && /PRESET_CUSTOM/.test(fnSource(f))),
+    StreamStore: isStore('ApplicationStreamingStore'),
+  });
+  const BRIDGE = { audio: '0', camera: '1', screen: '2', screenAudio: '3', video: ['4', '5', '6', '7'] };
+  /** What the device sends up the bridge. */
+  const bridgeIn = { camera: null, screen: null, screenAudio: null };
+  /** What the device asked to send. */
+  const wantVideo = { camera: false, screen: false, screenAudio: false };
+  /** The bridge's receive slots: mid -> { sender, key } (key: whose video it carries, `<user>:<source>`). */
+  const bridgeOut = new Map();
+  /** Remote video the client receives: `<user>:<source>` -> { track, user, source, at }. */
+  const remoteVideo = new Map();
+  /** Go Live streams the device asked to watch, by owner. */
+  const watching = new Set();
+
+  /** The client's connection a peer connection belongs to ('default', or 'stream' for a Go Live), and its stream's owner. */
+  function connectionOf(pc) {
+    let out = null;
+    try {
+      mod.MediaEngineStore.getMediaEngine().eachConnection((c) => {
+        if (c && c.pc === pc) out = { context: c.context, owner: c.streamUserId || (c.streamKey && String(c.streamKey).split(':').pop()) || null };
+      });
+    } catch (e) {}
+    return out;
+  }
+
+  /** A remote video track arrived on one of the client's own connections. Its stream id is "<user>-<ssrc>". */
+  function videoIn(pc, track, stream) {
+    if (!call.id || call.mode !== 'bridge') return;
+    const conn = connectionOf(pc);
+    const user = (stream && /^(\d+)-\d+$/.exec(stream.id) || [])[1] || (conn && conn.owner);
+    if (!user) return;
+    const source = conn && conn.context && conn.context !== 'default' ? 'stream' : 'camera';
+    const key = `${user}:${source}`;
+    remoteVideo.set(key, { track, user, source, at: Date.now() });
+    const gone = () => {
+      const v = remoteVideo.get(key);
+      if (v && v.track === track) remoteVideo.delete(key);
+      if (call.push) call.push();
+    };
+    track.addEventListener('ended', gone);
+    if (call.push) call.push();
+  }
+
+  /** Whose video is live: a camera while its owner has it on, a stream while it is watched. */
+  function liveVideo() {
+    const states = (() => {
+      try {
+        return mod.VoiceStateStore.getVoiceStatesForChannel(call.channelId) || {};
+      } catch (e) {
+        return {};
+      }
+    })();
+    const me = currentUser();
+    const out = [];
+    for (const v of remoteVideo.values()) {
+      if (v.track.readyState === 'ended' || (me && v.user === me.id)) continue;
+      const st = Object.values(states).find((x) => (x.userId || x.user_id) === v.user);
+      if (v.source === 'camera' && !(st && st.selfVideo)) continue;
+      if (v.source === 'stream' && !watching.has(v.user)) continue;
+      out.push(v);
+    }
+    // Streams first (asked for by name), then cameras, newest last.
+    return out.sort((a, b) => (a.source === b.source ? a.at - b.at : a.source === 'stream' ? -1 : 1));
+  }
+
+  /** Puts live video on the bridge's slots, keeping what already plays where it is; returns CallState.video. */
+  function assignSlots() {
+    if (!bridgeOut.size) return [];
+    const live = liveVideo().slice(0, bridgeOut.size);
+    const keys = new Set(live.map((v) => `${v.user}:${v.source}`));
+    for (const slot of bridgeOut.values()) if (slot.key && !keys.has(slot.key)) setSlot(slot, null);
+    const placed = new Set([...bridgeOut.values()].map((x) => x.key).filter(Boolean));
+    for (const v of live) {
+      const key = `${v.user}:${v.source}`;
+      if (placed.has(key)) {
+        const slot = [...bridgeOut.values()].find((x) => x.key === key);
+        if (slot.track !== v.track) setSlot(slot, v, key);
+        continue;
+      }
+      const free = [...bridgeOut.values()].find((x) => !x.key);
+      if (!free) break;
+      setSlot(free, v, key);
+    }
+    const out = [];
+    for (const [mid, slot] of bridgeOut) if (slot.key) out.push({ slot: mid, who: slot.key.split(':')[0], source: slot.key.split(':')[1] });
+    return out;
+  }
+  function setSlot(slot, v, key) {
+    slot.key = v ? key : null;
+    slot.track = v ? v.track : null;
+    slot.sender.replaceTrack(v ? v.track : null).catch((e) => log('debug', 'a video slot did not take its track', String(e)));
+  }
+
+  /** The account's own client in the call, for the device (CallState.self). */
+  function selfState() {
+    const ms = mod.MediaEngineStore;
+    const me = currentUser();
+    let connected = call.mode === 'direct';
+    let muted = false;
+    let deafened = false;
+    let camera = false;
+    let streaming = false;
+    try {
+      muted = !!ms.isSelfMute();
+      deafened = !!ms.isSelfDeaf();
+      camera = !!(ms.isVideoEnabled && ms.isVideoEnabled());
+      ms.getMediaEngine().eachConnection((c) => {
+        if (c && c.context === 'default' && c.connectionState === 'CONNECTED' && call.mode === 'bridge') connected = true;
+      });
+    } catch (e) {}
+    try {
+      const st = me && mod.VoiceStateStore.getVoiceStatesForChannel(call.channelId);
+      const mine = st && Object.values(st).find((x) => (x.userId || x.user_id) === me.id);
+      streaming = !!(mine && mine.selfStream);
+    } catch (e) {}
+    return { connected, muted, deafened, ...(camera ? { camera: true } : {}), ...(streaming ? { streaming: true } : {}), ...(watching.size ? { watching: [...watching] } : {}) };
+  }
+
+  /** The call's channel in the client's own view: the call grid, which asks the voice server for people's video. */
+  function openCallView(channel) {
+    try {
+      const transition = mod.Router && exportedFn(mod.Router, 64, isTransitionTo);
+      const guild = channel.guild_id || (channel.getGuildId && channel.getGuildId()) || '@me';
+      if (transition && location.pathname !== `/channels/${guild}/${channel.id}`) transition(`/channels/${guild}/${channel.id}`);
+    } catch (e) {
+      log('debug', 'could not open the call view', String(e));
+    }
+  }
+
+  function streamKeyFor(ownerId) {
+    const ch = mod.ChannelStore.getChannel(call.channelId);
+    const guildId = ch && (ch.guild_id || (ch.getGuildId && ch.getGuildId()));
+    return guildId ? { streamType: 'guild', guildId, channelId: call.channelId, ownerId } : { streamType: 'call', channelId: call.channelId, ownerId };
+  }
+  const keyString = (k) => (k.streamType === 'guild' ? ['guild', k.guildId, k.channelId, k.ownerId] : ['call', k.channelId, k.ownerId]).join(':');
+
+  /** The device's camera and screen on or off, through the client's own camera button and Share Your Screen. */
+  async function callVideo(cmd) {
+    if (call.mode !== 'bridge') throw new Error('Video goes through bridge mode');
+    const act = mod.AudioActions;
+    const ms = mod.MediaEngineStore;
+    if (!act || typeof act.setVideoEnabled !== 'function' || !ms) throw new Error('the client has no camera setting (Discord changed?)');
+    wantVideo.screenAudio = !!cmd.screenAudio;
+    const camera = !!cmd.camera;
+    if (camera !== wantVideo.camera) {
+      wantVideo.camera = camera;
+      if (camera && !bridgeIn.camera) throw new Error('the device\'s camera has not reached the account yet');
+      // Off and on again, so the client asks for the camera anew (it keeps the old track otherwise).
+      if (camera && ms.isVideoEnabled()) act.setVideoEnabled(false);
+      act.setVideoEnabled(camera);
+    }
+    const screen = !!cmd.screen;
+    if (screen !== wantVideo.screen) {
+      wantVideo.screen = screen;
+      const me = currentUser();
+      if (screen) {
+        if (!bridgeIn.screen) throw new Error('the device\'s screen has not reached the account yet');
+        const start = mod.GoLiveStart && exportedFn(mod.GoLiveStart, 4, (f) => /getDesktopSource\(/.test(fnSource(f)));
+        if (!start) throw new Error('the client has no Go Live (Discord changed?)');
+        const ch = mod.ChannelStore.getChannel(call.channelId);
+        const guildId = (ch && (ch.guild_id || (ch.getGuildId && ch.getGuildId()))) || null;
+        start(guildId, call.channelId, []);
+      } else if (me) stopOwnStream(me.id);
+    }
+    if (call.push) call.push();
+    return { ok: true };
+  }
+
+  function stopOwnStream(meId) {
+    const stop = mod.StreamActions && exportedFn(mod.StreamActions, 24, (f) => /type:"STREAM_STOP"/.test(fnSource(f)));
+    let key = null;
+    try {
+      const own = mod.StreamStore && mod.StreamStore.getCurrentUserActiveStream();
+      if (own) key = keyString(own);
+    } catch (e) {}
+    key = key || keyString(streamKeyFor(meId));
+    if (stop) stop(key);
+    else mod.Dispatcher.dispatch({ type: 'STREAM_STOP', streamKey: key, appContext: 'APP' });
+  }
+
+  /** Watch someone's Go Live, as a click on their LIVE tile does, or stop watching it. */
+  function callWatch(cmd) {
+    if (call.mode !== 'bridge') throw new Error('Watching goes through bridge mode');
+    const user = String(cmd.user || '');
+    if (!/^\d+$/.test(user)) throw new Error('whose stream?');
+    const fns = mod.StreamActions;
+    const watch = fns && exportedFn(fns, 24, (f) => /type:"STREAM_WATCH"/.test(fnSource(f)) && /allowMultiple/.test(fnSource(f)));
+    const stop = fns && exportedFn(fns, 24, (f) => /type:"STREAM_STOP"/.test(fnSource(f)));
+    if (!watch || !stop) throw new Error('the client has no Go Live viewer (Discord changed?)');
+    const key = streamKeyFor(user);
+    if (cmd.on) {
+      watching.add(user);
+      watch(key, { forceMultiple: watching.size > 1, noFocus: true });
+    } else {
+      watching.delete(user);
+      stop(keyString(key));
+    }
+    if (call.push) call.push();
+    return { ok: true };
+  }
+
+  /** At the end of a call: the device's camera and screen off, every stream unwatched, the slots empty. */
+  function stopVideo() {
+    const me = currentUser();
+    if (wantVideo.camera && mod.AudioActions && typeof mod.AudioActions.setVideoEnabled === 'function') mod.AudioActions.setVideoEnabled(false);
+    if (wantVideo.screen && me) stopOwnStream(me.id);
+    for (const u of watching) {
+      try {
+        const stop = mod.StreamActions && exportedFn(mod.StreamActions, 24, (f) => /type:"STREAM_STOP"/.test(fnSource(f)));
+        if (stop) stop(keyString(streamKeyFor(u)));
+      } catch (e) {}
+    }
+    watching.clear();
+    remoteVideo.clear();
+    bridgeOut.clear();
+    wantVideo.camera = wantVideo.screen = wantVideo.screenAudio = false;
+    bridgeIn.camera = bridgeIn.screen = bridgeIn.screenAudio = null;
+  }
+
+  const IN_CALL = { local: callLocal, input: (cmd) => applyInput(cmd.input), stage: callStage, sounds: callSounds, sound: callSound, video: callVideo, watch: callWatch };
 
   // -------------------------------------------------------------- moderation
   // A moderator's actions on a server's members and on others' messages and reactions, each from the owner's click,

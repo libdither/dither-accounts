@@ -81,6 +81,13 @@ export type Capability =
   | 'stage'
   /** In a call: the sounds this account may play (the call's `sounds` and `sound` ops), and effects others send (the call event's `effect`). */
   | 'soundboard'
+  /**
+   * In a bridge call: this device's camera and screen go to the account's client, which sends them as its own camera and
+   * Go Live (the call's `video` op), and others' cameras come back on the bridge's video slots (CallState.video).
+   */
+  | 'callVideo'
+  /** In a bridge call: watching someone's Go Live (the call's `watch` op); their screen comes back on a video slot. */
+  | 'watchStreams'
   /** Forwarding a message it can read into another conversation, the network's own way (the `forward` command). */
   | 'forward'
   /** Reads a conversation's or space's settings, members and permissions (the `about` command, about.ts). */
@@ -827,6 +834,10 @@ export type AdapterCommand =
   /** reply.result: { sounds: CallSound[]; reason?: string } (capability 'soundboard'). */
   | { t: 'call'; id: string; call: string; op: 'sounds' }
   | { t: 'call'; id: string; call: string; op: 'sound'; sound: string; guild: string }
+  /** Bridge mode (capability 'callVideo'): the device's camera and screen, as the bridge's slots carry them, on or off. */
+  | { t: 'call'; id: string; call: string; op: 'video'; camera: boolean; screen: boolean; screenAudio?: boolean }
+  /** Bridge mode (capability 'watchStreams'): watch someone's Go Live, or stop. `user` native. */
+  | { t: 'call'; id: string; call: string; op: 'watch'; user: string; on: boolean }
   /**
    * What an invite, address, name or handle is, without joining, following or telling anyone (capability 'resolve').
    * Identity facts it names first, then reply.result: AddPreview. Not found or expired: an error sentence.

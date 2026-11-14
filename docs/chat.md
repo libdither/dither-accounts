@@ -521,6 +521,31 @@ dither-chat's docs/calls.md "Ringing" has the whole picture; here, where it come
   the modules the hook found.
 - **Signal** (`extractors/signal/src/calls.ts`): `callStates` from the call messages in envelopes (docs/signal.md "Calls").
 
+## In a call (Discord)
+
+dither-chat's docs/calls.md has the device's side; here, what the hook does with the account's client (hook.js "calls",
+"in a call", "video over the bridge").
+
+- **Joining.** Before the client selects the channel, the hook sets its mute and deafen to the device's: the client
+  keeps its own across sessions, and one left muted joined muted and never sent the device's microphone. A client whose
+  audio was never enabled (no microphone ever granted in its sandbox) only answers an unmute by enabling audio, which
+  asks getUserMedia: in bridge mode the hook waits for that (at most 3 s), and in direct mode sets the gateway's flags
+  only (`setSelfMute`), enabling nothing.
+- **The microphone.** The page wraps `navigator.mediaDevices.getUserMedia` itself (an own property holding the original
+  it took at load), so the hook replaces both that and the prototype's while a bridge call lasts, and puts both back.
+- **Its own state** goes with each call state as `self`: connected (its default connection `CONNECTED`), muted,
+  deafened, camera, streaming, and the streams it watches.
+- **Video (bridge mode).** The device's camera and screen arrive on the bridge's m-lines 1 and 2 (protocol
+  `BRIDGE_MIDS`); `getUserMedia` with video and `getDisplayMedia` hand them to the client (with a stand-in camera in
+  `enumerateDevices` when the sandbox has none), and the call's `video` op turns them on and off with the client's own
+  `setVideoEnabled` and its web Go Live start (found by its code: `getDesktopSource(` and `PRESET_CUSTOM`), stopped by
+  the streaming module's stop (`type:"STREAM_STOP"`). `watch` is that module's watch (`type:"STREAM_WATCH"`,
+  `allowMultiple`). Once someone has video, the hook opens the call's channel in the client (its call view asks the
+  voice server for people's video), takes each remote video track from the client's connections (stream id
+  `<user>-<ssrc>`; a connection of context `stream` is a Go Live) and puts it on one of the bridge's receive slots
+  (m-lines 4 to 7), streams first; the state's `video` says whose is on which. Capabilities `callVideo` (the audio
+  settings module) and `watchStreams` (the streaming module).
+
 ## Adding chat accounts here
 
 Each chat kind's manifest has `add`, so the page's Add dialog offers it:

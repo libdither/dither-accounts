@@ -33,7 +33,7 @@ const EXPAND = new Set(['Omit', 'Pick', 'Extract', 'Exclude', 'Partial', 'Requir
 const MAX_DEPTH = 6;
 const WIDTH = 100;
 
-const exportName: Record<string, string> = { chat: 'chat', 'google.calendar': 'googleCalendar', 'test.echo': 'testEcho', calendar: 'calendar', contacts: 'contacts', mail: 'mail', notifications: 'notifications', desktop: 'desktop', exchange: 'exchange', 'privacy.session': 'privacySession', statements: 'statements', 'monero.view': 'moneroView', dns: 'dns' };
+const exportName: Record<string, string> = { chat: 'chat', 'google.calendar': 'googleCalendar', 'test.echo': 'testEcho', calendar: 'calendar', contacts: 'contacts', mail: 'mail', notifications: 'notifications', desktop: 'desktop', exchange: 'exchange', 'privacy.session': 'privacySession', statements: 'statements', 'monero.view': 'moneroView', dns: 'dns', claude: 'claude' };
 
 export function generate(): Types {
   const cfgPath = join(ROOT, 'tsconfig.json');

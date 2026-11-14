@@ -48,6 +48,16 @@
         "@dither-chat/protocol": "workspace:*",
       },
     },
+    "extractors/claude": {
+      "name": "@dither-accounts/extractor-claude",
+      "dependencies": {
+        "@dither-accounts/browser": "workspace:*",
+        "@dither-accounts/interfaces": "workspace:*",
+        "@dither-accounts/link": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-accounts/statements-common": "workspace:*",
+      },
+    },
     "extractors/dav": {
       "name": "@dither-accounts/extractor-dav",
       "dependencies": {
@@ -413,6 +423,8 @@
     "@dither-accounts/extractor-bugwatch": ["@dither-accounts/extractor-bugwatch@workspace:extractors/bugwatch"],
 
     "@dither-accounts/extractor-chat-fake": ["@dither-accounts/extractor-chat-fake@workspace:extractors/chat-fake"],
+
+    "@dither-accounts/extractor-claude": ["@dither-accounts/extractor-claude@workspace:extractors/claude"],
 
     "@dither-accounts/extractor-dav": ["@dither-accounts/extractor-dav@workspace:extractors/dav"],
 

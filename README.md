@@ -25,7 +25,7 @@ It is built for one person on their own machine: you run it, you are its only us
 - **Money (statements for an app such as [dither-finance](https://github.com/libdither/dither-finance)):**
   SimpleFIN Bridge, Charles Schwab (History and Realized Gain/Loss exports), Privacy.com, Venmo, Amazon order
   history, a Monero view-only wallet, and a Haveno node.
-- **Other:** GitHub notifications and Njalla DNS records.
+- **Other:** GitHub notifications, Njalla DNS records, and Claude subscriptions for a CLIProxyAPI hub.
 
 Each kind's doc in [docs/](docs) says what it needs from you and what only a real account can check.
 

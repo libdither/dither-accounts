@@ -1,0 +1,13 @@
+{
+  "name": "@dither-accounts/extractor-claude",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@dither-accounts/browser": "workspace:*",
+    "@dither-accounts/interfaces": "workspace:*",
+    "@dither-accounts/link": "workspace:*",
+    "@dither-accounts/manager": "workspace:*",
+    "@dither-accounts/statements-common": "workspace:*"
+  }
+}

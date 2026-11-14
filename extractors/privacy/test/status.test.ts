@@ -158,6 +158,9 @@ test('what Privacy asks for on a sign-in page: a code, a captcha, another step; 
   expect(challengeOf({ ...login, path: '/verify-device' }, true)?.what).toBe('code');
   expect(challengeOf({ ...login, path: '/login/password' }, true)).toEqual({ what: 'step', message: stepMessage('/login/password') });
   expect(challengeOf({ ...login, captcha: true }, false)).toEqual({ what: 'captcha', message: CAPTCHA_MESSAGE });
+  // The app's home right after the passkey answered (the tab still on /login a moment): the sign-in landing, no step.
+  expect(challengeOf({ ...login, path: '/home', passkeyButton: false, passwordInput: false }, true)).toBeNull();
+  expect(challengeOf({ ...login, path: '/', passkeyButton: false, passwordInput: false }, true)).toBeNull();
 });
 
 test('what blocks a pull: no browser, no passkey, an unchecked one, a hold; signed out does not', () => {

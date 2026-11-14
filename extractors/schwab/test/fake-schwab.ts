@@ -12,7 +12,8 @@
  * pages (allow="publickey-credentials-get/-create"). The widget's "Log in with a passkey" button does nothing until its
  * script has hydrated it (`hydrateMs`); then it asks navigator.credentials.get for rpId localhost, and the server
  * checks the assertion with FakeRp: the frame's origin, crossOrigin true and the app's origin as topOrigin, as Chromium
- * writes them for that frame, and the counter. The settings frame registers one (ES256 only). After a passkey
+ * writes them for that frame, and the counter; `throttled`, it asks for nothing and shows an alert ("Too many attempts
+ * …"). The settings frame registers one (ES256 only). After a passkey
  * sign-in the widget tells the top page (postMessage) to go to the summary, or, with `codeAfterPasskey`, to the code
  * page.
  *
@@ -31,6 +32,9 @@ export interface FakeSchwab {
   rp: FakeRp;
   /** After a passkey sign-in, ask for a code (as Schwab may). */
   codeAfterPasskey: boolean;
+  /** The widget's passkey option asks for nothing and shows an alert instead (as Schwab stopped asking for the passkey
+   * after a few sign-ins in a row). */
+  throttled: boolean;
   hydrateMs: number;
   /** Every export: which account, which range, signed in or not. */
   exports: { layout: string; mask: string; from: string; to: string; ok: boolean }[];
@@ -163,7 +167,9 @@ button.addEventListener('click', async () => {
   if (!hydrated) return; // prerendered: a click before the script is up does nothing
   if (${dead}) return; // the sign-in page left after an idle logout: its passkey option asks for nothing
   try {
-    const o = await fetch('/gw/passkey/options', { method: 'POST' }).then(r => r.json());
+    const res = await fetch('/gw/passkey/options', { method: 'POST' });
+    const o = await res.json();
+    if (!res.ok) { document.getElementById('err').textContent = o.error; return; }
     const cred = await navigator.credentials.get({ publicKey: { challenge: dec(o.challenge), rpId: 'localhost', userVerification: 'required', allowCredentials: [] } });
     const body = { id: cred.id, clientDataJSON: enc(cred.response.clientDataJSON), authenticatorData: enc(cred.response.authenticatorData), signature: enc(cred.response.signature), userHandle: cred.response.userHandle ? enc(cred.response.userHandle) : null };
     const r = await fetch('/gw/passkey/finish', { method: 'POST', body: JSON.stringify(body) }).then(r => r.json());
@@ -229,7 +235,7 @@ export function startFakeSchwab(): FakeSchwab {
   };
   const challenges = { get: new Set<string>(), create: new Set<string>() };
   const userId = Buffer.from('fake-schwab-user').toString('base64url');
-  const me: FakeSchwab = { origin: '', frameOrigin: '', rp: null as unknown as FakeRp, codeAfterPasskey: false, hydrateMs: 600, exports, log, push: () => {}, expire: () => {}, stop: () => {} };
+  const me: FakeSchwab = { origin: '', frameOrigin: '', rp: null as unknown as FakeRp, codeAfterPasskey: false, throttled: false, hydrateMs: 600, exports, log, push: () => {}, expire: () => {}, stop: () => {} };
 
   // The app (client.schwab.com's stand-in) and the sign-in widget's origin (sws-gateway's): one site, two origins.
   const handler = (req: Request): Response | Promise<Response> => {
@@ -246,9 +252,13 @@ export function startFakeSchwab(): FakeSchwab {
       }
       // ---- the gateway's widget and passkey settings (served on both origins; the app's pages frame frameOrigin's)
       if (p === '/ui/login')
-        return html(PAGE('Log in', '<button id="pk" type="button"><span>Log in with a passkey</span></button> <a href="#">Learn about passkeys</a><p id="err"></p>', WIDGET(me.origin, me.hydrateMs, u.searchParams.has('inactivity'))));
+        return html(PAGE('Log in', '<button id="pk" type="button"><span>Log in with a passkey</span></button> <a href="#">Learn about passkeys</a><p id="err" role="alert"></p>', WIDGET(me.origin, me.hydrateMs, u.searchParams.has('inactivity'))));
       if (p === '/ui/passkeys') return html(PAGE('Passkeys', '<p id="list">No passkeys yet</p>', SETTINGS));
       if (p === '/gw/passkey/options' && req.method === 'POST') {
+        if (me.throttled) {
+          log.push('passkey-throttled');
+          return Response.json({ error: 'Too many attempts (error 4029). Please try again later.' }, { status: 429 });
+        }
         const challenge = me.rp.challenge();
         challenges.get.add(challenge);
         return Response.json({ challenge });

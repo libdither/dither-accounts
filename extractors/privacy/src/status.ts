@@ -11,7 +11,7 @@
  * sign-in page, for SETTLE_MS (the app shows its home briefly before an expired session goes to /login).
  *
  * Once the passkey is checked, Privacy's short sessions are not your problem: the account signs itself in with the
- * passkey before each pull (and once when it starts), so signed out is still online. It asks for you only when that
+ * passkey before each pull, so signed out is still online. It asks for you only when that
  * sign-in fails a few times, or when Privacy asks for something only you can give (a code, a captcha, a password):
  * then it holds every pull until the live view shows Privacy signed in again. A paired phone that refused the sign-in
  * (packages/passkey signin.ts) is the attention `approval`, saying what asks it again.
@@ -94,12 +94,14 @@ export const autoFailedMessage = (why: string) => `Signing in to Privacy with th
 
 /**
  * Whether a sign-in page is asking for something only you can give. `afterPasskey`: the passkey has answered, so a
- * code field on the page is Privacy asking for more (before it, the sign-in form's own fields are normal).
+ * code field on the page is Privacy asking for more (before it, the sign-in form's own fields are normal). A page of
+ * the app itself (its home, which it loads right after the passkey answers) asks nothing: it is the sign-in landing.
  */
 export function challengeOf(p: PageState, afterPasskey: boolean): { what: string; message: string } | null {
   if (p.captcha) return { what: 'captcha', message: CAPTCHA_MESSAGE };
   if (!PLAIN_SIGN_IN.test(p.path)) {
     if (/tfa|2fa|two-factor|mfa|otp|verify|code|confirm/i.test(p.path)) return { what: 'code', message: CODE_MESSAGE };
+    if (!SIGN_IN.test(p.path)) return null;
     return { what: 'step', message: stepMessage(p.path) };
   }
   if (afterPasskey && p.codeInput) return { what: 'code', message: CODE_MESSAGE };

@@ -52,11 +52,14 @@ export function linkHub(opts: LinkOptions): HubLink {
   const queue: string[] = [];
   let ws: WebSocket | null = null;
   let open = false;
+  /** The manager said it is going (a restart): hold everything for the next one. */
+  let going = false;
   let closed = false;
   let attempt = 0;
 
   const send = (s: string) => {
-    if (open && ws) ws.send(s);
+    // After the manager said it is going, everything waits for the next one.
+    if (open && ws && !going) ws.send(s);
     else {
       queue.push(s);
       if (queue.length > MAX_QUEUE) queue.splice(0, queue.length - MAX_QUEUE);
@@ -71,6 +74,7 @@ export function linkHub(opts: LinkOptions): HubLink {
     ws = new WebSocket(url);
     ws.onopen = () => {
       open = true;
+      going = false;
       attempt = 0;
       gone.up();
       while (queue.length) ws!.send(queue.shift()!);
@@ -81,6 +85,12 @@ export function linkHub(opts: LinkOptions): HubLink {
       try {
         cmd = JSON.parse(String(e.data));
       } catch {
+        return;
+      }
+      if ((cmd as { t: string }).t === 'manager-going') {
+        // dither-accounts restarting: events wait for the next manager; the answer follows every frame sent before.
+        going = true;
+        ws?.send(JSON.stringify({ t: 'holding' }));
         return;
       }
       if (cmd.t === 'shutdown') {

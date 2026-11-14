@@ -8,7 +8,8 @@ import { type Kind, loadKinds } from './kinds.ts';
 import { type NoticeTimes, Notices, NOTICES_KIND, noticesKind } from './notices.ts';
 import { providers as factories, type Provider } from './providers/index.ts';
 import { Router } from './router.ts';
-import { chooseLaunch, type Launch, Supervisor } from './supervisor.ts';
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { acquireManagerLock, chooseLaunch, type CodeRestarts, type Launch, releaseManagerLock, Supervisor } from './supervisor.ts';
 import { NdjsonFile, setTraceSink, StallWatch } from './trace.ts';
 
 export interface ManagerOpts {
@@ -50,6 +51,22 @@ export interface ManagerOpts {
   fingerprint?: (kind: Kind) => string;
   /** Tests only: the pause between restarts of adopted extractors whose code changed (20 s). */
   restartPauseMs?: number;
+  /** Tests only: how long an adopted extractor has to connect (60 s). */
+  adoptConnectMs?: number;
+  /** Tests only: what a `scope` launch goes through instead of systemd-run. */
+  systemdRun?: string;
+  /** Tests only: how long a surviving extractor waits for a manager before it ends itself (1800 s). */
+  managerGoneExitS?: number;
+}
+
+/** What a manager that goes on a restart leaves the next one (docs/supervisor.md "Handing over"). */
+export const HANDOVER = 'handover.json';
+interface Handover {
+  pid: number;
+  at: string;
+  /** Extractors that said they hold their events from then on: nothing of theirs was lost. */
+  holding: string[];
+  held: Record<string, { frames: { account: string; data: string }[]; dropped: Record<string, number> }>;
 }
 
 export interface Manager {
@@ -64,6 +81,8 @@ export interface Manager {
   kinds: Map<string, Kind>;
   providers: Provider[];
   url: string;
+  /** The systemd user service this manager is the main process of, or null (procs.ts ownService). */
+  service: string | null;
   /**
    * Stops the manager. With `leaveExtractors`, extractors that can outlive it are left running for the next manager
    * to adopt (main.ts on SIGTERM: a restart keeps every session); without it every extractor stops.
@@ -73,6 +92,10 @@ export interface Manager {
 
 export async function createManager(o: ManagerOpts): Promise<Manager> {
   const repoRoot = o.repoRoot ?? resolve(import.meta.dir, '../../..');
+  if (!existsSync(o.dataDir)) mkdirSync(o.dataDir, { recursive: true, mode: 0o700 });
+  // One manager per data directory: a second would adopt (and stop) the first one's extractors.
+  const other = acquireManagerLock(o.dataDir);
+  if (other) throw new Error(other);
   const traceFile = o.trace ? new NdjsonFile(join(o.dataDir, 'traces/manager.trace.ndjson')) : null;
   const stallFile = o.trace ? new NdjsonFile(join(o.dataDir, 'traces/event-loop-stalls.ndjson'), { maxBytes: 2 * 1024 * 1024, keep: 3 }) : null;
   if (traceFile) setTraceSink(traceFile.push);
@@ -87,13 +110,17 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
   let notices: Notices | undefined;
   const publicUrl = (o.publicUrl ?? `http://localhost:${o.port}`).replace(/\/$/, '');
   const approvers = new Approvers(store, { dataDir: o.dataDir, publicUrl, pushHttp: o.approverPushHttp === true, requestMs: o.approverRequestMs, onChange: () => router?.accountsChanged(), count: (account, op, outcome) => router?.count('approver', account, op, outcome), onNoDevice: (account, rpId, op) => notices?.noDevice(account, rpId, op) });
+  const launch = chooseLaunch(o.launch ?? 'child');
   const sup = new Supervisor(store, kinds, {
     extractorUrl: () => `ws://127.0.0.1:${http.server.port}/extractor`,
     repoRoot,
     dataDir: o.dataDir,
-    launch: chooseLaunch(o.launch ?? 'child'),
+    launch: launch.launch,
     fingerprint: o.fingerprint,
     restartPauseMs: o.restartPauseMs,
+    adoptConnectMs: o.adoptConnectMs,
+    systemdRun: o.systemdRun,
+    managerGoneExitS: o.managerGoneExitS,
     onEvent: (id, ev) => {
       router.event(id, ev);
       if (ev.t === 'status') notices?.poke();
@@ -135,9 +162,17 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     startedAt: Date.now(),
     openPage: o.openPage === true,
   }, approvers);
+  // What the manager before handed over (a restart): its held events first, before anything new comes.
+  const handover = takeHandover(o.dataDir);
+  if (handover) router.restoreHeld(handover.held ?? {});
   http.notices = notices;
+  http.codeRestarts = () => sup.codeRestarts();
   http.start();
-  if (o.startAccounts !== false) sup.startAll();
+  if (o.startAccounts !== false) {
+    sup.startAll();
+    // An adopted extractor whose events the manager before may have lost: apps hear of a gap and start it over.
+    for (const id of sup.adopted()) if (!handover?.holding?.includes(id)) router.markGap(id);
+  }
   return {
     store,
     router,
@@ -149,10 +184,15 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     kinds,
     providers,
     url: `http://127.0.0.1:${http.server.port}`,
+    service: launch.unit,
     async stop(so = {}) {
       for (const p of providers) p.stop?.();
       notices!.stop();
-      await sup.stopAll({ leave: so.leaveExtractors === true });
+      const { holding } = await sup.stopAll({ leave: so.leaveExtractors === true });
+      // What apps have not had yet: sent now, and what waits for absent ones goes to the next manager.
+      router.flushNow();
+      if (so.leaveExtractors) writeHandover(o.dataDir, { pid: process.pid, at: new Date().toISOString(), holding, held: router.heldForHandover() });
+      releaseManagerLock(o.dataDir);
       approvers.stop();
       router.stop();
       http.stop();
@@ -166,6 +206,32 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
   };
 }
 
+function writeHandover(dataDir: string, h: Handover) {
+  const p = join(dataDir, HANDOVER);
+  try {
+    writeFileSync(`${p}.tmp`, JSON.stringify(h), { mode: 0o600 });
+    renameSync(`${p}.tmp`, p);
+  } catch (e) {
+    console.error(`could not write ${HANDOVER}: ${(e as Error).message}`);
+  }
+}
+
+/** The handover an earlier manager left, read once (it holds message events, so it does not stay on disk). */
+function takeHandover(dataDir: string): Handover | null {
+  const p = join(dataDir, HANDOVER);
+  try {
+    const h = JSON.parse(readFileSync(p, 'utf8')) as Handover;
+    unlinkSync(p);
+    return h && typeof h === 'object' ? h : null;
+  } catch {
+    try {
+      unlinkSync(p);
+    } catch {}
+    return null;
+  }
+}
+
+export type { CodeRestarts };
 export type { Kind, Manifest } from './kinds.ts';
 export { kindOf, loadKinds } from './kinds.ts';
 export { acquireLock, releaseLock, LOCK, type Launch } from './supervisor.ts';

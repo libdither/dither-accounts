@@ -25,6 +25,15 @@ function crashWith(message: string): never {
   throw new TypeError(message);
 }
 
+/**
+ * config.children: start what a real extractor starts (a browser, Xvfb), here two `sleep`s: one in its process group,
+ * one in a session of its own, as a sandbox or a browser's zygote may be. A stop must end both (docs/supervisor.md).
+ */
+const children: number[] = [];
+if (process.env.DITHER_ACCOUNT_CONFIG?.includes('"children":true')) {
+  for (const detached of [false, true]) children.push(Bun.spawn(['sleep', '3600'], { stdio: ['ignore', 'ignore', 'ignore'], detached }).pid);
+}
+
 const link = linkManager({
   onConnect: () => {
     link.emit({ t: 'hello', version: '1', label: link.label });
@@ -53,7 +62,7 @@ const link = linkManager({
         await Bun.sleep(Number(cmd.ms));
         return { slept: cmd.ms };
       case 'pid':
-        return { pid: process.pid };
+        return { pid: process.pid, children };
       case 'exit':
         // End with that code soon after answering (an adopted extractor's exit code: docs/supervisor.md).
         setTimeout(() => process.exit(Number(cmd.code ?? 0)), 50);

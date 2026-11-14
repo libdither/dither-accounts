@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { installProcessHandlers } from './errors.ts';
 import { createManager } from './index.ts';
+import { restartQueued } from './procs.ts';
 
 const args = process.argv.slice(2);
 const given = (n: string): string | undefined => {
@@ -51,10 +52,16 @@ const m = await createManager({ dataDir, port, hostname: host, publicUrl, ...(we
 if (m.errors) installProcessHandlers(m.errors);
 console.log(`dither-accounts on ${m.url.replace('127.0.0.1', host)}  page=${publicUrl}  kinds=${[...m.kinds.keys()].join(',')}  data=${dataDir}  launch=${m.sup.launch}`);
 
-// A restart (a deploy, systemd's own) leaves the extractors that can outlive the manager running: the next one adopts
-// them. Stopping an account (disabled, stopped, removed) still stops its extractor.
+// A restart (a deploy, `systemctl --user restart`) leaves the extractors that can outlive the manager running: the next
+// one adopts them. A stop (`systemctl --user stop`, a shutdown) stops them, as does stopping one account. Under systemd,
+// which it is comes from the unit's job; a `detached` launch outside systemd always leaves them (docs/supervisor.md).
+let stopping = false;
 const shutdown = async () => {
-  await m.stop({ leaveExtractors: true });
+  if (stopping) return;
+  stopping = true;
+  const leave = m.sup.launch === 'detached' || (m.sup.launch === 'scope' && !!m.service && restartQueued(m.service));
+  console.log(`dither-accounts going: ${leave ? 'a restart, extractors left running for the next manager' : 'stopping its extractors'}`);
+  await m.stop({ leaveExtractors: leave });
   process.exit(0);
 };
 process.on('SIGINT', shutdown);

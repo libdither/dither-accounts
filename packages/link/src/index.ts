@@ -82,13 +82,16 @@ export function linkManager(opts: LinkOptions): Link {
   const queue: string[] = [];
   let ws: WebSocket | null = null;
   let open = false;
+  /** The manager said it is going (a restart): hold everything for the next one. */
+  let going = false;
   let closed = false;
   let attempt = 0;
   const config: Record<string, any> = JSON.parse(process.env.DITHER_ACCOUNT_CONFIG || '{}');
   const asked = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: Timer }>();
 
   const send = (x: string) => {
-    if (open && ws) ws.send(x);
+    // After the manager said it is going, everything waits for the next one.
+    if (open && ws && !going) ws.send(x);
     else {
       queue.push(x);
       if (queue.length > MAX_QUEUE) queue.splice(0, queue.length - MAX_QUEUE);
@@ -106,6 +109,7 @@ export function linkManager(opts: LinkOptions): Link {
     ws = new WebSocket(url);
     ws.onopen = () => {
       open = true;
+      going = false;
       attempt = 0;
       gone.up();
       while (queue.length) ws!.send(queue.shift()!);
@@ -119,6 +123,13 @@ export function linkManager(opts: LinkOptions): Link {
         return;
       }
       if (cmd.t === 'shutdown') return shutdown();
+      if (cmd.t === 'manager-going') {
+        // A manager restarting (docs/supervisor.md): from now on events wait for the next one; the answer comes after
+        // every frame sent before, so the going manager has them all.
+        going = true;
+        ws?.send(JSON.stringify({ t: 'holding' }));
+        return;
+      }
       if (cmd.t === 'config') {
         if (cmd.config && typeof cmd.config === 'object' && !Array.isArray(cmd.config)) {
           for (const k of Object.keys(config)) if (!(k in cmd.config)) delete config[k];

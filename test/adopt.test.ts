@@ -8,6 +8,7 @@ import { afterAll, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { AccountsClient, register } from '@dither-accounts/client';
 import { createManager, kindOf, type Manager } from '@dither-accounts/manager';
 import { newToken, Store } from '../packages/manager/src/db.ts';
 import { procAlive, procStat } from '../packages/manager/src/procs.ts';
@@ -222,4 +223,51 @@ test('without leaveExtractors, and with the child launch, a stopping manager sto
   pids.push(p);
   await m.stop({ leaveExtractors: true });
   expect(procAlive(p)).toBe(false);
+});
+
+/** An app with test.echo on every account, approved, not connected. */
+async function app(m: Manager) {
+  const r = await register(m.url, { name: 'notes-app', requests: [{ interface: 'test.echo', level: 'manage' }] });
+  for (const q of r.requests) expect((await fetch(`${m.url}/api/requests/${q.id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status).toBe(200);
+  return r;
+}
+function listen(m: Manager, a: { app: string; token: string }) {
+  const got: number[] = [];
+  const gaps: string[] = [];
+  const c = new AccountsClient({ url: m.url, app: a.app, token: a.token, onEvents: (_acc, evs) => got.push(...evs.filter((e) => e.t === 'note').map((e) => e.n as number)), onGap: (acc) => gaps.push(acc) });
+  return { c, got, gaps };
+}
+
+test('a restart hands over: events held for an absent app reach it from the next manager, and events emitted meanwhile wait in the extractor', async () => {
+  const { dir, m1, id, port } = await world('handover');
+  const a = await app(m1);
+  // The app is away: three notes wait in the manager.
+  await m1.sup.command(id, { t: 'emit', n: 3 });
+  await Bun.sleep(100);
+  await m1.stop({ leaveExtractors: true });
+  const h = JSON.parse(readFileSync(join(dir, 'handover.json'), 'utf8'));
+  expect(h.holding).toEqual([id]);
+  const m2 = await manager(dir, { port });
+  expect(existsSync(join(dir, 'handover.json'))).toBe(false);
+  await until(() => online(m2, id), 15_000, 'adopted and back');
+  const l = listen(m2, a);
+  await until(() => l.got.length >= 3, 5000, 'the held notes');
+  expect(l.got.slice(0, 3)).toEqual([0, 1, 2]);
+  expect(l.gaps).toEqual([]);
+  l.c.close();
+  await m2.stop();
+});
+
+test('without a handover (a manager that crashed), apps hear of a gap for each adopted account', async () => {
+  const { dir, m1, id, port } = await world('nohandover');
+  const a = await app(m1);
+  await m1.stop({ leaveExtractors: true });
+  rmSync(join(dir, 'handover.json'));
+  const m2 = await manager(dir, { port });
+  await until(() => online(m2, id), 15_000, 'adopted and back');
+  const l = listen(m2, a);
+  await until(() => l.gaps.length === 1, 5000, 'a gap');
+  expect(l.gaps).toEqual([id]);
+  l.c.close();
+  await m2.stop();
 });

@@ -6,7 +6,7 @@ import { afterAll, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fingerprintEntry } from '../packages/manager/src/fingerprint.ts';
+import { codeEnv, fingerprintEntry, sameCode } from '../packages/manager/src/fingerprint.ts';
 import { procAlive, procStat } from '../packages/manager/src/procs.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'dacc-fp-'));
@@ -71,4 +71,30 @@ test("a pid is only the process it was: a different start time is someone else's
   expect(procAlive(process.pid, me.start)).toBe(true);
   expect(procAlive(process.pid, String(Number(me.start) + 1))).toBe(false);
   expect(procAlive(2 ** 22 + 12345)).toBe(false);
+});
+
+test('only what it reaches: TypeScript of a reached package it never imports leaves it; the lock file, Bun and the environment count', () => {
+  const before = fp().hash;
+  put('packages/shared/src/unused.ts', 'export const unused = 1;\n');
+  expect(fp().hash).toBe(before);
+  put('packages/shared/src/page.js', '// read as a file\n');
+  const withAsset = fp().hash;
+  expect(withAsset).not.toBe(before);
+  put('bun.lock', '{"lockfileVersion":1}\n');
+  const withLock = fp().hash;
+  expect(withLock).not.toBe(withAsset);
+  const env = (e: Record<string, string>) => fingerprintEntry(root, join(root, 'extractors/x/src/main.ts'), e).hash;
+  // Per account or per start (its id, token, the manager's port), and the manager's own settings: not the code.
+  expect(env({ DITHER_ACCOUNT_ID: 'acc-1', DITHER_HUB_URL: 'ws://127.0.0.1:1/x', DITHER_ACCOUNTS_PORT: '1' })).toBe(withLock);
+  expect(env({ DITHER_TELEGRAM_DESKTOP: '1' })).not.toBe(withLock);
+  expect(env({ PATH: '/opt/bin' })).not.toBe(withLock);
+  expect(Object.keys(codeEnv({ DITHER_TELEGRAM_DESKTOP: '1', DITHER_ADAPTER_TOKEN: 't', DITHER_MARKER_KEY: 'k', HOME: '/x', PATH: '/p' })).sort()).toEqual(['DITHER_TELEGRAM_DESKTOP', 'PATH']);
+});
+
+test('an unknown fingerprint is never the same code', () => {
+  expect(sameCode('abc', 'abc')).toBe(true);
+  expect(sameCode('abc', 'abd')).toBe(false);
+  expect(sameCode('unknown: x', 'unknown: x')).toBe(false);
+  expect(sameCode('', '')).toBe(false);
+  expect(sameCode(undefined, 'abc')).toBe(false);
 });

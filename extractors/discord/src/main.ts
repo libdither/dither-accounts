@@ -472,8 +472,11 @@ async function startupBackfill(targets: string[], newest: Record<string, string>
     try {
       await historyPace.run('backfill', async () => {
         const res = await bridge.request<{ messages: any[] }>({ kind: 'history', channelId, limit: 20 }, 30_000);
-        for (const raw of res.messages ?? []) for (const ev of messageEvents(raw, st, false)) hub.emit(ev);
-        memory.record(channelId, (res.messages ?? []).map((m) => m?.id).filter((id): id is string => typeof id === 'string'), newest[channelId]);
+        const messages = Array.isArray(res?.messages) ? res.messages : [];
+        for (const raw of messages) for (const ev of messageEvents(raw, st, false)) hub.emit(ev);
+        // Remembered only once its messages came and their events went out (queued for the manager, which the link
+        // keeps across a manager's restart); an empty answer may be a page not ready yet, so it is asked again next time.
+        if (messages.length) memory.record(channelId, messages.map((m) => m?.id).filter((id): id is string => typeof id === 'string'), newest[channelId]);
       });
     } catch (e) {
       log('debug', 'backfill failed', { channelId, error: String(e) });

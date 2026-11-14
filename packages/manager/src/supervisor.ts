@@ -19,10 +19,10 @@ import { join } from 'node:path';
 import { writeSecretFile } from '@dither-chat/protocol/secret-file';
 import { isExtractorCode } from '@dither-accounts/spec';
 import type { Row, Store } from './db.ts';
-import { fingerprintEntry } from './fingerprint.ts';
+import { fingerprintEntry, sameCode } from './fingerprint.ts';
 import { LOG } from './files.ts';
 import type { Kind } from './kinds.ts';
-import { procAlive, procCmdline, procEnv, procStartedAt, procStat } from './procs.ts';
+import { allPids, cgroupMembers, cgroupOf, descendants, endAll, groupMembers, ownService, procAlive, procCmdline, procEnv, type ProcRef, procsWithEnv, procStartedAt, procStat, signalRef } from './procs.ts';
 import { spanRecordOf, writeSpan } from './trace.ts';
 
 export interface ExtractorSocketData {
@@ -43,16 +43,25 @@ export type ExtractorEvent = { t: string; [k: string]: unknown };
  */
 export type Launch = 'scope' | 'detached' | 'child';
 
-/** `auto`: `scope` when the manager runs as a systemd service and `systemd-run --user --scope` works, else `child`. */
-export function chooseLaunch(want: Launch | 'auto'): Launch {
-  if (want !== 'auto') return want;
-  if (!process.env.INVOCATION_ID) return 'child';
-  try {
-    const r = Bun.spawnSync(['systemd-run', '--user', '--scope', '--quiet', '--collect', 'true'], { stdout: 'ignore', stderr: 'ignore', timeout: 10_000 });
-    return r.exitCode === 0 ? 'scope' : 'child';
-  } catch {
-    return 'child';
-  }
+/**
+ * `auto`: `scope` when this process is the main process of a systemd user service (procs.ts ownService: a shell or a
+ * script that only inherited a service's INVOCATION_ID is not) and `systemd-run --user --scope` works; else `child`.
+ * With the service's name, which main.ts asks on SIGTERM whether it is being restarted or stopped.
+ */
+export function chooseLaunch(want: Launch | 'auto', o: { service?: () => string | null; probe?: () => boolean } = {}): { launch: Launch; unit: string | null } {
+  const unit = (o.service ?? ownService)();
+  if (want !== 'auto') return { launch: want, unit };
+  if (!unit) return { launch: 'child', unit };
+  const probe =
+    o.probe ??
+    (() => {
+      try {
+        return Bun.spawnSync(['systemd-run', '--user', '--scope', '--quiet', '--collect', 'true'], { stdout: 'ignore', stderr: 'ignore', timeout: 10_000 }).exitCode === 0;
+      } catch {
+        return false;
+      }
+    });
+  return { launch: probe() ? 'scope' : 'child', unit };
 }
 
 interface Running {
@@ -62,6 +71,8 @@ interface Running {
   /** The process that runs the account, started here or adopted, and when it started (procs.ts): a reused pid is not it. */
   pid?: number;
   pstart?: string;
+  /** Its control group, when it is a scope of its own (`dither-accounts-x-….scope`): everything it started is in it. */
+  cgroup?: string;
   /** Started by an earlier manager and taken over by this one: watched in /proc, not as a child. */
   adopted?: boolean;
   /** It outlives this manager (launched as `scope` or `detached`, or adopted): a manager that goes leaves it running. */
@@ -72,6 +83,8 @@ interface Running {
   connectBy?: number;
   /** adapter.log's size when it started: a failed exit's last lines are read from there. */
   logFrom?: number;
+  /** What an earlier process left behind is being ended before this one starts. */
+  cleaning?: boolean;
   ws?: ServerWebSocket<ExtractorSocketData>;
   restarts: number;
   stopping: boolean;
@@ -114,6 +127,10 @@ const ADOPT_CONNECT_MS = 60_000;
 const RESTART_PAUSE_MS = 20_000;
 /** An extractor that outlives its manager ends itself after this long without one (its link, DITHER_MANAGER_GONE_EXIT_S). */
 const MANAGER_GONE_EXIT_S = 1800;
+/** How long a going manager waits for its extractors to say they hold their events. */
+const GOING_MS = 2000;
+/** A scope the supervisor made: only such a control group is ever emptied (never the manager's own). */
+const OUR_SCOPE = /\/dither-accounts-x-[^/]+\.scope$/;
 
 /** An extractor's own process, not what it started (Chromium, signal-cli, the WhatsApp bridge inherit its environment). */
 const isExtractorCmd = (pid: number) => procCmdline(pid).some((a) => a.endsWith('/src/main.ts'));
@@ -124,15 +141,8 @@ const isExtractorCmd = (pid: number) => procCmdline(pid).some((a) => a.endsWith(
  */
 export function accountProcesses(accountId: string, except: number[] = []): number[] {
   const out: number[] = [];
-  let pids: string[] = [];
-  try {
-    pids = readdirSync('/proc').filter((d) => /^\d+$/.test(d));
-  } catch {
-    return out;
-  }
   const needle = `DITHER_ACCOUNT_ID=${accountId}`;
-  for (const d of pids) {
-    const pid = Number(d);
+  for (const pid of allPids()) {
     if (pid === process.pid || except.includes(pid)) continue;
     try {
       // The adapter itself (bun …/src/main.ts), not what it started (Chromium, signal-cli, the WhatsApp bridge
@@ -179,31 +189,30 @@ function alive(pid: number): boolean {
   }
 }
 
-/** Signal `pid` only while it is still the process that started at `start`. */
-function signal(pid: number, start: string | undefined, sig: NodeJS.Signals): boolean {
-  if (!procAlive(pid, start)) return false;
+/** The manager's own lock on its data directory: one manager per data directory, so none adopts another's extractors. */
+export const MANAGER_LOCK = 'manager.lock';
+/** Data directories a manager in this process holds (tests run several managers in one process). */
+const heldHere = new Set<string>();
+export function acquireManagerLock(dataDir: string): string | null {
+  const p = join(dataDir, MANAGER_LOCK);
+  const key = realpathSync(dataDir);
+  if (heldHere.has(key)) return `another manager in this process runs on ${dataDir}`;
   try {
-    process.kill(pid, sig);
-    return true;
-  } catch {
-    return false;
-  }
+    const l = JSON.parse(readFileSync(p, 'utf8')) as { pid?: number; start?: string };
+    if (typeof l.pid === 'number' && l.pid !== process.pid && procAlive(l.pid, l.start)) return `another manager (pid ${l.pid}) runs on ${dataDir}`;
+  } catch {}
+  writeFileSync(p, JSON.stringify({ pid: process.pid, start: procStat(process.pid)?.start, at: new Date().toISOString() }), { mode: 0o600 });
+  heldHere.add(key);
+  return null;
 }
-
-/** SIGTERM, then SIGKILL after `graceMs`; resolves once it is gone (or it would not go). */
-async function terminate(pid: number, start: string | undefined, proc?: Subprocess, graceMs = 8000): Promise<void> {
-  if (!signal(pid, start, 'SIGTERM')) return;
-  const gone = async (ms: number) => {
-    const end = Date.now() + ms;
-    while (Date.now() < end) {
-      if (proc ? proc.exitCode !== null || proc.signalCode !== null : !procAlive(pid, start)) return true;
-      await (proc ? Promise.race([proc.exited, Bun.sleep(100)]) : Bun.sleep(100));
-    }
-    return false;
-  };
-  if (await gone(graceMs)) return;
-  signal(pid, start, 'SIGKILL');
-  await gone(3000);
+export function releaseManagerLock(dataDir: string) {
+  const p = join(dataDir, MANAGER_LOCK);
+  try {
+    heldHere.delete(realpathSync(dataDir));
+  } catch {}
+  try {
+    if (JSON.parse(readFileSync(p, 'utf8')).pid === process.pid) unlinkSync(p);
+  } catch {}
 }
 
 /** The code an extractor that is no child wrote as it exited (EXIT_FILE), if that file is about this pid. */
@@ -248,6 +257,12 @@ const fileSize = (p: string) => {
 /** A systemd unit name for an extractor's scope: its account and a stamp (an old scope can linger while it empties). */
 const scopeName = (accountId: string) => `dither-accounts-x-${accountId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80)}-${Date.now().toString(36)}.scope`;
 
+/** A process's control group when it is a scope the supervisor made, else undefined. */
+const scopeOf = (pid: number) => {
+  const cg = cgroupOf(pid);
+  return cg && OUR_SCOPE.test(cg) ? cg : undefined;
+};
+
 /**
  * The key an account's extractor makes the names its browser extension leaves in pages from (DITHER_MARKER_KEY,
  * packages/browser/src/markers.ts): HMAC of this install's own random secret (kv `page-markers`, made once) and the
@@ -267,6 +282,20 @@ interface Found {
   fingerprint: string;
 }
 
+/** Restarts for changed code since this manager started, for /api/health (only counts) and the deployer. */
+export interface CodeRestarts {
+  /** Waiting for their turn. */
+  queued: number;
+  /** One is being restarted now. */
+  active: boolean;
+  /** Restarted so far. */
+  restarted: number;
+  /** Of those, online now. */
+  online: number;
+  /** Of those, ended on their own since (a crash loop on the new code). */
+  crashed: number;
+}
+
 export class Supervisor {
   private running = new Map<string, Running>();
   /** What a stop forgets but the account pane still shows: how often it started, how it last ended. */
@@ -280,8 +309,17 @@ export class Supervisor {
   /** Adopted accounts whose code changed, restarted one at a time. */
   private outdated: string[] = [];
   private rolling = false;
-  private scan?: { at: number; found: Found[] };
+  private rollingNow: string | null = null;
+  /** Accounts restarted for changed code, with their starts count just after. */
+  private rolled = new Map<string, number>();
+  /** Accounts stopped on purpose (a stop from the page, an app, a disable): a staggered restart leaves them stopped. */
+  private halted = new Set<string>();
   private pause?: { timer: Timer; done: () => void };
+  private scan?: { at: number; found: Found[] };
+  /** When an account was last made sure to have nothing left running. */
+  private cleanedAt = new Map<string, number>();
+  /** Extractors that said they hold their events (a going manager's `manager-going`). */
+  private holding = new Map<string, () => void>();
   /** The manager is going: nothing starts again, and exits of processes it leaves running are not crashes. */
   private closing = false;
 
@@ -296,10 +334,16 @@ export class Supervisor {
       dataDir: string;
       /** How extractors are started (default `child`). */
       launch?: Launch;
+      /** The command a `scope` launch goes through (default systemd-run; tests give a stand-in). */
+      systemdRun?: string;
       /** The fingerprint of a kind's code (default fingerprint.ts over repoRoot); tests give their own. */
       fingerprint?: (kind: Kind) => string;
       /** Between restarts for changed code (default 20 s). */
       restartPauseMs?: number;
+      /** How long an adopted extractor has to connect (default 60 s). */
+      adoptConnectMs?: number;
+      /** Seconds an extractor that outlives the manager waits for one before it ends itself (default 1800). */
+      managerGoneExitS?: number;
       /** Events (not replies or logs) from an account's extractor. */
       onEvent: (accountId: string, ev: ExtractorEvent) => void;
       /** Running or online changed. */
@@ -345,11 +389,31 @@ export class Supervisor {
     };
   }
 
+  /** Accounts whose extractor this manager adopted (still running as adopted). */
+  adopted(): string[] {
+    return [...this.running].filter(([, r]) => r.adopted && r.pid).map(([id]) => id);
+  }
+
+  /** Restarts for changed code: what waits, what is under way, and how the restarted ones are doing. */
+  codeRestarts(): CodeRestarts {
+    let online = 0;
+    let crashed = 0;
+    let restarted = 0;
+    for (const [id, startsAfter] of this.rolled) {
+      const r = this.running.get(id);
+      if (!r || this.halted.has(id)) continue; // stopped on purpose since
+      restarted++;
+      if (r.ws) online++;
+      if ((r.starts ?? 0) > startsAfter) crashed++;
+    }
+    return { queued: this.outdated.length, active: this.rollingNow !== null, restarted, online, crashed };
+  }
+
   /** The fingerprint of the code a kind's extractor would run if started now. */
   fingerprintOf(kind: Kind): string {
     if (this.opts.fingerprint) return this.opts.fingerprint(kind);
     try {
-      return fingerprintEntry(this.opts.repoRoot, join(kind.dir, kind.entry)).hash;
+      return fingerprintEntry(this.opts.repoRoot, join(kind.dir, kind.entry), { ...process.env, ...(kind.env ?? {}) }).hash;
     } catch (e) {
       return `unknown: ${(e as Error).message}`.slice(0, 100);
     }
@@ -357,7 +421,7 @@ export class Supervisor {
 
   /**
    * Every enabled account's extractor: an earlier manager's still running is adopted, the rest start. Extractors an
-   * earlier manager left running for accounts that are now disabled or gone are stopped.
+   * earlier manager left running for accounts that are now disabled, gone or of a kind that no longer loads are stopped.
    */
   startAll() {
     this.sweep();
@@ -372,48 +436,90 @@ export class Supervisor {
     // One look at /proc serves every account startAll starts; each use checks again that the process still runs.
     const mine = new Set([...this.running.values()].map((r) => r.pid));
     if (this.scan && Date.now() - this.scan.at < 1000) return this.scan.found.filter((f) => !mine.has(f.pid) && procAlive(f.pid, f.start));
-    const found = this.lookInProc(mine);
-    this.scan = { at: Date.now(), found };
-    return found;
-  }
-
-  private lookInProc(mine: Set<number | undefined>): Found[] {
-    const out: Found[] = [];
-    let pids: number[] = [];
-    try {
-      pids = readdirSync('/proc').filter((d) => /^\d+$/.test(d)).map(Number);
-    } catch {
-      return out;
-    }
-    for (const pid of pids) {
+    const found: Found[] = [];
+    for (const pid of allPids()) {
       if (pid === process.pid || mine.has(pid)) continue;
       const env = procEnv(pid);
       if (!env || env.DITHER_MANAGER_DATA !== this.dataDir || !env.DITHER_EXTRACTOR_LAUNCH || !env.DITHER_ACCOUNT_ID) continue;
       if (!isExtractorCmd(pid)) continue;
       const st = procStat(pid);
       if (!st || st.state === 'Z') continue;
-      out.push({ pid, start: st.start, accountId: env.DITHER_ACCOUNT_ID, token: env.DITHER_ADAPTER_TOKEN ?? '', fingerprint: env.DITHER_EXTRACTOR_FINGERPRINT ?? '' });
+      found.push({ pid, start: st.start, accountId: env.DITHER_ACCOUNT_ID, token: env.DITHER_ADAPTER_TOKEN ?? '', fingerprint: env.DITHER_EXTRACTOR_FINGERPRINT ?? '' });
     }
-    return out;
+    this.scan = { at: Date.now(), found };
+    return found;
   }
 
-  /** Strays: an earlier manager's extractors whose account is disabled or gone (or whose token is not the account's). */
+  /** Every process this data directory's extractors of an account started and left (it inherits their environment). */
+  private leftovers(accountId: string): ProcRef[] {
+    return procsWithEnv((env) => env.DITHER_ACCOUNT_ID === accountId && env.DITHER_MANAGER_DATA === this.dataDir);
+  }
+
+  /**
+   * Ends an extractor and everything it started: SIGTERM (after a `shutdown` on its socket, sent by the caller), SIGKILL
+   * after `graceMs`, then whatever is left of it: its scope's control group, its process group, its descendants as
+   * they were, and anything carrying its account in this data directory's environment (Chromium's zygotes, Xvfb,
+   * signal-cli, the WhatsApp bridge). A process left behind would be a second session on one account.
+   */
+  private async end(accountId: string, p: { pid: number; start?: string; proc?: Subprocess; cgroup?: string }, graceMs = 8000) {
+    const tree = descendants(p.pid);
+    const cgroup = p.cgroup ?? scopeOf(p.pid);
+    signalRef({ pid: p.pid, start: p.start ?? '' }, 'SIGTERM');
+    const gone = () => (p.proc ? p.proc.exitCode !== null || p.proc.signalCode !== null : !procAlive(p.pid, p.start));
+    const until = async (ms: number) => {
+      const end = Date.now() + ms;
+      while (!gone() && Date.now() < end) await (p.proc ? Promise.race([p.proc.exited, Bun.sleep(100)]) : Bun.sleep(100));
+    };
+    if (p.start === undefined) {
+      // No start time to check by: signal it only as our own child.
+      if (p.proc && !gone()) p.proc.kill('SIGTERM');
+    }
+    await until(graceMs);
+    if (!gone()) {
+      if (p.start !== undefined) signalRef({ pid: p.pid, start: p.start }, 'SIGKILL');
+      else p.proc?.kill('SIGKILL');
+      await until(3000);
+    }
+    await this.endLeft(accountId, cgroup, [...tree, ...groupMembers(p.pid)]);
+  }
+
+  /** What is left of an account's extractor: ended (SIGTERM, then SIGKILL). */
+  private async endLeft(accountId: string, cgroup: string | undefined, known: ProcRef[] = []) {
+    const seen = new Map<string, ProcRef>();
+    const add = (rs: ProcRef[]) => {
+      for (const r of rs) if (r.pid !== process.pid) seen.set(`${r.pid}:${r.start}`, r);
+    };
+    add(known);
+    if (cgroup && OUR_SCOPE.test(cgroup)) add(cgroupMembers(cgroup));
+    add(this.leftovers(accountId));
+    const left = [...seen.values()].filter((r) => procAlive(r.pid, r.start));
+    this.cleanedAt.set(accountId, Date.now());
+    if (!left.length) return;
+    const acc = this.store.account(accountId);
+    if (acc) appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} ending ${left.length} process(es) its extractor left: ${left.map((r) => r.pid).join(', ')}\n`);
+    await endAll(left);
+    this.cleanedAt.set(accountId, Date.now());
+  }
+
+  /** Strays: an earlier manager's extractors whose account is disabled or gone, of no kind, or not the account's token. */
   private sweep() {
     for (const f of this.found()) {
       const acc = this.store.account(f.accountId);
-      if (acc?.enabled && acc.token === f.token && !this.inProcess.has(acc.id)) continue;
-      console.error(`[${f.accountId}] stopping pid ${f.pid}, left running by an earlier manager: its account is ${acc ? (acc.enabled ? 'started another way' : 'disabled') : 'gone'}`);
-      if (acc) appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} dither-accounts stopping pid ${f.pid}, left running by an earlier manager (the account is ${acc.enabled ? 'not its' : 'disabled'})\n`);
-      void terminate(f.pid, f.start);
+      const why = !acc ? 'gone' : !acc.enabled ? 'disabled' : !this.kinds.has(acc.kind) ? `of kind "${acc.kind}", which does not load` : acc.token !== f.token || this.inProcess.has(acc.id) ? 'run another way' : null;
+      if (!why) continue;
+      console.error(`[${f.accountId}] stopping pid ${f.pid}, left running by an earlier manager: its account is ${why}`);
+      if (acc) appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} dither-accounts stopping pid ${f.pid}, left running by an earlier manager (the account is ${why})\n`);
+      void this.end(f.accountId, { pid: f.pid, start: f.start });
     }
   }
 
   start(id: string) {
+    this.halted.delete(id);
     if (this.inProcess.has(id) || this.closing) return;
     const acc = this.store.account(id);
     if (!acc || !acc.enabled) return;
     const cur = this.running.get(id);
-    if (cur && !cur.stopping && cur.pid) return;
+    if (cur && !cur.stopping && (cur.pid || cur.cleaning)) return;
     const r: Running = cur ?? { restarts: 0, stopping: false, lastStart: 0, ...this.history.get(id) };
     clearTimeout(r.retry);
     r.stopping = false;
@@ -428,22 +534,35 @@ export class Supervisor {
     const found = this.found().filter((f) => f.accountId === id && f.token === acc.token);
     if (found.length) {
       const [f, ...more] = found;
-      for (const m of more) void terminate(m.pid, m.start);
+      for (const m of more) void this.end(id, { pid: m.pid, start: m.start });
       acquireLock(acc.dir, 'dither-accounts', acc.id, found.map((x) => x.pid));
       r.proc = undefined;
       r.pid = f!.pid;
       r.pstart = f!.start;
+      r.cgroup = scopeOf(f!.pid);
       r.adopted = true;
       r.survives = true;
       r.fingerprint = f!.fingerprint;
       r.lastStart = procStartedAt(f!.start) ?? Date.now();
-      r.connectBy = r.ws ? undefined : Date.now() + ADOPT_CONNECT_MS;
-      const now = this.fingerprintOf(kind);
-      appendFileSync(log, `--- ${new Date().toISOString()} dither-accounts took over the running ${acc.kind} extractor (pid ${f!.pid})${f!.fingerprint === now ? '' : '; its code changed, so it restarts soon'}\n`);
+      r.connectBy = r.ws ? undefined : Date.now() + (this.opts.adoptConnectMs ?? ADOPT_CONNECT_MS);
+      const changed = !sameCode(f!.fingerprint, this.fingerprintOf(kind));
+      appendFileSync(log, `--- ${new Date().toISOString()} dither-accounts took over the running ${acc.kind} extractor (pid ${f!.pid})${changed ? '; its code changed, so it restarts soon' : ''}\n`);
       r.logFrom = fileSize(log);
       this.watch();
-      if (f!.fingerprint !== now) this.queueRestart(id);
+      if (changed) this.queueRestart(id);
       this.opts.onChange(id);
+      return;
+    }
+
+    // What an earlier process of this account left (a browser, signal-cli) goes first: never two sessions on one store.
+    // (Not right after this manager ended what the last one left: that look at every process's environment is slow.)
+    const left = Date.now() - (this.cleanedAt.get(id) ?? 0) < 2000 ? [] : this.leftovers(id);
+    if (left.length) {
+      r.cleaning = true;
+      void this.endLeft(id, undefined, left).finally(() => {
+        r.cleaning = false;
+        if (this.running.get(id) === r && !r.stopping) this.start(id);
+      });
       return;
     }
 
@@ -468,7 +587,7 @@ export class Supervisor {
     const launch = this.launch;
     appendFileSync(log, `\n--- ${new Date().toISOString()} dither-accounts starting ${acc.kind} extractor\n`);
     r.logFrom = fileSize(log);
-    const argv = launch === 'scope' ? ['systemd-run', '--user', '--scope', '--quiet', '--collect', `--unit=${scopeName(acc.id)}`, `--description=dither-accounts extractor (${acc.kind})`, 'bun', entry] : ['bun', entry];
+    const argv = launch === 'scope' ? [this.opts.systemdRun ?? 'systemd-run', '--user', '--scope', '--quiet', '--collect', `--unit=${scopeName(acc.id)}`, `--description=dither-accounts extractor (${acc.kind})`, 'bun', entry] : ['bun', entry];
     // Its output straight to its log: the manager going away cannot break a pipe under it.
     const fd = openSync(log, 'a', 0o600);
     let proc: Subprocess;
@@ -490,7 +609,7 @@ export class Supervisor {
           DITHER_MANAGER_DATA: this.dataDir,
           DITHER_EXTRACTOR_LAUNCH: launch,
           DITHER_EXTRACTOR_FINGERPRINT: fingerprint,
-          ...(launch === 'child' ? {} : { DITHER_MANAGER_GONE_EXIT_S: String(MANAGER_GONE_EXIT_S) }),
+          ...(launch === 'child' ? {} : { DITHER_MANAGER_GONE_EXIT_S: String(this.opts.managerGoneExitS ?? MANAGER_GONE_EXIT_S) }),
         },
         stdin: 'ignore',
         stdout: fd,
@@ -506,10 +625,19 @@ export class Supervisor {
     r.proc = proc;
     r.pid = proc.pid;
     r.pstart = procStat(proc.pid)?.start;
+    r.cgroup = undefined;
     r.adopted = false;
     r.survives = launch !== 'child';
     r.fingerprint = fingerprint;
     r.connectBy = undefined;
+    // Its scope exists once systemd-run has made it, just before it runs the extractor.
+    if (launch === 'scope') {
+      const cg = () => {
+        if (r.proc === proc && !r.cgroup) r.cgroup = scopeOf(proc.pid);
+      };
+      setTimeout(cg, 200);
+      setTimeout(cg, 2000);
+    }
     this.opts.onChange(id);
   }
 
@@ -537,11 +665,12 @@ export class Supervisor {
         if (!procAlive(r.pid, r.pstart)) {
           const acc = this.store.account(id);
           const code = acc ? exitCodeOf(acc.dir, r.pid) : null;
-          this.ended(id, r, code, null);
+          // No exit record: it never got to write one (SIGKILL, the OOM killer).
+          this.ended(id, r, code, code === null ? 'killed' : null);
         } else if (!r.ws && r.connectBy && Date.now() > r.connectBy) {
           r.connectBy = undefined;
           const acc = this.store.account(id);
-          if (acc) appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} the extractor taken over (pid ${r.pid}) did not connect in ${ADOPT_CONNECT_MS / 1000} s: starting it afresh\n`);
+          if (acc) appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} the extractor taken over (pid ${r.pid}) did not connect in ${Math.round((this.opts.adoptConnectMs ?? ADOPT_CONNECT_MS) / 1000)} s: starting it afresh\n`);
           void this.restart(id);
         }
       }
@@ -553,9 +682,11 @@ export class Supervisor {
     const log = acc ? join(acc.dir, LOG) : null;
     // Its last lines, before the manager adds its own.
     const lines = log ? linesSince(log, r.logFrom ?? 0, CRASH_LINES) : [];
+    const cgroup = r.cgroup;
     r.proc = undefined;
     r.pid = undefined;
     r.pstart = undefined;
+    r.cgroup = undefined;
     r.adopted = false;
     r.connectBy = undefined;
     r.lastExit = { code, signal: sig, at: Date.now() };
@@ -568,14 +699,27 @@ export class Supervisor {
     }
     if ((code !== null && code !== 0) || sig != null) this.opts.onFailedExit?.(id, acc.kind, { code, signal: sig, stderr: lines });
     if (Date.now() - r.lastStart > 120_000) r.restarts = 0;
-    const delay = BACKOFF[Math.min(r.restarts, BACKOFF.length - 1)];
+    const delay = BACKOFF[Math.min(r.restarts, BACKOFF.length - 1)]!;
     r.restarts++;
-    // Kept in retry, so a stop (or the manager stopping) cancels it; set before onCrash, which must not keep it from it.
-    r.retry = setTimeout(() => this.start(id), delay * 1000);
+    // What it started goes before the next one starts; the retry is kept in `retry`, so a stop (or the manager
+    // stopping) cancels it. Set before onCrash, which must not keep it from it.
+    r.cleaning = true;
+    const t0 = Date.now();
+    void this.endLeft(id, cgroup).finally(() => {
+      r.cleaning = false;
+      if (r.stopping || this.closing || this.running.get(id) !== r) return;
+      r.retry = setTimeout(() => this.start(id), Math.max(0, delay * 1000 - (Date.now() - t0)));
+    });
     this.opts.onCrash?.(id);
   }
 
+  /** Stops an account's extractor on purpose (a stop, a disable, a removal): a staggered restart leaves it stopped. */
   async stop(id: string) {
+    this.halted.add(id);
+    await this.stopProcess(id);
+  }
+
+  private async stopProcess(id: string) {
     const r = this.running.get(id);
     if (!r) return;
     r.stopping = true;
@@ -586,8 +730,9 @@ export class Supervisor {
         r.ws.send(JSON.stringify({ t: 'shutdown' }));
       } catch {}
     }
-    if (r.pid) await terminate(r.pid, r.pstart, r.proc);
-    this.running.delete(id);
+    if (r.pid) await this.end(id, { pid: r.pid, start: r.pstart, proc: r.proc, cgroup: r.cgroup });
+    else await this.endLeft(id, r.cgroup);
+    if (this.running.get(id) === r) this.running.delete(id);
     this.history.set(id, { starts: r.starts, lastExit: r.lastExit });
     const acc = this.store.account(id);
     if (acc) releaseLock(acc.dir);
@@ -596,10 +741,11 @@ export class Supervisor {
   }
 
   /**
-   * The manager is going. Extractors that outlive it (launched as `scope` or `detached`, or adopted) are left running
-   * for the next manager to adopt when `leave`; the rest stop, as every one does without it.
+   * The manager is going. With `leave` (a restart), extractors that outlive it (launched as `scope` or `detached`, or
+   * adopted) are told so (`manager-going`: from then on they hold their events for the next manager) and left running;
+   * the rest stop, as every one does without it. Says which extractors acknowledged holding their events.
    */
-  async stopAll(o: { leave?: boolean } = {}) {
+  async stopAll(o: { leave?: boolean } = {}): Promise<{ holding: string[] }> {
     this.closing = true;
     clearInterval(this.watcher);
     this.watcher = undefined;
@@ -610,11 +756,39 @@ export class Supervisor {
     }
     const ids = [...this.running.keys()];
     for (const id of ids) clearTimeout(this.running.get(id)!.retry);
-    await Promise.all(ids.filter((id) => !(o.leave && this.running.get(id)?.survives)).map((id) => this.stop(id)));
+    const left = ids.filter((id) => o.leave && this.running.get(id)?.survives && this.running.get(id)?.pid);
+    const holding: string[] = [];
+    if (left.length) {
+      // Every frame an extractor sent before its answer has arrived by then (one socket, in order).
+      await Promise.all(
+        left.map((id) => {
+          const ws = this.running.get(id)?.ws;
+          if (!ws) return;
+          return new Promise<void>((done) => {
+            const timer = setTimeout(done, GOING_MS);
+            this.holding.set(id, () => {
+              clearTimeout(timer);
+              holding.push(id);
+              done();
+            });
+            try {
+              ws.send(JSON.stringify({ t: 'manager-going' }));
+            } catch {
+              done();
+            }
+          });
+        }),
+      );
+    }
+    await Promise.all(ids.filter((id) => !left.includes(id)).map((id) => this.stopProcess(id)));
+    return { holding };
   }
 
+  /** Stop and start again (the page's Restart, an extractor that never reconnected). */
   async restart(id: string) {
-    await this.stop(id);
+    await this.stopProcess(id);
+    // Apps hear it went before the next one's start takes the event loop.
+    await Bun.sleep(1);
     this.start(id);
   }
 
@@ -646,17 +820,25 @@ export class Supervisor {
         const r = this.running.get(id);
         const acc = this.store.account(id);
         const kind = acc && this.kinds.get(acc.kind);
-        if (!r?.adopted || !r.pid || r.stopping || !acc?.enabled || !kind) continue;
-        const now = this.fingerprintOf(kind);
-        if (r.fingerprint === now) continue;
-        // Connected first, so it hears a shutdown and ends as it would at a stop (the watch restarts one that never does).
-        const by = Date.now() + ADOPT_CONNECT_MS;
-        while (!this.closing && !r.ws && r.pid && Date.now() < by) await Bun.sleep(250);
-        if (this.closing || !r.pid || this.running.get(id) !== r) continue;
-        appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} its code changed since it started: restarting it\n`);
-        await this.restart(id);
-        const end = Date.now() + 60_000;
-        while (!this.closing && Date.now() < end && !this.running.get(id)?.ws) await Bun.sleep(250);
+        if (!r?.adopted || !r.pid || r.stopping || !acc?.enabled || !kind || this.halted.has(id)) continue;
+        if (sameCode(r.fingerprint, this.fingerprintOf(kind))) continue;
+        this.rollingNow = id;
+        try {
+          // Connected first, so it hears a shutdown and ends as it would at a stop (the watch restarts one that never does).
+          const by = Date.now() + (this.opts.adoptConnectMs ?? ADOPT_CONNECT_MS);
+          while (!this.closing && !r.ws && r.pid && Date.now() < by) await Bun.sleep(250);
+          if (this.closing || !r.pid || this.running.get(id) !== r || this.halted.has(id)) continue;
+          appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} its code changed since it started: restarting it\n`);
+          await this.stopProcess(id);
+          // Stopped on purpose meanwhile (the page, an app): it stays stopped.
+          if (this.halted.has(id) || this.closing) continue;
+          this.start(id);
+          this.rolled.set(id, this.running.get(id)?.starts ?? 0);
+          const end = Date.now() + 60_000;
+          while (!this.closing && Date.now() < end && !this.running.get(id)?.ws) await Bun.sleep(250);
+        } finally {
+          this.rollingNow = null;
+        }
       }
     } finally {
       this.rolling = false;
@@ -668,7 +850,8 @@ export class Supervisor {
   authorize(accountId: string | null, token: string | null): string | null {
     if (!accountId || !token || this.inProcess.has(accountId)) return null;
     const acc = this.store.account(accountId);
-    return acc && acc.token === token ? acc.id : null;
+    // A disabled account's extractor (a stray being stopped) is not let in.
+    return acc && acc.enabled && acc.token === token ? acc.id : null;
   }
 
   attach(ws: ServerWebSocket<ExtractorSocketData>) {
@@ -718,6 +901,11 @@ export class Supervisor {
       return;
     }
     const id = ws.data.accountId;
+    if (ev.t === 'holding') {
+      this.holding.get(id)?.();
+      this.holding.delete(id);
+      return;
+    }
     if (ev.t === 'reply') {
       const rid = (ev.rid ?? ev.id) as string;
       const p = this.pending.get(rid);

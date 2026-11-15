@@ -19,6 +19,10 @@ export interface BridgeServerOpts {
   onMessage: (msg: BridgeUp) => void;
   onConnect?: () => void;
   onDisconnect?: () => void;
+  /** Every frame that came up, replies included, before it is routed: the page watch hears the page through it. */
+  onFrame?: (msg: BridgeUp) => void;
+  /** A command the page did not answer in time. */
+  onTimeout?: (kind: string) => void;
   log: (level: 'debug' | 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
 }
 
@@ -69,6 +73,7 @@ export class BridgeServer {
           } catch {
             return;
           }
+          self.opts.onFrame?.(msg);
           if (msg.t === 'reply') {
             const p = self.pending.get(msg.id);
             if (p) {
@@ -106,6 +111,7 @@ export class BridgeServer {
       if (!this.sock) return reject(new Error('extension not connected'));
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        this.opts.onTimeout?.(cmd.kind);
         reject(new Error(`hook timed out on ${cmd.kind}`));
       }, timeoutMs);
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });

@@ -277,3 +277,62 @@ describe('calls setting on, the primary device (signal-cli registered the number
     expect(w.logs.join('\n')).not.toMatch(/AAA|BBB/);
   });
 });
+
+describe('a calls-only account (the call lab): Signal Desktop alone, no signal-cli', () => {
+  const events: AdapterEvent[] = [];
+  let dir: string;
+  let adapter: SignalAdapter;
+  let desk: StubDesktop;
+  const w = () => ({ dir, adapter, events, logs: [], desk, made: 1 }) as World;
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'dither-sig-callsonly-'));
+    const host: AdapterHost = { emit: (ev) => events.push(ev), log: () => {}, accountDir: dir, config: { callsOnly: true, peers: [ALICE.toUpperCase(), 'not-an-aci'] }, secret: () => ({}), saveSecret: () => {} };
+    adapter = new SignalAdapter(host, {
+      signalCli: async () => {
+        throw new Error('a calls-only account runs no signal-cli');
+      },
+      desktop: (o) => {
+        desk = new StubDesktop(o);
+        desk.request = (async (op: string, body: Record<string, unknown> = {}) => {
+          desk.asked.push({ op, body });
+          return op === 'names' ? { [ALICE]: 'Ann Lee' } : { ok: true };
+        }) as CallsHost['request'];
+        return desk;
+      },
+    });
+    await adapter.start();
+  });
+  afterAll(async () => {
+    await adapter.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('it offers calls only, and asks for the link with Desktop’s code', async () => {
+    expect(events[0]).toMatchObject({ t: 'hello', capabilities: ['callStates'] });
+    expect(desk.started).toBe(1);
+    desk.set({ ready: true, signedIn: false, linkUrl: 'sgnl://linkdevice?uuid=AAA&pub_key=BBB' }, true);
+    const st = await until(w(), 'the link code', () => events.find((e) => e.t === 'status' && e.attention?.qr));
+    expect(st).toMatchObject({ status: 'attention', attention: { kind: 'link_device', qr: 'sgnl://linkdevice?uuid=AAA&pub_key=BBB' }, layers: [{ name: 'calls', state: 'waiting' }] });
+  });
+
+  test('linked: online as itself, with a 1:1 for each listed peer and nothing else, and the call capabilities', async () => {
+    const mark = events.length;
+    desk.set({ ready: true, signedIn: true, aci: SELF.toUpperCase() });
+    await until(w(), 'online', () => events.slice(mark).find((e) => e.t === 'status' && e.status === 'online'));
+    const out = events.slice(mark).filter((e) => e.t !== 'status');
+    expect(out).toEqual([
+      { t: 'hello', network: 'signal', version: expect.any(String), capabilities: ['callStates', ...CALL_CAPS] },
+      { t: 'identity', identity: { nativeId: ALICE, displayName: 'Ann Lee', contact: true } },
+      { t: 'conversation', conversation: { nativeId: `dm:${SELF}:${ALICE}`, shape: 'direct', participants: [SELF, ALICE], encrypted: true } },
+    ]);
+    expect(desk.asked.find((a) => a.op === 'names')!.body).toEqual({ peers: [ALICE] });
+    await cmd(w(), { t: 'call', call: 'c1', op: 'join', conversation: `dm:${SELF}:${ALICE}`, mode: 'bridge' });
+    expect(desk.asked.at(-1)).toMatchObject({ op: 'join', body: { target: { peer: ALICE } } });
+  });
+
+  test('on a reconnect to the hub it says its peers again', () => {
+    const mark = events.length;
+    adapter.onHubConnect();
+    expect(events.slice(mark).filter((e) => e.t === 'conversation').length).toBe(1);
+  });
+});

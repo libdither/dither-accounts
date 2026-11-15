@@ -273,7 +273,7 @@ export class SignalAdapter {
     const globalCfg = join(host.accountDir, 'signal-cli.global.json');
     if (!existsSync(globalCfg)) writeFileSync(globalCfg, '{}\n', { mode: 0o600 });
     this.env = { ...process.env, SIGNAL_CLI_CONFIG: globalCfg };
-    if (host.config.calls === true) {
+    if (host.config.calls === true || this.callsOnly) {
       const make = opts.desktop ?? ((o: DesktopOptions) => new SignalDesktop(o));
       this.desktop = make({
         accountDir: host.accountDir,
@@ -296,10 +296,52 @@ export class SignalAdapter {
     }
   }
 
+  /**
+   * A calls-only account (config `callsOnly`, the call lab's: docs/signal.md "A calls-only account for the call lab"):
+   * Signal Desktop alone, no signal-cli. Nothing of the account's messages, contacts or groups leaves Desktop; the hub
+   * hears only who this account is and a 1:1 with each ACI in config `peers`.
+   */
+  /** What a calls-only account told the hub of its peers, said again on every reconnect. */
+  private callsOnlyFacts: P.AdapterEvent[] = [];
+
+  private get callsOnly() {
+    return this.host.config.callsOnly === true;
+  }
+
+  private async callsOnlyChanged() {
+    const app = this.desktop?.app;
+    if (app?.signedIn && app.aci && !this.account) {
+      const aci = app.aci.toLowerCase();
+      this.account = { number: '', aci };
+      const peers = (Array.isArray(this.host.config.peers) ? this.host.config.peers : []).filter((p: unknown): p is string => typeof p === 'string' && ACI.test(p)).map((p: string) => p.toLowerCase());
+      let names: Record<string, string> = {};
+      try {
+        names = (await this.desktop!.request<Record<string, string>>('names', { peers })) ?? {};
+      } catch {}
+      this.callsOnlyFacts = peers.flatMap((peer): P.AdapterEvent[] => [
+        { t: 'identity', identity: { nativeId: peer, ...(names[peer] ? { displayName: names[peer] } : {}), contact: true } },
+        { t: 'conversation', conversation: { nativeId: `dm:${aci}:${peer}`, shape: 'direct', participants: [aci, peer], encrypted: true } },
+      ]);
+      for (const ev of this.callsOnlyFacts) this.host.emit(ev);
+      this.setStatus('online', null, { nativeId: aci, isSelf: true });
+      return;
+    }
+    if (this.account) {
+      this.setStatus(this.desktop?.ready ? 'online' : 'connecting', null);
+      return;
+    }
+    if (app?.linkUrl) this.setStatus('attention', { kind: 'link_device', message: 'Link Signal Desktop for calls: on your phone, Signal → Settings → Linked devices → Link new device, and scan this code.', qr: app.linkUrl });
+    else this.setStatus('connecting', null);
+  }
+
   /** Desktop linked, unlinked, came or went: what the hub may offer, the status, and a primary's own link. */
   private desktopChanged() {
     if (this.phase === 'stopped') return;
     if (this.capabilities().join(',') !== this.toldCaps) this.hello();
+    if (this.callsOnly) {
+      void this.callsOnlyChanged();
+      return;
+    }
     if (this.lastStatus) this.setStatus(this.lastStatus.status, this.lastStatus.attention);
     void this.calls?.onAppChange();
   }
@@ -314,6 +356,7 @@ export class SignalAdapter {
 
   /** CAPABILITIES, and link previews while the phone's setting allows them (unknown: not). */
   capabilities(): P.Capability[] {
+    if (this.callsOnly) return ['callStates', ...(this.calls?.capabilities() ?? [])];
     const base = this.settings().linkPreviews === true ? [...CAPABILITIES, 'linkPreviews' as const] : CAPABILITIES;
     const calls = this.calls?.capabilities() ?? [];
     return calls.length ? [...base, ...calls] : base;
@@ -339,6 +382,7 @@ export class SignalAdapter {
   onHubConnect() {
     this.hello();
     if (this.lastStatus) this.host.emit(this.lastStatus);
+    for (const ev of this.callsOnlyFacts) this.host.emit(ev);
     if (this.requestsKnown) this.sendAllRequests();
     if (this.linksKnown) this.host.emit({ t: 'relationships', list: [...this.links].map(([identity, relationship]) => ({ identity, relationship })) });
   }
@@ -346,6 +390,10 @@ export class SignalAdapter {
   async start() {
     this.hello();
     this.setStatus('connecting', null);
+    if (this.callsOnly) {
+      void this.desktop?.start();
+      return;
+    }
     try {
       this.argv0 = await this.opts.signalCli();
       await this.children.reapOrphans();
@@ -378,7 +426,7 @@ export class SignalAdapter {
     const ev: Status = { t: 'status', status };
     if (attention !== undefined) ev.attention = attention;
     if (self) ev.self = self;
-    ev.layers = this.layers(status, attention ?? null);
+    ev.layers = this.callsOnly ? [] : this.layers(status, attention ?? null);
     if (this.desktop) {
       ev.layers.push(this.desktop.layer());
       ev.liveView = this.desktop.liveView();

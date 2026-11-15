@@ -291,6 +291,15 @@ In the sandbox the hook allows Signal's own microphone and camera settings, sinc
   after its offer. Audio and video went both ways (heard and seen on the phone; the phone's camera and voice reached the
   device). The phone's video arrived at the device at 176 to 528 pixels wide.
 
+**A calls-only account for the call lab.** To test calls between two Signal accounts automatically, the way
+dither-chat's call lab does for Discord, a lab manager can hold an account in calls-only mode: config `callsOnly: true`
+and `peers`, a list of ACIs. It runs Signal Desktop alone, without signal-cli, so the real account it is linked to gains
+exactly one linked device. Nothing of the account's messages, contacts or groups goes to the hub. The hub hears only who
+this account is, and a 1:1 with each peer (named as Signal names them). It advertises `callStates` and the call
+capabilities, nothing else. Desktop itself still receives what any linked device receives, in its own database in
+the lab's account directory. Delete that directory and unlink the device (on the phone: Settings → Linked devices) when
+the lab is done.
+
 **Why Desktop, and not the others** (weighed for this, 2026-11-14):
 
 | | signal-cli + `signal-call-tunnel` | Signal Desktop in the sandbox | Android app in the emulator |

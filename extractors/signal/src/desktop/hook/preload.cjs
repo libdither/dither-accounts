@@ -523,6 +523,16 @@ function main() {
       fromDevice: Object.fromEntries(Object.entries(fromDevice).map(([k, t]) => [k, t ? t.readyState : null])),
     }),
     join,
+    /** The names Signal shows for these people (only those asked: a calls-only account's peers). */
+    names: (req) => {
+      const out = {};
+      for (const aci of Array.isArray(req.peers) ? req.peers : []) {
+        const c = window.ConversationController && window.ConversationController.get(aci);
+        const name = c && typeof c.getTitle === 'function' ? c.getTitle() : null;
+        if (name) out[aci] = name;
+      }
+      return out;
+    },
     signal: (req) => bridgeSignal(req.data),
     leave: () => {
       if (!call) return { ok: true };

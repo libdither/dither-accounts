@@ -142,7 +142,10 @@ function layers(): Layer[] {
     out.push(!h ? { name: s.name, state: 'waiting', note: 'not read yet' } : h.error ? { name: s.name, state: 'failed', note: h.error } : h.files ? { name: s.name, state: 'ok', note: `${h.files} file${h.files === 1 ? '' : 's'}, ${h.records} new records` } : { name: s.name, state: 'waiting', note: 'no file there yet' });
   }
   const t = watch?.cfg.threads;
-  out.push(!watch ? { name: 'threads', state: 'waiting' } : !t ? { name: 'threads', state: 'off', note: 'not set up' } : { name: 'threads', state: 'ok', note: `${st.threadStarts.length} in the last 24 h of ${t.dayMax}, ${watch.queue().length} waiting` });
+  const held = Object.values(st.bugs).filter((b) => b.held).length;
+  const wk = watch?.report(7);
+  const week = wk && wk.threads + wk.failed ? `; the last 7 days: ${wk.threads} threads, ${wk.withPr} with a PR${t?.show ? `, ${wk.runs} runs, ${wk.items} items, ${wk.minutes} min` : ''}` : '';
+  out.push(!watch ? { name: 'threads', state: 'waiting' } : !t ? { name: 'threads', state: 'off', note: 'not set up' } : { name: 'threads', state: 'ok', note: `${st.threadStarts.length} in the last 24 h of ${t.dayMax}, ${watch.queue().length} waiting, ${held} held until they come back${week}` });
   return out;
 }
 
@@ -161,6 +164,8 @@ function status(force = false) {
       unread,
       threadsToday: st.threadStarts.length,
       queued: watch?.queue().length ?? 0,
+      held: Object.values(st.bugs).filter((b) => b.held).length,
+      threadsWeek: watch?.report(7) ?? null,
       lastScanAt: lastScan ? new Date(lastScan.at).toISOString() : null,
       lastScanRecords: lastScan?.records ?? null,
     },

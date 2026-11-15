@@ -9,12 +9,14 @@
  *       only task is to reply "ok", and prints what the command answered.
  *   bun extractors/bugwatch/src/cli.ts --account-dir <dir> --clear <bug id>
  *       clears a fingerprint of a running bugwatch account (it may get a thread again); applied at its next scan.
+ *   bun extractors/bugwatch/src/cli.ts --account-dir <dir> --report [--days 7]
+ *       the threads a running bugwatch account started in the last days, and what each cost as far as threads.show said.
  */
 import { appendFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig } from './config.ts';
 import { run } from './run.ts';
-import { DAY, fresh, HOUR } from './state.ts';
+import { DAY, fresh, HOUR, loadState } from './state.ts';
 import { parseThreadId, type RunResult, Watch } from './watch.ts';
 
 const args = process.argv.slice(2);
@@ -44,7 +46,26 @@ if (flag('clear')) {
   process.exit(0);
 }
 
-const configPath = value('config') ?? die('usage: cli.ts --config <file> (--dry [--since 24h] | --selftest [--source <name>]), or --account-dir <dir> --clear <id>');
+if (flag('report')) {
+  const dir = value('account-dir') ?? die('--report needs --account-dir <the bugwatch account directory>');
+  const days = Number(value('days') ?? 7);
+  if (!(days > 0)) die('--days takes a number of days');
+  const st = loadState(join(dir, 'state.json'), (m) => die(m));
+  const now = Date.now();
+  const bugs = Object.values(st.bugs).filter((b) => b.thread && b.thread.at >= now - days * DAY).sort((a, b) => a.thread!.at - b.thread!.at);
+  for (const b of bugs) {
+    const t = b.thread!;
+    const r = t.record;
+    const cost = t.failed ? `failed to start (${t.failed})` : !r || r.runs === undefined ? (r?.error ? `not read: ${r.error}` : 'no record yet') : `${r.status ?? '?'}${r.done ? ', done' : ''}: ${r.runs} runs, ${r.items ?? '?'} items, ${r.prs ?? 0} PRs, ${r.minutes ?? '?'} min`;
+    console.log(`${new Date(t.at).toISOString().slice(0, 16).replace('T', ' ')}  ${t.title}\n    bug ${b.id}, seen ${b.count} times; ${cost}${t.id ? `; thread ${t.id}` : ''}`);
+  }
+  const w = new Watch({ sources: [], ignore: [], always: [], threads: null, briefs: [], spikeGapHours: 6 }, st, { now: () => now, run: async () => ({ code: null, stdout: '', stderr: '' }), log: () => {}, emit: () => {}, briefTemplate: '' });
+  const r = w.report(days, now);
+  console.log(`\nthe last ${days} days: ${r.threads} threads (${r.withPr} with a PR, ${r.unknown} without a record), ${r.failed} failed to start; ${r.runs} runs, ${r.items} items, ${r.minutes} min in all`);
+  process.exit(0);
+}
+
+const configPath = value('config') ?? die('usage: cli.ts --config <file> (--dry [--since 24h] | --selftest [--source <name>]), or --account-dir <dir> (--clear <id> | --report [--days 7])');
 const cfg = (() => {
   try {
     return loadConfig(configPath);
@@ -97,9 +118,12 @@ for (const s of cfg.sources) {
   const h = w.health.get(s.name);
   console.log(`source ${s.name}: ${h ? (h.error ? `failed: ${h.error}` : `${h.files} files, ${h.records} records`) : 'not read'}`);
 }
+console.log('\nhow far back each source goes:');
+for (const x of w.reach()) console.log(`  ${x.name}: ${x.from === null ? 'no dated line' : new Date(x.from).toISOString()} (${x.files} files)`);
 if (cfg.threads) {
-  console.log(`\nthreads (one every ${cfg.threads.gapMinutes} min, ${cfg.threads.dayMax} a day):`);
+  console.log(`\nthreads (one every ${cfg.threads.gapMinutes} min, ${cfg.threads.dayMax} a day; a new bug that is not a crash waits until it is seen again ${cfg.threads.recurMinutes} min after its first sighting):`);
   for (const s of started) console.log(`  would start now: ${JSON.stringify(s.argv)}`);
+  for (const b of Object.values(st.bugs).filter((x) => x.held)) console.log(`  held until it comes back: ${w.threadTitle(b)} (${b.count} times over ${Math.round((b.last - b.first) / 60_000)} min)`);
   for (const b of w.queue()) console.log(`  would queue: ${w.threadTitle(b)} (${b.count} times)`);
   const first = Object.values(st.bugs).find((b) => b.thread);
   if (first && flag('brief')) console.log(`\nits brief:\n\n${w.brief(first)}`);

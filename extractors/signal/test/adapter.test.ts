@@ -342,6 +342,22 @@ describe('signal adapter against a fake signal-cli', () => {
     expect(calls('sendReceipt').length).toBe(before);
   });
 
+  test('markRead up to a line of our own ("could not be decrypted"): what came before is read, no receipt for the line', async () => {
+    await cmd({ t: 'markRead', conversation: DM_ALICE, upTo: `${ALICE}:${T + 94_000}` }); // what earlier tests left unread
+    push({
+      account: '+15550100',
+      envelope: { sourceNumber: '+15550137', sourceUuid: ALICE, sourceName: 'Alice', sourceDevice: 1, timestamp: T + 95_000, dataMessage: { timestamp: T + 95_000, message: 'before it' } },
+    });
+    await until('unread message', () => of('message').find((e) => e.message.nativeId === `${ALICE}:${T + 95_000}`));
+    expect(await cmd({ t: 'markRead', conversation: DM_ALICE, upTo: `${ALICE}:${T + 96_000}:undecrypted` })).toEqual({ receipts: 1 });
+    expect(calls('sendReceipt').at(-1).params).toEqual({ recipient: ALICE, targetTimestamp: [T + 95_000], type: 'read' });
+    const before = calls('sendReceipt').length;
+    expect(await cmd({ t: 'markRead', conversation: DM_ALICE, upTo: `${ALICE}:${T + 97_000}:undecrypted` })).toEqual({ receipts: 0 });
+    expect(await cmd({ t: 'markRead', conversation: DM_ALICE, upTo: `${SELF}:${T + 98_000}:endsession` })).toEqual({ receipts: 0 });
+    expect(calls('sendReceipt').length).toBe(before);
+    await expect(cmd({ t: 'markRead', conversation: DM_ALICE, upTo: `${ALICE}:${T + 99_000}:bogus` })).rejects.toThrow('not a Signal message id');
+  });
+
   test('polls: make one, vote with a higher number each time, take it back, end your own', async () => {
     let mark = events.length;
     const made = (await cmd({ t: 'pollCreate', conversation: GROUP, poll: { question: 'Which night?', options: ['Tue', 'Thu'], multi: false } })) as { nativeId: string };

@@ -47,6 +47,7 @@ import {
   msgId,
   noteToSelf,
   parseConversation,
+  parseLineId,
   parseMsgId,
   pendingIds,
   personAbout,
@@ -1595,7 +1596,9 @@ export class SignalAdapter {
 
   private async markRead(conversation: string, upTo: string) {
     const self = this.self;
-    const m = this.message(upTo);
+    // Read up to the last line, which can be one of ours ("could not be decrypted"): its time marks the place.
+    const m = parseLineId(upTo);
+    if (!m) throw new Error(`not a Signal message id: ${upTo}`);
     // A message request: no read receipt until it is accepted, and what is unread stays so, for the receipts then.
     if (await this.quiet(conversation)) {
       this.host.log('debug', 'no read receipts: a message request waits for your answer');
@@ -1603,7 +1606,7 @@ export class SignalAdapter {
     }
     const acks = this.state.takeUnread(conversation, m.ts);
     // Nothing tracked (e.g. after a restart): acknowledge the target itself, once.
-    if (!acks.length && m.author !== self && m.ts > (this.acked.get(conversation) ?? 0)) acks.push([m.author, m.ts]);
+    if (!acks.length && !m.own && m.author !== self && m.ts > (this.acked.get(conversation) ?? 0)) acks.push([m.author, m.ts]);
     this.acked.set(conversation, Math.max(this.acked.get(conversation) ?? 0, m.ts));
     this.startExpiry(conversation, m.ts);
     const byAuthor = new Map<string, number[]>();

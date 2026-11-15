@@ -2168,3 +2168,127 @@ details.more > summary:hover {
   max-width: 420px;
   overflow-wrap: anywhere;
 }
+
+/* ---------------------------------------------------------------- a suite's identities (Suites.tsx): one Google account, its services */
+
+.id-card {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.id-card:hover {
+  background: var(--center);
+}
+.id-card-head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  color: var(--text);
+}
+.id-card-head:hover {
+  text-decoration: none;
+}
+.id-card-head:hover .ov-card-name {
+  text-decoration: underline;
+}
+.id-parts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.part-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.part-chip:hover {
+  text-decoration: none;
+  background: var(--hover);
+}
+.part-chip .dot {
+  flex: none;
+}
+.part-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.part-chip-why {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.part-chip.t-warn {
+  border-color: color-mix(in oklab, var(--warn) 45%, transparent);
+}
+.part-chip.t-danger {
+  border-color: color-mix(in oklab, var(--danger) 50%, transparent);
+}
+.part-chip.none {
+  border-style: dashed;
+  color: var(--text-faint);
+}
+.part-chip.none:hover {
+  color: var(--text);
+}
+.acc-identity + .acc-identity {
+  margin-top: 4px;
+}
+.acc-identity-head {
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.parts {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+}
+.part-row {
+  display: grid;
+  grid-template-columns: 84px 1fr auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 7px 0;
+  border-top: 1px solid var(--border-soft);
+}
+.part-row:first-child {
+  border-top: 0;
+}
+.part-how {
+  min-width: 0;
+}
+.part-why {
+  display: block;
+}
+.part-pill {
+  gap: 5px;
+}
+.suite-parts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.suite-parts .seg {
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+.suite-here {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-dim);
+}

@@ -9,8 +9,10 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { AddField, ManagerState } from '../../../src/api-types.ts';
 import { CATEGORIES, type CategoryId, choicesOf, formOf, type Service, services, type Way } from '../catalog.ts';
 import { act, addedNote, copy, go, openWhenReady, state, takeQuery, toast } from '../state.ts';
+import { groupIdentities, suiteOfService } from '../suites.ts';
 import { KindMark } from './bits.tsx';
 import { brandColor, Icon } from './icons.tsx';
+import { identityName, partState } from './Suites.tsx';
 
 /** The sheet, when open: from the top bar's Add (everything), a section's + (its category) or a service's mark. */
 export const adding = signal<{ category: CategoryId | null; service: string | null } | null>(null);
@@ -72,7 +74,7 @@ export function AddSheet() {
     <div class="scrim" onClick={(e) => e.target === e.currentTarget && close()}>
       <div class="dialog sheet" role="dialog" aria-modal="true" aria-labelledby="add-title" data-add-dialog>
         {sv ? (
-          <ServiceForm sv={sv} onBack={() => (adding.value = { category: open.category, service: null })} onClose={close} />
+          <ServiceForm key={sv.id} sv={sv} onBack={() => (adding.value = { category: open.category, service: null })} onClose={close} />
         ) : (
           <Picker all={all} category={open.category} query={query} setQuery={setQuery} onClose={close} />
         )}
@@ -170,6 +172,7 @@ function ServiceForm({ sv, onBack, onClose }: { sv: Service; onBack: () => void;
           ✕
         </button>
       </div>
+      <SuiteParts sv={sv} />
       {sv.ways.length > 1 && (
         <div class="ways" role="radiogroup" aria-label="How to add it">
           {sv.ways.map((w) => (
@@ -187,6 +190,51 @@ function ServiceForm({ sv, onBack, onClose }: { sv: Service; onBack: () => void;
         <KindForm sv={sv} way={way} key={`${sv.id}/${way.id}`} onClose={onClose} />
       )}
     </>
+  );
+}
+
+/**
+ * For a service that is part of a suite (Google's Calendar, Gmail and Messages): the suite's other services, one click
+ * away, and the accounts of that suite already here, with what each gives, so a second way in to the same account is
+ * a choice and not a surprise.
+ */
+function SuiteParts({ sv }: { sv: Service }) {
+  const s = state.value!;
+  const su = suiteOfService(sv.id);
+  if (!su) return null;
+  const all = services(s);
+  const here = groupIdentities(s.accounts).identities.filter((i) => i.suite.id === su.id);
+  const part = su.parts.find((p) => p.service === sv.id)!;
+  return (
+    <div class="suite-parts" data-suite-parts={su.id}>
+      <div class="seg" role="tablist" aria-label={`${su.name} services`}>
+        {su.parts.map((p) => {
+          const target = all.find((x) => x.id === p.service);
+          if (!target) return null;
+          return (
+            <button key={p.id} type="button" role="tab" aria-selected={p.service === sv.id} class={`seg-btn ${p.service === sv.id ? 'on' : ''}`} onClick={() => (adding.value = { category: target.category, service: target.id })} data-suite-part={p.id}>
+              {p.name}
+            </button>
+          );
+        })}
+      </div>
+      {here.length > 0 && (
+        <ul class="suite-here small">
+          {here.map((i) => {
+            const st = partState(i, part);
+            const has = su.parts.filter((p) => partState(i, p).by);
+            return (
+              <li key={i.key}>
+                <strong>{identityName(i).name}</strong>{' '}
+                <span class="muted">
+                  {st.by ? `${st.tone === 'good' ? 'already has' : 'has'} ${part.name} (${su.way[st.by.kind] ?? st.by.kind})${st.tone === 'good' ? '' : `, not working yet: ${st.text}`}` : has.length ? `has ${has.map((p) => p.name).join(' and ')}, not ${part.name}` : 'here, with nothing working yet'}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
 

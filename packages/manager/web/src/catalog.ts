@@ -210,7 +210,17 @@ const SERVICES: Service[] = [
       { ...MAILBOX('proton', 'Proton Bridge', 'Over IMAP through Proton Bridge running on this machine (paid plans): give the password Bridge shows for this address.', 'bridge') },
     ],
   },
-  { id: 'gmail', name: 'Gmail', mark: { brand: 'gmail' }, category: 'mail', line: 'Over IMAP, with an app password', ways: [MAILBOX('gmail', 'App password', 'Gmail over IMAP and SMTP with an app password (Google Account → Security → App passwords), not your account password.')] },
+  {
+    id: 'gmail',
+    name: 'Gmail',
+    mark: { brand: 'gmail' },
+    category: 'mail',
+    line: 'In a sandboxed browser (with Google Calendar), or over IMAP with an app password',
+    ways: [
+      { ...BROWSER('google', 'Gmail'), tip: 'Runs Gmail and Google Calendar in a sandboxed browser: you sign in to Google once in the live view, and that one account gives both.' },
+      MAILBOX('gmail', 'App password', 'Gmail over IMAP and SMTP with an app password (Google Account → Security → App passwords), not your account password. Mail only.'),
+    ],
+  },
   { id: 'fastmail', name: 'Fastmail', mark: { glyph: 'mail' }, category: 'mail', line: 'Over IMAP, with an app password', ways: [MAILBOX('fastmail', 'App password', 'Fastmail over IMAP and SMTP with an app password (Settings → Privacy & Security → App passwords).')] },
   { id: 'icloud', name: 'iCloud Mail', mark: { brand: 'icloud' }, category: 'mail', line: 'Over IMAP, with an app-specific password', ways: [MAILBOX('icloud', 'App password', 'iCloud Mail over IMAP and SMTP with an app-specific password (account.apple.com → Sign-In and Security).')] },
   {
@@ -228,10 +238,10 @@ const SERVICES: Service[] = [
     name: 'Google Calendar',
     mark: { brand: 'google' },
     category: 'calendar',
-    line: 'In a sandboxed browser, or with your own OAuth client',
+    line: 'In a sandboxed browser (with Gmail), or with your own OAuth client',
     ways: [
-      { ...BROWSER('google', 'Google Calendar'), tip: 'Runs Google Calendar in a sandboxed browser; you sign in to Google once in the live view.' },
-      { id: 'oauth', label: 'OAuth client', glyph: 'key', oauth: 'google', tip: "Google's API with an OAuth client of your own: no browser to keep running, but fewer kinds of data." },
+      { ...BROWSER('google', 'Google Calendar'), tip: 'Runs Google Calendar and Gmail in a sandboxed browser: you sign in to Google once in the live view, and that one account gives both.' },
+      { id: 'oauth', label: 'OAuth client', glyph: 'key', oauth: 'google', tip: "Google's API with an OAuth client of your own: Calendar only, no browser to keep running, but fewer kinds of data." },
     ],
   },
   {

@@ -7,6 +7,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import type { AccountDetail, AccountInfo, DirListing, ManagerState, StatusLayer } from '../../../src/api-types.ts';
 import { CATEGORIES, categoryOf, nicknameOf, subtitleOf, usernameOf } from '../catalog.ts';
+import { groupIdentities, gives, identityOf, SUITES } from '../suites.ts';
 import { act, addedNote, ago, api, appName, bytes, confirm, confirmWith, copy, go, href, kindName, named, openWhenReady, route, since, state, takeQuery, toast } from '../state.ts';
 import { openAdd } from './Add.tsx';
 import { approvers, loadApprovers } from './Approvers.tsx';
@@ -17,6 +18,7 @@ import { LiveView } from './LiveView.tsx';
 import { MoneroKeyImages } from './Monero.tsx';
 import { Overview } from './Overview.tsx';
 import { Runner } from './Runner.tsx';
+import { IdentityBlock, identityName, partState } from './Suites.tsx';
 
 interface GoogleStatus {
   accounts: { id: string; email: string | null; scopes: string[] }[];
@@ -28,8 +30,9 @@ const origin = (a: AccountInfo) => (a.builtin ? 'Part of the manager' : a.create
 
 function AccountList({ active }: { active: string | undefined }) {
   const s = state.value!;
+  const { identities, rest } = groupIdentities(s.accounts);
   const byCat = new Map<string, AccountInfo[]>();
-  for (const a of s.accounts) {
+  for (const a of rest) {
     const c = categoryOf(a.interfaces);
     (byCat.get(c) ?? byCat.set(c, []).get(c)!).push(a);
   }
@@ -45,6 +48,48 @@ function AccountList({ active }: { active: string | undefined }) {
           <Icon glyph="plus" size={14} />
         </button>
       </div>
+      {SUITES.map((su) => {
+        const list = identities.filter((i) => i.suite.id === su.id);
+        if (!list.length) return null;
+        const all = list.flatMap((i) => i.accounts);
+        return (
+          <div class="acc-group" key={su.id} data-category={su.id} data-suite={su.id}>
+            <div class="acc-group-head">
+              <span>{su.name}</span>
+              <span class="faint">
+                {all.filter((a) => a.online).length}/{all.length}
+              </span>
+            </div>
+            {list.map((i) => (
+              <div class="acc-identity" key={i.key} data-identity={i.key}>
+                <div class="acc-identity-head" title={i.email ?? undefined}>
+                  {identityName(i).name}
+                </div>
+                {i.accounts.map((a) => {
+                  const cd = condition(a);
+                  const trouble = cd.tone === 'danger' || cd.tone === 'warn';
+                  const parts = su.parts.filter((p) => gives(a, p));
+                  const stuck = parts.map((p) => partState({ ...i, accounts: [a] }, p)).find((p) => p.tone !== 'good');
+                  return (
+                    <a key={a.id} href={href('accounts', a.id)} class={`acc-item ${active === a.id ? 'on' : ''}`} aria-current={active === a.id ? 'page' : undefined} data-account={a.id}>
+                      <span class="acc-item-avatar">
+                        <Avatar a={a} size={30} badge={false} />
+                        <Dot tone={cd.tone} title={cd.text} />
+                      </span>
+                      <span class="acc-item-text">
+                        <span class="acc-item-name">{su.way[a.kind] ?? kindName.value.get(a.kind) ?? a.kind}</span>
+                        <span class={`acc-item-sub ${trouble || stuck ? 'warn' : ''}`}>
+                          {trouble ? cd.text : stuck ? `${stuck.part.name}: ${stuck.text}` : parts.map((p) => p.name).join(', ') || cd.text}
+                        </span>
+                      </span>
+                    </a>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        );
+      })}
       {CATEGORIES.filter((c) => byCat.has(c.id)).map((c) => {
         const list = byCat.get(c.id)!.slice().sort((x, y) => (x.kind === y.kind ? named(x).localeCompare(named(y)) : x.kind.localeCompare(y.kind)));
         return (
@@ -256,8 +301,10 @@ function AccountOverview({ a, d, reload }: { a: AccountInfo; d: AccountDetail | 
       if (await act(`/api/providers/google/accounts/${a.id}`, { method: 'DELETE' }, 'Disconnected')) go('accounts');
     }
   };
+  const identity = identityOf(a, s.accounts);
   return (
     <div class="pane-body">
+      {identity && <IdentityBlock i={identity} a={a} />}
       {a.layers && a.layers.length > 0 && <Chain layers={a.layers} />}
 
       <section class="pane-section">

@@ -17,6 +17,23 @@ through the manager. No app sees a cookie or a token.
 dither-calendar picks the accounts it syncs by kind: `a.kind === 'google'` (its `server/google/index.ts`). It sees
 browser accounts; a `google-api` account is not picked up until it chooses by grant instead.
 
+## On the page: one Google account, several services
+
+The kinds above, Gmail over IMAP (`imap` with the gmail preset) and Google Messages (`gmessages`) are each their own
+account here, with their own sign-in. The page shows those that are the same Google account as one: a **Google**
+section on the overview, first, with a card per Google account and a chip per service (Calendar, Gmail, Messages),
+each the state of the account that gives it, or a dashed **+** to add it. An account's pane opens with the same, service
+by service: which way in gives it (this account, or a link to the other), the apps that use it, and where it stops.
+
+They are grouped by email (packages/manager/web/src/suites.ts): what the account says it is signed in as, or for
+Google Messages paired with a Google account, the address its `paired` layer names. An IMAP account joins when its
+address is a Gmail one or is one a Google account here has. An account whose email is not known yet (a browser
+not signed in, Messages paired by QR code) is a card of its own. Grouping is the page's only; nothing is stored.
+
+In the add sheet, Google Calendar, Gmail and Google Messages stay in their categories, and each form has the three
+as tabs and lists the Google accounts already here with what each gives. Gmail's first way is the browser (it gives
+Calendar too); the app password is the other.
+
 ## Signing in with a browser (kind `google`)
 
 On the accounts page, **Add → Google** (the kind's manifest has `add`, so the page can make the account). Its

@@ -14,7 +14,7 @@ import { fingerprint, firstInRepoFrame, normalize, parseFrame } from '../extract
 import { expand, parseErrorsLine, parseSpanLine, parseTextLines, tail } from '../extractors/bugwatch/src/readers.ts';
 import { run } from '../extractors/bugwatch/src/run.ts';
 import { DAY, fresh, HOUR, loadState, saveState, type State } from '../extractors/bugwatch/src/state.ts';
-import { type Deps, parseThreadId, type RunResult, Watch } from '../extractors/bugwatch/src/watch.ts';
+import { type Deps, parseThreadId, parseThreadRecord, type RunResult, Watch } from '../extractors/bugwatch/src/watch.ts';
 
 const ROOT = resolve(import.meta.dir, '..');
 const FAKE_T3 = join(ROOT, 'extractors/bugwatch/test/fake-t3.ts');
@@ -162,7 +162,9 @@ describe('config', () => {
   test('sources, rules and threads; relative paths from the config file; mistakes said', () => {
     const c = parseConfig({ sources: [{ name: 'hub', kind: 'errors-ndjson', path: 'traces/errors.ndjson', project: '/srv/app', base: 'origin/main' }], ignore: ['ResizeObserver'], always: [{ match: '^attempt/' }], threads: { command: ['t3', '{title}'] }, briefs: [{ match: 'hub', file: 'extra.md' }] }, '/etc/bw');
     expect(c.sources[0]).toEqual({ name: 'hub', kind: 'errors-ndjson', path: '/etc/bw/traces/errors.ndjson', project: '/srv/app', base: 'origin/main' });
-    expect(c.threads).toEqual({ command: ['t3', '{title}'], gapMinutes: 15, dayMax: 6, queueMax: 10 });
+    expect(c.threads).toEqual({ command: ['t3', '{title}'], gapMinutes: 15, dayMax: 6, queueMax: 10, recurMinutes: 60, budgetMinutes: 60, show: null });
+    expect(parseConfig({ sources: c.sources, threads: { command: ['t3'], recurMinutes: 0, show: ['t3', 'thread', 'show', '{id}'] } }, '/').threads).toMatchObject({ recurMinutes: 0, show: ['t3', 'thread', 'show', '{id}'] });
+    expect(() => parseConfig({ sources: c.sources, threads: { command: ['t3'], show: [] } }, '/')).toThrow('threads.show must name a program');
     expect(c.always[0]!.gapHours).toBe(24);
     expect(c.briefs[0]!.file).toBe('/etc/bw/extra.md');
     expect(c.spikeGapHours).toBe(6);
@@ -188,7 +190,7 @@ interface Rig {
   write: (lines: string[]) => void;
 }
 
-function rig(o: { threads?: Partial<Config['threads']> | null; always?: Config['always']; ignore?: RegExp[]; run?: Deps['run']; backlog?: string[] } = {}): Rig {
+function rig(o: { threads?: Partial<NonNullable<Config['threads']>> | null; always?: Config['always']; ignore?: RegExp[]; run?: Deps['run']; backlog?: string[]; sources?: Config['sources'] } = {}): Rig {
   const dir = tmp();
   const calls = join(dir, 'calls');
   mkdirSync(calls);
@@ -196,10 +198,10 @@ function rig(o: { threads?: Partial<Config['threads']> | null; always?: Config['
   mkdirSync(join(dir, 'traces'));
   writeFileSync(file, (o.backlog ?? []).map((l) => `${l}\n`).join(''));
   const cfg: Config = {
-    sources: [{ name: 'hub', kind: 'errors-ndjson', path: file, project: '/srv/app', base: 'origin/main' }],
+    sources: [{ name: 'hub', kind: 'errors-ndjson', path: file, project: '/srv/app', base: 'origin/main' }, ...(o.sources ?? [])],
     ignore: o.ignore ?? [],
     always: o.always ?? [],
-    threads: o.threads === null ? null : { command: ['bun', FAKE_T3, calls, 'thread', 'start', '--title', '{title}', '--worktree', '{base}', '--json', '{project}', '-'], gapMinutes: 15, dayMax: 6, queueMax: 10, ...o.threads },
+    threads: o.threads === null ? null : { command: ['bun', FAKE_T3, calls, 'thread', 'start', '--title', '{title}', '--worktree', '{base}', '--json', '{project}', '-'], gapMinutes: 15, dayMax: 6, queueMax: 10, recurMinutes: 0, budgetMinutes: 60, show: null, ...o.threads },
     briefs: [],
     spikeGapHours: 6,
   };
@@ -481,6 +483,109 @@ describe('threads', () => {
     await r.w.scan();
     expect(callsIn(r)).toEqual([]);
     expect(news(r)[0]!.body).toContain('No T3 thread: its source names no project and base.');
+  });
+
+  test('triage: a new bug waits for its thread until it comes back recurMinutes after its first sighting; a crash does not wait', async () => {
+    const r = rig({ threads: { recurMinutes: 60 } });
+    await r.w.scan();
+    r.write([errLine({ at: T0 + 1 })]);
+    await r.w.scan();
+    expect(callsIn(r)).toEqual([]);
+    const n = news(r)[0]!;
+    expect(n.body).toContain('No T3 thread yet: one starts if it comes back 60 minutes or more after it was first seen (a one-off that recovers on its own gets none).');
+    expect(n.subject!.state).toBe('held');
+    // Again within the hour: still held.
+    r.clock.now += 20 * 60_000;
+    r.write([errLine({ at: r.clock.now })]);
+    await r.w.scan();
+    expect(callsIn(r)).toEqual([]);
+    // An hour after the first: its thread starts (with no plain log to wait on for context, at once).
+    r.clock.now = T0 + 61 * 60_000;
+    r.write([errLine({ at: r.clock.now })]);
+    await r.w.scan();
+    expect(r.logs.some((l) => /bug [0-9a-f]{16} came back after 61 min: it waits for a thread now/.test(l))).toBe(true);
+    const [c] = callsIn(r);
+    expect(c!.stdin).toContain('- Seen over 61 minutes, from the first sighting to the last: not a one-off.');
+    expect(r.w.notification(Object.values(r.st.bugs)[0]!).subject!.state).toBe('thread');
+    // A crash does not wait.
+    r.clock.now += 20 * 60_000;
+    r.write([errLine({ at: r.clock.now, source: 'uncaught', where: 'process', name: 'TypeError', message: 'x is undefined' })]);
+    await r.w.scan();
+    expect(callsIn(r)).toHaveLength(2);
+  });
+
+  test('armed: a later occurrence brings the plain logs\' warn and error lines around it to the brief; the brief says how far back each source goes', async () => {
+    const d = tmp();
+    mkdirSync(join(d, 'acct-1'));
+    const log = join(d, 'acct-1/adapter.log');
+    const iso = (t: number) => new Date(t).toISOString();
+    writeFileSync(log, `${iso(T0 - 3 * DAY)} [info] started\n`);
+    writeFileSync(`${log}.1`, `${iso(T0 - 5 * DAY)} [info] older\n`);
+    const r = rig({ sources: [{ name: 'adapters', kind: 'text-log', path: join(d, '*/adapter.log') }] });
+    await r.w.scan();
+    r.write([errLine({ at: T0 + 1 })]);
+    await r.w.scan();
+    expect(Object.values(r.st.bugs)[0]!.samples[0]!.context).toBeUndefined();
+    // The second occurrence, with lines around it: two before, one just after, one long before.
+    const t = T0 + 30 * 60_000;
+    r.clock.now = t + 5_000;
+    appendFileSync(log, [`${iso(t - 15 * 60_000)} [warn] long before`, `${iso(t - 60_000)} [info] an info line`, `${iso(t - 30_000)} [warn] the page went quiet`, `${iso(t + 4_000)} [warn] the page's silence: received by the page`, ''].join('\n'));
+    r.write([errLine({ at: t })]);
+    await r.w.scan();
+    const b = Object.values(r.st.bugs)[0]!;
+    expect(b.samples.at(-1)!.context).toBeUndefined();
+    r.clock.now = t + 61_000;
+    await r.w.scan();
+    expect(b.samples.at(-1)!.context).toEqual([`acct-1/adapter.log: ${iso(t - 30_000)} [warn] the page went quiet`, `acct-1/adapter.log: ${iso(t + 4_000)} [warn] the page's silence: received by the page`]);
+    const brief = r.w.brief(b);
+    expect(brief).toContain('The warn and error lines of the plain logs around it:');
+    expect(brief).toContain('[warn] the page went quiet');
+    expect(brief).not.toContain('an info line');
+    expect(brief).not.toContain('long before');
+    expect(brief).toContain('- `adapters` (text-log, 1 file): from 2026-11-08 12:00 UTC');
+    expect(brief).toContain('- `hub` (errors-ndjson, 1 file): from 2026-11-13 12:00 UTC');
+    expect(brief).toContain('**Budget: about 60 minutes.**');
+    // A notice still never carries it.
+    expect(JSON.stringify(r.w.notification(b))).not.toContain('went quiet');
+  });
+
+  test('a thread\'s record: threads.show read now and then until it is done; the week\'s report adds them up', async () => {
+    const shown: string[][] = [];
+    let status = 'running';
+    const fake: Deps['run'] = async (argv): Promise<RunResult> => {
+      if (argv[0] === 'show') {
+        shown.push(argv);
+        return { code: 0, stdout: JSON.stringify({ thread: { threadId: argv[1], status, runCount: 3, itemCount: 120, pullRequestCount: 1, createdAt: new Date(T0).toISOString(), updatedAt: new Date(T0 + 45 * 60_000).toISOString(), settled: status === 'idle' } }), stderr: '' };
+      }
+      return { code: 0, stdout: JSON.stringify({ threadId: 't1' }), stderr: '' };
+    };
+    const r = rig({ run: fake, threads: { show: ['show', '{id}'] } });
+    await r.w.scan();
+    r.write([errLine({ at: T0 + 1 })]);
+    await r.w.scan();
+    expect(shown).toEqual([['show', 't1']]);
+    const t = Object.values(r.st.bugs)[0]!.thread!;
+    expect(t.record).toEqual({ checkedAt: T0, status: 'running', runs: 3, items: 120, prs: 1, minutes: 45 });
+    // Not again within FOLLOW_EVERY_MS; then settled, and done.
+    r.clock.now += 10 * 60_000;
+    await r.w.scan();
+    expect(shown).toHaveLength(1);
+    status = 'idle';
+    r.clock.now += 25 * 60_000;
+    await r.w.scan();
+    expect(shown).toHaveLength(2);
+    expect(t.record!.done).toBe(true);
+    r.clock.now += 60 * 60_000;
+    await r.w.scan();
+    expect(shown).toHaveLength(2);
+    expect(r.w.report()).toEqual({ threads: 1, failed: 0, withPr: 1, runs: 3, items: 120, minutes: 45, unknown: 0 });
+    expect(r.w.report(7, T0 + 8 * DAY).threads).toBe(0);
+  });
+
+  test('parseThreadRecord: t3\'s { thread: … }, or nothing', () => {
+    expect(parseThreadRecord('{"thread":{"status":"running","runCount":2,"itemCount":9,"pullRequestCount":0,"archived":true}}', 5)).toEqual({ checkedAt: 5, status: 'running', runs: 2, items: 9, prs: 0, done: true });
+    expect(parseThreadRecord('{"other":1}', 5)).toBeNull();
+    expect(parseThreadRecord('not json', 5)).toBeNull();
   });
 
   test('parseThreadId: t3\'s { threadId }, a line of it, or nothing', () => {

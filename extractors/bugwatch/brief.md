@@ -10,12 +10,17 @@ to find out what fails and fix it.
 - {{count}} times, first seen {{first}}, last seen {{last}}; {{lastHour}} in the last hour, about {{hourly}} an hour
   over the 7 days before it
 - The project: `{{project}}`, this worktree starts from `{{base}}`
+{{recur}}
 
 Sample records (the error line and its frames, nothing else of the log):
 
 {{samples}}
 
 {{trace}}
+
+How far back each source goes now (older records are gone; say so rather than guess about before then):
+
+{{reach}}
 
 ## Rules
 
@@ -28,4 +33,8 @@ Sample records (the error line and its frames, nothing else of the log):
 - **Fix it in a pull request and leave it for the owner's review:** do not merge it, do not enable auto-merge, do not
   deploy it.
 - If it is not a bug in this code (an outside service's outage, a refusal that is expected), say so and change nothing.
+- **Budget: about {{budget}} minutes.** If the cause is not found by then, stop and report what you know, what you
+  ruled out, and which log line or measurement would settle it next time. Adding that line, at the point of failure, is
+  a fine pull request on its own: bugwatch keeps the warn and error lines around each later occurrence for the next
+  thread.
 - **Finish with:** what failed, why, the pull request's link, and what is still unproven.

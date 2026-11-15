@@ -15,6 +15,12 @@ export interface Sample {
   frames: string[];
   trace?: string;
   status?: number;
+  /**
+   * The warn and error lines of the plain logs in the minutes around it (`<dir>/<file>: <line>`), kept for an
+   * occurrence after the first: a fingerprint is armed when first seen, and its next occurrences bring their context
+   * to the thread. Never sent anywhere but a thread's brief.
+   */
+  context?: string[];
 }
 
 export type Reason = 'new' | 'spike' | 'always';
@@ -26,6 +32,24 @@ export interface Thread {
   id?: string;
   /** The start failed: how (an exit code, a timeout), never its output. */
   failed?: string;
+  /** What it cost, from threads.show, read now and then until it is done. */
+  record?: ThreadRecord;
+}
+
+export interface ThreadRecord {
+  checkedAt: number;
+  status?: string;
+  runs?: number;
+  /** Items in the thread (messages, tool calls): its rough size. */
+  items?: number;
+  /** Pull requests it opened or linked. */
+  prs?: number;
+  /** From its start to its last change. */
+  minutes?: number;
+  /** No more checks: settled, archived, or old enough. */
+  done?: boolean;
+  /** threads.show failed: how. */
+  error?: string;
 }
 
 export interface Bug {
@@ -51,6 +75,8 @@ export interface Bug {
   thread?: Thread;
   /** Waits for a thread since. */
   queued?: number;
+  /** Triage holds its thread until it is seen again threads.recurMinutes after it was first seen. */
+  held?: boolean;
   /** Was left out of a full queue (bugs with more occurrences waited). */
   dropped?: boolean;
   /** Muted (notify.mute): no notices and no threads until cleared. */

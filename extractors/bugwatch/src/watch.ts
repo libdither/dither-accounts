@@ -1,7 +1,9 @@
 /**
  * bugwatch's engine, without the manager: a scan reads what is new in every source, groups the records by fingerprint,
  * decides which are bugs (new, a spike, or an `always` match), raises a notice for each and starts a T3 thread for it
- * within the caps. main.ts drives it on a timer and answers `notifications` from it; cli.ts runs it once (--dry).
+ * within the caps, once triage says it is not a one-off. A fingerprint is armed when first seen: its later occurrences
+ * keep the plain logs' warn and error lines around them for the thread. Started threads are followed (threads.show)
+ * for a record of what they cost. main.ts drives it on a timer and answers `notifications` from it; cli.ts runs it once (--dry).
  *
  * A notice says only bugwatch's own words, the source's name, where, the error's name and its normalized message:
  * never a stack, a sample, a raw log line or anything else of a record (it goes on to phones). The brief, which stays
@@ -12,8 +14,8 @@ import { basename, dirname } from 'node:path';
 import type { Notification, Urgency } from '@dither-accounts/interfaces';
 import type { Config, Source } from './config.ts';
 import { clip, fingerprint } from './normalize.ts';
-import { expand, parseErrorsLine, parseSpanLine, parseTextLines, type Rec, tail } from './readers.ts';
-import { type Bug, BUCKET_MS, countBetween, DAY, HOUR, prune, type Reason, type State } from './state.ts';
+import { expand, lineTime, oldestTime, parseErrorsLine, parseSpanLine, parseTextLines, type Rec, tail } from './readers.ts';
+import { type Bug, BUCKET_MS, countBetween, DAY, HOUR, prune, type Reason, type Sample, type State, type ThreadRecord } from './state.ts';
 
 export interface RunResult {
   code: number | null;
@@ -38,6 +40,18 @@ export const NEW_AFTER = 14 * DAY;
 export const SPIKE_MIN = 20;
 export const SPIKE_FACTOR = 5;
 export const THREAD_TIMEOUT_MS = 120_000;
+/** A plain log's warn and error lines are kept this long, for the context of an armed fingerprint's next occurrence. */
+export const RECENT_MS = 20 * 60_000;
+/** An occurrence's context: the lines from this long before it… */
+export const CONTEXT_BEFORE_MS = 10 * 60_000;
+/** …to this long after it (a diagnosis is often logged just after the failure), so it is filled in this late. */
+export const CONTEXT_AFTER_MS = 60_000;
+export const CONTEXT_LINES = 12;
+/** A thread's record (threads.show) is read again this often, one thread a scan, until it is done. */
+export const FOLLOW_EVERY_MS = 30 * 60_000;
+/** A thread is not followed past this age. */
+export const FOLLOW_FOR_MS = 3 * DAY;
+const LEVEL = /^(?:\S+Z )?\[(?:warn|error)\] /;
 export const SOURCE = 'bugwatch';
 const RANK: Record<Reason, number> = { new: 3, always: 2, spike: 1 };
 const KIND_ORDER = { 'errors-ndjson': 0, 'text-log': 1, 'trace-ndjson': 2 } as const;
@@ -51,6 +65,27 @@ export interface SourceHealth {
   files: number;
   records: number;
   error?: string;
+}
+
+/** How far back a source's files go now. */
+export interface Reach {
+  name: string;
+  kind: Source['kind'];
+  files: number;
+  /** The oldest time any of its files (or their rotated copies) holds; null when none says. */
+  from: number | null;
+}
+
+/** What the threads of a window cost, from their records. */
+export interface ThreadReport {
+  threads: number;
+  failed: number;
+  withPr: number;
+  runs: number;
+  items: number;
+  minutes: number;
+  /** Threads with no record yet (no threads.show, or not read yet). */
+  unknown: number;
 }
 
 export interface ScanResult {
@@ -67,6 +102,11 @@ export class Watch {
   lastScanAt: number | null = null;
   /** How far back the first scan reads (the catch-up). */
   backlogMs = DAY;
+  /** The plain logs' warn and error lines of the last RECENT_MS, oldest first. */
+  private recent: { at: number; label: string; line: string }[] = [];
+  /** Samples of an armed fingerprint waiting for their context (the lines just after them may not be written yet). */
+  private pending: { bug: Bug; sample: Sample; at: number }[] = [];
+  private following = false;
 
   constructor(
     public cfg: Config,
@@ -123,6 +163,16 @@ export class Watch {
     // Where it is in files no source names now is forgotten, unless a source failed halfway (its files were not all seen).
     if (!failed) for (const p of Object.keys(this.st.files)) if (!seenPaths.has(p)) delete this.st.files[p];
 
+    // Triage: a held bug seen again long enough after its first sighting gets its thread now (its notice stays as it was).
+    for (const b of touched) {
+      if (!b.held || b.thread || b.queued !== undefined || b.muted) continue;
+      if (!this.persists(b, 'new')) continue;
+      b.held = false;
+      b.queued = now;
+      b.dropped = false;
+      this.deps.log('info', `bug ${b.id} came back after ${Math.round((b.last - b.first) / 60_000)} min: it waits for a thread now`);
+    }
+
     // Spikes: the last hour against the 7 days before it.
     for (const b of touched) {
       const lastHour = countBetween(b, now - HOUR, now + BUCKET_MS);
@@ -138,11 +188,15 @@ export class Watch {
       const b = this.st.bugs[id]!;
       b.notice = { at: now, reason, unread: true, ...(quiet.has(b.sourceName) ? { catchUp: true } : {}) };
       if (this.cfg.threads && !b.thread && b.queued === undefined && this.threadable(b)) {
-        b.queued = now;
-        b.dropped = false;
+        if (this.persists(b, reason)) {
+          b.queued = now;
+          b.dropped = false;
+          b.held = false;
+        } else b.held = true;
       }
       out.push({ bug: b, reason });
     }
+    this.fillContext(now);
     // A thread that may start now starts before its notice goes, so the notice can say so.
     await this.pump();
     for (const { bug } of out) {
@@ -153,6 +207,7 @@ export class Watch {
     }
     this.st.startedAt ??= now;
     this.lastScanAt = now;
+    await this.follow();
     prune(this.st, now);
     return { catchUp, records, raised: out };
   }
@@ -190,6 +245,7 @@ export class Watch {
           state.hold = true;
         }
         if (chunk.current) state.at = p.at;
+        this.remember(path, chunk.lines, now);
         const where = basename(src.path);
         recs.push(...got.map((r) => ({ ...r, where })));
       }
@@ -234,8 +290,15 @@ export class Watch {
     if (r.source === 'uncaught') b.crash = true;
     // The first and the latest four.
     if (b.samples.length >= 5) b.samples.splice(1, 1);
-    b.samples.push({ at: r.at, line: clip(`${r.name}: ${r.message}`, 300), frames: r.stack.slice(0, 10), ...(r.trace ? { trace: r.trace } : {}), ...(r.status !== undefined ? { status: r.status } : {}) });
+    const sample: Sample = { at: r.at, line: clip(`${r.name}: ${r.message}`, 300), frames: r.stack.slice(0, 10), ...(r.trace ? { trace: r.trace } : {}), ...(r.status !== undefined ? { status: r.status } : {}) };
+    b.samples.push(sample);
     touched.add(b);
+    // Armed when first seen: each later occurrence keeps the plain logs' warn and error lines around it (when a source is one).
+    if (prevLast !== undefined && !b.muted && this.cfg.sources.some((x) => x.kind === 'text-log')) {
+      this.pending = this.pending.filter((p) => p.bug !== b || b.samples.includes(p.sample));
+      this.pending.push({ bug: b, sample, at: r.at });
+      if (this.pending.length > 50) this.pending.shift();
+    }
 
     if (prevLast === undefined || r.at - prevLast > NEW_AFTER) this.raise(b, 'new', raised);
     const rule = this.cfg.always.find((a) => a.match.test(`${r.source}/${r.where}`));
@@ -249,6 +312,45 @@ export class Watch {
     if (b.muted) return;
     const was = raised.get(b.id);
     if (!was || RANK[reason] > RANK[was]) raised.set(b.id, reason);
+  }
+
+  /** A plain log's warn and error lines with a time, kept RECENT_MS. */
+  private remember(path: string, lines: string[], now: number) {
+    const label = `${basename(dirname(path))}/${basename(path)}`;
+    for (const line of lines) {
+      if (!LEVEL.test(line)) continue;
+      const at = lineTime('text-log', line);
+      if (at !== null && at >= now - RECENT_MS) this.recent.push({ at, label, line: clip(line, 300) });
+    }
+    this.recent.sort((a, b) => a.at - b.at);
+    const from = this.recent.findIndex((l) => l.at >= now - RECENT_MS);
+    this.recent = from < 0 ? [] : this.recent.slice(from).slice(-2000);
+  }
+
+  /** Context for the pending samples whose minute after has passed (or that are too old to wait for). */
+  private fillContext(now: number) {
+    const keep: typeof this.pending = [];
+    for (const p of this.pending) {
+      if (now < p.at + CONTEXT_AFTER_MS) {
+        keep.push(p);
+        continue;
+      }
+      const lines = this.recent.filter((l) => l.at >= p.at - CONTEXT_BEFORE_MS && l.at <= p.at + CONTEXT_AFTER_MS).slice(-CONTEXT_LINES);
+      if (lines.length) p.sample.context = lines.map((l) => `${l.label}: ${l.line}`);
+    }
+    this.pending = keep;
+  }
+
+  // ---------------------------------------------------------------- triage
+
+  /**
+   * Is it worth a thread now: a spike, an `always` rule, a crash, or a new bug seen again recurMinutes or more after
+   * its first sighting. A one-off that recovers on its own waits (held) and gets none unless it comes back.
+   */
+  persists(b: Bug, reason: Reason): boolean {
+    const t = this.cfg.threads;
+    if (reason !== 'new' || b.crash || !t || t.recurMinutes <= 0) return true;
+    return b.last - b.first >= t.recurMinutes * 60_000;
   }
 
   // ---------------------------------------------------------------- threads
@@ -285,7 +387,8 @@ export class Watch {
   async pump(): Promise<void> {
     if (this.pumping) return this.pumping;
     const p = (async () => {
-      const next = this.queue()[0];
+      // A bug whose latest occurrence still waits for its context starts a scan or two later, with it.
+      const next = this.queue().find((b) => !this.pending.some((p) => p.bug === b));
       if (next && this.canStart()) await this.startThread(next);
       this.trimQueue();
     })();
@@ -333,6 +436,77 @@ export class Watch {
     }
   }
 
+  /** Read one started thread's record (threads.show), the one checked longest ago, at most every FOLLOW_EVERY_MS. */
+  async follow(): Promise<void> {
+    const show = this.cfg.threads?.show;
+    if (!show || this.following) return;
+    const now = this.deps.now();
+    const due = Object.values(this.st.bugs)
+      .filter((b) => b.thread?.id && !b.thread.failed && !b.thread.record?.done && now - (b.thread.record?.checkedAt ?? 0) >= FOLLOW_EVERY_MS)
+      .sort((a, b) => (a.thread!.record?.checkedAt ?? 0) - (b.thread!.record?.checkedAt ?? 0))[0];
+    if (!due) return;
+    const t = due.thread!;
+    this.following = true;
+    try {
+      let r: RunResult;
+      try {
+        r = await this.deps.run(show.map((a) => a.replaceAll('{id}', t.id!)), '', 30_000);
+      } catch (e) {
+        r = { code: null, stdout: '', stderr: (e as Error).message };
+      }
+      const rec = r.code === 0 ? parseThreadRecord(r.stdout, now) : null;
+      const old = now - t.at > FOLLOW_FOR_MS;
+      if (rec) {
+        if (old) rec.done = true;
+        t.record = rec;
+      } else {
+        const how = r.timedOut ? 'it timed out' : r.code === null ? 'it could not run' : r.code === 0 ? 'its output was not a thread' : `exit code ${r.code}`;
+        t.record = { ...t.record, checkedAt: now, error: how, ...(old ? { done: true } : {}) };
+        this.deps.log('warn', `reading thread ${t.id} for bug ${due.id} failed (${how})`);
+      }
+    } finally {
+      this.following = false;
+    }
+  }
+
+  /** What the threads started in the last `days` cost, as far as their records say. */
+  report(days = 7, now = this.deps.now()): ThreadReport {
+    const out: ThreadReport = { threads: 0, failed: 0, withPr: 0, runs: 0, items: 0, minutes: 0, unknown: 0 };
+    for (const b of Object.values(this.st.bugs)) {
+      const t = b.thread;
+      if (!t || t.at < now - days * DAY) continue;
+      if (t.failed) {
+        out.failed++;
+        continue;
+      }
+      out.threads++;
+      const r = t.record;
+      if (!r || r.runs === undefined) {
+        out.unknown++;
+        continue;
+      }
+      if ((r.prs ?? 0) > 0) out.withPr++;
+      out.runs += r.runs ?? 0;
+      out.items += r.items ?? 0;
+      out.minutes += r.minutes ?? 0;
+    }
+    out.minutes = Math.round(out.minutes);
+    return out;
+  }
+
+  /** How far back each source's files go now (each file's first dated line, its rotated copies included). */
+  reach(): Reach[] {
+    return this.cfg.sources.map((s) => {
+      const files = expand(s.path);
+      let from: number | null = null;
+      for (const f of files) {
+        const t = oldestTime(s.kind, f);
+        if (t !== null && (from === null || t < from)) from = t;
+      }
+      return { name: s.name, kind: s.kind, files: files.length, from };
+    });
+  }
+
   /** The brief a thread gets on stdin: the template filled in, then each `briefs` addendum whose match fits. */
   brief(b: Bug): string {
     const s = this.source(b.sourceName);
@@ -340,8 +514,15 @@ export class Watch {
     const lastHour = countBetween(b, now - HOUR, now + BUCKET_MS);
     const hourly = countBetween(b, now - 7 * DAY - HOUR, now - HOUR) / (7 * 24);
     const samples = b.samples
-      .map((x) => ['```', `${new Date(x.at).toISOString()}  ${x.line}${x.status !== undefined ? `  (status ${x.status})` : ''}${x.trace ? `  trace ${x.trace}` : ''}`, ...x.frames.map((f) => `    ${f}`), '```'].join('\n'))
+      .map((x) => {
+        const rec = ['```', `${new Date(x.at).toISOString()}  ${x.line}${x.status !== undefined ? `  (status ${x.status})` : ''}${x.trace ? `  trace ${x.trace}` : ''}`, ...x.frames.map((f) => `    ${f}`), '```'];
+        if (x.context?.length) rec.push('', 'The warn and error lines of the plain logs around it:', '', '```', ...x.context, '```');
+        return rec.join('\n');
+      })
       .join('\n\n');
+    const reach = this.reach()
+      .map((r) => `- \`${r.name}\` (${r.kind}, ${plural(r.files, 'file')}): ${r.from === null ? 'no dated line in it' : `from ${when(r.from)}`}`)
+      .join('\n');
     const trace = [...b.samples].reverse().find((x) => x.trace)?.trace;
     const data = s?.data ?? (s ? (s.path.includes('/traces/') ? s.path.slice(0, s.path.lastIndexOf('/traces/')) : dirname(s.path)) : '');
     const how = trace
@@ -365,6 +546,9 @@ export class Watch {
       base: s?.base ?? '',
       samples,
       trace: how,
+      reach,
+      budget: String(this.cfg.threads?.budgetMinutes ?? 60),
+      recur: b.last - b.first >= 60_000 ? `- Seen over ${Math.round((b.last - b.first) / 60_000)} minutes, from the first sighting to the last: not a one-off.` : '',
     };
     let out = this.deps.briefTemplate.replace(/\{\{(\w+)\}\}/g, (m, k: string) => values[k] ?? m);
     for (const a of this.cfg.briefs) {
@@ -388,6 +572,7 @@ export class Watch {
     const t = this.cfg.threads;
     if (b.thread?.failed) return `Starting a T3 thread failed (${b.thread.failed}): the bugwatch account's log says more.`;
     if (b.thread) return b.notice && b.notice.at > b.thread.at + 60_000 ? `A T3 thread already looked into it (${b.thread.title}).` : `A T3 thread is looking into it (${b.thread.title}).`;
+    if (b.held && t) return `No T3 thread yet: one starts if it comes back ${plural(t.recurMinutes, 'minute')} or more after it was first seen (a one-off that recovers on its own gets none).`;
     if (b.queued !== undefined && t) return `A T3 thread will start when the limits allow (one every ${plural(t.gapMinutes, 'minute')}, ${t.dayMax} a day).`;
     if (!t) return 'No T3 thread: threads are not set up in the config.';
     if (!this.threadable(b)) return 'No T3 thread: its source names no project and base.';
@@ -414,7 +599,7 @@ export class Watch {
       url: null,
       reason: n.reason,
       context: b.sourceName,
-      subject: { kind: 'bug', title: clip(`${b.name}: ${b.message}`, 200), url: null, state: b.thread?.failed ? 'thread-failed' : b.thread ? 'thread' : b.queued !== undefined ? 'queued' : 'no-thread' },
+      subject: { kind: 'bug', title: clip(`${b.name}: ${b.message}`, 200), url: null, state: b.thread?.failed ? 'thread-failed' : b.thread ? 'thread' : b.queued !== undefined ? 'queued' : b.held ? 'held' : 'no-thread' },
       actors: [],
       at: n.at,
       unread: n.unread,
@@ -462,6 +647,7 @@ export class Watch {
     this.markRead([noticeId(b.id)]);
     b.muted = true;
     b.queued = undefined;
+    b.held = false;
     return true;
   }
 
@@ -475,6 +661,7 @@ export class Watch {
     b.thread = undefined;
     b.dropped = false;
     b.muted = false;
+    b.held = false;
     if (b.notice?.unread && this.cfg.threads && this.threadable(b)) b.queued = this.deps.now();
     return true;
   }
@@ -491,4 +678,28 @@ export function parseThreadId(stdout: string): string | null {
     } catch {}
   }
   return null;
+}
+
+/** A thread's record from threads.show's JSON (`t3 thread show --json` prints `{ thread: { status, runCount, … } }`). */
+export function parseThreadRecord(stdout: string, now: number): ThreadRecord | null {
+  let j: Record<string, any>;
+  try {
+    j = JSON.parse(stdout.trim());
+  } catch {
+    return null;
+  }
+  const t = (j?.thread && typeof j.thread === 'object' ? j.thread : j) as Record<string, unknown>;
+  if (!t || typeof t !== 'object') return null;
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+  const created = typeof t.createdAt === 'string' ? Date.parse(t.createdAt) : NaN;
+  const updated = typeof t.updatedAt === 'string' ? Date.parse(t.updatedAt) : NaN;
+  const rec: ThreadRecord = { checkedAt: now };
+  if (typeof t.status === 'string') rec.status = clip(t.status, 40);
+  if (n(t.runCount) !== undefined) rec.runs = n(t.runCount);
+  if (n(t.itemCount) !== undefined) rec.items = n(t.itemCount);
+  if (n(t.pullRequestCount) !== undefined) rec.prs = n(t.pullRequestCount);
+  if (Number.isFinite(created) && Number.isFinite(updated) && updated >= created) rec.minutes = Math.round((updated - created) / 6_000) / 10;
+  if (rec.status === undefined && rec.runs === undefined && rec.items === undefined) return null;
+  if (t.settled === true || t.archived === true) rec.done = true;
+  return rec;
 }

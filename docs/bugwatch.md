@@ -47,7 +47,10 @@ last 24 hours, its bugs listed without a notification. One that stops reading ke
   "threads": {
     "command": ["t3", "thread", "start", "--title", "{title}", "--provider", "claudeAgent", "--model", "claude-opus-5-5", "--worktree", "{base}", "--json", "{project}", "-"],
     "gapMinutes": 15,
-    "dayMax": 6
+    "dayMax": 6,
+    "recurMinutes": 60,
+    "budgetMinutes": 60,
+    "show": ["t3", "thread", "show", "--json", "--messages", "0", "{id}"]
   },
   "briefs": [{ "match": "^hub ", "file": "/path/to/hub-addendum.md" }]
 }
@@ -65,8 +68,10 @@ last 24 hours, its bugs listed without a notification. One that stops reading ke
   per `gapHours` (24) per fingerprint, read or not: for failures you want to hear of each time, such as a failed attempt
   to make a group.
 - **`threads`**: the command, as argv (never through a shell), with `{title}`, `{project}` and `{base}` filled in and
-  the brief on its stdin; `gapMinutes` (15) between two starts, `dayMax` (6) in 24 hours, `queueMax` (10) bugs waiting.
-  Without `threads`, no threads: notices only.
+  the brief on its stdin; `gapMinutes` (15) between two starts, `dayMax` (6) in 24 hours, `queueMax` (10) bugs waiting;
+  `recurMinutes` (60, 0 for none) and `budgetMinutes` (60), below under "A thread"; `show` (optional), argv with `{id}`
+  that prints a thread's state as JSON, for the record of what each thread cost. Without `threads`, no threads: notices
+  only.
 - **`briefs`**: an addendum file appended to the brief of each bug whose fingerprint text matches.
 - **`spikeGapHours`** (6): a spike of one fingerprint is announced at most this often.
 
@@ -159,10 +164,10 @@ One per fingerprint, id `bug:<fingerprint id>`, so a repeat replaces it:
 | --- | --- |
 | `source` | `bugwatch` |
 | `title` | `<source name>: <name>: <normalized message>`, at most 120 characters (`hub: SQLiteError: database is locked`) |
-| `body` | where, how many times since when (and for a spike, the last hour against the week's mean), then the thread: "A T3 thread is looking into it (<thread title>).", "A T3 thread already looked into it (…)." (a spike after one), "A T3 thread will start when the limits allow (…).", "Starting a T3 thread failed (exit code N): the bugwatch account's log says more.", or why there is none (no `threads` in the config; the source names no project and base; more bugs waited than the queue keeps) |
+| `body` | where, how many times since when (and for a spike, the last hour against the week's mean), then the thread: "A T3 thread is looking into it (<thread title>).", "A T3 thread already looked into it (…)." (a spike after one), "A T3 thread will start when the limits allow (…).", "No T3 thread yet: one starts if it comes back N minutes or more after it was first seen (…)", "Starting a T3 thread failed (exit code N): the bugwatch account's log says more.", or why there is none (no `threads` in the config; the source names no project and base; more bugs waited than the queue keeps) |
 | `reason` | `new`, `spike` or `always` |
 | `context` | the source's name |
-| `subject` | `{ kind: 'bug', title: '<name>: <message>', url: null, state: 'thread' \| 'queued' \| 'thread-failed' \| 'no-thread' }` |
+| `subject` | `{ kind: 'bug', title: '<name>: <message>', url: null, state: 'thread' \| 'queued' \| 'held' \| 'thread-failed' \| 'no-thread' }` |
 | `urgency` | `high` when one of its records was a process crash (`uncaught`), else `normal` |
 | `at` | when it was raised; `url` null; `actors` empty |
 
@@ -183,26 +188,46 @@ id from its JSON output (`t3 thread start --json` prints `{ threadId, runId }`).
 other than 0, a timeout) is said in the notice and in the account's log (its last stderr line); it is not tried again
 until cleared.
 
+- **Triage**: a thread costs more than a notice, so a new bug's thread waits until the bug is seen again at least
+  `recurMinutes` after it was first seen. A one-off, or a burst that stops by itself within that time (an outage
+  elsewhere, a deploy's restart), gets its notice and no thread. Its notice says so (`subject.state` `held`), and the
+  log says when one comes back and waits for its thread. A process crash (`uncaught`), a spike and an `always` match
+  don't wait. The catch-up counts too: a bug seen over more than `recurMinutes` in its window waits for a thread at once.
+- **Armed, then context**: a fingerprint is armed when first seen. Each later occurrence keeps, with its sample, the
+  plain logs' (`text-log` sources) `[warn]` and `[error]` lines from 10 minutes before it to 1 minute after (at most 12,
+  each `<directory>/<file>: <line>`, 300 characters). A failure's own diagnosis is often logged just after it, so a
+  sample's context is filled in a minute late, and a thread waiting on it starts a scan or two later. Bugwatch keeps
+  these lines for 20 minutes in memory, and the samples stay in `state.json` and the brief only, never in a notice.
+  Logging a failure's state at the point it fails (as the Google extractor's "the <page> page's silence" line does) is
+  what turns this into an answer on the next occurrence.
 - **Caps**: one thread per fingerprint, until you clear it; one start every `gapMinutes`; at most `dayMax` in 24
   hours. Bugs over the caps wait in a queue of `queueMax` (10), the most frequent first; the rest are left out and
   their notices say so. The queue starts as the caps allow, one a scan.
 - **Clearing** a fingerprint (it may get a thread again, and is unmuted): `bun extractors/bugwatch/src/cli.ts
   --account-dir <the account's directory> --clear <fingerprint id>` writes it to `clear.txt` there, applied at the
   next scan. One whose notice is still unread waits for a thread again at once.
+- **What threads cost**: with `threads.show`, bugwatch reads each started thread's state, one thread a scan, every 30
+  minutes, until it is settled or archived or 3 days old. It keeps the thread's status, runs, items (messages and tool
+  calls), pull requests, and the minutes from its start to its last change. The `threads` layer and the details
+  (`threadsWeek`) add up the last 7 days. `bun extractors/bugwatch/src/cli.ts --account-dir <dir> --report [--days 7]`
+  lists each thread with its record. A failed read is logged and tried again later.
 - **The brief** (`extractors/bugwatch/brief.md`, filled in): what was seen (the fingerprint, where, the counts, first
   and last seen, the last hour and the week's mean, the sample records, the trace id and how to read it with
-  `bun scripts/trace-summary.ts --data <dir> --since all --trace <id>` in a dither-chat checkout), then the rules:
+  `bun scripts/trace-summary.ts --data <dir> --since all --trace <id>` in a dither-chat checkout), how far back each
+  source goes now (the first dated line of each file's oldest rotated copy, `<file>.1` to `.9`; `--dry` prints it too),
+  then the rules:
   read only on live systems (never re-send a command, never act on a real account, never restart a live service);
   reproduce it in a test or a demo instance; fix it in a pull request and leave it for the owner's review (no merge, no
-  auto-merge, no deploy); finish with what failed, why, the pull request's link and what is unproven. Then each
+  auto-merge, no deploy); a budget of `budgetMinutes`, after which it reports what it knows and which log line would
+  settle it next time; finish with what failed, why, the pull request's link and what is unproven. Then each
   matching `briefs` addendum.
 
 ## Its account
 
 Status `online` once the config reads (`attention` with kind `config` until it does). Layers: `config`, each source
 (how many files its path matches now and the records of the last scan, or why it failed), `threads` (started in the
-last 24 h, waiting). Details: the config's path, sources, fingerprints kept, unread notices, threads today, queued, the
-last scan. `state.json` in the account's directory keeps where it is in each file and the fingerprints;
+last 24 h, waiting, held, and the last 7 days' threads and their cost). Details: the config's path, sources,
+fingerprints kept, unread notices, threads today, queued, held, `threadsWeek`, the last scan. `state.json` in the account's directory keeps where it is in each file and the fingerprints;
 `DITHER_BUGWATCH_SCAN_MS` changes the 30 s between scans.
 
 ## Tests
@@ -210,6 +235,7 @@ last scan. `state.json` in the account's directory keeps where it is in each fil
 `test/bugwatch-unit.test.ts`: normalizing and fingerprints across line changes, each reader (a Bun crash block with its
 excerpt left out, failed spans without expected refusals), tailing across rotation and truncation, the config, new,
 spike and `always`, the catch-up, the caps and the queue with a fake thread command, a failing command, notices that
-hold no raw content, read, mute and clear. `test/bugwatch.test.ts`: over the real wire, a manager with the kind, an
+hold no raw content, read, mute and clear, triage, an armed fingerprint's context and each source's reach in the brief,
+and a thread's record with the week's report. `test/bugwatch.test.ts`: over the real wire, a manager with the kind, an
 account added as the page adds it, an app hearing `notify.new` and `notify.read`, a restart, and the CLI's `--dry`.
 `test/errors.test.ts`: the manager's error file, with a fake extractor that crashes.

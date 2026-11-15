@@ -298,6 +298,14 @@ restarts the encoder behind it each time.
 - A 1:1 call from the test account to a phone, answered on the phone: the bridge's answer reaches the device 0.25 s
   after its offer. Audio and video went both ways (heard and seen on the phone; the phone's camera and voice reached the
   device). The phone's video arrived at the device at 176 to 528 pixels wide.
+- Two accounts here, each with Desktop as its calls body, called each other through dither-chat with a headless
+  device on each end (dither-chat's two-device call lab), with no phone involved: the ring was answered and both sides
+  were connected in 3–5 s. Audio went both ways in every phase. Cameras went both ways, ramping from 240×180 to
+  720×540 at about 20 fps. Screen sharing worked both ways (an 800×450 tab, seen at the far end).
+- With a phone on mobile data, the phone's own answer capped the call at 300 kbit/s, and its video came through at
+  under 1 fps. Once in that call, the phone's voice faded at the device a few seconds after the answer although
+  RingRTC received it; this was not seen again between the two accounts here. Each call logs its media every 5 s
+  (`[desktop] call media`: the call mix's level, the tracks, frames per remote), which is where to look if it is.
 
 **A calls-only account for the call lab.** To test calls between two Signal accounts automatically, the way
 dither-chat's call lab does for Discord, a lab manager can hold an account in calls-only mode: config `callsOnly: true`

@@ -8,7 +8,7 @@ import { nicknameOf, services } from '../catalog.ts';
 import { href, kindName, state } from '../state.ts';
 import { appsUsing, gives, type Identity, partStop, type Suite, type SuitePart } from '../suites.ts';
 import { openAdd } from './Add.tsx';
-import { Avatar, condition, Dot, type Tone } from './bits.tsx';
+import { attentionOf, Avatar, condition, Dot, type Tone } from './bits.tsx';
 import { Icon } from './icons.tsx';
 
 export interface PartState {
@@ -57,22 +57,15 @@ function addPart(part: SuitePart) {
   openAdd(sv?.category ?? null, part.service);
 }
 
-function PartChip({ p }: { p: PartState }) {
-  if (!p.by)
-    return canAdd(p.part) ? (
-      <button type="button" class="part-chip none" onClick={() => addPart(p.part)} title={`Add ${p.part.name}`} data-part={p.part.id} data-part-state="none">
-        <Icon glyph="plus" size={11} />
-        {p.part.name}
-      </button>
-    ) : null;
+const GLYPH: Record<string, 'calendar' | 'mail' | 'chat'> = { calendar: 'calendar', gmail: 'mail', messages: 'chat' };
+
+/** A part as a small icon: plain when it works, a corner dot when it is stuck, dim when nothing gives it. */
+function PartIcon({ p }: { p: PartState }) {
+  const tip = p.by ? `${p.part.name}: ${p.tone === 'good' ? 'working' : p.text}` : `${p.part.name}: not set up`;
   return (
-    <a class={`part-chip t-${p.tone}`} href={href('accounts', p.by.id)} title={`${p.part.name}: ${p.text}`} data-part={p.part.id} data-part-state={p.tone}>
-      <Dot tone={p.tone!} />
-      <span class="part-chip-text">
-        {p.part.name}
-        {p.tone !== 'good' && <span class="part-chip-why">: {p.text}</span>}
-      </span>
-    </a>
+    <span class={`part-ic ${p.by ? `t-${p.tone}` : 'none'}`} title={tip} aria-label={tip} role="img" data-part={p.part.id} data-part-state={p.by ? p.tone : 'none'}>
+      <Icon glyph={GLYPH[p.part.id] ?? 'grid'} size={14} />
+    </span>
   );
 }
 
@@ -81,25 +74,38 @@ const worst = (i: Identity): Tone => {
   return on.length ? on.map((a) => condition(a).tone).sort((x, y) => RANK[y] - RANK[x])[0] : 'off';
 };
 
+/**
+ * One Google account on the overview, as any other account's card: its picture, its name, and its type; where the
+ * others have a status dot, an icon for each of its services. What an account in it needs from you (a sign-in) takes
+ * the type line, as it does on the other cards.
+ */
 function IdentityCard({ i }: { i: Identity }) {
   const main = i.accounts[0];
   const { name, sub } = identityName(i);
   const tone = worst(i);
+  const stuck = i.accounts.find((a) => a.enabled && (condition(a).tone === 'warn' || condition(a).tone === 'danger'));
+  const trouble = stuck ? (attentionOf(stuck)?.message ?? condition(stuck).text) : null;
+  // Named by its email: "Google". By a nickname: "Google · its email". Not known yet: what kind of account it is.
+  const type = i.email ? (sub ? `${i.suite.name} · ${sub}` : i.suite.name) : (kindName.value.get(main.kind) ?? i.suite.name);
+  const parts = i.suite.parts.map((part) => partState(i, part));
   return (
-    <div class={`ov-card id-card t-${tone}`} data-identity={i.key}>
-      <a class="id-card-head" href={href('accounts', main.id)} data-account={main.id}>
-        <Avatar a={main} size={40} />
-        <span class="ov-card-text">
-          <span class="ov-card-name">{name}</span>
-          {sub && <span class="ov-card-sub">{sub}</span>}
+    <a class={`ov-card t-${tone}`} href={href('accounts', main.id)} data-account={main.id} data-identity={i.key} title={`${name} · ${parts.map((p) => (p.by ? `${p.part.name} ${p.tone === 'good' ? 'working' : p.text}` : `no ${p.part.name}`)).join(' · ')}`}>
+      <Avatar a={main} size={40} />
+      <span class="ov-card-text">
+        <span class="ov-card-name">{name}</span>
+        <span class="ov-card-sub id-sub">
+          <span class="part-ics" aria-label="Services">
+            {parts.map((p) => (
+              <PartIcon key={p.part.id} p={p} />
+            ))}
+          </span>
+          <span class={`id-sub-text ${trouble ? 'warn-text' : ''}`}>{trouble ?? type}</span>
         </span>
-      </a>
-      <span class="id-parts">
-        {i.suite.parts.map((part) => (
-          <PartChip key={part.id} p={partState(i, part)} />
-        ))}
       </span>
-    </div>
+      <span class={`ov-state ${tone}`} data-condition>
+        <Dot tone={tone} title={trouble ?? condition(main).text} />
+      </span>
+    </a>
   );
 }
 

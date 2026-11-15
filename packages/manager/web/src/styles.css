@@ -2171,74 +2171,49 @@ details.more > summary:hover {
 
 /* ---------------------------------------------------------------- a suite's identities (Suites.tsx): one Google account, its services */
 
-.id-card {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
-}
-.id-card:hover {
-  background: var(--center);
-}
-.id-card-head {
+.id-sub {
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: 6px;
+}
+.id-sub-text {
   min-width: 0;
-  color: var(--text);
-}
-.id-card-head:hover {
-  text-decoration: none;
-}
-.id-card-head:hover .ov-card-name {
-  text-decoration: underline;
-}
-.id-parts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-.part-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  max-width: 100%;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  font-size: 12px;
-  color: var(--text);
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.part-chip:hover {
-  text-decoration: none;
-  background: var(--hover);
-}
-.part-chip .dot {
+.part-ics {
+  display: inline-flex;
+  gap: 4px;
   flex: none;
 }
-.part-chip-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.part-chip-why {
+.part-ic {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
   color: var(--text-dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
-.part-chip.t-warn {
-  border-color: color-mix(in oklab, var(--warn) 45%, transparent);
-}
-.part-chip.t-danger {
-  border-color: color-mix(in oklab, var(--danger) 50%, transparent);
-}
-.part-chip.none {
-  border-style: dashed;
+.part-ic.none {
   color: var(--text-faint);
+  opacity: 0.4;
 }
-.part-chip.none:hover {
-  color: var(--text);
+.part-ic.t-warn::after,
+.part-ic.t-danger::after,
+.part-ic.t-off::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--center);
+  background: var(--warn);
+}
+.part-ic.t-danger::after {
+  background: var(--danger);
+}
+.part-ic.t-off::after {
+  background: var(--text-faint);
 }
 .acc-identity + .acc-identity {
   margin-top: 4px;

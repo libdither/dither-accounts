@@ -21,8 +21,9 @@ browser accounts; a `google-api` account is not picked up until it chooses by gr
 
 The kinds above, Gmail over IMAP (`imap` with the gmail preset) and Google Messages (`gmessages`) are each their own
 account here, with their own sign-in. The page shows those that are the same Google account as one: a **Google**
-section on the overview, first, with a card per Google account and a chip per service (Calendar, Gmail, Messages),
-each the state of the account that gives it, or a dashed **+** to add it. An account's pane opens with the same, service
+section on the overview, first, with a card per Google account, as plain as the other cards (picture, name, type),
+and on its type line an icon per service (Calendar, Gmail, Messages): plain when it works, with a dot when it is stuck,
+dim when nothing here gives it. An account's pane opens with the same, service
 by service: which way in gives it (this account, or a link to the other), the apps that use it, and where it stops.
 
 They are grouped by email (packages/manager/web/src/suites.ts): what the account says it is signed in as, or for

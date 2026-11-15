@@ -51,6 +51,24 @@
  *   (`mail.move` to archive, to Inbox, or into a label or folder), `trash` (`mail.move` into Trash, and `mail.trash`)
  *   and `junk` (`mail.move` into Spam or Junk). A write of a kind not listed answers 501 without reaching the server.
  *   Absent: not said; try, and a 501 says the account does not make that write.
+ * - `details.contacts: boolean`: `mail.contacts` can answer now (the google and proton kinds: their page is attached
+ *   and signed in). Absent or false: do not call it (the imap kind has no such op).
+ *
+ * `mail.contacts { query, limit? }` suggests people to write to as the mail service's own composer does while you type
+ * an address: at most `limit` (default 8, at most 20) `{ email, name }`, best first in the service's own order, each
+ * address once (without regard to case); `name` is null where the service has none (or it is only the address). The
+ * query is trimmed; an empty one answers `{ contacts: [] }` without asking the server. It is meant for keystrokes (an
+ * app debounces them): it answers fast, waits behind no background reading, and may answer from a cache of the last
+ * minute. The google kind answers what Gmail's compose To field offers, the proton kind what Proton's composer offers
+ * from your contacts' addresses (no groups). Codes it may fail with (CallError.code, with its status), besides
+ * `failed`:
+ *
+ * - 503 `unavailable`: the page cannot answer now (closed, reloading, signed out, at a challenge, the service busy);
+ *   nothing was asked. Try again later; `details.contacts` says when it can.
+ * - 504 (`failed`): the page or the service did not answer in time (the manager's own `timeout` past 10 s).
+ * - 502 (`failed`): the service answered in a layout the extractor does not know; nothing is returned rather than
+ *   possibly wrong people.
+ * - On a kind without the op (imap): `failed` with status 400 ("imap has no operation \"mail.contacts\"").
  *
  * Writes (`mail.flag`, `mail.move`, `mail.trash`) take `ids` and, optionally, `threadIds` beside them in the same order:
  * each message's `threadId` as its summary gave it (null where unknown). An extractor that needs a message's thread
@@ -226,6 +244,13 @@ export interface OutgoingMail {
   attachments?: OutgoingFile[];
 }
 
+/** One person `mail.contacts` suggests: an address to write to, and the name the service shows with it. */
+export interface MailContact {
+  email: string;
+  /** Null when the service has no name for it, or the name is only the address again. */
+  name: string | null;
+}
+
 /** A kind of write an account makes (`details.writes`). */
 export type MailWriteKind = 'seen' | 'flagged' | 'move' | 'trash' | 'junk';
 
@@ -290,6 +315,14 @@ export const mail = iface({
       120_000,
     ),
     'mail.changes': op('read', 'What changed in a mailbox since a state', s.object({ mailboxId: s.string, state: s.optional(s.string), limit: s.optional(s.integer) }), s.typed<MailChanges>(), 120_000),
+    /** Header: `details.contacts`, and the codes it may fail with. */
+    'mail.contacts': op(
+      'read',
+      "People to write to who match what you have typed of a name or an address, best first, as the mail service's own composer suggests them",
+      s.object({ query: s.string, limit: s.optional(s.integer) }),
+      s.typed<{ contacts: MailContact[] }>(),
+      10_000,
+    ),
     'mail.flag': op(
       'write',
       'Mark messages read or unread, flagged, answered',

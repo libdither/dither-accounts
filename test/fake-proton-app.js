@@ -223,6 +223,8 @@
           addresses: { value: null },
           mailSettings: { value: { AutoSaveContacts: 1, DelaySendSeconds: 0, Sign: 0, PGPScheme: 16, DraftMIMEType: 'text/html', AttachPublicKey: 0 } },
           mailContacts: { contactsMap: {} },
+          // The composer's list of your contact emails, sorted by Order, when the fake says the store has one.
+          ...(Array.isArray(cfg.contactEmails) ? { contactEmails: { value: cfg.contactEmails.slice().sort((a, b) => a.Order - b.Order), meta: {}, error: undefined } } : {}),
         };
         const store = {
           getState: () => state,

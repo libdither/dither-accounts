@@ -27,9 +27,11 @@ const WEB = {
   labels: ['INBOX', 'secret-label-name', 'another-secret-label'],
   /** What the stand-in Gmail app's rows and /sync answers are full of (fake-gmail-page.js). */
   mailMark: 'Mk#7731',
+  /** The key Gmail's config puts beside Google's people API: the people suggestions take it alone. */
+  peopleKey: `AIza${'Q'.repeat(35)}`,
 };
 /** What the Gmail side holds that must never reach a log, a status, the probe's answer or the recorded shapes. */
-const MAIL_SECRETS = [WEB.mailKey, WEB.mailEmail, 'secret-label-name', 'another-secret-label', 'secret-subject-line', '424242', WEB.mailMark, 'Mk%237731'];
+const MAIL_SECRETS = [WEB.mailKey, WEB.mailEmail, 'secret-label-name', 'another-secret-label', 'secret-subject-line', '424242', WEB.mailMark, 'Mk%237731', WEB.peopleKey];
 
 let bins: ReturnType<typeof resolveBins> | null = null;
 try {
@@ -59,7 +61,7 @@ const until = async (f: () => boolean | Promise<boolean>, ms: number, what: stri
 };
 const statusOf = (account: string) => events[account]?.filter((e) => e.t === 'status').at(-1);
 const layerOf = (account: string, name: string) => statusOf(account)?.layers?.find((l: any) => l.name === name);
-const config = (authuser: number, more: Record<string, unknown> = {}) => ({ authuser, testOrigin: fake.url, apiBase: fake.url, testMailOrigin: fake.mailUrl, gmailApiBase: fake.mailUrl, ...more });
+const config = (authuser: number, more: Record<string, unknown> = {}) => ({ authuser, testOrigin: fake.url, apiBase: fake.url, testMailOrigin: fake.mailUrl, gmailApiBase: fake.mailUrl, peopleApiBase: fake.mailUrl, ...more });
 const accountDir = (id: string) => m!.store.account(id)!.dir;
 const logOf = (id: string) => readFileSync(join(accountDir(id), 'adapter.log'), 'utf8');
 /** The Gmail probe, asked for as an operator would (a file in the account's directory); its answer. */
@@ -180,6 +182,9 @@ it(
       backgroundLane: true,
       backgroundStopped: null,
       readsMarkRead: false,
+      // Suggesting people as Gmail's To field does.
+      contacts: true,
+      contactsNote: null,
     });
     expect(layerOf(signedIn, 'Gmail page')).toEqual({ name: 'Gmail page', state: 'ok', note: 'hook up, signed in', interface: 'mail' });
     // Calendar's chain as it was, then the Gmail page, which it does not rest on: each says whose it is alone.
@@ -264,23 +269,29 @@ it(
   'the Gmail API probe: asked for with a file, answered in probe-gmail.json with statuses and no values',
   async () => {
     const r = await probeGmail(signedIn);
-    expect(r).toMatchObject({ origin: fake.mailUrl, api: fake.mailUrl, page: { tab: true, hook: true, signedIn: true, keys: ['page-html'] }, accepted: true, error: null });
-    // No key, then the key in the Gmail page's HTML; each with the plain and the _u hash. The fake takes the key and a
-    // hash made with the Gmail page's own origin, and refuses _u.
+    expect(r).toMatchObject({ origin: fake.mailUrl, api: fake.mailUrl, page: { tab: true, hook: true, signedIn: true, keys: ['page-html', 'page-html'] }, accepted: true, error: null });
+    // No key, then the two keys in the Gmail page's HTML (the Gmail one, then the one its config gives the people
+    // suggestions); each with the plain and the _u hash. The fake takes the first key and a hash made with the Gmail
+    // page's own origin, and refuses _u and the other key.
     const rows = r.results.map((x: any) => [x.endpoint, x.key, x.auth, x.status, x.googleStatus ?? null, x.reason ?? null]);
+    const other = ['page-html', 400, 'INVALID_ARGUMENT', 'badRequest'];
     expect(rows).toEqual([
       ['profile', 'none', 'plain', 403, 'PERMISSION_DENIED', 'forbidden'],
       ['profile', 'none', 'u', 403, 'PERMISSION_DENIED', 'forbidden'],
       ['profile', 'page-html', 'plain', 200, null, null],
       ['profile', 'page-html', 'u', 401, 'UNAUTHENTICATED', 'authError'],
+      ['profile', other[0], 'plain', ...other.slice(1)],
+      ['profile', other[0], 'u', ...other.slice(1)],
       ['labels', 'none', 'plain', 403, 'PERMISSION_DENIED', 'forbidden'],
       ['labels', 'none', 'u', 403, 'PERMISSION_DENIED', 'forbidden'],
       ['labels', 'page-html', 'plain', 200, null, null],
       ['labels', 'page-html', 'u', 401, 'UNAUTHENTICATED', 'authError'],
+      ['labels', other[0], 'plain', ...other.slice(1)],
+      ['labels', other[0], 'u', ...other.slice(1)],
     ]);
     expect(r.results[0].message).toStartWith("Method doesn't allow unregistered callers");
     expect(r.results[2].fields).toEqual(['emailAddress', 'historyId', 'messagesTotal', 'threadsTotal']);
-    expect(r.results[6].labels).toBe(3);
+    expect(r.results[8].labels).toBe(3);
     expect(r.acceptedWith).toEqual([
       { endpoint: 'profile', key: 'page-html', auth: 'plain' },
       { endpoint: 'labels', key: 'page-html', auth: 'plain' },
@@ -288,7 +299,7 @@ it(
     // Field names and a count: no address, label name, key, cookie or number from the mailbox.
     const text = readFileSync(join(accountDir(signedIn), 'probe-gmail.json'), 'utf8');
     for (const secret of [...MAIL_SECRETS, WEB.sapisid, WEB.email, 'messagesTotal": ', 'historyId": ']) expect(text).not.toContain(secret);
-    expect(fake.mailCalls.filter((c) => c.startsWith('GET /gmail/v1/')).length).toBe(8);
+    expect(fake.mailCalls.filter((c) => c.startsWith('GET /gmail/v1/')).length).toBe(12);
     await until(() => String(statusOf(signedIn)?.details?.gmailProbe).startsWith('accepted ('), 5000, 'the probe in the details');
     expect(logOf(signedIn)).toContain('gmail probe: profile, key page-html, plain hash: 200 fields emailAddress,historyId,messagesTotal,threadsTotal');
   },
@@ -651,6 +662,66 @@ it(
 );
 
 it(
+  "mail.contacts: what Gmail's To field suggests, through the page with the key in Gmail's config, beside mail; another layout refused",
+  async () => {
+    await until(() => layerOf(signedIn, 'Gmail page')?.state === 'ok', 30_000, 'the Gmail page up');
+    await until(() => statusOf(signedIn)?.details?.contacts === true, 10_000, 'details.contacts');
+    expect(statusOf(signedIn).details.contactsNote).toBeNull();
+    const reloads = statusOf(signedIn).details.gmailReloads;
+    const calls = () => fake.people.calls.length;
+    const n0 = calls();
+    expect(await mailCall('mail.contacts', { query: '   ' })).toEqual({ contacts: [] });
+    expect(calls()).toBe(n0);
+    // The fake answers in the recorded layout: a person with no name, an address twice, a name that is the address, a group.
+    const a = await mailCall('mail.contacts', { query: 'a' });
+    expect(a.contacts).toEqual([
+      { email: 'ann.lee@example.com', name: 'Ann Lee' },
+      { email: 'alice@example.org', name: null },
+      { email: 'albert@example.net', name: null },
+      { email: 'carol@example.com', name: 'Carol Ames' },
+    ]);
+    // The key Gmail's config names, the first time: no other key of the page's was tried (the fake refuses them).
+    expect(fake.people.calls.slice(n0)).toEqual(['ok']);
+    expect((await mailCall('mail.contacts', { query: 'A', limit: 2 })).contacts.map((c: any) => c.email)).toEqual(['ann.lee@example.com', 'alice@example.org']);
+    expect(calls()).toBe(n0 + 1); // the minute's cache
+    // Keystrokes beside mail: a list page and suggestions at once, all answered.
+    const [list, ...sug] = await Promise.all([mailCall('mail.list', { mailboxId: '^i', limit: 5 }), mailCall('mail.contacts', { query: 'b' }), mailCall('mail.contacts', { query: 'c' }), mailCall('mail.contacts', { query: 'stone' })]);
+    expect(list.messages.length).toBe(5);
+    expect(sug.map((s) => s.contacts.map((c: any) => c.email))).toEqual([['bob.stone@example.com'], ['carol@example.com'], ['bob.stone@example.com']]);
+    // Another layout: 502 and why, details.contacts false; the next good answer puts it back.
+    fake.people.layout = 'swapped';
+    try {
+      const e = (await mailCall('mail.contacts', { query: 'al' }).catch((x) => x)) as CallFailed;
+      expect([e.code, e.status]).toEqual(['failed', 502]);
+      expect(e.message).toBe("Gmail's people suggestions answer is not laid out as this extractor knows it (at json[0][0][0][0][0][1][0]: expected an address, got a list of 2); nothing was returned rather than possibly wrong people");
+      await until(() => statusOf(signedIn)?.details?.contacts === false, 5000, 'details.contacts false');
+      expect(statusOf(signedIn).details.contactsNote).toBe(e.message);
+      // Mail does not rest on it.
+      expect(layerOf(signedIn, 'Gmail protocol').state).toBe('ok');
+    } finally {
+      fake.people.layout = 'normal';
+    }
+    expect((await mailCall('mail.contacts', { query: 'car' })).contacts).toEqual([{ email: 'carol@example.com', name: 'Carol Ames' }]);
+    await until(() => statusOf(signedIn)?.details?.contacts === true, 5000, 'details.contacts again');
+    // Google busy: 503 unavailable. Google slower than the hook waits (6 s): 504, within the op's 10 s.
+    fake.people.fails.push(503);
+    const busy = (await mailCall('mail.contacts', { query: 'zz' }).catch((x) => x)) as CallFailed;
+    expect([busy.code, busy.status]).toEqual(['unavailable', 503]);
+    fake.people.delays.push(7000);
+    const t0 = Date.now();
+    const late = (await mailCall('mail.contacts', { query: 'zy' }).catch((x) => x)) as CallFailed;
+    expect([late.code, late.status]).toEqual(['failed', 504]);
+    expect(Date.now() - t0).toBeLessThan(9000);
+    // The hook answered (it gave up on Google itself): not a silence of the page's, so no reload.
+    expect(statusOf(signedIn).details.gmailReloads).toBe(reloads);
+    // Never a query or a person in the log.
+    const log = logOf(signedIn);
+    for (const x of ['ann.lee', 'Ann Lee', 'Carol', 'alice@', 'stone']) expect(log).not.toContain(x);
+  },
+  60_000,
+);
+
+it(
   'a Gmail layout the extractor does not know: refused with 502 and a plain sentence, nothing returned, the Gmail protocol layer failed; ok again after',
   async () => {
     fake.gmail.layout('swapped');
@@ -733,7 +804,9 @@ it(
     expect(layerOf(mailOff, 'Gmail protocol')).toEqual({ name: 'Gmail protocol', state: 'off', note: 'no Gmail tab', interface: 'mail' });
     expect(layerOf(mailOff, 'Gmail background')).toEqual({ name: 'Gmail background', state: 'off', note: 'no Gmail tab', interface: 'mail' });
     expect(statusOf(mailOff).details.backgroundLane).toBeUndefined();
-    expect(statusOf(mailOff).details).toMatchObject({ writes: [], canSend: false, sendNote: 'This account reads no mail (mail: false in its config)' });
+    expect(statusOf(mailOff).details).toMatchObject({ writes: [], canSend: false, sendNote: 'This account reads no mail (mail: false in its config)', contacts: false, contactsNote: 'this account reads no mail' });
+    const none = (await app.call(mailIface, mailOff, 'mail.contacts', { query: 'ann' }).catch((x: any) => x)) as CallFailed;
+    expect([none.code, none.status]).toEqual(['failed', 501]);
     expect(fake.pageLoads('gmail', 2)).toBe(0);
     expect(logOf(mailOff)).not.toContain('Gmail tab');
     await app.admin({ do: 'stop', account: mailOff });
@@ -767,6 +840,11 @@ it(
     expect([bg.code, bg.status]).toEqual(['paused', 503]);
     const fg = (await app.call(mailIface, signedOut, 'mail.list', { mailboxId: '^i' }).catch((x: any) => x)) as CallFailed;
     expect([fg.code, fg.status]).toEqual(['failed', 401]);
+    // Suggestions: not now, and why; an empty query still answers.
+    expect(statusOf(signedOut).details).toMatchObject({ contacts: false, contactsNote: 'Google is not signed in; sign in in the live view' });
+    const sug = (await app.call(mailIface, signedOut, 'mail.contacts', { query: 'ann' }).catch((x: any) => x)) as CallFailed;
+    expect([sug.code, sug.status]).toEqual(['unavailable', 503]);
+    expect(await app.call(mailIface, signedOut, 'mail.contacts', { query: '' })).toEqual({ contacts: [] });
   },
   90_000,
 );
@@ -775,7 +853,7 @@ it('no cookie, key, query or event content in the logs or the statuses', () => {
   // The statuses and other events (mail.arrived carries a message, as it should, to apps with a mail grant).
   const said = JSON.stringify(Object.values(events).map((evs) => evs.filter((e) => !String(e.t).startsWith('mail.'))));
   const logs = [signedIn, signedOut, mailOff].filter(Boolean).map((id) => readFileSync(join(m!.store.account(id)!.dir, 'adapter.log'), 'utf8')).join('\n');
-  for (const secret of [WEB.sapisid, WEB.pageKey, WEB.htmlKey, 'secret-query', 'secret-hash', 'page-own-secret-body', 'Dinner', "Luigi's", ...MAIL_SECRETS, fake.gmail.xsrf, fake.gmail.ik, 'Plans', 'Person']) {
+  for (const secret of [WEB.sapisid, WEB.pageKey, WEB.htmlKey, 'secret-query', 'secret-hash', 'page-own-secret-body', 'Dinner', "Luigi's", ...MAIL_SECRETS, fake.gmail.xsrf, fake.gmail.ik, 'Plans', 'Person', 'ann.lee@', 'Carol Ames']) {
     expect(said).not.toContain(secret);
     expect(logs).not.toContain(secret);
   }

@@ -3,7 +3,8 @@
 Google accounts are signed in here, on the accounts page (https://accounts.example.net, your `--public-url`), not in the apps that use
 them. There are two ways in, two kinds of account, and both answer the `google.calendar` interface
 (packages/interfaces/src/google-calendar.ts) with Google's own JSON; the browser kind also reads Gmail, as `mail`
-(read, marked, filed and sent from: "Gmail mail" and "Writing to Gmail" below):
+(read, marked, filed and sent from, and people suggested as its To field does: "Gmail mail", "Writing to Gmail" and
+"Suggesting people" below):
 
 | kind | extractor | how it signs in |
 |---|---|---|
@@ -74,6 +75,8 @@ never), `apiBase` (default
 `https://clients6.google.com`), `gmailApiBase` (default `https://gmail.googleapis.com`), `noSandbox`. `testOrigin` and
 `testMailOrigin` are for tests: the start pages, the extension's matches and the hook's allowed origins then include
 them. With `testOrigin` and no `testMailOrigin` there is no Gmail tab, so a test never opens the real Gmail.
+`peopleApiBase` is for tests too: where the hook sends people suggestions ("Suggesting people"), taken only when it is
+one of the test origins; otherwise it is always Google's.
 
 ### Two tabs: Calendar and Gmail
 
@@ -301,8 +304,8 @@ known, `failed` with the endpoint and where it differs (no value), `waiting` bef
 below); and **`Gmail background`**, the background lane ("The background lane" below): `ok` (`idle`, or `running`
 for 30 s after a background call), `waiting` while backed off (until when), `failed` while stopped (and why), `off`
 without a Gmail tab. For mail, the details also say `idPerMessage`, `summaryHeaders`, `raw`, `searchIds`,
-`backgroundLane`, `backgroundStopped`, `readsMarkRead`, `bvLayout`, `canSend`, `sendNote`, `gmailWatch`,
-`gmailSelfCheckAt` and `gmailSelfCheck`. The extractor's log (`adapter.log`) has ids and
+`backgroundLane`, `backgroundStopped`, `readsMarkRead`, `bvLayout`, `canSend`, `sendNote`, `contacts`,
+`contactsNote` ("Suggesting people"), `gmailWatch`, `gmailSelfCheckAt` and `gmailSelfCheck`. The extractor's log (`adapter.log`) has ids and
 statuses: never cookies, keys, tokens, queries or anything from your calendars or your mail.
 
 ### What is verified, and what is not
@@ -334,7 +337,12 @@ any of that; then through the hook's write path, read and unread, a star and off
 Spam answering 501, and a reply with a file sent (the bytes handed to the page in pieces, uploaded, the draft, the
 send, the original marked replied); a swapped layout refused with 502, the Gmail protocol layer failed, Calendar still online, and
 ok again after; the watch's `mail.arrived` and `mail.changed`; the self-check from its file, with no subject,
-address, name, label name or id in it and only one read message older than 30 days downloaded. The suite is skipped
+address, name, label name or id in it and only one read message older than 30 days downloaded. Suggesting people
+(the fake's people-stack endpoint on the Gmail side's origin, `peopleApiBase`, which checks the key, the hash, the
+headers and the body as Google did live, and answers in the recorded layout from invented people): the key Gmail's
+config names used first and no other tried, names, a repeated address and a group, the minute's cache, a mail list
+alongside, another layout 502 with `details.contacts` false and back, Google busy 503 and late 504, a signed-out page
+503 and `mail: false` 501, no query or person in the log. The suite is skipped
 when Xvfb, chromium or x11vnc cannot be found. `test/gmail-learn.test.ts` (no browser) covers the shapes (anchors kept, a marker in subjects,
 bodies, names, addresses and keys never surviving, random inputs giving only tags and anchors), the XSSI, chunk and
 form parsing, numbers, the depth cap, path templates, the nav check, the script's limits, and that hook.js holds the
@@ -651,8 +659,8 @@ out.
 `searchIds: true`, `backgroundLane: true`, `backgroundStopped` (null, or why the background lane stopped),
 `readsMarkRead` (the unread guard tripped), `bvLayout` (`own` or `page`: the last `bv` answer's), `writes: ['seen',
 'flagged', 'move', 'trash']` (no `junk`), `canSend` (the Gmail page up, signed in, its address shown) and `sendNote`
-(why not, else null), `sendCap` (25 MB), `maxRecipients` (100), `gmailWatch`, `gmailSelfCheckAt` and
-`gmailSelfCheck`. No storage quota (none was found in the recorded answers). `self.addresses` is the one address the
+(why not, else null), `sendCap` (25 MB), `maxRecipients` (100), `contacts` and `contactsNote` (`mail.contacts` can
+answer now, or why not: "Suggesting people"), `gmailWatch`, `gmailSelfCheckAt` and `gmailSelfCheck`. No storage quota (none was found in the recorded answers). `self.addresses` is the one address the
 page is signed in as, with the name its account button shows.
 
 **Guesses, in one place** (each a position the shapes show but cannot explain): `bv` request element 0 (a request
@@ -764,7 +772,98 @@ the op's 120 s, nothing new starts late (`SEND_LIMITS`): no upload past 60 s, no
 no send past 90 s (502, the draft left in Drafts). A file is handed to the page in pieces; a piece for an upload the
 page no longer holds (it reloaded) is refused rather than started anew, and the upload checks the size it got.
 
+## Suggesting people
 
+`mail.contacts { query, limit? }` answers what Gmail's own compose To field suggests while you type an address: the
+same call, made from the same page (`extractors/google/src/gmail/contacts.ts`, the hook's `gmail.contacts`). It was
+learned on the live page on 2026-11-14: a compose window opened in a test account's sandbox and one letter typed into
+To while the page's calls were recorded as shapes (type tags, no name or address), then the call made by hand from the
+page's console with a few queries, values looked at only for the owner's own addresses; the draft was discarded.
+
+### Gmail's call
+
+The To field does not ask mail.google.com. It asks Google's people stack, in JSON+protobuf (positional arrays):
+
+```
+POST https://peoplestack-pa.clients6.google.com/$rpc/peoplestack.PeopleStackAutocompleteService/Autocomplete
+Content-Type: application/json+protobuf
+X-Goog-Api-Key: <one of the Gmail page's keys>
+X-Goog-AuthUser: 0
+X-User-Agent: grpc-web-javascript/0.1
+Authorization: SAPISIDHASH <ts>_<hash> SAPISID1PHASH <ts>_<hash> SAPISID3PHASH <ts>_<hash>   (made with https://mail.google.com; no _u)
+(the page's cookies)
+
+[134, "ann", [1, 2], 8]
+```
+
+- Google's own 400s name the fields: `affinity_type` (134: Gmail's compose; another number is 400 INVALID_ARGUMENT),
+  the query, `client_information` (`[1, 2]`, as the page sends it) and the page size (8, what the To field asks; 3 and
+  20 are honoured alike).
+- When compose opens, the page also calls `…/Warmup` with `[134, [1, 2]]` (answered `[]`) and an experiments service.
+  Neither is needed: Autocomplete answers a page that never opened compose (tried on a freshly loaded one), in about
+  100 to 200 ms.
+- The key goes in `X-Goog-Api-Key`, not the address. It is one of the many keys in the page's HTML: the one Gmail's
+  config (`GLOBALS`) puts right after `"https://people-pa.googleapis.com"`. Another of the page's keys is refused, 403
+  `[7, "PeopleStack Backend Private API has not been used in project …", [[…, ["SERVICE_DISABLED", …]], …]]`; no key
+  at all is 403 "Method doesn't allow unregistered callers".
+- Errors are `[code, message, details]`, the code gRPC's (3 INVALID_ARGUMENT, 7 PERMISSION_DENIED, 16 UNAUTHENTICATED).
+
+The answer, with invented values (`[]` when nothing matches; the empty query, which `mail.contacts` never sends, gives
+the To field's top people, with a second element of timings):
+
+```
+[[
+  [[ [ [ [["https://lh3.example.com/photo", 1], ["Ann Lee", "Ann", "Lee", 1], ["<token>", 1731300000000], 1],
+         ["ann.lee@example.com", null, [1]],
+         null, null,
+         [["<account id>"], [null, "<contact id, 16 hex>"]],
+         null, null, 1 ] ],
+     ["<token>"] ]],
+  …
+]]
+```
+
+A suggestion is `json[0][i]`, its people `json[0][i][0][0]` (one person; a group would be several), the person's
+address `json[0][i][0][0][0][1][0]`, its display name `json[0][i][0][0][0][0][1][0]` (that name entry is null for
+someone known only by address; the account id is there only for Google accounts).
+
+### How it is made here
+
+- **What goes out.** The hook takes the body from the extractor and checks it again (`contactsRefusal`): exactly
+  `[134, query, [1, 2], n]`, the query trimmed and 1 to 300 characters, n 1 to 20; anything else is refused and nothing
+  is sent. The address and the headers are the hook's own, the hash is made in the page as for every other call, and
+  the cookies never leave it.
+- **The key**, in order: the one the page's own people-stack calls carried (noted from its requests, kept in the
+  page), the last one that answered, the one after `people-pa.googleapis.com` in the page's HTML, then the page's other
+  keys. A key Google refuses as a key (SERVICE_DISABLED, an unregistered caller, a key not valid) is not tried again;
+  at most three keys a call.
+- **Fast, and apart.** The hook gives Google 6 s (then it aborts: 504); the extractor waits 8 s, under the op's 10 s.
+  Suggestion calls have a lane of their own beside the Gmail page's (at most two in flight): keystrokes never wait
+  behind mail, the watch or the background lane, and those never wait behind keystrokes. A suggestion call the page
+  leaves unanswered counts toward reloading the Gmail tab, as any.
+- **Read strictly** (`readContacts`): every suggestion's people are read as persons (a group's too, so that another
+  nesting cannot pass for a group); an address not where it belongs (or not an address), a profile or a name of another
+  kind, or an answer in which no suggestion has an address is **502**: "Gmail's people suggestions answer is not laid
+  out as this extractor knows it (at json[0][0][0][0][0][1][0]: expected an address, got a list of 2); nothing was
+  returned rather than possibly wrong people".
+- **What it answers**: the people in Gmail's order, each address once (without regard to case; the first kept), `name`
+  the display name with its spaces made one, or null when there is none or it is only the address again; groups and
+  people without an address are left out. At most `limit` (8 by default, at most 20); Gmail is asked for 8, or for
+  the limit when it is more, so the first ones are always Gmail's own. A minute's cache per query (without regard to
+  case) and page size. An empty query is `{ contacts: [] }`, asking nothing.
+- **When it can**: `details.contacts` is true while the Gmail page is up and signed in (on mail.google.com, not being
+  reloaded, its last reload not failed, no verification page met by the background lane) and the call itself has not
+  failed in a way that does not mend by itself (no key taken, another layout, Google refusing it) in the last 15
+  minutes; `details.contactsNote` says why not, in a sentence. Mail does not rest on it: the Gmail protocol layer is
+  untouched.
+- **Errors**: 503 `unavailable` when the page cannot ask now (the reasons above), or Google answered 401, 429 or 5xx,
+  a sign-in or verification page, or could not be reached; 504 when Google did not answer in 6 s (or the page in 8 s);
+  502 for the failures above; 400 for a query over 300 characters or a limit that is not a whole number; 501 with
+  `mail: false`.
+- **Logs**: one line when the call breaks (`gmail contacts: …`, positions and kinds only) and one when it answers
+  again. Never a query or a person.
+
+## The Gmail self-check
 
 A content-free check of all of the above on the live account. Make an empty file **`gmail-selfcheck.request`** in the
 account's directory; within 3 s it is taken (deleted) and the check runs in the Gmail tab, then writes
@@ -901,7 +1000,12 @@ that used it lose it at once (dither-calendar drops its copies of those calendar
   page's own as recorded, each write's labels in the fake, writes in part (`refused`, `unknown`, `threadIds`), 404 and
   422, Spam 501 and the folders mail is not moved into 400; a send with Cc, Bcc and a file (upload, draft, send) and a
   reply (its thread, In-Reply-To, the original answered, the reply's headers in `mail.changes`); `checkOutgoing`.
+- `test/gmail-contacts.test.ts`: suggesting people without a browser: the request as the To field sends it, the
+  answer read in the recorded layout (a person with no name, a name that is the address, a repeated address, a group,
+  a suggestion without an address) and refused in others (where and what kind, never a value), the cache, readiness,
+  and each kind of failure's status and code, the 15 minutes of `details.contacts` false, and the log.
 - `test/google-browser.test.ts`: the `google` extractor in its real sandbox against the same fake in its `web` mode
-  (config `testOrigin` and `apiBase` point at it, `testMailOrigin` and `gmailApiBase` at its Gmail side; `stall()`
+  (config `testOrigin` and `apiBase` point at it, `testMailOrigin`, `gmailApiBase` and `peopleApiBase` at its Gmail
+  side; `stall()`
   makes a page's API calls hang). The stall tests wait out the real 25 s, so the suite takes about three minutes. Skipped without Xvfb, chromium and x11vnc (found on PATH, through
   `XVFB_BIN` / `X11VNC_BIN` / `CHROMIUM_BIN`, or with `nix build`).

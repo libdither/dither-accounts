@@ -35,6 +35,10 @@
  * (HTML), a 429 naming a captcha, a sign-in page, or a page that says none of those; `gmail.failNext` /
  * `gmail.delayNext` fail or slow the next calls;
  * `gmail.readsMarkRead(true)` makes a download take ^u off the message, as a reader that marks mail read would.
+ *
+ * And Gmail's people suggestions (`people`), what its compose To field asks while you type: on the Gmail side's
+ * origin, the people-stack Autocomplete call checked as Google checks it, answered in the layout recorded from the live
+ * page (`peopleAnswer`) from invented people (`FAKE_PEOPLE`); the Gmail page's config holds the key it takes.
  */
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
@@ -69,6 +73,8 @@ export interface WebOpts {
   labels?: string[];
   /** Gmail: the content the stand-in Gmail app's list, threads and calls are full of (none of it may leak). */
   mailMark?: string;
+  /** Gmail: the key its config puts beside Google's people API, the only one the people suggestions take. */
+  peopleKey?: string;
 }
 
 // ------------------------------------------------------------------ the fake Gmail's mailbox
@@ -655,6 +661,58 @@ export const GMAIL_ROWS = [
   { t: 'thread-f:1800000000000000008', k: 'FMfcgA8', cls: 'zA yO' }, // read: the second
 ];
 
+// ------------------------------------------------------------------ Gmail's people suggestions (mail.contacts)
+/** Someone Gmail's To field may suggest: invented, as everything here. `name: null` is a person with an address only. */
+export interface FakePerson {
+  email: string;
+  name: string | null;
+  /** A Google account (its id is in the answer) or only a contact of yours. */
+  account?: boolean;
+  /** A suggestion of several people (a group) at this place, which mail.contacts leaves out. */
+  group?: boolean;
+}
+
+/** The people the fake suggests from, in the order it ranks them (Gmail's own order is the server's). */
+export const FAKE_PEOPLE: FakePerson[] = [
+  { email: 'ann.lee@example.com', name: 'Ann Lee', account: true },
+  { email: 'alice@example.org', name: null },
+  { email: 'Ann.Lee@Example.com', name: 'Ann Lee (work)' }, // the first one's address again, in other case
+  { email: 'albert@example.net', name: 'albert@example.net' }, // a name that is only the address
+  { email: 'team-a@example.com', name: 'A team', group: true },
+  { email: 'bob.stone@example.com', name: '  Bob   Stone ', account: true },
+  { email: 'carol@example.com', name: 'Carol Ames' },
+];
+
+/**
+ * A suggestions answer in the layout recorded from Gmail's page (2026-11-14, shapes only): `[[suggestion, …]]`, or `[]`
+ * when nothing matches. A suggestion is `[[[person, …], [token, n]]]`; a person `[[[photo, n], name | null, [token, n],
+ * 1], [address, null, [1]], null, null, ids, null, null, 1]`, its name `[display, given, family, n]`. `swapped` puts the
+ * profile where the address belongs (and back), a layout to refuse.
+ */
+export function peopleAnswer(people: FakePerson[], opts: { swapped?: boolean } = {}): unknown[] {
+  if (!people.length) return [];
+  const token = (i: number) => Buffer.from(`token-${i}`).toString('base64');
+  const person = (p: FakePerson, i: number) => {
+    const [given = '', family = ''] = (p.name ?? '').trim().split(/\s+/);
+    const profile = [[`https://lh3.example.com/photo-${i}`, p.account ? 3 : 1], p.name === null ? null : [p.name, given, family, 1], [token(i), 1731300000000 + i], 1];
+    const address = [p.email, null, [1]];
+    const ids = p.account ? [[`10000000000000000000${i}`], [null, `0123456789abcde${i % 10}`]] : [[null, `0123456789abcde${i % 10}`]];
+    return opts.swapped ? [address, profile, null, null, ids, null, null, 1] : [profile, address, null, null, ids, null, null, 1];
+  };
+  return [
+    people.map((p, i) => {
+      const members = p.group ? [person({ email: `one-${p.email}`, name: 'One' }, i), person({ email: `two-${p.email}`, name: 'Two' }, i)] : [person(p, i)];
+      return [[members, [token(i)]]];
+    }),
+  ];
+}
+
+/** Whether the To field would suggest a person for a query: a word of the name, or the address, starts with it. */
+export function personMatches(p: FakePerson, query: string): boolean {
+  const q = query.toLowerCase();
+  return p.email.toLowerCase().startsWith(q) || (p.name ?? '').toLowerCase().split(/[\s.@()-]+/).some((w) => w && w.startsWith(q));
+}
+
 export type FakePage = 'calendar' | 'gmail';
 /** on: API calls hang until stall(page, 'off'); until-reload: until the page (authuser 0) is loaded again. */
 export type Stall = 'off' | 'on' | 'until-reload';
@@ -868,7 +926,52 @@ export function startFakeGoogle(opts: { web?: WebOpts } = {}) {
     email: web?.mailEmail ?? 'mail-owner@example.com',
     labels: web?.labels ?? ['INBOX', 'secret-label-name', 'another-label'],
     mark: web?.mailMark ?? 'Mk#0000',
+    peopleKey: web?.peopleKey ?? `AIza${'Q'.repeat(35)}`,
   };
+
+  /**
+   * Gmail's people suggestions (mail.contacts), on the Gmail side's origin in tests (live: peoplestack-pa.clients6.
+   * google.com): POST /$rpc/peoplestack.PeopleStackAutocompleteService/Autocomplete as the page's To field makes it,
+   * checked as Google answered the calls tried live: the key (none: 403 "unregistered callers"; another: 403
+   * SERVICE_DISABLED), the cookie's SAPISIDHASH made with the Gmail page's origin and X-Goog-AuthUser (else 401), the
+   * JSON+protobuf type, and the body `[134, query, [1, 2], size]` (else 400, Google's INVALID_ARGUMENT). Errors are
+   * `[code, message, …]` as Google's. `people.layout('swapped')` answers in a layout to refuse; `failNext`, `delayNext`.
+   */
+  const people = {
+    list: [...FAKE_PEOPLE],
+    layout: 'normal' as 'normal' | 'swapped',
+    /** Each call's verdict: 'ok', or the status refused with. */
+    calls: [] as string[],
+    fails: [] as number[],
+    delays: [] as number[],
+  };
+  const PEOPLE_PATH = '/$rpc/peoplestack.PeopleStackAutocompleteService/Autocomplete';
+  async function peopleCall(req: Request): Promise<Response> {
+    const proto = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json+protobuf; charset=UTF-8' } });
+    const refuse = (status: number, body: unknown[]) => {
+      people.calls.push(String(status));
+      return proto(status, body);
+    };
+    const key = req.headers.get('x-goog-api-key');
+    if (!key) return refuse(403, [7, "Method doesn't allow unregistered callers (callers without established identity). Please use API Key or other form of API consumer identity to call this API."]);
+    if (key !== mail.peopleKey) return refuse(403, [7, 'PeopleStack Backend Private API has not been used in project 1000 before or it is disabled.', [['type.googleapis.com/google.rpc.ErrorInfo', ['SERVICE_DISABLED', 'googleapis.com']]]]);
+    const sapisid = (req.headers.get('cookie') ?? '').match(/(?:^|;\s*)SAPISID=([^;]*)/)?.[1];
+    const hash = (req.headers.get('authorization') ?? '').match(/^SAPISIDHASH (\d+)_([0-9a-f]{40})(?:\s|$)/);
+    const fresh = !!hash && Math.abs(Date.now() / 1000 - Number(hash[1])) < 300;
+    const origin = req.headers.get('origin');
+    if (!sapisid || !hash || !fresh || origin !== mailBase || hash[2] !== createHash('sha1').update(`${hash[1]} ${sapisid} ${mailBase}`).digest('hex') || req.headers.get('x-goog-authuser') !== '0') return refuse(401, [16, 'Request had invalid authentication credentials.']);
+    if (!(req.headers.get('content-type') ?? '').startsWith('application/json+protobuf') || req.headers.get('x-user-agent') !== 'grpc-web-javascript/0.1') return refuse(400, [3, 'Request contains an invalid argument.']);
+    const body = (await req.json().catch(() => null)) as unknown;
+    const ok = Array.isArray(body) && body.length === 4 && body[0] === 134 && typeof body[1] === 'string' && Array.isArray(body[2]) && body[2].join() === '1,2' && Number.isInteger(body[3]) && body[3] >= 1 && body[3] <= 20;
+    if (!ok) return refuse(400, [3, 'Request contains an invalid argument.']);
+    const fail = people.fails.shift();
+    if (fail) return refuse(fail, [fail === 429 ? 8 : 14, 'fake failure']);
+    const delay = people.delays.shift();
+    if (delay) await Bun.sleep(delay);
+    people.calls.push('ok');
+    const [, q, , size] = body as [number, string, number[], number];
+    return proto(200, peopleAnswer(people.list.filter((p) => personMatches(p, q)).slice(0, size), { swapped: people.layout === 'swapped' }));
+  }
   /** The Gmail mailbox behind the sync endpoints and the download route. */
   const gmail = web ? fakeGmail(mail.mark, { sapisid: web.sapisid }) : null;
 
@@ -901,6 +1004,7 @@ export function startFakeGoogle(opts: { web?: WebOpts } = {}) {
           const path = url.pathname;
           mailCalls.push(`${req.method} ${path}${url.search}`);
           let m: RegExpMatchArray | null;
+          if (req.method === 'POST' && path === PEOPLE_PATH) return peopleCall(req);
           // The fake Gmail's own endpoints (bv, fd, s in the recorded layout, the download route), before the page.
           const answer = await gmail!.handle(req, url);
           if (answer) return answer;
@@ -939,7 +1043,8 @@ export function startFakeGoogle(opts: { web?: WebOpts } = {}) {
   function mailPage(signedIn: boolean) {
     const w = web!;
     const html = `<!doctype html><html><head><title>Gmail</title>
-<script>window.__gm = { k: "${mail.key}" };</script></head>
+<script>window.__gm = { k: "${mail.key}" };</script>
+<script>var GLOBALS = [null,"en","https://chat.example.com",null,"https://people-pa.googleapis.com","${mail.peopleKey}"];</script></head>
 <body><header>${signedIn ? `<a href="#" aria-label="Google Account: Pat Example&#10;(${w.email})">P</a>` : '<a href="#">Sign in</a>'}</header>
 <main><div class="subject">secret-subject-line</div></main>${
       signedIn
@@ -1039,6 +1144,8 @@ setTimeout(() => {
     mailOpened,
     /** web: the fake Gmail mailbox behind the sync endpoints. */
     gmail: gmail!,
+    /** web: Gmail's people suggestions: who it suggests from, its layout, each call's verdict, failures and delays to come. */
+    people,
     /** A page's API calls hang (on, until-reload) or answer again (off; the held ones go on). */
     stall(page: FakePage, mode: Stall) {
       if (mode === 'off') release(page);

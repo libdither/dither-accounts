@@ -5,6 +5,7 @@
 import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { expandIncludes } from '../../../packages/browser/src/markers.ts';
 import { MAX_WAIT_MS, PAGE_START_MS, PageWatch, SILENT_LIMIT } from '../src/pagewatch.ts';
 
 function clock() {
@@ -97,7 +98,8 @@ function worker(tabs: { id: number; url: string }[]) {
   };
   const self = { addEventListener() {} };
   const fetch = async () => ({ json: async () => ({ wsUrl: 'ws://127.0.0.1:1/', token: 't' }) });
-  const src = readFileSync(join(import.meta.dir, '../src/extension/sw.js'), 'utf8');
+  // As the extension's copy has it: the shared worker-watch put in (markers.ts).
+  const src = expandIncludes(readFileSync(join(import.meta.dir, '../src/extension/sw.js'), 'utf8'));
   new Function('chrome', 'WebSocket', 'self', 'fetch', src)(chrome, FakeSocket, self, fetch);
   const settle = () => new Promise((r) => setTimeout(r, 5));
   return {
@@ -121,7 +123,8 @@ test('the worker answers a command at once when no page is attached, and hands i
   const got = w.page();
   w.down({ t: 'cmd', id: 'c2', cmd: { kind: 'reactionContext', channelId: '700000000000000001' } });
   expect(got).toEqual([{ t: 'cmd', id: 'c2', cmd: { kind: 'reactionContext', channelId: '700000000000000001' } }]);
-  expect(w.up.find((m) => m.id === 'c2')).toBeUndefined();
+  // Handed on: the worker says so (`got`, for a timeout's diagnosis) and leaves the answer to the page.
+  expect(w.up.filter((m) => m.id === 'c2')).toEqual([{ t: 'got', id: 'c2', at: 'worker' }]);
 });
 
 test("tab.reload sends the Discord tab back to its start, or opens one when there is none; never another site's", async () => {

@@ -29,6 +29,7 @@
 (() => {
   'use strict';
   /*@include main-world@*/
+  /*@include command-watch@*/
   const nativeFetch = window.fetch;
   const then = Promise.prototype.then;
   /** Headers whose values say which client is calling (no secrets); copied onto our calls. */
@@ -38,6 +39,9 @@
 
   const post = (payload) => cloak.send(payload);
   const log = (level, msg) => post({ t: 'log', level, msg });
+  // Each command's `got`, page.state and a command still open after 20 s (packages/browser's command-watch.js). An
+  // api call is named by its method and path template, nothing else.
+  const watch = commandWatch({ post, log, name: (c) => (c.kind === 'api' ? `api ${String(c.method || 'get').toUpperCase()} ${watchPath(c.path || '')}` : String(c.kind)) });
 
   // ------------------------------------------------------------ the app's own calls
   const app = {
@@ -1141,6 +1145,8 @@
       return;
     }
     if (p.t !== 'cmd' || !p.cmd) return;
+    const done = watch.take(p);
+    if (!done) return;
     try {
       let result;
       const k = p.cmd.kind;
@@ -1153,6 +1159,8 @@
       post({ t: 'reply', id: p.id, ok: true, result });
     } catch (err) {
       post({ t: 'reply', id: p.id, ok: false, error: String((err && err.message) || err).slice(0, 300) });
+    } finally {
+      done();
     }
   });
 

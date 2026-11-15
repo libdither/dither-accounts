@@ -291,6 +291,7 @@ let runnerStarted = false;
 
 const host = new BrowserHost({
   link,
+  name: 'Schwab',
   extensionSrc: join(import.meta.dir, 'extension'),
   startUrl: START_URL,
   testOrigin,

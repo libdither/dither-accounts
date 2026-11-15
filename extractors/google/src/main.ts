@@ -26,7 +26,7 @@
  */
 import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BridgeServer, pickFreeDisplay, type Reached, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, diagnoseSilence, pickFreeDisplay, type Reached, Sandbox } from '@dither-accounts/browser';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
 import type { OutgoingMail } from '@dither-accounts/interfaces';
 import { GmailMail, type PageKind, stateOf, type SyncAnswer, type Transport } from './gmail/mail.ts';
@@ -54,8 +54,6 @@ const ATTACH_MS = 30_000;
 const PAGE_ANSWER_MS = 25_000;
 /** This many unanswered requests in a row to one page, and its tab is reloaded. */
 const SILENT_LIMIT = 2;
-/** When a page did not answer, the worker (the tab's state) and the hook (its own state, no network) answer within this. */
-const DIAGNOSE_MS = 5_000;
 /** The service worker's own commands (open or reload a tab) answer within this. */
 const TAB_COMMAND_MS = 10_000;
 /** The Gmail API probe: asked for by this file in the account's directory, answered in the other. */
@@ -710,34 +708,22 @@ function unanswered(p: Page, cmd: PageCmd, reached: Reached) {
 }
 
 /**
- * One line on a page that did not answer: how far the request got (the page's port, the page itself), what Chromium
- * says of the tab, and what the hook says when asked without the network (its visibility, lifecycle events, counts of
- * uncaught errors, the commands it still has open). Names of steps, paths and counts only, nothing from the page.
+ * One line on a page that did not answer (packages/browser's silence.ts): how far the request got (the page's port,
+ * the page itself), what Chromium says of the tab, and what the hook says when asked without the network (its
+ * visibility, lifecycle events, counts of uncaught errors, the commands it still has open). Names of steps, paths and
+ * counts only, nothing from the page.
  */
-async function diagnose(p: Page, cmd: PageCmd, reached: Reached) {
-  const ask = async <T>(c: PageCmd | TabCmd): Promise<{ ok: true; ms: number; v: T } | { ok: false; ms: number; error: string }> => {
-    const t0 = Date.now();
-    try {
-      const v = await bridge.request<T>(c, DIAGNOSE_MS);
-      return { ok: true, ms: Date.now() - t0, v };
-    } catch (e) {
-      return { ok: false, ms: Date.now() - t0, error: String((e as Error).message ?? e).slice(0, 200) };
-    }
-  };
-  if (!bridge.connected) return;
-  const [tab, hook] = await Promise.all([
-    ask<Record<string, unknown>>({ kind: 'tab.state', page: p.role, tabId: p.tabId }),
-    ask<Record<string, unknown>>({ kind: 'page.state', page: p.role }),
-  ]);
-  const said = {
+function diagnose(p: Page, cmd: PageCmd, reached: Reached) {
+  return diagnoseSilence(bridge, {
+    name: p.name,
     request: cmd.kind,
-    reached: { none: 'not acknowledged by the service worker', worker: 'handed to the page, which never said it had it', page: 'received by the page, which never answered' }[reached],
-    tab: tab.ok ? tab.v : `no answer: ${tab.error}`,
-    hook: hook.ok ? { answeredInMs: hook.ms, ...hook.v } : `no answer in ${DIAGNOSE_MS / 1000} s: ${hook.error}`,
-    lastAnswerAgoS: p.answeredAt ? Math.round((Date.now() - p.answeredAt) / 1000) : null,
-    hookUpAgoS: p.hookAt ? Math.round((Date.now() - p.hookAt) / 1000) : null,
-  };
-  log('warn', `the ${p.name} page's silence: request ${said.reached}; the hook ${hook.ok ? 'answers without the network' : 'does not answer either'}`, said);
+    reached,
+    log,
+    tab: { kind: 'tab.state', page: p.role, tabId: p.tabId },
+    page: { kind: 'page.state', page: p.role },
+    lastAnswerAt: p.answeredAt || null,
+    extra: { hookUpAgoS: p.hookAt ? Math.round((Date.now() - p.hookAt) / 1000) : null },
+  });
 }
 
 const gfetch = (cmd: Gfetch) => pageRequest<GResponse>('calendar', cmd);

@@ -69,6 +69,7 @@ let probeTimer: Timer | undefined;
 
 const host = new BrowserHost({
   link,
+  name: 'Amazon',
   extensionSrc: join(import.meta.dir, 'extension'),
   startUrl: `${BASE}/`,
   testOrigin,

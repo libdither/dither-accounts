@@ -136,6 +136,9 @@ const bridge = new BridgeServer<Up, Down>({
   onConnect: () => status(),
   onDisconnect: () => status(),
   log,
+  // A command that times out is told apart in the log: how far it got, the tab's state, and the hook's page.state
+  // (its own, with what it knows of its commands under `watch`).
+  silence: { name: 'Privacy', tab: true, page: true },
 });
 
 // ------------------------------------------------------------------- status

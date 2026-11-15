@@ -117,7 +117,7 @@ supervised restart, as before.
 **Each unanswered request is told apart in the log, before any reload**, so the cause of a silence can be found from
 the log alone. The service worker reports each command it hands to a page's port (`got` at `worker`) and the hook
 reports it again when it arrives (`got` at `page`); after a silence the extractor asks the worker for the tab's state
-(`tab.state`: loading or complete, discarded, frozen, active, its origin and path) and the hook for its own, without
+(`tab.state`: loading or complete, discarded, frozen, active, its origin and path template) and the hook for its own, without
 the network (`page.state`: visibility, focus, lifecycle events seen, counts of uncaught errors and rejections, the
 commands it still has open and for how long), each within 5 s. One line says it all:
 `the Calendar page's silence: request received by the page, which never answered; the hook answers without the
@@ -126,7 +126,8 @@ it had it" at the page's port, a hook that does not answer either at a frozen or
 with the request still open at the call to Google. The hook also logs a command still open after 20 s
 (`[hook] gfetch GET <host><path template> still open after 20 s`) and the page's lifecycle (`[hook] page hidden`,
 `visible`, `frozen`, `resumed`). Only names of steps, path templates (ids taken out) and counts: no query, body or
-error text from the page. Every line of `adapter.log` starts with its time (ISO, UTC).
+error text from the page. Every line of `adapter.log` starts with its time (ISO, UTC). The code is shared with the
+other browser kinds ([page-silence.md](page-silence.md)); Google calls it by hand, per page, before it reloads a tab.
 
 In the layers: Calendar's **Calendar API** layer is `waiting` while its page is silent ("the Calendar page did not
 answer the last request in 25 s"), being reloaded, or reloaded and not yet answering, and `failed` when the tab could

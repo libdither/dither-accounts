@@ -189,6 +189,14 @@ Everything above is tested against fakes of the client's modules (`test/hook.tes
 answers, the 80013 refusal and the confirm, the spam and stranger flags, and the analytics contexts are what the
 client is known to use (read from its bundle as of November 2026), and are confirmed only on a live account.
 
+## A command the page does not answer (Discord)
+
+Each command to the Discord page that times out is told apart in the log at once, in one line: `the Discord page's
+silence: request …`, with how far the request got (the worker handed it to the page, the hook had it), how Chromium
+sees the tab, and what the hook says of itself without the network (`page.state`: visibility, lifecycle events, error
+counts, the commands still open). The hook also logs a command still open after 20 s. See
+[page-silence.md](page-silence.md); command names only, never a body or an id.
+
 ## The account itself (Discord)
 
 What Discord says of the account and its person-level actions, for dither-chat's docs/account-self.md

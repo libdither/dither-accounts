@@ -39,6 +39,8 @@ export interface HostOpts {
   /** The kind's extension dir: manifest.json and page.js (driver.js is added as sw.js). */
   extensionSrc: string;
   startUrl: string;
+  /** What the log calls the site's page when a command to it times out: "the <name> page's silence" (default "site"). */
+  name?: string;
   /** Tests: the fake site's origin, added to the extension's host permissions (and its content scripts' matches). */
   testOrigin?: string | null;
   /** Tests: more of the fake site's origins (Schwab's sign-in frame), added the same way. */
@@ -90,6 +92,8 @@ export class BrowserHost {
       onConnect: () => o.onChange?.(),
       onDisconnect: () => o.onChange?.(),
       log: (l, m, d) => o.link.log(l, m, d),
+      // A command that times out is told apart in the log: how far it got, and how Chromium sees its tab.
+      silence: { name: o.name ?? 'site', tab: true, workerRuns: true },
     });
   }
 

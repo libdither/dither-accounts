@@ -8,6 +8,8 @@
  */
 'use strict';
 
+/*@include worker-watch@*/
+
 let CONFIG = null;
 let ws = null;
 let wsReady = false;
@@ -75,6 +77,12 @@ async function connect() {
       return;
     }
     if (cmd.t === 'ping') return; // keepalive from the adapter
+    // tab.state: how Chromium sees the newest page's tab, asked when the page stops answering (packages/browser's
+    // silence.ts).
+    if (cmd.t === 'cmd' && cmd.cmd && cmd.cmd.kind === 'tab.state') {
+      const last = Array.from(ports).pop();
+      return void workerWatch.answer(sendToAdapter, cmd.id, last && last.sender && last.sender.tab ? last.sender.tab.id : null, { ports: ports.size });
+    }
     if (cmd.t === 'cmd' && cmd.cmd && cmd.cmd.kind === 'tab.reload') {
       reloadTab(cmd.id, cmd.cmd);
       return;
@@ -85,6 +93,8 @@ async function connect() {
       return;
     }
     toPorts(cmd); // { t:'cmd', id, cmd } -> content.js -> hook.js
+    // Handed to the pages' ports: one never answered was lost in a page, not on the way to it.
+    if (cmd.t === 'cmd' && ports.size) workerWatch.got(sendToAdapter, cmd.id);
   };
   ws.onclose = () => {
     wsReady = false;

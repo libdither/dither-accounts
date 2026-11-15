@@ -1,143 +1,14 @@
 /**
- * The adapter's own little WebSocket server. The extension's service worker
- * connects to ws://127.0.0.1:<port>/?token=... from inside the sandbox; this is
- * the only thing that may talk to the hook. Bound to loopback, token-gated.
- *
- * It also correlates request/reply ids so the adapter can await a hook command,
- * and carries a human-pacing queue so outgoing Discord actions are spaced out.
+ * The adapter's own little WebSocket server: packages/browser's BridgeServer (loopback, token-gated; it correlates
+ * request and reply ids and says how far a timed-out request got), typed with Discord's frames. This file also
+ * carries a human-pacing queue so outgoing Discord actions are spaced out.
  */
 
-import type { Server, ServerWebSocket } from 'bun';
-import type { BridgeDown, BridgeUp, HookCommand } from './discord-types.ts';
+import { BridgeServer as SharedBridge } from '@dither-accounts/browser';
+import type { BridgeUp, HookCommand } from './discord-types.ts';
 import { phase } from './trace.ts';
 
-type SocketData = { authed: boolean };
-
-export interface BridgeServerOpts {
-  port: number;
-  token: string;
-  onMessage: (msg: BridgeUp) => void;
-  onConnect?: () => void;
-  onDisconnect?: () => void;
-  /** Every frame that came up, replies included, before it is routed: the page watch hears the page through it. */
-  onFrame?: (msg: BridgeUp) => void;
-  /** A command the page did not answer in time. */
-  onTimeout?: (kind: string) => void;
-  log: (level: 'debug' | 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
-}
-
-interface Pending {
-  resolve: (v: unknown) => void;
-  reject: (e: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
-}
-
-export class BridgeServer {
-  private server?: Server<SocketData>;
-  private sock: ServerWebSocket<SocketData> | null = null;
-  private pending = new Map<string, Pending>();
-  private seq = 0;
-
-  constructor(private opts: BridgeServerOpts) {}
-
-  get connected(): boolean {
-    return !!this.sock;
-  }
-  get port(): number {
-    return this.server?.port ?? this.opts.port;
-  }
-
-  start() {
-    const self = this;
-    this.server = Bun.serve<SocketData, never>({
-      port: this.opts.port,
-      hostname: '127.0.0.1',
-      idleTimeout: 120,
-      fetch(req, server) {
-        const url = new URL(req.url);
-        if (url.searchParams.get('token') !== self.opts.token) return new Response('forbidden', { status: 403 });
-        if (server.upgrade(req, { data: { authed: true } })) return undefined;
-        return new Response('expected websocket', { status: 400 });
-      },
-      websocket: {
-        maxPayloadLength: 64 * 1024 * 1024,
-        open(ws) {
-          self.sock = ws;
-          self.opts.log('info', 'extension connected');
-          self.opts.onConnect?.();
-        },
-        message(ws, raw) {
-          let msg: BridgeUp;
-          try {
-            msg = JSON.parse(typeof raw === 'string' ? raw : raw.toString());
-          } catch {
-            return;
-          }
-          self.opts.onFrame?.(msg);
-          if (msg.t === 'reply') {
-            const p = self.pending.get(msg.id);
-            if (p) {
-              self.pending.delete(msg.id);
-              clearTimeout(p.timer);
-              if (msg.ok) p.resolve(msg.result);
-              else p.reject(Object.assign(new Error(msg.error), { retry_after: msg.retryAfter }));
-            }
-            return;
-          }
-          self.opts.onMessage(msg);
-        },
-        close(ws) {
-          if (self.sock === ws) {
-            self.sock = null;
-            self.opts.log('info', 'extension disconnected');
-            self.opts.onDisconnect?.();
-          }
-        },
-      },
-    });
-    this.opts.log('info', `bridge server on ws://127.0.0.1:${this.server.port}`);
-    return this.server;
-  }
-
-  private sendDown(payload: BridgeDown) {
-    if (!this.sock) throw new Error('extension not connected');
-    this.sock.send(JSON.stringify(payload));
-  }
-
-  /** Run a command in the page and await its reply. */
-  request<T = unknown>(cmd: HookCommand, timeoutMs = 30_000): Promise<T> {
-    const id = `c${++this.seq}`;
-    return new Promise<T>((resolve, reject) => {
-      if (!this.sock) return reject(new Error('extension not connected'));
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        this.opts.onTimeout?.(cmd.kind);
-        reject(new Error(`hook timed out on ${cmd.kind}`));
-      }, timeoutMs);
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
-      try {
-        this.sendDown({ t: 'cmd', id, cmd });
-      } catch (e) {
-        this.pending.delete(id);
-        clearTimeout(timer);
-        reject(e as Error);
-      }
-    });
-  }
-
-  ping() {
-    if (this.sock) this.sock.send(JSON.stringify({ t: 'ping' } satisfies BridgeDown));
-  }
-
-  stop() {
-    for (const p of this.pending.values()) {
-      clearTimeout(p.timer);
-      p.reject(new Error('adapter shutting down'));
-    }
-    this.pending.clear();
-    this.server?.stop(true);
-  }
-}
+export class BridgeServer extends SharedBridge<BridgeUp, HookCommand> {}
 
 /**
  * Serializes outgoing Discord actions with a human-ish gap + jitter, so a burst of

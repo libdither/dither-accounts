@@ -58,6 +58,7 @@ let lookTimer: Timer | undefined;
 
 const host = new BrowserHost({
   link,
+  name: 'Claude',
   extensionSrc: join(import.meta.dir, 'extension'),
   startUrl: `${BASE}/`,
   testOrigin,

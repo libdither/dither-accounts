@@ -225,6 +225,12 @@ and no key, credential id or user handle on the wire to the manager. `status.tes
 If Privacy refuses the passkey, it says so in the page, and `lastRefusal` or the log says why when the refusal is
 ours.
 
+## A command the page does not answer
+
+Each command that times out is told apart in the log at once, in one line: `the Privacy page's silence: request …`, with
+how far the request got, how Chromium sees the tab, and the hook's own `page.state` (where the page is, as booleans and a path template), which now also carries what the hook knows of its commands (`watch`: visibility, lifecycle events, error counts, the commands still open). See [page-silence.md](page-silence.md); command names
+and path templates only, never a body or an id.
+
 ## Tests
 
 - `bun test packages/passkey`: the authenticator (shared with Schwab), its rpId and frame rules.

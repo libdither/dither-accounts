@@ -7,13 +7,19 @@
  * has got to (the service worker handed it to the page's port: 'worker'; the page has it: 'page'), so one never
  * answered says how far it got (the timeout's `reached`); anything else to onMessage.
  * Down to it: `{ t: 'cmd', id, cmd }` (request) and `{ t: 'ping' }`.
+ *
+ * With `silence` set, every request that times out is told apart in the log at once (silence.ts): the worker is asked
+ * for the tab's state and the hook for its own, and one line says how far the request got. Without it, a kind calls
+ * diagnoseSilence itself where it wants (Google's, before it reloads a tab).
  */
 import type { Server, ServerWebSocket } from 'bun';
 import type { Log } from './sandbox.ts';
+import { diagnoseSilence } from './silence.ts';
 
 type SocketData = { authed: boolean };
 
-export type BridgeReply = { t: 'reply'; id: string; ok: true; result?: unknown } | { t: 'reply'; id: string; ok: false; error: string; retryAfter?: number };
+/** `from: 'worker'`: the service worker answered (a tab command, or no page to run it in), not the page. */
+export type BridgeReply = ({ t: 'reply'; id: string; ok: true; result?: unknown } | { t: 'reply'; id: string; ok: false; error: string; retryAfter?: number }) & { from?: 'worker' };
 
 export interface BridgeServerOpts<Up> {
   /** 0 (the default): any free loopback port; read `port` after start(). */
@@ -22,7 +28,25 @@ export interface BridgeServerOpts<Up> {
   onMessage: (msg: Up) => void;
   onConnect?: () => void;
   onDisconnect?: () => void;
+  /** Every frame that came up but a `got`, replies included, before it is routed (a page watch hears the page through it). */
+  onFrame?: (msg: Up | BridgeReply) => void;
+  /** A command the extension did not answer in time, by its kind. */
+  onTimeout?: (kind: string) => void;
   log: Log;
+  /** Diagnose each timed-out request by itself (silence.ts). Off by default. */
+  silence?: BridgeSilence;
+}
+
+/** How a bridge diagnoses its own timeouts: what the page is called, and what its extension can answer. */
+export interface BridgeSilence {
+  /** "the <name> page's silence". */
+  name: string;
+  /** The worker answers `tab.state` (page/worker-watch.js). A command's own numeric `tabId` goes with it. */
+  tab?: boolean;
+  /** The hook answers `page.state` (page/command-watch.js). */
+  page?: boolean;
+  /** The worker runs commands itself rather than handing them to a page (statements-common's driver). */
+  workerRuns?: boolean;
 }
 
 /** How far a command got before its timeout: nowhere we heard of, the service worker, or the page itself. */
@@ -41,6 +65,8 @@ export class BridgeServer<Up extends { t: string } = { t: string; [k: string]: u
   private sock: ServerWebSocket<SocketData> | null = null;
   private pending = new Map<string, Pending>();
   private seq = 0;
+  private diagnosing = false;
+  private answeredAt: number | null = null;
 
   constructor(private opts: BridgeServerOpts<Up>) {}
 
@@ -49,6 +75,10 @@ export class BridgeServer<Up extends { t: string } = { t: string; [k: string]: u
   }
   get port(): number {
     return this.server?.port ?? this.opts.port ?? 0;
+  }
+  /** When the extension last answered a request (any reply), or null. */
+  get lastAnswerAt(): number | null {
+    return this.answeredAt;
   }
   /** What the extension's config.json needs. */
   get wsUrl(): string {
@@ -89,9 +119,11 @@ export class BridgeServer<Up extends { t: string } = { t: string; [k: string]: u
             if (p && (g.at === 'worker' || g.at === 'page') && REACHED_RANK[g.at] > REACHED_RANK[p.reached]) p.reached = g.at;
             return;
           }
+          self.opts.onFrame?.(msg);
           if (msg.t === 'reply') {
             const r = msg as BridgeReply;
             const p = self.pending.get(r.id);
+            self.answeredAt = Date.now();
             if (p) {
               self.pending.delete(r.id);
               clearTimeout(p.timer);
@@ -120,8 +152,11 @@ export class BridgeServer<Up extends { t: string } = { t: string; [k: string]: u
     this.sock.send(JSON.stringify(payload));
   }
 
-  /** Run a command in the page and await its reply. A timeout's error carries `reached`: how far the command got. */
-  request<T = unknown>(cmd: Cmd, timeoutMs = 30_000): Promise<T> {
+  /**
+   * Run a command in the page and await its reply. A timeout's error carries `reached`: how far the command got. With
+   * the `silence` option, a timeout is also diagnosed in the log, unless `diagnose` is false (the probes themselves).
+   */
+  request<T = unknown>(cmd: Cmd, timeoutMs = 30_000, opts: { diagnose?: boolean } = {}): Promise<T> {
     const id = `c${++this.seq}`;
     return new Promise<T>((resolve, reject) => {
       if (!this.sock) return reject(new Error('extension not connected'));
@@ -129,6 +164,8 @@ export class BridgeServer<Up extends { t: string } = { t: string; [k: string]: u
         const reached = this.pending.get(id)?.reached ?? 'none';
         this.pending.delete(id);
         reject(Object.assign(new Error(`hook timed out on ${cmd.kind}`), { reached }));
+        this.opts.onTimeout?.(cmd.kind);
+        if (opts.diagnose !== false) this.diagnose(cmd, reached);
       }, timeoutMs);
       this.pending.set(id, { reached: 'none', resolve: resolve as (v: unknown) => void, reject, timer });
       try {
@@ -138,6 +175,25 @@ export class BridgeServer<Up extends { t: string } = { t: string; [k: string]: u
         clearTimeout(timer);
         reject(e as Error);
       }
+    });
+  }
+
+  /** One diagnosis at a time: requests that time out together are one silence. */
+  private diagnose(cmd: Cmd, reached: Reached) {
+    const s = this.opts.silence;
+    if (!s || this.diagnosing || !this.sock) return;
+    this.diagnosing = true;
+    const tabId = (cmd as { tabId?: unknown }).tabId;
+    void diagnoseSilence(this, {
+      name: s.name,
+      request: cmd.kind,
+      reached,
+      log: this.opts.log,
+      tab: s.tab ? { kind: 'tab.state', ...(typeof tabId === 'number' ? { tabId } : {}) } : null,
+      page: s.page ? { kind: 'page.state' } : null,
+      workerRuns: s.workerRuns,
+    }).finally(() => {
+      this.diagnosing = false;
     });
   }
 

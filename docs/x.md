@@ -664,6 +664,12 @@ From the bundle's own code and its SQLite schema, for XChat; legacy DMs may diff
   `canBeAddedToGroup`.
 - Message length: the composer reports `maxMessageLengthBytes` (a server value, not in the bundle).
 
+## A command the page does not answer
+
+Each command that times out is told apart in the log at once, in one line: `the x.com page's silence: request …`, with
+how far the request got, how Chromium sees the tab, and what the hook says of itself without the network (`page.state`). The hook also logs a command still open after 20 s. See [page-silence.md](page-silence.md); command names
+and path templates only, never a body or an id.
+
 ## Tests
 
 - `extractors/x/test/*.test.ts`: validation (`validate.test.ts`), mapping (`map.test.ts`), diffs (`ingest.test.ts`),

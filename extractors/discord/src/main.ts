@@ -204,6 +204,8 @@ const bridge = new BridgeServer({
   },
   onTimeout: () => pageWatch.unanswered(),
   log,
+  // A command that times out is told apart in the log: how far it got, the tab's state and the hook's own.
+  silence: { name: 'Discord', tab: true, page: true },
 });
 
 /** Reload the Discord tab through the worker when the page watch says so. */

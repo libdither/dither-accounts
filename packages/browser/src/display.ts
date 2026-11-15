@@ -1,6 +1,7 @@
 /**
  * A free X display for a new sandbox: the first n in a range (default :80–:89, then :100–:159) with no X socket, no X
- * lock file and no live claim (below). Discord's sandboxes keep their own hashed :91–:99. Ten displays were not enough
+ * lock file and no live claim (below). Discord's sandboxes keep their own :91–:99, each account's hashed slot or the
+ * next free one (extractors/discord/src/sandbox.ts). Ten displays were not enough
  * once eight accounts had live views and a test manager wanted four more. A display's live view is a Unix socket in
  * its account's directory (vnc.ts), so it has no port to find free.
  */

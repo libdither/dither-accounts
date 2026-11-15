@@ -3,13 +3,19 @@
  * who it is signed in as, its kind's mark and its state; what needs you on top (accounts, and apps asking for access).
  * Adding is here too: Add for everything, and in each category its services' marks (one click to that service) and
  * a + for the category's sheet. A category with no accounts yet shows its services as tiles to start from.
+ *
+ * Google comes first, in a section of its own: one card per Google account (its accounts here with one email), with
+ * a chip for each of its services (suites.ts, Suites.tsx), rather than one card per way in, spread over Chat, Mail and
+ * Calendars.
  */
 import type { AccountInfo } from '../../../src/api-types.ts';
 import { CATEGORIES, categoryOf, type Service, services, subtitleOf } from '../catalog.ts';
 import { href, kindName, named, pending, state } from '../state.ts';
+import { groupIdentities, SUITES } from '../suites.ts';
 import { openAdd, ServiceMark } from './Add.tsx';
 import { attentionOf, Avatar, condition, Dot } from './bits.tsx';
 import { Icon } from './icons.tsx';
+import { SuiteSection } from './Suites.tsx';
 
 function AccountCard({ a }: { a: AccountInfo }) {
   const c = condition(a);
@@ -46,8 +52,9 @@ function Offer({ list }: { list: Service[] }) {
 export function Overview() {
   const s = state.value!;
   const all = services(s);
+  const { identities, rest } = groupIdentities(s.accounts);
   const byCat = new Map<string, AccountInfo[]>();
-  for (const a of s.accounts) {
+  for (const a of rest) {
     const c = categoryOf(a.interfaces);
     (byCat.get(c) ?? byCat.set(c, []).get(c)!).push(a);
   }
@@ -87,6 +94,11 @@ export function Overview() {
           <Icon glyph="arrow" size={16} />
         </a>
       ))}
+
+      {SUITES.map((su) => {
+        const list = identities.filter((i) => i.suite.id === su.id);
+        return list.length ? <SuiteSection suite={su} identities={list} key={su.id} /> : null;
+      })}
 
       {CATEGORIES.map((c) => {
         const list = byCat.get(c.id) ?? [];

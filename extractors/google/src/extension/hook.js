@@ -29,7 +29,11 @@
  * HTML page, a 429) goes up only as what it reads as (pageKind: a sign-in or verification page, or neither). (i) For
  * writing (docs/google.md, "Writing to Gmail"): gmail.write, an s call that is one of the page's own kinds of write
  * (label changes from a fixed set, a draft and its send; writeRefusal says why any other is refused), and
- * gmail.upload, an attachment handed over in pieces (gmail.uploadChunk) and uploaded as the page uploads one.
+ * gmail.upload, an attachment handed over in pieces (gmail.uploadChunk) and uploaded as the page uploads one. (j) For
+ * suggesting people (docs/google.md, "Suggesting people"): gmail.contacts, the call Gmail's compose To field makes to
+ * Google's people-stack autocomplete while you type, with the body checked (contactsRefusal), the URL and headers fixed,
+ * and an API key of the page's (the one its own such calls carry, else the one Gmail's config puts beside Google's
+ * people API), cut off after 6 s.
  *
  * It never sees the extractor's token; it only talks to content.js, over the channel in main-world.js (put in below
  * when the extension is copied), which also keeps its fetch and XMLHttpRequest wrappers looking native to the page.
@@ -301,7 +305,9 @@
   const jsonStringify = JSON.stringify;
   const fromCharCode = String.fromCharCode;
   const btoaNative = window.btoa;
-  let settings = { authuser: '0', testOrigin: null, testMailOrigin: null };
+  const clearLater = window.clearTimeout;
+  const AbortC = window.AbortController;
+  let settings = { authuser: '0', testOrigin: null, testMailOrigin: null, peopleApiBase: null };
 
   const post = (payload) => cloak.send(payload);
   const log = (level, msg, data) => post({ t: 'log', level, msg, data });
@@ -863,6 +869,106 @@
     return { base64: toBase64(r.bytes.subarray(start, end)) };
   }
 
+  // gmail.contacts: the people Gmail's compose To field suggests, from Google's people-stack autocomplete, called as
+  // the page calls it (contacts.ts builds the body; this checks it, and makes the URL and headers itself).
+  const PEOPLE_BASE = 'https://peoplestack-pa.clients6.google.com';
+  const PEOPLE_PATH = '/$rpc/peoplestack.PeopleStackAutocompleteService/Autocomplete';
+  const PEOPLE_MS = 6000;
+  /** Gmail's config (GLOBALS) puts the key its people calls use right after Google's people API's address. */
+  const PEOPLE_KEY = /"https:\/\/people-pa\.googleapis\.com","(AIza[0-9A-Za-z_-]{35})"/;
+  const API_KEY = /^AIza[0-9A-Za-z_-]{35}$/;
+  /** Kept here only: the key the page's own suggestion calls carry, the one in its config, the last that worked, those refused. */
+  const people = { pageKey: null, htmlKey: null, htmlAt: 0, winner: null, refused: new Set() };
+  /** In tests, the fake's origin (only one of the test origins); otherwise always Google's. */
+  const peopleBase = () => (settings.peopleApiBase && testOrigin(settings.peopleApiBase) ? settings.peopleApiBase : PEOPLE_BASE);
+  const isPeopleCall = (u) => u.origin === peopleBase() && u.pathname.indexOf('/$rpc/peoplestack.') === 0;
+
+  /** A call of the page's own to the people stack: the key it carries (kept here, never sent up). */
+  function peopleNote(url, h) {
+    try {
+      const u = new URL(String(url), location.href);
+      if (!isPeopleCall(u)) return;
+      const k = headerOf(h, 'x-goog-api-key');
+      if (k && API_KEY.test(k)) people.pageKey = k;
+    } catch (e) {}
+  }
+
+  /** The key in Gmail's config, read from the page as served (once, and again at most a minute later while there is none). */
+  function peopleHtmlKey() {
+    if (people.htmlKey || Date.now() - people.htmlAt < 60000) return people.htmlKey;
+    people.htmlAt = Date.now();
+    try {
+      const m = PEOPLE_KEY.exec(document.documentElement.innerHTML);
+      if (m) people.htmlKey = m[1];
+    } catch (e) {}
+    return people.htmlKey;
+  }
+
+  /** Why a body is not the To field's suggestions request, or null: [134, query (trimmed, 1 to 300), [1, 2], 1 to 20]. */
+  function contactsRefusal(b) {
+    if (!Array.isArray(b) || b.length !== 4) return 'not a suggestions request';
+    if (b[0] !== 134) return "not Gmail compose's own kind of suggestion";
+    if (typeof b[1] !== 'string' || !b[1].length || b[1].length > 300 || b[1].trim() !== b[1]) return 'a query that is empty, too long or not trimmed';
+    if (!Array.isArray(b[2]) || b[2].length !== 2 || b[2][0] !== 1 || b[2][1] !== 2) return 'client information not as the page sends it';
+    if (!Number.isInteger(b[3]) || b[3] < 1 || b[3] > 20) return 'a page size that is not 1 to 20';
+    return null;
+  }
+
+  /** Google refusing the key (not the call): the API not enabled for its project, an unregistered caller, a bad key. */
+  const keyRefused = (status, text) => (status === 400 || status === 403) && /SERVICE_DISABLED|API_KEY_|API key not valid|unregistered callers|referer.{0,40}blocked/i.test(text);
+
+  /** One call with one key, answered within PEOPLE_MS: Google's status and JSON, or why not. */
+  async function peopleFetch(key, body) {
+    const ctl = new AbortC();
+    const timer = cloak.apply(later, window, [() => ctl.abort(), PEOPLE_MS]);
+    try {
+      const headers = { 'Content-Type': 'application/json+protobuf', 'X-Goog-Api-Key': key, 'X-Goog-AuthUser': String(settings.authuser), 'X-User-Agent': 'grpc-web-javascript/0.1' };
+      const auth = await authorization(false);
+      if (auth) headers.Authorization = auth;
+      const res = await cloak.apply(nativeFetch, window, [peopleBase() + PEOPLE_PATH, { method: 'POST', headers, body: jsonStringify(body), credentials: 'include', cache: 'no-store', signal: ctl.signal }]);
+      const text = await textUpTo(res, 2 * 1024 * 1024);
+      let json;
+      try {
+        json = jsonParse(text);
+      } catch (e) {}
+      if (json === undefined) return { status: res.status, error: 'not-json', page: learn.pageKind(res.status, res.headers.get('content-type'), text, res.url) };
+      if (res.status !== 200) return { status: res.status, code: Array.isArray(json) && Number.isInteger(json[0]) ? json[0] : null, keyRefused: keyRefused(res.status, text) };
+      return { status: 200, json };
+    } catch (e) {
+      return { status: 0, error: ctl.signal.aborted ? 'timeout' : 'network' };
+    } finally {
+      cloak.apply(clearLater, window, [timer]);
+    }
+  }
+
+  /** gmail.contacts: the body checked, then the keys in turn (at most three a call) until one is taken. */
+  async function contactsCall(body) {
+    const no = contactsRefusal(body);
+    if (no) throw new Error('gmail.contacts: refused, ' + no);
+    const tries = [];
+    const add = (k) => k && API_KEY.test(k) && tries.indexOf(k) < 0 && !people.refused.has(k) && tries.push(k);
+    add(people.pageKey);
+    add(people.winner);
+    add(peopleHtmlKey());
+    // Then the page's other keys (its requests' and its HTML's), in case Gmail's config moves the one it names.
+    keys.forEach((_source, k) => add(k));
+    let last = null;
+    for (let i = 0; i < tries.length && i < 3; i++) {
+      const r = await peopleFetch(tries[i], body);
+      if (r.keyRefused) {
+        people.refused.add(tries[i]);
+        if (people.winner === tries[i]) people.winner = null;
+        last = r;
+        continue;
+      }
+      delete r.keyRefused;
+      if (r.status === 200) people.winner = tries[i];
+      return r;
+    }
+    // Every key tried was refused (the next call tries the next ones), or the page has none.
+    return { status: last ? last.status : 0, code: last ? last.code : null, error: 'no-key' };
+  }
+
   // The wrappers are methods (no prototype) and cloak.replace makes each read like the native it stands in for.
   const fetchWrapper = {
     fetch(input, init) {
@@ -872,6 +978,7 @@
         const auth = headerOf(init && init.headers, 'authorization') || (input instanceof Request ? input.headers.get('authorization') : null);
         note(url, auth);
         syncNote(url, (init && init.headers) || (input instanceof Request ? input.headers : null), init && typeof init.body === 'string' ? init.body : null);
+        peopleNote(url, (init && init.headers) || (input instanceof Request ? input.headers : null));
         ctx = learnFetchStart(input, init, url);
       } catch (e) {}
       const p = cloak.apply(nativeFetch, this, arguments);
@@ -927,6 +1034,7 @@
           if (x) {
             note(x.url, x.auth);
             syncNote(x.url, x.headers, typeof body === 'string' ? body : null);
+            peopleNote(x.url, x.headers);
             const ctx = recording() ? learnNote(x.method, x.url, x.type, body === undefined ? null : body) : null;
             if (ctx) cloak.apply(addListener, this, ['loadend', () => learnXhrEnd(ctx, this)]);
           }
@@ -1048,6 +1156,8 @@
         return uploadChunk(c);
       case 'gmail.upload':
         return uploadSend(c);
+      case 'gmail.contacts':
+        return contactsCall(c.body);
     }
     throw new Error(`no command ${c.kind}`);
   }

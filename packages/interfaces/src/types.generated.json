@@ -1076,6 +1076,13 @@
      "mailboxId": ""
     }
    },
+   "mail.contacts": {
+    "input": "{ query: string; limit?: number }",
+    "output": "{ contacts: MailContact[] }",
+    "example": {
+     "query": ""
+    }
+   },
    "mail.flag": {
     "input": "{\n  ids: string[];\n  seen?: boolean;\n  answered?: boolean;\n  threadIds?: (null | string)[];\n  flagged?: boolean;\n}",
     "output": "{ refused?: string[]; unknown?: string[] }",
@@ -1118,6 +1125,7 @@
    "MailAttachment": "type MailAttachment = {\n  id: string;\n  filename: null | string;\n  mime: string;\n  size: number;\n  inline: boolean;\n  /** For inline parts that the HTML refers to as cid:… */\n  contentId: null | string;\n};",
    "Mailbox": "type Mailbox = {\n  id: string;\n  /** Its own name, the last part of the path. */\n  name: string;\n  /** The full path as the server shows it, `Work/Clients`. */\n  path: string;\n  parentId: null | string;\n  /** What it is for, when the server says (IMAP SPECIAL-USE, JMAP role), or the extractor is sure. */\n  role: null | \"all\" | \"flagged\" | \"inbox\" | \"sent\" | \"drafts\" | \"trash\" | \"junk\" | \"archive\" | \"important\";\n  unread: null | number;\n  total: null | number;\n};",
    "MailBulk": "/** Raw header values for an app to decide what is bulk: unfolded, trimmed, 300 characters at most; null when absent. */\ntype MailBulk = {\n  /** List-Id, as `\"Name\" <list.example.com>` or just `<list.example.com>`. */\n  listId: null | string;\n  /** List-Unsubscribe, `<https://…>, <mailto:…>`. */\n  unsubscribe: null | string;\n  /** Precedence: `bulk`, `list`, `junk`, … */\n  precedence: null | string;\n  /** Auto-Submitted: `auto-generated`, `auto-replied`, … (`no` means a person sent it). */\n  autoSubmitted: null | string;\n};",
+   "MailContact": "/** One person `mail.contacts` suggests: an address to write to, and the name the service shows with it. */\ntype MailContact = {\n  email: string;\n  /** Null when the service has no name for it, or the name is only the address again. */\n  name: null | string;\n};",
    "MailFlags": "type MailFlags = { seen: boolean; flagged: boolean; answered: boolean; draft: boolean };",
    "MailSummary": "type MailSummary = {\n  id: string;\n  mailboxId: string;\n  messageId: null | string;\n  /** The server's thread, when it has threads (Gmail, JMAP); otherwise null. */\n  threadId: null | string;\n  /** The server's own id for this message, the same in every mailbox it is in: Gmail's X-GM-MSGID, or RFC 8474's EMAILID (OBJECTID servers such as Dovecot). Absent when the server has none. A message with no Message-ID header is one message acro */\n  emailId?: string;\n  from: MailAddress[];\n  to: MailAddress[];\n  cc: MailAddress[];\n  subject: string;\n  /** The Date header. */\n  date: number;\n  /** When the server got it. */\n  receivedAt: number;\n  flags: MailFlags;\n  /** Keywords or labels beyond the flags (Gmail labels, IMAP keywords). */\n  labels: string[];\n  size: number;\n  /** The start of the text, when the server gives one cheaply. */\n  preview: null | string;\n  hasAttachments: boolean;\n  /** The In-Reply-To header's Message-ID; null when there is none or the extractor cannot see it here. */\n  inReplyTo?: null | string;\n  /** The References header's Message-IDs, oldest first: at most 20 (the first, the thread's root, and the last 19). */\n  references?: string[];\n  /** Headers that say the message came from a list or a machine; present only when at least one of them is there. */\n  bulk?: MailBulk;\n};",
    "OutgoingFile": "type OutgoingFile = {\n  filename: string;\n  mime: string;\n  /** A file on this machine, or the bytes. One of the two. */\n  path?: string;\n  base64?: string;\n};"

@@ -78,6 +78,7 @@ export const BINS = {
   pasta: { name: 'pasta', env: 'PASTA_BIN', nix: 'passt' },
   dbusDaemon: { name: 'dbus-daemon', env: 'DBUS_DAEMON_BIN', nix: 'dbus', candidates: ['/run/current-system/sw/bin/dbus-daemon'] },
   xdotool: { name: 'xdotool', env: 'XDOTOOL_BIN', nix: 'xdotool' },
+  pulseaudio: { name: 'pulseaudio', env: 'PULSEAUDIO_BIN', nix: 'pulseaudio' },
   sh: { name: 'sh', env: 'SANDBOX_SH_BIN', nix: 'bash', candidates: ['/bin/sh'] },
   env: { name: 'env', env: 'SANDBOX_COREUTILS_ENV', nix: 'coreutils', candidates: ['/usr/bin/env'] },
 } satisfies Record<string, BinSpec>;
@@ -94,9 +95,11 @@ export interface SandboxBins {
   coreutils: string;
   pasta: string | null;
   xdotool: string | null;
+  /** Only when the sandbox has audio devices (AppSandboxOptions.audio). */
+  pulseaudio: string | null;
 }
 
-export function sandboxBins(log: Log, want: { pasta: boolean; xdotool: boolean }): SandboxBins {
+export function sandboxBins(log: Log, want: { pasta: boolean; xdotool: boolean; pulseaudio?: boolean }): SandboxBins {
   const dbusDaemon = resolveBin(BINS.dbusDaemon, log);
   const dbusSend = join(dirname(dbusDaemon), 'dbus-send');
   if (!existsSync(dbusSend)) throw new Error(`${dirname(dbusDaemon)} has dbus-daemon but no dbus-send`);
@@ -115,5 +118,6 @@ export function sandboxBins(log: Log, want: { pasta: boolean; xdotool: boolean }
     coreutils: dirname(env),
     pasta: want.pasta ? tryBin(BINS.pasta, log) : null,
     xdotool: want.xdotool ? tryBin(BINS.xdotool, log) : null,
+    pulseaudio: want.pulseaudio ? resolveBin(BINS.pulseaudio, log) : null,
   };
 }

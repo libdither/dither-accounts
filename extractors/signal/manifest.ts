@@ -10,4 +10,12 @@ export default {
     blurb: 'Links this machine as another Signal device through signal-cli. Your phone stays in charge.',
     next: 'A code to scan shows here in a moment: on your phone, Signal → Settings → Linked devices → Link new device.',
   },
+  settings: [
+    {
+      key: 'calls',
+      label: 'Calls',
+      type: 'boolean',
+      note: 'Voice and video calls from dither-chat, through Signal Desktop linked as one more device of this account (docs/signal.md "Calls through Signal Desktop"). Off by default.',
+    },
+  ],
 } satisfies Manifest;

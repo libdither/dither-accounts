@@ -2168,3 +2168,102 @@ details.more > summary:hover {
   max-width: 420px;
   overflow-wrap: anywhere;
 }
+
+/* ---------------------------------------------------------------- a suite's identities (Suites.tsx): one Google account, its services */
+
+.id-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.id-sub-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.part-ics {
+  display: inline-flex;
+  gap: 4px;
+  flex: none;
+}
+.part-ic {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  color: var(--text-dim);
+}
+.part-ic.none {
+  color: var(--text-faint);
+  opacity: 0.4;
+}
+.part-ic.t-warn::after,
+.part-ic.t-danger::after,
+.part-ic.t-off::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--center);
+  background: var(--warn);
+}
+.part-ic.t-danger::after {
+  background: var(--danger);
+}
+.part-ic.t-off::after {
+  background: var(--text-faint);
+}
+.acc-identity + .acc-identity {
+  margin-top: 4px;
+}
+.acc-identity-head {
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.parts {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+}
+.part-row {
+  display: grid;
+  grid-template-columns: 84px 1fr auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 7px 0;
+  border-top: 1px solid var(--border-soft);
+}
+.part-row:first-child {
+  border-top: 0;
+}
+.part-how {
+  min-width: 0;
+}
+.part-why {
+  display: block;
+}
+.part-pill {
+  gap: 5px;
+}
+.suite-parts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.suite-parts .seg {
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+.suite-here {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-dim);
+}

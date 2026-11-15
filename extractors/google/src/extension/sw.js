@@ -285,7 +285,7 @@ chrome.runtime.onConnect.addListener(async (port) => {
   try {
     port.postMessage({
       t: 'settings',
-      settings: { authuser: String((cfg && cfg.authuser) ?? '0'), testOrigin: (cfg && cfg.testOrigin) || null, testMailOrigin: (cfg && cfg.testMailOrigin) || null },
+      settings: { authuser: String((cfg && cfg.authuser) ?? '0'), testOrigin: (cfg && cfg.testOrigin) || null, testMailOrigin: (cfg && cfg.testMailOrigin) || null, peopleApiBase: (cfg && cfg.peopleApiBase) || null },
     });
   } catch (e) {}
 });

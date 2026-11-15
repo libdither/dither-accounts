@@ -124,6 +124,14 @@ async function main() {
       }
       return;
     }
+    case 'set': {
+      const [id, key, value] = rest;
+      if (!id || !key || !value || !['on', 'off', 'true', 'false'].includes(value)) die('set <account> <setting> on|off');
+      if (!up) die(`the manager is not running at ${url}`);
+      await call('PATCH', `/api/accounts/${encodeURIComponent(id)}`, { settings: { [key]: value === 'on' || value === 'true' } });
+      console.log(`${id}: ${key} ${value === 'on' || value === 'true' ? 'on' : 'off'} (its extractor restarts to take it)`);
+      return;
+    }
     case 'import-dither-chat':
       return importDitherChat(up);
     case 'export-to-dither-chat':
@@ -159,7 +167,7 @@ async function main() {
       return cliproxy(up);
     default:
       die(
-        'usage: cli.ts accounts | apps | approve <request> | grant <app> <interface> <level> | import-dither-chat --hub-data <dir> (--accounts id,id | --all) [--dry-run] | forget <account> | export-to-dither-chat <account> --hub-data <dir> | set-password [--file <file>] | sessions | revoke-sessions | cliproxy (status | connect [keys.env] | add-claude <email> [--mail <account>] | relink|enable|disable|remove <account>)',
+        'usage: cli.ts accounts | apps | approve <request> | grant <app> <interface> <level> | set <account> <setting> on|off | import-dither-chat --hub-data <dir> (--accounts id,id | --all) [--dry-run] | forget <account> | export-to-dither-chat <account> --hub-data <dir> | set-password [--file <file>] | sessions | revoke-sessions | cliproxy (status | connect [keys.env] | add-claude <email> [--mail <account>] | relink|enable|disable|remove <account>)',
       );
   }
 }

@@ -232,6 +232,9 @@ Its config holds the form's fields (no password). Nothing else: messages are rea
 - One address to send as: no aliases yet, so `from` is the configured address or nothing.
 - Password sign-in only: no OAuth (XOAUTH2), so not Outlook.com / Microsoft 365.
 - A renamed mailbox gets a new id (its path is the id).
+- No address suggestions: `mail.contacts` answers 400 (`failed`, "imap has no operation \"mail.contacts\""), and the
+  status has no `details.contacts`. IMAP has no address book; the google and proton kinds suggest people as their
+  services' composers do.
 
 ## Asked of the manager
 

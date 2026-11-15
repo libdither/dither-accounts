@@ -92,7 +92,8 @@ if (sub === 'link') {
         process.exit(3);
       }
       writeFileSync(accountsFile, JSON.stringify({ accounts: [{ path: '123456', environment: 'LIVE', number: NUMBER, uuid: ACI }], version: 2 }));
-      writeFileSync(join(config, 'data', '123456'), JSON.stringify({ version: 9, deviceId: 2 }));
+      // FAKE_PRIMARY=1: the number's own (primary) device, as `register` would have made it.
+      writeFileSync(join(config, 'data', '123456'), JSON.stringify({ version: 9, deviceId: process.env.FAKE_PRIMARY === '1' ? 1 : 2 }));
       console.log(`Associated with: ${NUMBER}`);
       process.exit(0);
     }
@@ -563,6 +564,9 @@ if (sub === 'daemon') {
         return { data: Buffer.from(`sticker ${params?.packId}:${params?.stickerId}`).toString('base64') };
       case 'version':
         return { version: '0.14.8-fake' };
+      case 'addDevice':
+        if (typeof params?.uri !== 'string' || !params.uri.startsWith('sgnl://linkdevice')) throw fail('Invalid device link');
+        return {};
       default:
         throw Object.assign(new Error('Method not implemented'), { code: -32601 });
     }

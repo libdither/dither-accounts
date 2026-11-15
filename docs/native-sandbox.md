@@ -5,7 +5,8 @@ window, and the extension sees the page. A native app (Telegram Desktop, Signal 
 such door. But every app is a guest of its environment: it draws on a display, takes input from it, asks the session
 bus for notifications and file dialogs, runs `xdg-open` to show a link, writes under `$HOME`, and talks to the network.
 If we own that environment, we own every channel by which the app reaches outside itself, without touching the app.
-That is `packages/sandbox`, and Telegram Desktop (docs/telegram.md) is its first tenant.
+That is `packages/sandbox`. Telegram Desktop (docs/telegram.md) is its first tenant; Signal Desktop, as a Signal
+account's calls body (docs/signal.md, "Calls through Signal Desktop"), is its second, and the first with sound.
 
 ## What we own, for any app
 
@@ -16,6 +17,7 @@ That is `packages/sandbox`, and Telegram Desktop (docs/telegram.md) is its first
 | **the filesystem** | bubblewrap: `/nix/store` read-only, a few `/etc` files (DNS, TLS roots, fonts, the clock), a synthetic `passwd`, `group` and `machine-id`; `HOME` is `<account>/desktop/home`; `/tmp` private | the app's data where we can read it (Telegram's tdata), and nothing of yours: not your home, your X server, your session bus or `/sys` |
 | **PATH** | `/run/dither/bin` first: `xdg-open`, `x-www-browser`, `sensible-browser` and friends, each a shell script that calls `net.dither.Sandbox.Open` with `dbus-send`; then coreutils. GLib's default handler for http(s) and mailto is a `.desktop` file pointing at the same shim (`mimeapps.list`, merged with what the app writes there) | every "open this link" an app can make, whether through Qt (`QDesktopServices` runs `xdg-open`), GLib, or a portal |
 | **the network** | its own network namespace through pasta (user-mode networking: out to the internet, nothing in, the host's loopback not mapped); `host` when pasta cannot be had (said in the status), `none` for tests | the app reaches Telegram and nothing on this machine: not the manager on 8486 (and no live view listens on a port to reach). And abstract unix sockets live in the network namespace: under the host's network, the app could reach every other Xvfb on the machine (the browser sandboxes' displays listen on abstract sockets, unauthenticated) |
+| **sound** (when asked: `audio`) | a PulseAudio server of the sandbox's own, outside it like Xvfb, with its own home and runtime directory, no default script (so nothing of the machine's sound), only the null sinks and the sources remapped from their monitors that the app's runner names, and no module loading by clients; its socket is the app's session PulseAudio (`PULSE_SERVER`) | what the app plays and records, as streams we can tap and feed: Signal Desktop's calls |
 | **processes** | the app under `bwrap --unshare-all` with `--die-with-parent`; a small environment (the extractor's own, with its manager token, never reaches even bubblewrap's init); a pid file so a later start ends what a killed extractor left | one account's app cannot see another's processes, or the extractor's secrets |
 
 `bun test packages/sandbox` checks these against a real bus and a real sandbox: what the app inside can see (its own

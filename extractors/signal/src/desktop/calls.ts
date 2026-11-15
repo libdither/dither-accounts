@@ -105,6 +105,14 @@ export class DesktopCalls {
     }
   }
 
+  /** Desktop went away (its window crashed or reloaded): every call through it is over, for the device too. */
+  endAll(reason: string) {
+    for (const call of [...this.calls.keys()]) {
+      this.calls.delete(call);
+      this.o.emit({ t: 'call', call, ended: reason });
+    }
+  }
+
   /** The hook's news as adapter events. */
   onHook(ev: HookEvent) {
     if (ev.ev === 'call') {

@@ -193,18 +193,30 @@ function main() {
     if (!frame || !bridge.pc) return;
     const [w, h] = frame;
     if (!(w > 2 && h > 2)) return;
+    const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer.buffer || buffer);
+    if (w * h * 4 > bytes.byteLength) return;
     let r = remote.get(key);
     if (!r) {
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d', { alpha: false });
-      r = { canvas, ctx, track: canvas.captureStream().getVideoTracks()[0], at: 0, frames: 0 };
+      r = { canvas, ctx, track: canvas.captureStream().getVideoTracks()[0], at: 0, frames: 0, big: 0, bigAt: 0 };
       remote.set(key, r);
     }
+    // Signal's call view may pull one video at two sizes (a screen share in the main view and in a small preview):
+    // keep to the largest of the last second, so the canvas (and the encoder behind its stream) is not resized on every
+    // frame.
+    const now = Date.now();
+    const area = w * h;
+    if (area < r.big * 0.8 && now - r.bigAt < 1000) return;
+    if (area >= r.big * 0.8 || now - r.bigAt >= 1000) {
+      if (area >= r.big || now - r.bigAt >= 1000) r.big = area;
+      r.bigAt = now;
+    }
     if (r.canvas.width !== w || r.canvas.height !== h) {
+      r.resizes = (r.resizes || 0) + 1;
       r.canvas.width = w;
       r.canvas.height = h;
     }
-    const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer.buffer || buffer);
     r.ctx.putImageData(new ImageData(new Uint8ClampedArray(bytes.buffer, bytes.byteOffset, w * h * 4), w, h), 0, 0);
     r.at = Date.now();
     r.frames++;
@@ -449,7 +461,7 @@ function main() {
           mixTrack: t ? `${t.readyState}${t.muted ? ' muted' : ''}${t.enabled ? '' : ' disabled'}` : null,
           ctx: bridge.ctx ? bridge.ctx.state : null,
           bridge: bridge.pc ? bridge.pc.connectionState : null,
-          frames: Object.fromEntries([...remote].map(([k, r]) => [k, `${r.frames} ${r.canvas.width}x${r.canvas.height}`])),
+          frames: Object.fromEntries([...remote].map(([k, r]) => [k, `${r.frames} ${r.canvas.width}x${r.canvas.height}${r.resizes ? ` resized ${r.resizes}` : ''}`])),
         });
       }
       tellState();

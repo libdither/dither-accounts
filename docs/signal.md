@@ -283,6 +283,14 @@ sandbox, one JSON object per line.
 
 In the sandbox the hook allows Signal's own microphone and camera settings, since there they always mean the device's.
 
+**When Desktop's window fails.** A crashed renderer is loaded again by `main.cjs`. A window that hangs first has its main
+thread paused once through Electron's debugger, and where it stood (function names, files and lines; never a value) is
+written to `~/dither-hang.json` in the sandbox, which the extractor logs as "Signal Desktop hung" when the hook goes. A
+call through Desktop ends for the device as soon as the hook goes ("Signal Desktop stopped"), and a Desktop whose hook
+has not come back after 45 s is started again. The copy of others' video keeps to the largest size Signal pulled in the
+last second, because Signal's call view can pull one screen share at two sizes, and a canvas resized on every frame
+restarts the encoder behind it each time.
+
 **Measured** (one machine, 2026-11-15):
 
 - Desktop idle, linked, in the sandbox: about 470 MB resident and under 1 % of a core. Started with

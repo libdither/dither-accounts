@@ -7,7 +7,7 @@
  * one JSON object per line (requests {id, op} and their answers; news {ev}). Logs carry ops and states, never a link
  * code, a name or a number.
  */
-import { mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { AppSandbox, type AudioDevices, type Network, pickFreeDisplay, resolveBin, runtimeDir } from '@dither-accounts/sandbox';
 
@@ -81,6 +81,8 @@ export const AUDIO: AudioDevices = {
 const HOOK_DIR = resolve(import.meta.dir, 'hook');
 const HOOK_IN = '/run/dither/hook';
 const RESTART_MS = [2_000, 5_000, 15_000, 30_000, 60_000];
+/** How long Desktop may be without its hook (a window reloading after a crash) before it is started again. */
+const WATCHDOG_MS = 45_000;
 
 /** Signal Desktop's Electron and app.asar, from its launcher ($SIGNAL_DESKTOP_BIN, PATH, or nix build nixpkgs#signal-desktop). */
 export function resolveSignalDesktop(log: Log): { electron: string; asar: string } {
@@ -104,6 +106,7 @@ export class SignalDesktop implements CallsHost {
   private stopped = false;
   private restarts = 0;
   private restartTimer: Timer | null = null;
+  private watchdog: Timer | null = null;
   private error: string | null = null;
   app: DesktopApp | null = null;
 
@@ -143,6 +146,7 @@ export class SignalDesktop implements CallsHost {
               p.reject(new Error('Signal Desktop went away'));
             }
             this.pending.clear();
+            this.hookGone();
             this.o.onChange();
           },
         },
@@ -179,6 +183,26 @@ export class SignalDesktop implements CallsHost {
     }
   }
 
+  /** Its hook went away (the window reloaded, the renderer crashed or hung): say where it hung, and start Desktop again if
+   * the hook is not back soon (main.cjs reloads a crashed window itself). */
+  private hookGone() {
+    const hang = join(this.dir, 'home', 'dither-hang.json');
+    if (existsSync(hang)) {
+      try {
+        const h = JSON.parse(readFileSync(hang, 'utf8')) as { reason?: string; error?: string; frames?: { fn: string; file: string; line: number; col: number }[] };
+        this.o.log('warn', 'Signal Desktop hung', { reason: h.reason ?? h.error, at: (h.frames ?? []).slice(0, 12).map((f) => `${f.fn} ${f.file}:${f.line}:${f.col}`) });
+      } catch {}
+      rmSync(hang, { force: true });
+    }
+    if (this.watchdog || this.stopped) return;
+    this.watchdog = setTimeout(() => {
+      this.watchdog = null;
+      if (this.conn || this.stopped || !this.sandbox?.appAlive) return;
+      this.o.log('warn', 'Signal Desktop has not come back since its window went away; starting it again');
+      void this.sandbox.restartApp();
+    }, WATCHDOG_MS);
+  }
+
   private scheduleRestart() {
     if (this.restartTimer || this.stopped) return;
     const ms = RESTART_MS[Math.min(this.restarts++, RESTART_MS.length - 1)];
@@ -193,6 +217,8 @@ export class SignalDesktop implements CallsHost {
     this.stopped = true;
     if (this.restartTimer) clearTimeout(this.restartTimer);
     this.restartTimer = null;
+    if (this.watchdog) clearTimeout(this.watchdog);
+    this.watchdog = null;
     this.conn?.end();
     this.conn = null;
     this.socket?.stop(true);

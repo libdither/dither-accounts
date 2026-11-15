@@ -247,9 +247,12 @@ describe('calls setting on, a linked account (a phone is the primary)', () => {
     ]);
   });
 
-  test('its hook gone: the call capabilities go with it', async () => {
+  test('its hook gone: a call through it is over for the device, and the call capabilities go with it', async () => {
+    await cmd(w, { t: 'call', call: 'c5', op: 'join', conversation: `dm:${SELF}:${ALICE}`, mode: 'bridge' });
     const before = hellos(w).length;
+    const mark = w.events.length;
     w.desk!.set(w.desk!.app, false);
+    expect(w.events.slice(mark).filter((e) => e.t === 'call')).toEqual([{ t: 'call', call: 'c5', ended: 'Signal Desktop stopped' }]);
     const h = await until(w, 'a new hello', () => hellos(w).length > before && hellos(w).at(-1));
     expect(h.capabilities).toEqual(CAPABILITIES);
     await expect(cmd(w, { t: 'call', call: 'c9', op: 'join', conversation: `dm:${SELF}:${ALICE}`, mode: 'bridge' })).rejects.toThrow(/not set up/);

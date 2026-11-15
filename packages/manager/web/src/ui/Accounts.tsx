@@ -218,6 +218,27 @@ function Chain({ layers }: { layers: StatusLayer[] }) {
   );
 }
 
+/** Its kind's own settings (the manifest's `settings`), each a switch; changing one restarts the extractor to take it. */
+function Settings({ a, reload }: { a: AccountInfo; reload: () => void }) {
+  const flip = async (key: string, label: string, value: boolean) => {
+    if (await act(`/api/accounts/${a.id}`, { method: 'PATCH', body: { settings: { [key]: value } } }, `${label} ${value ? 'on' : 'off'}: restarting it`)) reload();
+  };
+  return (
+    <section class="pane-section" data-settings>
+      <h4>Settings</h4>
+      {a.settings.map((x) => (
+        <div key={x.key} data-setting={x.key}>
+          <label class="row nowrap small">
+            <input type="checkbox" checked={x.value} onChange={(e) => void flip(x.key, x.label, (e.target as HTMLInputElement).checked)} />
+            <span>{x.label}</span>
+          </label>
+          <p class="muted small">{x.note}</p>
+        </div>
+      ))}
+    </section>
+  );
+}
+
 /**
  * Its passkeys (privacy, schwab): where new ones are made (here, or a paired phone: docs/approver.md) and each one held,
  * with where its key lives. Never a key.
@@ -328,6 +349,8 @@ function AccountOverview({ a, d, reload }: { a: AccountInfo; d: AccountDetail | 
           <Kv rows={Object.entries(details).map(([k, v]) => [k, scalar(v)])} />
         </section>
       )}
+
+      {a.settings?.length > 0 && <Settings a={a} reload={reload} />}
 
       {d?.passkeys && <Passkeys a={a} d={d} reload={reload} />}
 

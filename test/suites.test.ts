@@ -27,6 +27,7 @@ function acct(kind: string, o: { email?: string; name?: string; layers?: StatusL
     ownDir: true,
     createdBy: null,
     createdAt: n,
+    settings: [],
   };
 }
 const google = SUITES.find((s) => s.id === 'google')!;

@@ -735,6 +735,7 @@ export class Http {
       ownDir: ownDir(this.dataDir, a.id, a.dir),
       createdBy: a.created_by,
       createdAt: a.created_at,
+      settings: (this.kinds.get(a.kind)?.settings ?? []).map((x) => ({ key: x.key, label: x.label, note: x.note, value: parse<Record<string, unknown>>(a.config, {})[x.key] === true })),
     };
   }
 

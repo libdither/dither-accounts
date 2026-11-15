@@ -245,8 +245,16 @@ function main() {
     if (bridge.mixTrack && bridge.mixTrack.readyState === 'live') return bridge.mixTrack;
     const id = await deviceIdOf('audioinput', 'CallMix');
     const s = await gum.call(navigator.mediaDevices, { audio: { deviceId: { exact: id }, echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
-    bridge.mixTrack = s.getAudioTracks()[0];
-    return bridge.mixTrack;
+    const t = s.getAudioTracks()[0];
+    bridge.mixTrack = t;
+    for (const e of ['mute', 'unmute', 'ended']) t.addEventListener(e, () => log('info', `call mix track ${e}`));
+    // Its level, for the logs: what the device should be hearing.
+    try {
+      if (!bridge.ctx) bridge.ctx = new AudioContext();
+      bridge.meter = bridge.ctx.createAnalyser();
+      bridge.ctx.createMediaStreamSource(new MediaStream([t])).connect(bridge.meter);
+    } catch (e) {}
+    return t;
   }
   /** The device's microphone into the `mic_in` sink, whose monitor is Signal's microphone. */
   async function playMic(track) {
@@ -256,6 +264,15 @@ function main() {
     await el.setSinkId(await deviceIdOf('audiooutput', 'DeviceMic'));
     await el.play();
     bridge.micEl = el;
+  }
+  /** RMS of an analyser's last 2048 samples. */
+  function rms(an) {
+    if (!an) return null;
+    const b = new Float32Array(an.fftSize);
+    an.getFloatTimeDomainData(b);
+    let x = 0;
+    for (const v of b) x += v * v;
+    return Math.round(Math.sqrt(x / b.length) * 10000) / 10000;
   }
   function closeBridge() {
     if (bridge.pc) bridge.pc.close();
@@ -422,8 +439,19 @@ function main() {
     send({ ev: 'call', call: id, ended: reason });
   }
   // Signal's video frames come at its own pace; slots and levels are read a few times a second.
+  let ticks = 0;
   setInterval(() => {
     try {
+      if (call && ++ticks % 20 === 0) {
+        const t = bridge.mixTrack;
+        log('info', 'call media', {
+          mix: rms(bridge.meter),
+          mixTrack: t ? `${t.readyState}${t.muted ? ' muted' : ''}${t.enabled ? '' : ' disabled'}` : null,
+          ctx: bridge.ctx ? bridge.ctx.state : null,
+          bridge: bridge.pc ? bridge.pc.connectionState : null,
+          frames: Object.fromEntries([...remote].map(([k, r]) => [k, `${r.frames} ${r.canvas.width}x${r.canvas.height}`])),
+        });
+      }
       tellState();
     } catch (e) {
       log('warn', 'call state', String(e));

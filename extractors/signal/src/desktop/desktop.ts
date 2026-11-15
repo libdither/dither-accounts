@@ -231,7 +231,8 @@ export class SignalDesktop implements CallsHost {
       case 'hello':
         return;
       case 'log':
-        this.o.log(m.level === 'warn' || m.level === 'error' ? m.level : 'debug', `[desktop] ${String(m.msg).slice(0, 300)}`);
+        // The hook's own words and numbers (states, levels, counts: never a name or what anyone says).
+        this.o.log(m.level === 'warn' || m.level === 'error' ? m.level : m.level === 'info' ? 'info' : 'debug', `[desktop] ${String(m.msg).slice(0, 300)}`, m.data);
         return;
       case 'app': {
         const was = this.app;

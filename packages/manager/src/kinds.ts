@@ -29,6 +29,19 @@ export interface Manifest {
    * offers to keep new ones on a paired phone (docs/approver.md).
    */
   passkeys?: boolean;
+  /**
+   * Per-account settings the owner may change after adding (the account's PATCH `settings`, `cli.ts set`): each kept
+   * in the account's config under its key, and the extractor restarted to take it. Only keys listed here can be set.
+   */
+  settings?: SettingInfo[];
+}
+
+export interface SettingInfo {
+  key: string;
+  label: string;
+  type: 'boolean';
+  /** What it does, in a sentence, for the page and the CLI. */
+  note: string;
 }
 
 export interface Kind extends Manifest {

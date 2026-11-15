@@ -238,7 +238,83 @@ docs/calls.md "Ringing" has the hub's side.
 Not `subscribeCallEvents`, `rejectCall`, `startCall` or `acceptCall`: signal-cli 0.14.8 tracks a call only while
 subscribed to call events, and then spawns `signal-call-tunnel` for every incoming offer. The nix build ships none, the
 spawn fails, and signal-cli hangs up on the caller (`endCall` 'tunnel_spawn_error'): every call would end on the phone
-too. No `declineCall` until a tunnel is packaged.
+too. Calls from here go through Signal Desktop instead (next section).
+
+## Calls through Signal Desktop
+
+With the account's **calls** setting on (off by default: `bun packages/manager/src/cli.ts set <account> calls on`, or
+`PATCH /api/accounts/<id>` with `{"settings": {"calls": true}}`; the extractor restarts to take it), the extractor runs
+Signal Desktop as the account's calls body: the official app, linked as one more device of the account, in the
+account's own sandbox ([native-sandbox.md](native-sandbox.md)) with audio devices of its own, and a hook of ours inside
+its window. signal-cli goes on doing everything else; Desktop is only used for calls. dither-chat calls through it in
+bridge mode, the same way it calls through Discord's client (dither-chat's docs/calls.md, "Video (bridge mode)").
+
+**Linking it.** On an account whose primary is a phone, the account's status gets a `calls` layer, "link Signal
+Desktop: scan the code in the live view with Signal on your phone (Settings → Linked devices)", and the live view is
+Desktop's display. On an account whose primary is signal-cli itself (a number registered here, like a test account),
+the extractor links Desktop with signal-cli's `addDevice` and the code Desktop shows, with nobody involved. Desktop's
+data is `<account>/desktop/home/.config/Signal`. It runs with `--password-store=basic`, because the sandbox has no
+keyring and Signal would wait for one, so its database key is kept as signal-cli's keys are: in the 0700 account
+directory.
+
+**What it advertises**, only while Desktop is linked and its hook is connected (the hello goes out again when that
+changes): `calls`, `declineCall`, `ringCalls` and `callVideo`, beside `callStates`.
+
+**How the hook gets in.** nixpkgs runs Signal Desktop on its own Electron (`electron app.asar`), so the extractor runs
+`electron -r hook/main.cjs app.asar`. `main.cjs` adds `hook/preload.cjs` to the app's sessions, so it runs in Signal's
+own preload world, beside the app's code, with the same `window.reduxActions` and `@signalapp/ringrtc` its buttons use
+(required from the same `app.asar`, so it is the same module instance). Nothing is patched on disk and no debugging
+port is opened. The hook talks to the extractor over one Unix socket in the sandbox's runtime directory, bound into the
+sandbox, one JSON object per line.
+
+| What | How |
+|---|---|
+| start a call | `calling.startCallingLobby`, then `calling.startCall` with the lobby's call mode (groups: `setOutgoingRing` first, when the device asked to ring) |
+| answer (a `join` while it rings here) | `calling.acceptCall` |
+| decline | `calling.declineCall` |
+| leave, mute | `calling.hangUpActiveCall`, `calling.setLocalAudio` (deafen: the mix to the device is cut) |
+| camera on or off | `calling.setLocalVideo`; when Signal then asks `getUserMedia` for a camera, it gets the device's camera from the bridge |
+| share a screen | `calling._setPresenting(source, stream)` with the device's screen (and its sound) from the bridge; off: `cancelPresenting` |
+| the device's microphone | played into the `mic_in` sink; its monitor is `device_mic`, the sandbox's default source, which RingRTC records |
+| the call's audio | RingRTC plays into `call_out`, the default sink; the hook records its monitor (`call_mix`, no echo cancelling, gain control or noise suppression) and sends it on mid 0 |
+| others' video | each frame Signal's own call view pulls from RingRTC (`Call.receiveVideoFrame`, `GroupCall.getVideoSource`) is copied to a canvas of its own, whose stream goes on one of the bridge's video slots (mids 4–7, screens first); CallState.video says whose |
+| the call's state | read from the store four times a second: participants (ACIs) with mute, speaking (audio level over 0.05), camera and screen; `self.connected` once Signal's own call is connected (direct: `connected`; group: connected and joined) |
+| group rings | a group call ringing this account (`ringId`, not yet joined) is a `callState` fact `ring:<ringId>`; signal-cli does not see these. 1:1 rings stay signal-cli's (above) |
+
+In the sandbox the hook allows Signal's own microphone and camera settings, since there they always mean the device's.
+
+**Measured** (one machine, 2026-11-15):
+
+- Desktop idle, linked, in the sandbox: about 470 MB resident and under 1 % of a core. Started with
+  `--password-store=basic` it is up in about a second; without it, it waits about 50 s for a keyring.
+- A 1:1 call from the test account to a phone, answered on the phone: the bridge's answer reaches the device 0.25 s
+  after its offer. Audio and video went both ways (heard and seen on the phone; the phone's camera and voice reached the
+  device). The phone's video arrived at the device at 176 to 528 pixels wide.
+
+**A calls-only account for the call lab.** To test calls between two Signal accounts automatically, the way
+dither-chat's call lab does for Discord, a lab manager can hold an account in calls-only mode: config `callsOnly: true`
+and `peers`, a list of ACIs. It runs Signal Desktop alone, without signal-cli, so the real account it is linked to gains
+exactly one linked device. Nothing of the account's messages, contacts or groups goes to the hub. The hub hears only who
+this account is, and a 1:1 with each peer (named as Signal names them). It advertises `callStates` and the call
+capabilities, nothing else. Desktop itself still receives what any linked device receives, in its own database in
+the lab's account directory. Delete that directory and unlink the device (on the phone: Settings → Linked devices) when
+the lab is done.
+
+**Why Desktop, and not the others** (weighed for this, 2026-11-14):
+
+| | signal-cli + `signal-call-tunnel` | Signal Desktop in the sandbox | Android app in the emulator |
+|---|---|---|---|
+| 1:1 voice | yes | yes | yes |
+| video | no: signal-cli always offers `AUDIO_CALL`, and the tunnel drops incoming frames and feeds no outgoing ones | yes | yes, but video in needs v4l2loopback (a kernel module) or a file, and video out is only a screen capture |
+| group calls | no: `startCall` takes one recipient; the tunnel's group handling does nothing | yes | yes |
+| media taps | per-call PulseAudio devices | PulseAudio devices of the sandbox's own, and video frames in the renderer | the emulator's gRPC audio in and out; camera by v4l2 or file |
+| packaging here | not in nixpkgs; builds against a prebuilt WebRTC download, but a nested cargo build stalled in a first attempt | nixpkgs `signal-desktop` | the SDK's emulator needs an FHS environment on NixOS; the image has no Play services |
+| cost | small (estimated) | 470 MB idle, measured | 2.5–3.5 GB and 1–2 cores in a video call (estimated, not booted) |
+| risk to the account | signal-cli ends any call it gives up on with a hangup to the caller (tunnel error, daemon restart, 60 s of ringing), which ends the call on the caller's side | the official client, one more linked device | a whole phone to keep registered |
+
+The tunnel is [signal-call-tunnel](https://github.com/visigoth/signal-call-tunnel) (RingRTC 2.65); signal-cli added
+calls in 0.14.2 ([CHANGELOG](https://github.com/AsamK/signal-cli/blob/master/CHANGELOG.md)) and has an open request
+for video ([#1735](https://github.com/AsamK/signal-cli/issues/1735)).
 
 ## Not built
 

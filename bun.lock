@@ -254,6 +254,7 @@
       "name": "@dither-accounts/extractor-signal",
       "dependencies": {
         "@dither-accounts/manager": "workspace:*",
+        "@dither-accounts/sandbox": "workspace:*",
         "@dither-chat/protocol": "workspace:*",
       },
     },

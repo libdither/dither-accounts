@@ -69,6 +69,8 @@ export interface AccountInfo {
   /** The app that made it, if one did. */
   createdBy: string | null;
   createdAt: number;
+  /** Its kind's own settings (the manifest's `settings`) and their values here; the page shows each as a switch. */
+  settings: { key: string; label: string; note: string; value: boolean }[];
 }
 export interface GrantInfo {
   id: string;

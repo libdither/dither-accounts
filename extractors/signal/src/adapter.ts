@@ -25,6 +25,8 @@ import { errorText, groupIdOfLink, isMessageRequest, joinError, lookupError, sig
 import { answerJoinParams, approvalParams, groupLeaving, groupModeration, isAdmin, joinRequests, labelOf, labelParams, moderateParams, ownLabel, parseJoinRequest, picturePath, quitParams } from './groups.ts';
 import { ChildRegistry, type Logger } from './cli.ts';
 import { Daemon, type DaemonExit } from './daemon.ts';
+import { DesktopCalls } from './desktop/calls.ts';
+import { type CallsHost, type DesktopOptions, SignalDesktop } from './desktop/desktop.ts';
 import { LinkFlow } from './link.ts';
 import {
   adminChanges,
@@ -155,6 +157,8 @@ export interface AdapterOptions {
   devicesEveryMs?: number;
   /** A daemon down longer than this asks the phone for contacts, groups and settings again when it is back (sendSyncRequest). */
   syncAfterOutageMs?: number;
+  /** Signal Desktop as the calls body (desktop/desktop.ts), when the account's `calls` setting is on; tests give a stub. */
+  desktop?: (o: DesktopOptions) => CallsHost;
 }
 
 type Phase = 'starting' | 'linking' | 'daemon' | 'relinking' | 'stopped' | 'broken';
@@ -248,6 +252,9 @@ export class SignalAdapter {
   private toldCaps: string | null = null;
   /** The daemon running now was started with stories on (no --ignore-stories). */
   private storiesRunning = false;
+  /** Calls through Signal Desktop: only with the account's `calls` setting on (docs/signal.md "Calls through Signal Desktop"). */
+  private desktop: CallsHost | null = null;
+  private calls: DesktopCalls | null = null;
 
   constructor(
     private host: AdapterHost,
@@ -266,6 +273,77 @@ export class SignalAdapter {
     const globalCfg = join(host.accountDir, 'signal-cli.global.json');
     if (!existsSync(globalCfg)) writeFileSync(globalCfg, '{}\n', { mode: 0o600 });
     this.env = { ...process.env, SIGNAL_CLI_CONFIG: globalCfg };
+    if (host.config.calls === true || this.callsOnly) {
+      const make = opts.desktop ?? ((o: DesktopOptions) => new SignalDesktop(o));
+      this.desktop = make({
+        accountDir: host.accountDir,
+        log: host.log,
+        onEvent: (ev) => this.calls?.onHook(ev),
+        onChange: () => this.desktopChanged(),
+      });
+      this.calls = new DesktopCalls({
+        host: this.desktop,
+        self: () => this.account?.aci ?? null,
+        emit: (ev) => this.host.emit(ev),
+        log: host.log,
+        isPrimary: () => this.thisDeviceId() === 1,
+        addDevice: async (uri) => {
+          const rpc = this.daemon?.rpc;
+          if (!rpc?.open) throw new Error('signal-cli is not running');
+          await rpc.call('addDevice', { uri }, 60_000);
+        },
+      });
+    }
+  }
+
+  /**
+   * A calls-only account (config `callsOnly`, the call lab's: docs/signal.md "A calls-only account for the call lab"):
+   * Signal Desktop alone, no signal-cli. Nothing of the account's messages, contacts or groups leaves Desktop; the hub
+   * hears only who this account is and a 1:1 with each ACI in config `peers`.
+   */
+  /** What a calls-only account told the hub of its peers, said again on every reconnect. */
+  private callsOnlyFacts: P.AdapterEvent[] = [];
+
+  private get callsOnly() {
+    return this.host.config.callsOnly === true;
+  }
+
+  private async callsOnlyChanged() {
+    const app = this.desktop?.app;
+    if (app?.signedIn && app.aci && !this.account) {
+      const aci = app.aci.toLowerCase();
+      this.account = { number: '', aci };
+      const peers = (Array.isArray(this.host.config.peers) ? this.host.config.peers : []).filter((p: unknown): p is string => typeof p === 'string' && ACI.test(p)).map((p: string) => p.toLowerCase());
+      let names: Record<string, string> = {};
+      try {
+        names = (await this.desktop!.request<Record<string, string>>('names', { peers })) ?? {};
+      } catch {}
+      this.callsOnlyFacts = peers.flatMap((peer): P.AdapterEvent[] => [
+        { t: 'identity', identity: { nativeId: peer, ...(names[peer] ? { displayName: names[peer] } : {}), contact: true } },
+        { t: 'conversation', conversation: { nativeId: `dm:${aci}:${peer}`, shape: 'direct', participants: [aci, peer], encrypted: true } },
+      ]);
+      for (const ev of this.callsOnlyFacts) this.host.emit(ev);
+      this.setStatus('online', null, { nativeId: aci, isSelf: true });
+      return;
+    }
+    if (this.account) {
+      this.setStatus(this.desktop?.ready ? 'online' : 'connecting', null);
+      return;
+    }
+    if (app?.linkUrl) this.setStatus('attention', { kind: 'link_device', message: 'Link Signal Desktop for calls: on your phone, Signal → Settings → Linked devices → Link new device, and scan this code.', qr: app.linkUrl });
+    else this.setStatus('connecting', null);
+  }
+
+  /** Desktop linked, unlinked, came or went: what the hub may offer, the status, and a primary's own link. */
+  private desktopChanged() {
+    if (this.phase === 'stopped') return;
+    if (this.capabilities().join(',') !== this.toldCaps) this.hello();
+    if (this.callsOnly) {
+      void this.callsOnlyChanged();
+      return;
+    }
+    if (this.lastStatus) this.setStatus(this.lastStatus.status, this.lastStatus.attention);
+    void this.calls?.onAppChange();
   }
 
   // ---------------------------------------------------------------- lifecycle
@@ -278,7 +356,10 @@ export class SignalAdapter {
 
   /** CAPABILITIES, and link previews while the phone's setting allows them (unknown: not). */
   capabilities(): P.Capability[] {
-    return this.settings().linkPreviews === true ? [...CAPABILITIES, 'linkPreviews'] : CAPABILITIES;
+    if (this.callsOnly) return ['callStates', ...(this.calls?.capabilities() ?? [])];
+    const base = this.settings().linkPreviews === true ? [...CAPABILITIES, 'linkPreviews' as const] : CAPABILITIES;
+    const calls = this.calls?.capabilities() ?? [];
+    return calls.length ? [...base, ...calls] : base;
   }
 
   /** The phone's synced settings (SignalSettings), read at most once a minute. Public for tests. */
@@ -301,6 +382,7 @@ export class SignalAdapter {
   onHubConnect() {
     this.hello();
     if (this.lastStatus) this.host.emit(this.lastStatus);
+    for (const ev of this.callsOnlyFacts) this.host.emit(ev);
     if (this.requestsKnown) this.sendAllRequests();
     if (this.linksKnown) this.host.emit({ t: 'relationships', list: [...this.links].map(([identity, relationship]) => ({ identity, relationship })) });
   }
@@ -308,6 +390,10 @@ export class SignalAdapter {
   async start() {
     this.hello();
     this.setStatus('connecting', null);
+    if (this.callsOnly) {
+      void this.desktop?.start();
+      return;
+    }
     try {
       this.argv0 = await this.opts.signalCli();
       await this.children.reapOrphans();
@@ -322,12 +408,14 @@ export class SignalAdapter {
     if (this.account) this.startDaemon();
     else this.startLink();
     this.expiryTimer = setInterval(() => this.sweepExpired(), this.opts.expirySweepMs ?? 30_000);
+    void this.desktop?.start();
   }
 
   async shutdown() {
     this.phase = 'stopped';
     clearTimeout(this.restartTimer);
     clearInterval(this.expiryTimer);
+    await this.desktop?.stop();
     this.stopSnapshots();
     await Promise.all([this.link?.stop(), this.daemon?.stop()]);
     await this.children.killAll(3000);
@@ -338,7 +426,11 @@ export class SignalAdapter {
     const ev: Status = { t: 'status', status };
     if (attention !== undefined) ev.attention = attention;
     if (self) ev.self = self;
-    ev.layers = this.layers(status, attention ?? null);
+    ev.layers = this.callsOnly ? [] : this.layers(status, attention ?? null);
+    if (this.desktop) {
+      ev.layers.push(this.desktop.layer());
+      ev.liveView = this.desktop.liveView();
+    }
     const details = this.details();
     if (details) ev.details = details;
     this.lastStatus = ev;
@@ -1169,6 +1261,10 @@ export class SignalAdapter {
         return this.setLabel(cmd.conversation, cmd.text, cmd.emoji);
       case 'clearReactions':
         throw new Error('Signal does not let anyone remove others’ reactions.');
+      case 'call':
+      case 'declineCall':
+        if (!this.calls) throw new Error('Calls on this Signal account are off (its calls setting)');
+        return this.calls.command(cmd);
       case 'shutdown':
         return undefined;
     }
@@ -2595,6 +2691,7 @@ export class SignalAdapter {
     if (this.account) d['this device'] = `${me?.name ?? String(this.host.config.deviceName ?? 'dither-chat')}${id ? ` (#${id})` : ''}`;
     if (this.devices?.length) d['linked devices'] = devicesDetail(this.devices, id);
     if (this.state.username?.name) d.username = this.state.username.name;
+    if (this.desktop) Object.assign(d, this.desktop.details());
     return Object.keys(d).length ? d : undefined;
   }
 

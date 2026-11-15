@@ -337,6 +337,7 @@ export class SignalAdapter {
   /** Desktop linked, unlinked, came or went: what the hub may offer, the status, and a primary's own link. */
   private desktopChanged() {
     if (this.phase === 'stopped') return;
+    if (this.desktop && !this.desktop.ready) this.calls?.endAll('Signal Desktop stopped');
     if (this.capabilities().join(',') !== this.toldCaps) this.hello();
     if (this.callsOnly) {
       void this.callsOnlyChanged();

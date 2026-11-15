@@ -52,6 +52,9 @@ export function checkAbout(about: unknown): string {
 }
 
 export const msgId = (conversation: string, wid: string) => `${conversation}/${wid}`;
+
+/** A protobuf millisecond time sent as a string ("1731690000000"), or undefined when it is missing or zero. */
+const msOf = (v: string | undefined) => (v && Number(v) > 0 ? Number(v) : undefined);
 export function parseMsgId(id: string): { conversation: string; wid: string } {
   const i = id.lastIndexOf('/');
   if (i < 0) throw new Error(`not a WhatsApp message id: ${id}`);
@@ -325,12 +328,14 @@ export class Mapper {
       const r = m.reactionMessage;
       const target = msgId(conv, r.key?.ID ?? '');
       const prev = this.st.reaction(target, author);
+      // When (dither-chat docs/reactions.md "When"): the reaction's own time, else its message's.
+      const ts = msOf(r.senderTimestampMS) ?? info.ts;
       if (r.text) {
-        if (prev && prev !== r.text) o.events.push({ t: 'reaction', conversation: conv, message: target, author, key: prev, remove: true });
-        o.events.push({ t: 'reaction', conversation: conv, message: target, author, key: r.text });
+        if (prev && prev !== r.text) o.events.push({ t: 'reaction', conversation: conv, message: target, author, key: prev, remove: true, ts });
+        o.events.push({ t: 'reaction', conversation: conv, message: target, author, key: r.text, ts });
         this.st.setReaction(target, author, r.text);
       } else if (prev) {
-        o.events.push({ t: 'reaction', conversation: conv, message: target, author, key: prev, remove: true });
+        o.events.push({ t: 'reaction', conversation: conv, message: target, author, key: prev, remove: true, ts });
         this.st.setReaction(target, author, null);
       }
       return o;
@@ -436,15 +441,17 @@ export class Mapper {
   }
 
   private historyReactions(list: NonNullable<WaWebInfo['reactions']>, chat: string): P.ReactionFact[] {
-    const by = new Map<string, string[]>();
+    const by = new Map<string, { authors: string[]; at: Record<string, number> }>();
     for (const r of list) {
       if (!r.text) continue;
       const author = r.key?.fromMe ? this.self().id : r.key?.participant ? this.who(r.key.participant) : isGroup(chat) ? '' : this.who(chat);
       if (!author) continue;
-      const authors = by.get(r.text) ?? by.set(r.text, []).get(r.text)!;
-      if (!authors.includes(author)) authors.push(author);
+      const e = by.get(r.text) ?? by.set(r.text, { authors: [], at: {} }).get(r.text)!;
+      if (!e.authors.includes(author)) e.authors.push(author);
+      const ts = msOf(r.senderTimestampMS);
+      if (ts) e.at[author] = ts;
     }
-    return [...by].map(([key, authors]) => ({ key, authors }));
+    return [...by].map(([key, e]) => ({ key, authors: e.authors, ...(Object.keys(e.at).length ? { at: e.at } : {}) }));
   }
 
   /** The people a stub is about (added, removed, made admin), as native ids. */

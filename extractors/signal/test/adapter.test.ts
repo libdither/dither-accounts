@@ -316,9 +316,12 @@ describe('signal adapter against a fake signal-cli', () => {
 
   test('react, edit, redact, markRead', async () => {
     let mark = events.length;
+    const reactedFrom = Date.now();
     await cmd({ t: 'react', conversation: GROUP, message: `${ALICE}:${T + 1000}`, key: '🔥' });
     expect(calls('sendReaction').at(-1).params).toEqual({ groupId: GID, emoji: '🔥', targetAuthor: ALICE, targetTimestamp: T + 1000 });
-    expect(of('reaction', mark)).toEqual([{ t: 'reaction', conversation: GROUP, message: `${ALICE}:${T + 1000}`, author: SELF, key: '🔥' }]);
+    // Its time is the one signal-cli sent it with (the fake's are never before the call).
+    expect(of('reaction', mark)).toEqual([{ t: 'reaction', conversation: GROUP, message: `${ALICE}:${T + 1000}`, author: SELF, key: '🔥', ts: expect.any(Number) }]);
+    expect((of('reaction', mark)[0] as { ts: number }).ts).toBeGreaterThanOrEqual(reactedFrom);
     await cmd({ t: 'react', conversation: GROUP, message: `${ALICE}:${T + 1000}`, key: '🔥', remove: true });
     expect(calls('sendReaction').at(-1).params.remove).toBe(true);
 

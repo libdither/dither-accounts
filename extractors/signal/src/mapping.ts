@@ -537,6 +537,8 @@ function dataCommon(b: Build, dm: Partial<SigDataMessage>, author: string, conve
         author,
         key: dm.reaction.emoji,
         ...(dm.reaction.isRemove ? { remove: true } : {}),
+        // When it was made: the reaction message's own timestamp (dither-chat docs/reactions.md "When").
+        ...(ts ? { ts } : {}),
       });
     }
     return;

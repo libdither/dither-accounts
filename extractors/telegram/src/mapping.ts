@@ -189,11 +189,16 @@ export function reactionsOf(ctx: MapCtx, r: tl.TypeMessageReactions | undefined)
     const key = reactionKey(rc.reaction);
     if (!key) continue;
     const authors = new Set<string>();
+    // When each reacted: Telegram dates each named reaction (seconds).
+    const at: Record<string, number> = {};
     for (const pr of r.recentReactions ?? []) {
-      if (reactionKey(pr.reaction) === key) authors.add(authorOf(peerOf(pr.peerId)));
+      if (reactionKey(pr.reaction) !== key) continue;
+      const a = authorOf(peerOf(pr.peerId));
+      authors.add(a);
+      if (pr.date) at[a] = pr.date * 1000;
     }
     if (rc.chosenOrder !== undefined) authors.add(userId(ctx.self));
-    const f: P.ReactionFact = { key, authors: [...authors] };
+    const f: P.ReactionFact = { key, authors: [...authors], ...(Object.keys(at).length ? { at } : {}) };
     if (authors.size < rc.count) f.count = rc.count;
     if (rc.reaction._ === 'reactionCustomEmoji') f.emoji = { key, name: 'custom', url: emojiUrl(rc.reaction.documentId) };
     out.push(f);

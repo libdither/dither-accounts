@@ -27,6 +27,19 @@ typed from the protocol, and every `AdapterEvent` but replies and logs is an eve
 `hello` and `status` are the account's own state: the manager keeps the latest of each and gives them to an app when it
 connects or when a grant first lets it see the account.
 
+**When each reacted.** A `reaction` event carries `ts`, the network's time for it, and a snapshot names each person's
+(`MessageFact.reactions[].at`, and the `reactors` reply's `at`, both by author), where the network gives one.
+dither-chat shows them on hover and in who reacted (its `docs/reactions.md`, "When"); without one the hub uses the time
+it heard and shows "by".
+
+| kind | added | taken back |
+|---|---|---|
+| `signal` | the reaction message's timestamp (yours: the one signal-cli sent it with) | the same, from the message taking it back |
+| `whatsapp` | `senderTimestampMS`, else its message's time; history's reactions too | the time of the message taking it back |
+| `matrix` | the `m.reaction` event's `origin_server_ts`; a backfill snapshot's from the reaction index | the redaction's `origin_server_ts` (or `redacted_because`'s) |
+| `telegram` | the `messagePeerReaction` date of each person it names; `reactors` too | none: Telegram drops it from the list |
+| `discord`, `x`, `meta`, `gmessages` | none: their reactions come as lists of who | none |
+
 **A Discord page that never starts or stops answering** (`extractors/discord/src/pagewatch.ts`). The extension's
 worker can be attached while its tab has no working page: after a restart under load, Chromium's network service
 crashed while the page loaded and the hook never ran. The worker now refuses a command it has no page for at once

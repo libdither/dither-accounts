@@ -312,7 +312,8 @@ code, pre with its language, links, quotes, mentions by name as `<@id>`), replie
 where from, edits, `mentionsSelf` from Telegram's own flag, photos, files, video, voice, stickers (kind `sticker`,
 body the emoji), places, contacts, polls and dice as text, service messages in words (joins, renames, calls, topics,
 timers), views and album ids under `extra`. Reactions: a message's whole set as a snapshot (`reactions`, with the
-people Telegram names and its totals), and live changes as `reaction` events for those it names.
+people Telegram names, when each reacted, and its totals), and live changes as `reaction` events for those it names
+(with Telegram's date for one added; it gives none for one taken back).
 
 Events: `message` (live, and `live: false` for the snapshot and history), `delete`, `reaction`, `read` (with Telegram's
 own unread and mention counts), `receipt` (read, in private chats: Telegram says who only there), `typing` (6 s, as

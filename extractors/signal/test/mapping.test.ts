@@ -122,9 +122,9 @@ describe('incoming data messages', () => {
     expect(m.attachments![0].url).toBe(`file://${DIR}/attachments/secret.json`);
   });
 
-  test('reaction add and remove', () => {
-    expect(of(map('reaction-add').events, 'reaction')).toEqual([{ t: 'reaction', conversation: GROUP, message: `${ALICE}:${T + 1000}`, author: SAM, key: '🔥' }]);
-    expect(of(map('reaction-remove').events, 'reaction')).toEqual([{ t: 'reaction', conversation: GROUP, message: `${ALICE}:${T + 1000}`, author: SAM, key: '🔥', remove: true }]);
+  test('reaction add and remove, each at its own timestamp', () => {
+    expect(of(map('reaction-add').events, 'reaction')).toEqual([{ t: 'reaction', conversation: GROUP, message: `${ALICE}:${T + 1000}`, author: SAM, key: '🔥', ts: T + 4000 }]);
+    expect(of(map('reaction-remove').events, 'reaction')).toEqual([{ t: 'reaction', conversation: GROUP, message: `${ALICE}:${T + 1000}`, author: SAM, key: '🔥', remove: true, ts: T + 5000 }]);
     expect(of(map('reaction-add').events, 'message')).toHaveLength(0);
   });
 
@@ -411,7 +411,7 @@ describe('sync messages (your other devices)', () => {
   });
 
   test('reaction sent from the phone', () => {
-    expect(of(map('sync-sent-reaction').events, 'reaction')).toEqual([{ t: 'reaction', conversation: GROUP, message: `${SAM}:${T + 14000}`, author: SELF, key: '👍' }]);
+    expect(of(map('sync-sent-reaction').events, 'reaction')).toEqual([{ t: 'reaction', conversation: GROUP, message: `${SAM}:${T + 14000}`, author: SELF, key: '👍', ts: T + 19000 }]);
   });
 
   test('read sync: per conversation, up to the newest read message; unknown messages skipped', () => {

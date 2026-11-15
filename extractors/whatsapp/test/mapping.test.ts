@@ -107,18 +107,21 @@ test('media: one attachment served through the adapter, caption as body', () => 
   expect(video.attachments![0]).toMatchObject({ kind: 'video', size: 2_000_000 });
 });
 
-test('reactions: one per person, a removal names what it removes', () => {
+test('reactions: one per person, a removal names what it removes, each at its time', () => {
   run(fx('own_text'));
   const add = run(fx('reaction'));
-  expect(add.events).toEqual([{ t: 'reaction', conversation: ALICE, message: msgId(ALICE, 'A2'), author: ALICE, key: '❤️' }]);
+  // The reaction's own senderTimestampMS, not when its message arrived.
+  expect(add.events).toEqual([{ t: 'reaction', conversation: ALICE, message: msgId(ALICE, 'A2'), author: ALICE, key: '❤️', ts: 1760000000000 }]);
   // a different emoji from the same person replaces the first
   const swap = fx('reaction');
   swap.message.reactionMessage.text = '😂';
+  swap.message.reactionMessage.senderTimestampMS = '1760000060000';
   expect(run(swap).events).toEqual([
-    { t: 'reaction', conversation: ALICE, message: msgId(ALICE, 'A2'), author: ALICE, key: '❤️', remove: true },
-    { t: 'reaction', conversation: ALICE, message: msgId(ALICE, 'A2'), author: ALICE, key: '😂' },
+    { t: 'reaction', conversation: ALICE, message: msgId(ALICE, 'A2'), author: ALICE, key: '❤️', remove: true, ts: 1760000060000 },
+    { t: 'reaction', conversation: ALICE, message: msgId(ALICE, 'A2'), author: ALICE, key: '😂', ts: 1760000060000 },
   ]);
-  expect(run(fx('unreaction')).events).toEqual([{ t: 'reaction', conversation: ALICE, message: msgId(ALICE, 'A2'), author: ALICE, key: '😂', remove: true }]);
+  // No senderTimestampMS: the time of the message that took it back.
+  expect(run(fx('unreaction')).events).toEqual([{ t: 'reaction', conversation: ALICE, message: msgId(ALICE, 'A2'), author: ALICE, key: '😂', remove: true, ts: 1760000540000 }]);
   // nothing left to remove
   expect(run(fx('unreaction')).events).toEqual([]);
 });
@@ -165,7 +168,8 @@ test('view-once media is not shown, kept or forwardable', () => {
 test('history: backfill (no notifications), reactions snapshot, system lines', () => {
   run(fx('reply_mention')); // links Bob's LID to his number
   const [h] = facts(run(fx('history_text')));
-  expect(h).toMatchObject({ conversation: GROUP, author: BOB, body: 'old news', reactions: [{ key: '👍', authors: [ME] }] });
+  // Each reaction at its senderTimestampMS.
+  expect(h).toMatchObject({ conversation: GROUP, author: BOB, body: 'old news', reactions: [{ key: '👍', authors: [ME], at: { [ME]: 1760000000000 } }] });
   expect(run(fx('history_text')).events[0]).toMatchObject({ live: false });
   expect(st.reaction(h.nativeId, ME)).toBe('👍');
   run(fx('text')); // links Alice

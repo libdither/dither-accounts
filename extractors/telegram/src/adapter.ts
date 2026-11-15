@@ -1708,12 +1708,18 @@ export class TelegramAdapter {
     const before = this.reactionNames.get(native);
     const after = namedReactions(this.ctx, reactions);
     this.reactionNames.set(native, after);
+    // A new reaction's time is Telegram's date for it; one taken back has none (it is gone from the list).
+    const snapshot = reactionsOf(this.ctx, reactions);
+    const added = (k: string) => {
+      const [author, key] = k.split('\n');
+      return snapshot.find((f) => f.key === key)?.at?.[author];
+    };
     if (before) {
-      for (const k of after) if (!before.has(k)) this.reactionEvent(conv, native, k, false);
+      for (const k of after) if (!before.has(k)) this.reactionEvent(conv, native, k, false, added(k));
       for (const k of before) if (!after.has(k)) this.reactionEvent(conv, native, k, true);
     } else if (fact) {
       const had = new Set((fact.reactions ?? []).flatMap((r) => r.authors.map((a) => `${a}\n${r.key}`)));
-      for (const k of after) if (!had.has(k)) this.reactionEvent(conv, native, k, false);
+      for (const k of after) if (!had.has(k)) this.reactionEvent(conv, native, k, false, added(k));
       for (const k of had) if (!after.has(k)) this.reactionEvent(conv, native, k, true);
     }
     if (!fact) {
@@ -1723,9 +1729,8 @@ export class TelegramAdapter {
       fact = messageFact(this.ctx, { ...m, reactions } as tl.TypeMessage) ?? undefined;
       if (!fact) return;
       // Nothing to diff against: the people Telegram names now are the change.
-      if (!before) for (const k of after) this.reactionEvent(fact.conversation, native, k, false);
+      if (!before) for (const k of after) this.reactionEvent(fact.conversation, native, k, false, added(k));
     } else {
-      const snapshot = reactionsOf(this.ctx, reactions);
       fact = { ...fact, ...(snapshot.length ? { reactions: snapshot } : {}) };
       if (!snapshot.length) delete fact.reactions;
     }
@@ -1733,10 +1738,10 @@ export class TelegramAdapter {
     this.host.emit({ t: 'message', message: fact, live: false });
   }
 
-  private reactionEvent(conv: string, message: string, k: string, remove: boolean) {
+  private reactionEvent(conv: string, message: string, k: string, remove: boolean, ts?: number) {
     const [author, key] = k.split('\n');
     const id = parseCustomKey(key);
-    this.host.emit({ t: 'reaction', conversation: conv, message, author, key, ...(remove ? { remove: true } : {}), ...(id ? { emoji: { key, name: 'custom', url: emojiUrl(id) } } : {}) });
+    this.host.emit({ t: 'reaction', conversation: conv, message, author, key, ...(remove ? { remove: true } : {}), ...(id ? { emoji: { key, name: 'custom', url: emojiUrl(id) } } : {}), ...(ts ? { ts } : {}) });
   }
 
   private async refreshUser(id: number) {
@@ -2072,16 +2077,18 @@ export class TelegramAdapter {
     return { canReact: true, custom: [] };
   }
 
-  private async reactors(message: string, key: string): Promise<{ authors: string[] }> {
+  private async reactors(message: string, key: string): Promise<{ authors: string[]; at?: Record<string, number> }> {
     const m = this.message(message);
     try {
       const res = await this.call({ _: 'messages.getMessageReactionsList', peer: this.inputPeer(m.ref.peer), id: m.id, reaction: this.reaction(key), limit: 100 });
       this.ingest(res.users, res.chats);
-      return { authors: res.reactions.map((r) => authorOf(peerOf(r.peerId))) };
+      const authors = res.reactions.map((r) => authorOf(peerOf(r.peerId)));
+      const at = Object.fromEntries(res.reactions.filter((r) => r.date).map((r) => [authorOf(peerOf(r.peerId)), r.date * 1000]));
+      return { authors, ...(Object.keys(at).length ? { at } : {}) };
     } catch (e) {
       // Broadcast channels do not say who reacted.
-      const known = this.recent.get(message)?.reactions?.find((r) => r.key === key)?.authors ?? [];
-      if (known.length) return { authors: known };
+      const known = this.recent.get(message)?.reactions?.find((r) => r.key === key);
+      if (known?.authors.length) return { authors: known.authors, ...(known.at ? { at: known.at } : {}) };
       throw e;
     }
   }

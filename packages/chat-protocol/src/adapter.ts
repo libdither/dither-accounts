@@ -342,6 +342,8 @@ export interface ReactionFact {
   style?: ReactionStyle;
   /** Who reacted, as far as the network says. */
   authors: string[];
+  /** When each of authors reacted, by native id, where the network says (ms). */
+  at?: Record<string, number>;
   /** The network's total, when it does not name everyone (Discord). Omit when authors is the full list. */
   count?: number;
   /** Super reactions: the colours of the effect, as CSS hex. */
@@ -487,7 +489,11 @@ export type AdapterEvent =
   | { t: 'message'; message: MessageFact; live?: boolean; late?: boolean }
   /** A message is gone. `reason: 'expired'`: its disappearing timer ran out, rather than someone deleting it. */
   | { t: 'delete'; conversation: string; nativeId: string; reason?: 'expired' }
-  | { t: 'reaction'; conversation: string; message: string; author: string; key: string; remove?: boolean; style?: ReactionStyle; colors?: string[]; emoji?: CustomEmojiFact }
+  /**
+   * One person added or took back one reaction. `ts`: when, as the network says (ms). Leave it out where the network
+   * gives no time (Discord): the hub then keeps when it heard, and shows it as "by" that time (docs/reactions.md "When").
+   */
+  | { t: 'reaction'; conversation: string; message: string; author: string; key: string; remove?: boolean; style?: ReactionStyle; colors?: string[]; emoji?: CustomEmojiFact; ts?: number }
   /** A moderator removed every reaction on a message, or every one with this key. */
   | { t: 'reactionsCleared'; conversation: string; message: string; key?: string }
   /**
@@ -735,7 +741,7 @@ export type AdapterCommand =
   | { t: 'react'; id: string; conversation: string; message: string; key: string; remove?: boolean; style?: ReactionStyle; emoji?: CustomEmojiFact }
   /** reply.result: ReactionContext */
   | { t: 'reactionContext'; id: string; conversation: string; message?: string }
-  /** Name the people behind a total: identity facts first, then reply.result: { authors: string[] } */
+  /** Name the people behind a total: identity facts first, then reply.result: { authors: string[]; at?: Record<string, number> } (at as ReactionFact's). */
   | { t: 'reactors'; id: string; conversation: string; message: string; key: string; style?: ReactionStyle }
   | { t: 'edit'; id: string; conversation: string; message: string; body: string }
   /**

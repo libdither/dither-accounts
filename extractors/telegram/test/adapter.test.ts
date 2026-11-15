@@ -357,7 +357,9 @@ describe('signed in', () => {
     let n = h.events.length;
     await h.cmd({ t: 'react', conversation: DEVS, message: msg, key: '👍' });
     await h.until(() => h.since(n).some((e) => e.t === 'reaction'), 'the reaction');
-    expect(h.since(n).find((e) => e.t === 'reaction')).toEqual({ t: 'reaction', conversation: DEVS, message: msg, author: String(S), key: '👍' });
+    // Its time is Telegram's date for it.
+    const devsMsg = () => h.fake.world.msgs[`channel:${FAKE_IDS.devs}`][0];
+    expect(h.since(n).find((e) => e.t === 'reaction')).toEqual({ t: 'reaction', conversation: DEVS, message: msg, author: String(S), key: '👍', ts: devsMsg().reactedAt![S] * 1000 });
     await h.until(() => h.since(n).some((e) => e.t === 'message' && e.message.nativeId === msg), 'the snapshot');
     expect(h.since(n).find((e): e is Extract<Ev, { t: 'message' }> => e.t === 'message' && e.message.nativeId === msg)).toMatchObject({ live: false, message: { reactions: [{ key: '👍', authors: [String(S)] }] } });
     n = h.events.length;
@@ -367,11 +369,12 @@ describe('signed in', () => {
       ['🔥', false],
       ['👍', true],
     ]);
-    expect(await h.cmd({ t: 'reactors', conversation: DEVS, message: msg, key: '🔥' })).toEqual({ authors: [String(S)] });
+    expect(await h.cmd({ t: 'reactors', conversation: DEVS, message: msg, key: '🔥' })).toEqual({ authors: [String(S)], at: { [String(S)]: devsMsg().reactedAt![S] * 1000 } });
     n = h.events.length;
     await h.cmd({ t: 'react', conversation: DEVS, message: msg, key: '🔥', remove: true });
     await h.until(() => h.since(n).some((e) => e.t === 'reaction'), 'removed');
-    expect(h.since(n).find((e) => e.t === 'reaction')).toMatchObject({ key: '🔥', remove: true });
+    // Telegram does not say when one was taken back: no time, and the hub uses when it heard.
+    expect(h.since(n).find((e) => e.t === 'reaction')).toEqual({ t: 'reaction', conversation: DEVS, message: msg, author: String(S), key: '🔥', remove: true });
     expect(h.fake.world.msgs[`channel:${FAKE_IDS.devs}`][0].reactions).toEqual({});
     expect(await h.cmd({ t: 'reactionContext', conversation: DEVS })).toEqual({ canReact: true, custom: [] });
   });
@@ -538,7 +541,8 @@ describe('signed in', () => {
     n = h.events.length;
     await h.fake.control({ op: 'react', peer: `user:${FAKE_IDS.alice}`, id, from: FAKE_IDS.alice, key: '😂' });
     await h.until(() => h.since(n).some((e) => e.t === 'reaction'), 'the reaction');
-    expect(h.since(n).find((e) => e.t === 'reaction')).toEqual({ t: 'reaction', conversation: DM_ALICE, message: `${DM_ALICE}#${id}`, author: String(FAKE_IDS.alice), key: '😂' });
+    const reacted = h.fake.world.msgs[`user:${FAKE_IDS.alice}`].find((m) => m.id === id)!.reactedAt![FAKE_IDS.alice];
+    expect(h.since(n).find((e) => e.t === 'reaction')).toEqual({ t: 'reaction', conversation: DM_ALICE, message: `${DM_ALICE}#${id}`, author: String(FAKE_IDS.alice), key: '😂', ts: reacted * 1000 });
     n = h.events.length;
     await h.fake.control({ op: 'delete', peer: `user:${FAKE_IDS.alice}`, ids: [id] });
     await h.until(() => h.since(n).some((e) => e.t === 'delete'), 'the delete');

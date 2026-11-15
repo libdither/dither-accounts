@@ -31,6 +31,7 @@ import { BridgeServer, PaceQueue } from './server.ts';
 import { annotate, hookPhases, phase, sinceStart, traced } from './trace.ts';
 import { vncSocketPath } from '@dither-accounts/browser';
 import { Sandbox, pickDisplay } from './sandbox.ts';
+import { PageWatch } from './pagewatch.ts';
 import { callCapabilities, callEvents, CALL_EVENTS, newCallMemory } from './calls.ts';
 import { SERVER_DISPATCHES, ServerOps, serverCapabilities, serverDispatch } from './servers.ts';
 import { pollCapabilities, PollOps } from './polls.ts';
@@ -175,22 +176,51 @@ function deriveBridgeToken(): string {
 }
 const bridgeToken: string = hub.config.__bridgeToken ?? deriveBridgeToken();
 
+/** When to reload the Discord tab: a page that never spoke, or stopped answering (pagewatch.ts). */
+const pageWatch = new PageWatch();
+
 const bridge = new BridgeServer({
   port: adapterPort,
   token: bridgeToken,
   onMessage: handleBridge,
   onConnect: () => {
     log('info', 'sandbox extension attached');
+    pageWatch.attached();
     pushStatus();
   },
   onDisconnect: () => {
     log('info', 'sandbox extension detached');
+    pageWatch.detached();
     pushStatus();
   },
+  onFrame: (msg) => {
+    // The worker's own frames are not the page's: its hello, its answers to tab commands, its "no page" refusals.
+    if (msg.t === 'ready') return;
+    if (msg.t === 'reply' && msg.from === 'worker') {
+      if (!msg.ok) pageWatch.unanswered();
+      return;
+    }
+    pageWatch.heard();
+  },
+  onTimeout: () => pageWatch.unanswered(),
   log,
   // A command that times out is told apart in the log: how far it got, the tab's state and the hook's own.
   silence: { name: 'Discord', tab: true, page: true },
 });
+
+/** Reload the Discord tab through the worker when the page watch says so. */
+async function checkPage() {
+  const why = bridge.connected ? pageWatch.due() : null;
+  if (!why) return;
+  pageWatch.reloaded();
+  log('warn', `${why}; reloading its tab`);
+  try {
+    const r = await bridge.request<{ how: string }>({ kind: 'tab.reload', url: startUrl }, 15_000);
+    log('info', `the Discord tab was ${r?.how ?? 'reloaded'}`);
+  } catch (e) {
+    log('warn', 'the Discord tab could not be reloaded', String((e as Error)?.message ?? e).slice(0, 200));
+  }
+}
 
 const pace = new PaceQueue({ minGapMs: 1200, jitterMs: 600, log: (m, d) => log('debug', m, d) });
 const historyPace = new PaceQueue({ minGapMs: 1500, jitterMs: 1500, log: (m, d) => log('debug', m, d) });
@@ -288,6 +318,8 @@ async function boot() {
     // once through the live view and the persistent profile keeps the session.
     log('info', 'secret.json present, but auto-login is not enabled; log in via the live view once');
   }
+
+  setInterval(() => void checkPage(), 10_000);
 
   // Watchdog: if Chromium dies, surface it; the hub supervisor will restart us.
   const watch = setInterval(() => {

@@ -390,8 +390,9 @@ export type BridgeUp =
   | { t: 'loginIssue'; route: string; status: number; captcha?: string; message?: string; code?: number }
   /** A call's bridge signalling, its participants (with their users, so they have names), or its end. */
   | { t: 'call'; call: string; signal?: unknown; state?: { channelId: string; participants: CallParticipant[]; stage?: CallStage; self?: CallSelf; video?: CallVideo[] }; users?: RawUser[]; ended?: string; effect?: CallEffect }
-  | { t: 'reply'; id: string; ok: true; result?: unknown }
-  | { t: 'reply'; id: string; ok: false; error: string; retryAfter?: number }
+  /** `from: 'worker'`: the service worker answered (a tab command, or no page to run it in), not the page. */
+  | { t: 'reply'; id: string; ok: true; result?: unknown; from?: 'worker' }
+  | { t: 'reply'; id: string; ok: false; error: string; retryAfter?: number; from?: 'worker' }
   | { t: 'log'; level: 'debug' | 'info' | 'warn' | 'error'; msg: string; data?: unknown }
   /** The account itself: notices, settings, whom you ignore (self.ts). */
   | RawSelfUp;
@@ -467,6 +468,8 @@ export type HookCommand =
   /** suppressEmbeds, save, savedList, nativeScheduled, cancelScheduled (sending.ts). */
   | SendingHookCommand
   | { kind: 'lab'; op: string; [k: string]: unknown }
+  /** Run by the service worker itself: send the Discord tab back to `url`, or open one if there is none (pagewatch.ts). */
+  | { kind: 'tab.reload'; url: string }
   | {
       kind: 'send';
       channelId: string;

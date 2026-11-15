@@ -27,6 +27,14 @@ typed from the protocol, and every `AdapterEvent` but replies and logs is an eve
 `hello` and `status` are the account's own state: the manager keeps the latest of each and gives them to an app when it
 connects or when a grant first lets it see the account.
 
+**A Discord page that never starts or stops answering** (`extractors/discord/src/pagewatch.ts`). The extension's
+worker can be attached while its tab has no working page: after a restart under load, Chromium's network service
+crashed while the page loaded and the hook never ran. The worker now refuses a command it has no page for at once
+("the Discord page is not open in the sandbox") instead of dropping it, and the extractor reloads the tab through the
+worker (`tab.reload`: the Discord tab sent back to its start address, or a new one when there is none) when the page
+has not spoken 2 minutes after the worker attached, or left 3 requests in a row unanswered with no word between. Each
+reload with no word since doubles the next wait, up to 15 minutes.
+
 ## Network search and member walks
 
 dither-chat's network search and index jobs (its `netsearch.ts` and `jobs.ts`) ask an account to search the network's

@@ -18,7 +18,8 @@ import { diagnoseSilence } from './silence.ts';
 
 type SocketData = { authed: boolean };
 
-export type BridgeReply = { t: 'reply'; id: string; ok: true; result?: unknown } | { t: 'reply'; id: string; ok: false; error: string; retryAfter?: number };
+/** `from: 'worker'`: the service worker answered (a tab command, or no page to run it in), not the page. */
+export type BridgeReply = ({ t: 'reply'; id: string; ok: true; result?: unknown } | { t: 'reply'; id: string; ok: false; error: string; retryAfter?: number }) & { from?: 'worker' };
 
 export interface BridgeServerOpts<Up> {
   /** 0 (the default): any free loopback port; read `port` after start(). */
@@ -27,6 +28,10 @@ export interface BridgeServerOpts<Up> {
   onMessage: (msg: Up) => void;
   onConnect?: () => void;
   onDisconnect?: () => void;
+  /** Every frame that came up but a `got`, replies included, before it is routed (a page watch hears the page through it). */
+  onFrame?: (msg: Up | BridgeReply) => void;
+  /** A command the extension did not answer in time, by its kind. */
+  onTimeout?: (kind: string) => void;
   log: Log;
   /** Diagnose each timed-out request by itself (silence.ts). Off by default. */
   silence?: BridgeSilence;
@@ -114,6 +119,7 @@ export class BridgeServer<Up extends { t: string } = { t: string; [k: string]: u
             if (p && (g.at === 'worker' || g.at === 'page') && REACHED_RANK[g.at] > REACHED_RANK[p.reached]) p.reached = g.at;
             return;
           }
+          self.opts.onFrame?.(msg);
           if (msg.t === 'reply') {
             const r = msg as BridgeReply;
             const p = self.pending.get(r.id);
@@ -158,6 +164,7 @@ export class BridgeServer<Up extends { t: string } = { t: string; [k: string]: u
         const reached = this.pending.get(id)?.reached ?? 'none';
         this.pending.delete(id);
         reject(Object.assign(new Error(`hook timed out on ${cmd.kind}`), { reached }));
+        this.opts.onTimeout?.(cmd.kind);
         if (opts.diagnose !== false) this.diagnose(cmd, reached);
       }, timeoutMs);
       this.pending.set(id, { reached: 'none', resolve: resolve as (v: unknown) => void, reject, timer });

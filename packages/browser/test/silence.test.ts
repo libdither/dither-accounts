@@ -6,7 +6,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BridgeServer } from '../src/bridge.ts';
+import { BridgeServer, type Reached } from '../src/bridge.ts';
 import { diagnoseSilence, pathTemplate } from '../src/silence.ts';
 
 type Line = { level: string; msg: string; data?: any };
@@ -53,7 +53,7 @@ test("a timed-out request: how far it got, the tab's state and the hook's, in on
   });
   await bridge.request({ kind: 'ok' });
   expect(bridge.lastAnswerAt).not.toBeNull();
-  const e = await bridge.request({ kind: 'api', path: 'mail/v4/messages/abc', body: 'never logged' }, 150).catch((x) => x);
+  const e = (await bridge.request({ kind: 'api', path: 'mail/v4/messages/abc', body: 'never logged' }, 150).catch((x) => x)) as Error & { reached: Reached };
   expect(e.reached).toBe('page');
   await until(() => silences(lines).length === 1);
   const [line] = silences(lines);
@@ -100,7 +100,7 @@ test('without the option, a timeout is not diagnosed; diagnoseSilence can be cal
   const { bridge, lines } = await rig(undefined, (f, send) => {
     if (f.cmd?.kind === 'tab.state') send({ t: 'reply', id: f.id, ok: true, result: { tabId: f.cmd.tabId } });
   });
-  const e = await bridge.request({ kind: 'x' }, 100).catch((x) => x);
+  const e = (await bridge.request({ kind: 'x' }, 100).catch((x) => x)) as Error & { reached: Reached };
   await Bun.sleep(100);
   expect(silences(lines)).toHaveLength(0);
   await diagnoseSilence(bridge, { name: 'Calendar', request: 'x', reached: e.reached, log: (level, msg, data) => lines.push({ level, msg, data }), tab: { kind: 'tab.state', tabId: 4 }, lastAnswerAt: Date.now() - 61_000, extra: { hookUpAgoS: 5 } });
@@ -162,7 +162,7 @@ test("worker-watch: the worker's got, and tab.state from chrome.tabs with the ad
   await ww.answer((f: unknown) => sent.push(f), 'c3', 10);
   expect(sent).toEqual([
     { t: 'got', id: 'c1', at: 'worker' },
-    { t: 'reply', id: 'c2', ok: true, result: { tabId: 9, url: 'https://discord.example.com/channels/*/*', status: 'loading', active: true, discarded: false, frozen: true, audible: false, ports: 2 } },
-    { t: 'reply', id: 'c3', ok: true, result: { tabId: 10, gone: true } },
+    { t: 'reply', id: 'c2', ok: true, from: 'worker', result: { tabId: 9, url: 'https://discord.example.com/channels/*/*', status: 'loading', active: true, discarded: false, frozen: true, audible: false, ports: 2 } },
+    { t: 'reply', id: 'c3', ok: true, from: 'worker', result: { tabId: 10, gone: true } },
   ]);
 });

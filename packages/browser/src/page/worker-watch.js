@@ -51,9 +51,9 @@ const workerWatch = (() => {
     },
     async answer(send, id, tabId, extra) {
       try {
-        send({ t: 'reply', id, ok: true, result: { ...(await tab(tabId)), ...(extra || {}) } });
+        send({ t: 'reply', id, ok: true, from: 'worker', result: { ...(await tab(tabId)), ...(extra || {}) } });
       } catch (err) {
-        send({ t: 'reply', id, ok: false, error: String((err && err.message) || err).slice(0, 200) });
+        send({ t: 'reply', id, ok: false, from: 'worker', error: String((err && err.message) || err).slice(0, 200) });
       }
     },
   };

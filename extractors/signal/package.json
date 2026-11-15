@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@dither-chat/protocol": "workspace:*",
-    "@dither-accounts/manager": "workspace:*"
+    "@dither-accounts/manager": "workspace:*",
+    "@dither-accounts/sandbox": "workspace:*"
   }
 }

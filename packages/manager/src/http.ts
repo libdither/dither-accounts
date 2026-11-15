@@ -613,7 +613,7 @@ export class Http {
         return json({ ...r, state: this.state() });
       }
       if (req.method === 'PATCH') {
-        const b = await body<{ enabled?: boolean; label?: string; passkeyDevice?: string | null }>(req);
+        const b = await body<{ enabled?: boolean; label?: string; passkeyDevice?: string | null; settings?: Record<string, unknown> }>(req);
         if (this.router.inProcess.has(a.id) && b.enabled !== undefined) return bad(`${a.label} is part of the manager`, 409);
         // Where new passkeys are made (docs/approver.md): a paired device, or null for here (secret.json). The running
         // extractor gets the new config at once (its link's config is live), so it need not restart.
@@ -625,6 +625,19 @@ export class Http {
           else cfg.passkeyDevice = b.passkeyDevice;
           s.run('UPDATE account SET config = ?, updated_at = ? WHERE id = ?', JSON.stringify(cfg), Date.now(), a.id);
           this.sup.sendConfig(a.id);
+        }
+        // A kind's own settings (its manifest's `settings`): kept in the config, then the extractor restarts to take them.
+        if (b.settings && typeof b.settings === 'object') {
+          const known = new Map((this.kinds.get(a.kind)?.settings ?? []).map((x) => [x.key, x]));
+          const cfg = parse<Record<string, unknown>>(a.config, {});
+          for (const [k, v] of Object.entries(b.settings)) {
+            const info = known.get(k);
+            if (!info) return bad(`${a.kind} accounts have no setting ${k}`);
+            if (info.type === 'boolean' && typeof v !== 'boolean') return bad(`${k} is on or off (true or false)`);
+            cfg[k] = v;
+          }
+          s.run('UPDATE account SET config = ?, updated_at = ? WHERE id = ?', JSON.stringify(cfg), Date.now(), a.id);
+          if (a.enabled && !this.router.inProcess.has(a.id)) await this.sup.restart(a.id);
         }
         // An empty name clears the nickname: the page names it by who it is signed in as again (its kind's name is
         // what the registry keeps then, as for an account added without one).

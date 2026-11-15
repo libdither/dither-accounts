@@ -452,6 +452,12 @@ package type; a refusal's sentence (no addresses in it).
 the fake checks each send as a server holding every recipient's key would ("Tests"). Nothing has been sent from a real
 account yet: your first send is the checklist's step 9.
 
+## A command the page does not answer
+
+Each command that times out is told apart in the log at once, in one line: `the Mail page's silence: request …`, with
+how far the request got, how Chromium sees the tab, and what the hook says of itself without the network (`page.state`: visibility, lifecycle events, error counts, the commands still open; an `api` call is named by its method and path template). The hook also logs a command still open after 20 s. See [page-silence.md](page-silence.md); command names
+and path templates only, never a body or an id.
+
 ## Tests
 
 - `test/proton.test.ts`: no browser. The blob in all three versions (and a wrong key, version or a damaged blob), the

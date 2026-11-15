@@ -188,6 +188,8 @@ const bridge = new BridgeServer({
     pushStatus();
   },
   log,
+  // A command that times out is told apart in the log: how far it got, the tab's state and the hook's own.
+  silence: { name: 'Discord', tab: true, page: true },
 });
 
 const pace = new PaceQueue({ minGapMs: 1200, jitterMs: 600, log: (m, d) => log('debug', m, d) });

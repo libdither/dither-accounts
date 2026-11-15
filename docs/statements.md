@@ -71,6 +71,12 @@ now. dither-finance's `ledger/accounts.py` does this with a small stdlib WebSock
 the cursor stops before it), asks an account to pull only when its last pull is older than 18 hours, and its pull
 button always asks for a pull now and waits.
 
+## A command the page does not answer
+
+Each command that times out is told apart in the log at once, in one line: `the <name> page's silence: request …`, with
+how far the request got, how Chromium sees the tab, and nothing from the page: the driver runs each command itself, so the line says whether it took the command, and how Chromium sees the command's tab (`tab.state`). A kind names its page with `BrowserHost`'s `name` (Schwab, Amazon, Venmo, Claude). See [page-silence.md](page-silence.md); command names
+and path templates only, never a body or an id.
+
 ## Tests
 
 `test/statements.test.ts` (Python's JSON, the spool, the slot, the interface is read only), `test/simplefin.test.ts`,

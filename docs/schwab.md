@@ -150,6 +150,12 @@ cross-origin frame, and so does the hook). `lastRefusal`, `page` and the log sho
 2. Sign in in its live view ([What you do](#what-you-do)); the first pull backfills last year and this year.
 3. Compare the first pull's files with what your app already has for those accounts and days.
 
+## A command the page does not answer
+
+Each command that times out is told apart in the log at once, in one line: `the Schwab page's silence: request …`, with
+how far the request got, how Chromium sees the tab, and nothing from the page: the driver runs each command itself, so the line says whether it took the command, and how Chromium sees the command's tab. See [page-silence.md](page-silence.md); command names
+and path templates only, never a body or an id.
+
 ## Tests
 
 - `test/schwab.test.ts`: page kinds, recognizing exports (CSV and History's JSON, Schwab's file names and titles),

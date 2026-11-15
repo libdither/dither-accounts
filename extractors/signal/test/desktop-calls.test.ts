@@ -83,7 +83,8 @@ async function world(config: Record<string, unknown>, primary = false): Promise<
       secret = v as Record<string, any>;
     },
   };
-  process.env.FAKE_PRIMARY = primary ? '1' : '0';
+  // The adapter takes its environment for signal-cli when it is made: set only for that, so no other test file sees it.
+  if (primary) process.env.FAKE_PRIMARY = '1';
   w.adapter = new SignalAdapter(host, {
     signalCli: async () => [process.execPath, FAKE],
     linkRotateMs: 600,
@@ -99,6 +100,7 @@ async function world(config: Record<string, unknown>, primary = false): Promise<
       return w.desk;
     },
   });
+  delete process.env.FAKE_PRIMARY;
   await w.adapter.start();
   // Link the fake signal-cli, so the account knows itself.
   await until(w, 'a QR code', () => w.events.some((e) => e.t === 'status' && e.attention?.qr));

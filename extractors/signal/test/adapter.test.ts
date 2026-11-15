@@ -833,8 +833,10 @@ describe('signal adapter against a fake signal-cli', () => {
     const mark = events.length;
     const a = await configure(GROUP, { key: 'name', value: '  Crag rats ' });
     expect(calls('updateGroup').at(-1).params).toEqual({ groupId: GID, name: 'Crag rats' });
+    // Re-read after the write. Look for that call itself: health probes and other background calls can land after it.
     const rpcs = records().filter((r) => r.t === 'rpc');
-    expect(rpcs.at(-1)).toEqual({ t: 'rpc', method: 'listGroups', params: { groupId: [GID] } }); // re-read after the write
+    const write = rpcs.findLastIndex((r) => r.method === 'updateGroup');
+    expect(rpcs.slice(write + 1)).toContainEqual({ t: 'rpc', method: 'listGroups', params: { groupId: [GID] } });
     expect(a.fields.name).toEqual({ value: 'Crag rats', canEdit: true });
     expect(of('conversation', mark).map((c) => c.conversation)).toEqual([expect.objectContaining({ nativeId: GROUP, name: 'Crag rats', topic: 'thursday nights' })]);
     expect(of('message', mark).at(-1)!.message).toMatchObject({ conversation: GROUP, author: SELF, kind: 'system', body: 'You renamed the group to “Crag rats”.' });

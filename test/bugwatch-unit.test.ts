@@ -514,7 +514,7 @@ describe('threads', () => {
     expect(callsIn(r)).toHaveLength(2);
   });
 
-  test('armed: a later occurrence brings the plain logs\' warn and error lines around it to the brief; the brief says how far back each source goes', async () => {
+  test('armed: a later occurrence points the brief at the plain logs with warn and error lines around it, without copying them; the brief says how far back each source goes', async () => {
     const d = tmp();
     mkdirSync(join(d, 'acct-1'));
     const log = join(d, 'acct-1/adapter.log');
@@ -525,7 +525,7 @@ describe('threads', () => {
     await r.w.scan();
     r.write([errLine({ at: T0 + 1 })]);
     await r.w.scan();
-    expect(Object.values(r.st.bugs)[0]!.samples[0]!.context).toBeUndefined();
+    expect(Object.values(r.st.bugs)[0]!.samples[0]!.around).toBeUndefined();
     // The second occurrence, with lines around it: two before, one just after, one long before.
     const t = T0 + 30 * 60_000;
     r.clock.now = t + 5_000;
@@ -533,15 +533,15 @@ describe('threads', () => {
     r.write([errLine({ at: t })]);
     await r.w.scan();
     const b = Object.values(r.st.bugs)[0]!;
-    expect(b.samples.at(-1)!.context).toBeUndefined();
+    expect(b.samples.at(-1)!.around).toBeUndefined();
     r.clock.now = t + 61_000;
     await r.w.scan();
-    expect(b.samples.at(-1)!.context).toEqual([`acct-1/adapter.log: ${iso(t - 30_000)} [warn] the page went quiet`, `acct-1/adapter.log: ${iso(t + 4_000)} [warn] the page's silence: received by the page`]);
+    // Two warn lines in the window (not the info line, not the one long before): the file and the count, no line.
+    expect(b.samples.at(-1)!.around).toEqual({ from: t - 10 * 60_000, to: t + 60_000, files: [{ path: log, lines: 2 }] });
     const brief = r.w.brief(b);
-    expect(brief).toContain('The warn and error lines of the plain logs around it:');
-    expect(brief).toContain('[warn] the page went quiet');
-    expect(brief).not.toContain('an info line');
-    expect(brief).not.toContain('long before');
+    expect(brief).toContain(`Warn and error lines from ${iso(t - 10 * 60_000)} to ${iso(t + 60_000)}: \`${log}\` (2). Read them with \`awk '$1 >= "${iso(t - 10 * 60_000)}" && $1 <= "${iso(t + 60_000)}"' <file>\`.`);
+    expect(brief).not.toContain('went quiet');
+    expect(JSON.stringify(r.st)).not.toContain('went quiet');
     expect(brief).toContain('- `adapters` (text-log, 1 file): from 2026-11-08 12:00 UTC');
     expect(brief).toContain('- `hub` (errors-ndjson, 1 file): from 2026-11-13 12:00 UTC');
     expect(brief).toContain('**Budget: about 60 minutes.**');

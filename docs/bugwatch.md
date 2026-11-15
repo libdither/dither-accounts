@@ -193,11 +193,12 @@ until cleared.
   elsewhere, a deploy's restart), gets its notice and no thread. Its notice says so (`subject.state` `held`), and the
   log says when one comes back and waits for its thread. A process crash (`uncaught`), a spike and an `always` match
   don't wait. The catch-up counts too: a bug seen over more than `recurMinutes` in its window waits for a thread at once.
-- **Armed, then context**: a fingerprint is armed when first seen. Each later occurrence keeps, with its sample, the
-  plain logs' (`text-log` sources) `[warn]` and `[error]` lines from 10 minutes before it to 1 minute after (at most 12,
-  each `<directory>/<file>: <line>`, 300 characters). A failure's own diagnosis is often logged just after it, so a
-  sample's context is filled in a minute late, and a thread waiting on it starts a scan or two later. Bugwatch keeps
-  these lines for 20 minutes in memory, and the samples stay in `state.json` and the brief only, never in a notice.
+- **Armed, then pointed at the logs**: a fingerprint is armed when first seen. Each later occurrence notes, with its
+  sample, which plain logs (`text-log` sources) had `[warn]` or `[error]` lines from 10 minutes before it to 1 minute
+  after, and how many (at most 6 files, the busiest first). The brief names those files and the window, with an `awk`
+  command to read them; it never copies a line, so the brief stays short and the thread reads only what it needs.
+  A failure's own diagnosis is often logged just after it, so this is noted a minute late, and a thread waiting on it
+  starts a scan or two later. Bugwatch keeps only when and in which file such lines were, for 20 minutes, in memory.
   Logging a failure's state at the point it fails (as the Google extractor's "the <page> page's silence" line does) is
   what turns this into an answer on the next occurrence.
 - **Caps**: one thread per fingerprint, until you clear it; one start every `gapMinutes`; at most `dayMax` in 24
@@ -235,7 +236,7 @@ fingerprints kept, unread notices, threads today, queued, held, `threadsWeek`, t
 `test/bugwatch-unit.test.ts`: normalizing and fingerprints across line changes, each reader (a Bun crash block with its
 excerpt left out, failed spans without expected refusals), tailing across rotation and truncation, the config, new,
 spike and `always`, the catch-up, the caps and the queue with a fake thread command, a failing command, notices that
-hold no raw content, read, mute and clear, triage, an armed fingerprint's context and each source's reach in the brief,
+hold no raw content, read, mute and clear, triage, the log files named for an armed fingerprint's occurrence and each source's reach in the brief,
 and a thread's record with the week's report. `test/bugwatch.test.ts`: over the real wire, a manager with the kind, an
 account added as the page adds it, an app hearing `notify.new` and `notify.read`, a restart, and the CLI's `--dry`.
 `test/errors.test.ts`: the manager's error file, with a fake extractor that crashes.

@@ -2,7 +2,7 @@
  * bugwatch's engine, without the manager: a scan reads what is new in every source, groups the records by fingerprint,
  * decides which are bugs (new, a spike, or an `always` match), raises a notice for each and starts a T3 thread for it
  * within the caps, once triage says it is not a one-off. A fingerprint is armed when first seen: its later occurrences
- * keep the plain logs' warn and error lines around them for the thread. Started threads are followed (threads.show)
+ * note which plain logs to read around them, for the thread. Started threads are followed (threads.show)
  * for a record of what they cost. main.ts drives it on a timer and answers `notifications` from it; cli.ts runs it once (--dry).
  *
  * A notice says only bugwatch's own words, the source's name, where, the error's name and its normalized message:
@@ -15,7 +15,7 @@ import type { Notification, Urgency } from '@dither-accounts/interfaces';
 import type { Config, Source } from './config.ts';
 import { clip, fingerprint } from './normalize.ts';
 import { expand, lineTime, oldestTime, parseErrorsLine, parseSpanLine, parseTextLines, type Rec, tail } from './readers.ts';
-import { type Bug, BUCKET_MS, countBetween, DAY, HOUR, prune, type Reason, type Sample, type State, type ThreadRecord } from './state.ts';
+import { type Around, type Bug, BUCKET_MS, countBetween, DAY, HOUR, prune, type Reason, type Sample, type State, type ThreadRecord } from './state.ts';
 
 export interface RunResult {
   code: number | null;
@@ -40,13 +40,14 @@ export const NEW_AFTER = 14 * DAY;
 export const SPIKE_MIN = 20;
 export const SPIKE_FACTOR = 5;
 export const THREAD_TIMEOUT_MS = 120_000;
-/** A plain log's warn and error lines are kept this long, for the context of an armed fingerprint's next occurrence. */
+/** When and where the plain logs had warn and error lines is kept this long, to point an armed fingerprint's next occurrence at them. */
 export const RECENT_MS = 20 * 60_000;
-/** An occurrence's context: the lines from this long before it… */
+/** An occurrence's surroundings: from this long before it… */
 export const CONTEXT_BEFORE_MS = 10 * 60_000;
 /** …to this long after it (a diagnosis is often logged just after the failure), so it is filled in this late. */
 export const CONTEXT_AFTER_MS = 60_000;
-export const CONTEXT_LINES = 12;
+/** At most this many files are named for one occurrence (the most lines first). */
+export const AROUND_FILES = 6;
 /** A thread's record (threads.show) is read again this often, one thread a scan, until it is done. */
 export const FOLLOW_EVERY_MS = 30 * 60_000;
 /** A thread is not followed past this age. */
@@ -102,8 +103,8 @@ export class Watch {
   lastScanAt: number | null = null;
   /** How far back the first scan reads (the catch-up). */
   backlogMs = DAY;
-  /** The plain logs' warn and error lines of the last RECENT_MS, oldest first. */
-  private recent: { at: number; label: string; line: string }[] = [];
+  /** When and in which file the plain logs had a warn or error line in the last RECENT_MS (no line kept). */
+  private recent: { at: number; path: string }[] = [];
   /** Samples of an armed fingerprint waiting for their context (the lines just after them may not be written yet). */
   private pending: { bug: Bug; sample: Sample; at: number }[] = [];
   private following = false;
@@ -293,7 +294,7 @@ export class Watch {
     const sample: Sample = { at: r.at, line: clip(`${r.name}: ${r.message}`, 300), frames: r.stack.slice(0, 10), ...(r.trace ? { trace: r.trace } : {}), ...(r.status !== undefined ? { status: r.status } : {}) };
     b.samples.push(sample);
     touched.add(b);
-    // Armed when first seen: each later occurrence keeps the plain logs' warn and error lines around it (when a source is one).
+    // Armed when first seen: each later occurrence notes which plain logs had warn or error lines around it (when a source is one).
     if (prevLast !== undefined && !b.muted && this.cfg.sources.some((x) => x.kind === 'text-log')) {
       this.pending = this.pending.filter((p) => p.bug !== b || b.samples.includes(p.sample));
       this.pending.push({ bug: b, sample, at: r.at });
@@ -314,13 +315,12 @@ export class Watch {
     if (!was || RANK[reason] > RANK[was]) raised.set(b.id, reason);
   }
 
-  /** A plain log's warn and error lines with a time, kept RECENT_MS. */
+  /** When a plain log had a warn or error line, and in which file, kept RECENT_MS: the line itself is not kept. */
   private remember(path: string, lines: string[], now: number) {
-    const label = `${basename(dirname(path))}/${basename(path)}`;
     for (const line of lines) {
       if (!LEVEL.test(line)) continue;
       const at = lineTime('text-log', line);
-      if (at !== null && at >= now - RECENT_MS) this.recent.push({ at, label, line: clip(line, 300) });
+      if (at !== null && at >= now - RECENT_MS) this.recent.push({ at, path });
     }
     this.recent.sort((a, b) => a.at - b.at);
     const from = this.recent.findIndex((l) => l.at >= now - RECENT_MS);
@@ -335,8 +335,14 @@ export class Watch {
         keep.push(p);
         continue;
       }
-      const lines = this.recent.filter((l) => l.at >= p.at - CONTEXT_BEFORE_MS && l.at <= p.at + CONTEXT_AFTER_MS).slice(-CONTEXT_LINES);
-      if (lines.length) p.sample.context = lines.map((l) => `${l.label}: ${l.line}`);
+      const from = p.at - CONTEXT_BEFORE_MS;
+      const to = p.at + CONTEXT_AFTER_MS;
+      const n = new Map<string, number>();
+      for (const l of this.recent) if (l.at >= from && l.at <= to) n.set(l.path, (n.get(l.path) ?? 0) + 1);
+      if (n.size) {
+        const files = [...n].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, AROUND_FILES).map(([path, lines]) => ({ path, lines }));
+        p.sample.around = { from, to, files } satisfies Around;
+      }
     }
     this.pending = keep;
   }
@@ -516,7 +522,11 @@ export class Watch {
     const samples = b.samples
       .map((x) => {
         const rec = ['```', `${new Date(x.at).toISOString()}  ${x.line}${x.status !== undefined ? `  (status ${x.status})` : ''}${x.trace ? `  trace ${x.trace}` : ''}`, ...x.frames.map((f) => `    ${f}`), '```'];
-        if (x.context?.length) rec.push('', 'The warn and error lines of the plain logs around it:', '', '```', ...x.context, '```');
+        if (x.around) {
+          const a = x.around;
+          const iso = (t: number) => new Date(t).toISOString();
+          rec.push('', `Warn and error lines from ${iso(a.from)} to ${iso(a.to)}: ${a.files.map((f) => `\`${f.path}\` (${f.lines})`).join(', ')}. Read them with \`awk '$1 >= "${iso(a.from)}" && $1 <= "${iso(a.to)}"' <file>\`.`);
+        }
         return rec.join('\n');
       })
       .join('\n\n');

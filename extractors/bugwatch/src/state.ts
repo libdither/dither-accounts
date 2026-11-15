@@ -16,11 +16,17 @@ export interface Sample {
   trace?: string;
   status?: number;
   /**
-   * The warn and error lines of the plain logs in the minutes around it (`<dir>/<file>: <line>`), kept for an
-   * occurrence after the first: a fingerprint is armed when first seen, and its next occurrences bring their context
-   * to the thread. Never sent anywhere but a thread's brief.
+   * Where to look around it: the plain logs that have warn or error lines in the minutes around it, and how many, for
+   * an occurrence after the first (a fingerprint is armed when first seen). Paths and counts only: the thread reads
+   * the lines itself.
    */
-  context?: string[];
+  around?: Around;
+}
+
+export interface Around {
+  from: number;
+  to: number;
+  files: { path: string; lines: number }[];
 }
 
 export type Reason = 'new' | 'spike' | 'always';

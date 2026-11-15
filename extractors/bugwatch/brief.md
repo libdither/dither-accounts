@@ -35,6 +35,5 @@ How far back each source goes now (older records are gone; say so rather than gu
 - If it is not a bug in this code (an outside service's outage, a refusal that is expected), say so and change nothing.
 - **Budget: about {{budget}} minutes.** If the cause is not found by then, stop and report what you know, what you
   ruled out, and which log line or measurement would settle it next time. Adding that line, at the point of failure, is
-  a fine pull request on its own: bugwatch keeps the warn and error lines around each later occurrence for the next
-  thread.
+  a fine pull request on its own: bugwatch points the next thread at the logs around each later occurrence.
 - **Finish with:** what failed, why, the pull request's link, and what is still unproven.

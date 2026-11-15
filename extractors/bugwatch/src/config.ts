@@ -29,6 +29,15 @@ export interface Threads {
   dayMax: number;
   /** How many bugs wait for a thread (the most frequent kept). */
   queueMax: number;
+  /**
+   * Triage: a new bug that is not a crash waits for its thread until it is seen again at least this long after it was
+   * first seen (a one-off that recovers on its own gets none); 0 starts its thread at once.
+   */
+  recurMinutes: number;
+  /** The time a thread is told it has, in its brief. */
+  budgetMinutes: number;
+  /** argv that prints a thread's state as JSON ({id} filled in), to keep a record of what each thread cost; null: none. */
+  show: string[] | null;
 }
 
 export interface Config {
@@ -68,6 +77,15 @@ const arr = (v: unknown, what: string): unknown[] => {
   return v;
 };
 
+const argv = (v: unknown, what: string): string[] => {
+  const out = arr(v, what).map((a, i) => {
+    if (typeof a !== 'string') throw new Error(`${what}[${i}] must be a string`);
+    return a;
+  });
+  if (!out.length || !out[0]) throw new Error(`${what} must name a program`);
+  return out;
+};
+
 /** A config from its parsed JSON; relative paths are taken from `dir` (the config file's directory). */
 export function parseConfig(json: unknown, dir: string): Config {
   if (!json || typeof json !== 'object' || Array.isArray(json)) throw new Error('the config must be a JSON object');
@@ -93,12 +111,17 @@ export function parseConfig(json: unknown, dir: string): Config {
   let threads: Threads | null = null;
   if (j.threads !== undefined && j.threads !== null) {
     const t = j.threads as Record<string, unknown>;
-    const command = arr(t.command, 'threads.command').map((a, i) => {
-      if (typeof a !== 'string') throw new Error(`threads.command[${i}] must be a string`);
-      return a;
-    });
-    if (!command.length || !command[0]) throw new Error('threads.command must name a program');
-    threads = { command, gapMinutes: num(t.gapMinutes, 15, 'threads.gapMinutes'), dayMax: num(t.dayMax, 6, 'threads.dayMax'), queueMax: num(t.queueMax, 10, 'threads.queueMax', 1) };
+    const command = argv(t.command, 'threads.command');
+    const show = t.show === undefined || t.show === null ? null : argv(t.show, 'threads.show');
+    threads = {
+      command,
+      gapMinutes: num(t.gapMinutes, 15, 'threads.gapMinutes'),
+      dayMax: num(t.dayMax, 6, 'threads.dayMax'),
+      queueMax: num(t.queueMax, 10, 'threads.queueMax', 1),
+      recurMinutes: num(t.recurMinutes, 60, 'threads.recurMinutes'),
+      budgetMinutes: num(t.budgetMinutes, 60, 'threads.budgetMinutes', 1),
+      show,
+    };
   }
   return {
     sources,

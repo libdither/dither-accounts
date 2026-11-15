@@ -11,6 +11,7 @@ import { StatusError } from '@dither-accounts/link';
 import { type ApiRequest, ProtonApi, template, type Transport } from '../extractors/proton/src/api.ts';
 import { fold, ProtonMail, type Seen, stateOf } from '../extractors/proton/src/mail.ts';
 import { KeyError, localDecryptor, openpgp, type ProtonAddress, type ProtonUser, type Unlocked, unlockKeys } from '../extractors/proton/src/pgp.ts';
+import { contactEmailsOf, LIST_MS, normalize, ProtonContacts, protonLabel, suggestFrom } from '../extractors/proton/src/contacts.ts';
 import { checkOutgoing, checkPageSend, pickFrom, SEND_CAP, SETTINGS_REFUSAL, send, sendingAddresses } from '../extractors/proton/src/send.ts';
 import { openSessionBlob, sealSessionBlob } from '../extractors/proton/src/session.ts';
 import { ACCEPT, APP_VERSION, type FakeProton, startFakeProton } from './fake-proton.ts';
@@ -532,5 +533,94 @@ describe('mail.send: what is checked here, and what the page answers', () => {
     await expect(send(checkOutgoing({ ...ok, from: 'pat@proton.test' } as any, dir), { ...deps, addresses: undefined })).rejects.toMatchObject({ status: 503 });
     expect(cmds.length).toBe(n);
     expect(said.join('\n')).not.toContain('alias');
+  });
+});
+
+describe("mail.contacts: what Proton's composer suggests, from your contacts' addresses", () => {
+  // Invented contact emails as Proton's store keeps them (Order, LastUsedTime, Name, Email).
+  const C = (Email: string, Name: string, LastUsedTime: number, Order: number) => ({ ID: `ce-${Order}`, Email, Name, LastUsedTime, Order, Type: [], Defaults: 1, ContactID: `c-${Order}`, LabelIDs: [] });
+  const LIST = contactEmailsOf([
+    C('ann.lee@example.com', 'Ann Lee', 300, 1),
+    C('Ann.Lee@Example.com', 'Ann at work', 200, 2), // the same address again, in another contact
+    C('noel@example.org', 'Noël Gauss', 100, 3),
+    C('dana@example.net', 'dana@example.net', 0, 4), // a name that is only the address
+    C('zed@example.com', 'Zed Annan', 300, 5), // as recent as Ann: the label decides ("Ann…" < "Zed…")
+    C('ben@example.com', '', 50, 6), // no name: " ben@example.com"
+  ])!;
+
+  test('the label as Proton writes a recipient; normalize as Proton does', () => {
+    expect([protonLabel({ Name: 'Ann Lee', Email: 'a@x.test' }), protonLabel({ Name: 'a@x.test', Email: 'a@x.test' }), protonLabel({ Name: '', Email: 'a@x.test' })]).toEqual(['Ann Lee <a@x.test>', 'a@x.test', ' a@x.test']);
+    expect(normalize('  NOËL ')).toBe('noel');
+  });
+
+  test('ranked by when last used, then by the label; matched anywhere in it, without regard to case or accents; each address once', () => {
+    const emails = (q: string, n = 8) => suggestFrom(LIST, q, n).map((c) => c.email);
+    expect(emails('ann')).toEqual(['ann.lee@example.com', 'zed@example.com']); // Zed Annan: "ann" inside the name
+    expect(suggestFrom(LIST, 'ann', 8)[0]).toEqual({ email: 'ann.lee@example.com', name: 'Ann Lee' });
+    expect(emails('EXAMPLE.COM')).toEqual(['ann.lee@example.com', 'zed@example.com', 'ben@example.com']);
+    expect(emails('noel')).toEqual(['noel@example.org']);
+    expect(emails('NOËL')).toEqual(['noel@example.org']);
+    expect(emails('gauss <no')).toEqual(['noel@example.org']); // the label is "Noël Gauss <noel@example.org>"
+    expect(suggestFrom(LIST, 'dana', 8)).toEqual([{ email: 'dana@example.net', name: null }]);
+    expect(suggestFrom(LIST, 'ben', 8)).toEqual([{ email: 'ben@example.com', name: null }]);
+    expect(emails('example', 2)).toEqual(['ann.lee@example.com', 'zed@example.com']);
+    expect(emails('nobody')).toEqual([]);
+  });
+
+  test('Proton stops at 20 matches', () => {
+    const many = contactEmailsOf(Array.from({ length: 30 }, (_, i) => C(`p${i}@example.com`, `Person ${i}`, 1000 - i, i)))!;
+    expect(suggestFrom(many, 'person', 20).length).toBe(20);
+    expect(suggestFrom(many, 'person', 20).at(-1)!.email).toBe('p19@example.com');
+  });
+
+  test('the list as the store keeps it: by Order, entries without an address left out; none that is one is no list', () => {
+    expect(contactEmailsOf([C('b@x.test', 'B', 0, 2), { Name: 'no address' }, C('a@x.test', 'A', 0, 1)])!.map((c) => c.Email)).toEqual(['a@x.test', 'b@x.test']);
+    expect(contactEmailsOf([{ Name: 'no address' }])).toBeNull();
+    expect(contactEmailsOf({})).toBeNull();
+    expect(contactEmailsOf([])).toEqual([]);
+  });
+
+  test('from the store, read again after LIST_MS; an empty query asks nothing; not ready is 503 unavailable', async () => {
+    let now = 1_000_000;
+    let reads = 0;
+    let why: string | null = null;
+    const c = new ProtonContacts({ store: async () => (reads++, LIST), page: async () => { throw new Error('not the API'); } }, { now: () => now, ready: () => why });
+    expect(await c.suggest({ query: ' ' })).toEqual({ contacts: [] });
+    expect(reads).toBe(0);
+    expect((await c.suggest({ query: 'ann', limit: 1 })).contacts).toEqual([{ email: 'ann.lee@example.com', name: 'Ann Lee' }]);
+    await c.suggest({ query: 'zed' });
+    expect([reads, c.from]).toEqual([1, 'store, 6']);
+    now += LIST_MS;
+    why = 'Proton is not signed in; sign in in the live view';
+    const e = (await c.suggest({ query: 'ann' }).catch((x) => x)) as StatusError;
+    expect([e.status, e.callCode, e.message]).toEqual([503, 'unavailable', why]);
+    why = null;
+    await c.suggest({ query: 'ann' });
+    expect(reads).toBe(2);
+    for (const bad of [{ query: 'a'.repeat(301) }, { query: 'a', limit: 1.5 }, { query: null }]) expect(((await c.suggest(bad).catch((x) => x)) as StatusError).status).toBe(400);
+  });
+
+  test("a store with no list: the API's, every page of contacts/v4/contacts/emails (the fake Proton)", async () => {
+    const fake = await startFakeProton();
+    try {
+      fake.contact('ann.lee@example.com', { name: 'Ann Lee', lastUsed: 300, order: 1 });
+      fake.contact('Ann.Lee@Example.com', { name: 'Ann at work', lastUsed: 200, order: 2, second: true });
+      fake.contact('zed@example.com', { name: 'Zed Annan', lastUsed: 300, order: 3 });
+      fake.contact('quiet@example.com', { order: 4 });
+      const api = new ProtonApi(direct(fake), log);
+      const pages: number[] = [];
+      const c = new ProtonContacts({ store: async () => null, page: (page, size) => (pages.push(page), api.call({ method: 'GET', path: 'contacts/v4/contacts/emails', query: { Page: page, PageSize: size } })) });
+      expect((await c.suggest({ query: 'ann' })).contacts).toEqual([
+        { email: 'ann.lee@example.com', name: 'Ann Lee' },
+        { email: 'zed@example.com', name: 'Zed Annan' },
+      ]);
+      expect((await c.suggest({ query: 'quiet' })).contacts).toEqual([{ email: 'quiet@example.com', name: 'quiet' }]);
+      expect([pages, fake.contactLists, c.from]).toEqual([[0], 1, 'api, 4']);
+      // A store whose list is not laid out as known: 502, nothing returned.
+      const odd = new ProtonContacts({ store: async () => [{ Mail: 'x' }], page: async () => ({}) });
+      expect(((await odd.suggest({ query: 'x' }).catch((x) => x)) as StatusError).status).toBe(502);
+    } finally {
+      fake.stop();
+    }
   });
 });

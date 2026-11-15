@@ -12,8 +12,13 @@
  * Copied into each kind's extension as sw.js by the extractor at start (statements-common/src/tabs.ts); page.js is
  * the kind's own file and defines self.PAGE = { name: function }. A kind with a passkey (schwab) gets passkeys.js
  * appended to the copy: it adds the command `webauthn.answer` to EXTRA and takes the page hooks' ports.
+ *
+ * It says `got` (at 'worker') for each command it takes, and answers `tab.state` (how Chromium sees a tab), so a
+ * command that times out is told apart in the extractor's log (packages/browser's silence.ts and worker-watch.js).
  */
 'use strict';
+
+/*@include worker-watch@*/
 
 try {
   importScripts('page.js');
@@ -138,6 +143,14 @@ async function run(cmd) {
       return go(cmd.tabId, cmd.url, cmd.timeout);
     case 'tab.get':
       return tabInfo(cmd.tabId);
+    case 'tab.state': {
+      let id = cmd.tabId;
+      if (typeof id !== 'number') {
+        const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        id = active ? active.id : null;
+      }
+      return { ...(await workerWatch.tab(id)), loading: loads.has(id) };
+    }
     case 'tab.activate': {
       await chrome.tabs.update(cmd.tabId, { active: true });
       return tabInfo(cmd.tabId);
@@ -192,6 +205,7 @@ async function connect() {
       return;
     }
     if (msg.t !== 'cmd' || !msg.cmd) return; // pings only keep this worker awake
+    workerWatch.got(sendUp, msg.id);
     run(msg.cmd).then(
       (result) => sendUp({ t: 'reply', id: msg.id, ok: true, result }),
       (err) => sendUp({ t: 'reply', id: msg.id, ok: false, error: String((err && err.message) || err).slice(0, 300) }),

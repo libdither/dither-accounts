@@ -74,6 +74,7 @@ let runnerStarted = false;
 
 const host = new BrowserHost({
   link,
+  name: 'Venmo',
   extensionSrc: join(import.meta.dir, 'extension'),
   startUrl: `${appOrigin}/`,
   testOrigin,

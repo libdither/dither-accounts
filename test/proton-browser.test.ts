@@ -150,6 +150,10 @@ it(
       sendCap: 25 * 1024 * 1024,
       maxRecipients: 100,
       sendNote: null,
+      // Suggesting people as Proton's composer does; no list read yet.
+      contacts: true,
+      contactsNote: null,
+      contactsFrom: null,
     });
     // One runtime reached, its modules recorded as they ran (no module cache to read).
     expect(st.details.webpack).toMatch(/^1 runtime, \d+ modules, \d+ ran$/);
@@ -553,6 +557,51 @@ for (const missing of ['CryptoProxy', 'AddressKeysByUsage'] as const) {
 }
 
 it(
+  "mail.contacts: Proton's composer suggestions, from the page's store, else the API's list; ranked by when last used",
+  async () => {
+    // A store with no list (the fake's default): the API's list, every contact email.
+    fake.contact('quill.ames@example.com', { name: 'Quill Ames', lastUsed: 100, order: 50 });
+    fake.contact('quinn.r@example.org', { name: 'Quinn Rowe', lastUsed: 900, order: 51 });
+    fake.contact('Quinn.R@Example.org', { name: 'Quinn at work', lastUsed: 800, order: 52, second: true });
+    await until(() => statusOf(signedIn)?.details?.contacts === true, 10_000, 'details.contacts');
+    const lists = fake.contactLists;
+    expect(await call('mail.contacts', { query: '' })).toEqual({ contacts: [] });
+    expect((await call('mail.contacts', { query: 'QU' })).contacts).toEqual([
+      { email: 'quinn.r@example.org', name: 'Quinn Rowe' },
+      { email: 'quill.ames@example.com', name: 'Quill Ames' },
+    ]);
+    expect((await call('mail.contacts', { query: 'ames', limit: 1 })).contacts).toEqual([{ email: 'quill.ames@example.com', name: 'Quill Ames' }]);
+    // One read of the list for both keystrokes (it is kept a while).
+    expect(fake.contactLists).toBe(lists + 1);
+    await until(() => String(statusOf(signedIn)?.details?.contactsFrom).startsWith('api, '), 5000, 'where the list came from');
+
+    // A page whose store holds the list: read from the page, the API's list never asked.
+    const f = await startFakeProton({ pagePollMs: 500, storeContacts: true });
+    let id = '';
+    try {
+      f.contact('quill.ames@example.com', { name: 'Quill Ames', lastUsed: 100, order: 2 });
+      f.contact('quinn.r@example.org', { name: 'Quinn Rowe', lastUsed: 900, order: 1 });
+      f.contact('noel@example.net', { name: 'Noël Gauss', lastUsed: 0, order: 3 });
+      id = (await app.admin({ do: 'create', kind: 'proton', label: 'Proton (contacts in the store)', config: { testOrigin: f.url, pollSeconds: 1 } })).id;
+      await until(() => statusOf(id)?.status === 'online' && statusOf(id)?.details?.contacts === true, 60_000, 'online');
+      const sug = (q: string) => app.call(mail, id, 'mail.contacts', { query: q }) as Promise<any>;
+      expect((await sug('qu')).contacts.map((c: any) => c.email)).toEqual(['quinn.r@example.org', 'quill.ames@example.com']);
+      expect((await sug('noel')).contacts).toEqual([{ email: 'noel@example.net', name: 'Noël Gauss' }]);
+      expect(f.contactLists).toBe(0);
+      await until(() => statusOf(id)?.details?.contactsFrom === 'store, 3', 5000, 'from the store');
+      // Never a query or a person in the log.
+      const log = readFileSync(join(m!.store.account(id)!.dir, 'adapter.log'), 'utf8');
+      for (const x of ['quill', 'Quinn', 'Noël', 'noel@']) expect(log).not.toContain(x);
+    } finally {
+      if (id) await app.admin({ do: 'delete', account: id, purge: true }).catch(() => {});
+      f.stop();
+    }
+    await until(() => processesOf([id]).length === 0, 15_000, 'its processes gone');
+  },
+  90_000,
+);
+
+it(
   'an access token that runs out: the hook waits for the page to refresh it, and never refreshes itself',
   async () => {
     fake.expireAccess();
@@ -587,6 +636,11 @@ it(
     expect(await rfbBanner(lv.vncSocket)).toMatch(/^RFB /);
     const e = (await app.call(mail, signedOut, 'mail.mailboxes', {}).catch((x: any) => x)) as CallFailed;
     expect([e.code, e.status]).toEqual(['failed', 401]);
+    // Suggestions: not now, and why (503 unavailable, not 401); an empty query still answers.
+    expect(st.details).toMatchObject({ contacts: false, contactsNote: 'Proton is not signed in; sign in in the live view' });
+    const sug = (await app.call(mail, signedOut, 'mail.contacts', { query: 'ann' }).catch((x: any) => x)) as CallFailed;
+    expect([sug.code, sug.status]).toEqual(['unavailable', 503]);
+    expect(await app.call(mail, signedOut, 'mail.contacts', { query: ' ' })).toEqual({ contacts: [] });
   },
   90_000,
 );

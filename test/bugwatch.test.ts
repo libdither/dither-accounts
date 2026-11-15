@@ -61,7 +61,7 @@ beforeAll(async () => {
         { name: 'hub', kind: 'errors-ndjson', path: errors, project: '/srv/app', base: 'origin/main' },
         { name: 'svc', kind: 'text-log', path: log },
       ],
-      threads: { command: ['bun', FAKE_T3, calls, 'thread', 'start', '--title', '{title}', '--worktree', '{base}', '--json', '{project}', '-'], gapMinutes: 0, dayMax: 5 },
+      threads: { command: ['bun', FAKE_T3, calls, 'thread', 'start', '--title', '{title}', '--worktree', '{base}', '--json', '{project}', '-'], gapMinutes: 0, dayMax: 5, recurMinutes: 0 },
     }),
   );
   m = await createManager({ openPage: true, dataDir: join(dir, 'data'), port: 0, kinds: new Map([['bugwatch', kindOf(manifest, join(ROOT, 'extractors/bugwatch'))]]) });

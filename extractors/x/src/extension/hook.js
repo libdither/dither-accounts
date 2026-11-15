@@ -35,11 +35,14 @@
 (() => {
   'use strict';
   /*@include main-world@*/
+  /*@include command-watch@*/
   const HOOK_VERSION = 1;
   const settings = { testOrigin: null };
 
   const post = (payload) => cloak.send(payload); // a value that does not clone is dropped on the way
   const log = (level, msg) => post({ t: 'log', level, msg: String(msg).slice(0, 300) });
+  // Each command's `got`, page.state and a command still open after 20 s (packages/browser's command-watch.js).
+  const watch = commandWatch({ post, log });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const human = (lo, hi) => lo + Math.floor(Math.random() * (hi - lo));
 
@@ -2972,10 +2975,13 @@
       return;
     }
     if (payload.t !== 'cmd') return;
+    const done = watch.take(payload);
+    if (!done) return;
     Promise.resolve()
       .then(() => runCommand(payload.cmd || {}))
       .then((result) => post({ t: 'reply', id: payload.id, ok: true, result }))
-      .catch((err) => post({ t: 'reply', id: payload.id, ok: false, error: String((err && err.message) || err).slice(0, 300) }));
+      .catch((err) => post({ t: 'reply', id: payload.id, ok: false, error: String((err && err.message) || err).slice(0, 300) }))
+      .finally(done);
   });
 
   installDevtools();

@@ -17,10 +17,13 @@
 (() => {
   'use strict';
   /*@include main-world@*/
+  /*@include command-watch@*/
   const log = (level, msg, data) => post({ t: 'log', level, msg, data });
   const up = (payload) => post(payload);
   const post = (payload) => cloak.send(payload);
   const promiseThen = Promise.prototype.then;
+  // Each command's `got`, page.state and a command still open after 20 s (packages/browser's command-watch.js).
+  const watch = commandWatch({ post, log });
 
   // -------------------------------------------------------------- webpack grab
   // Discord ships several rspack runtimes (web, fast-connect, sentry,
@@ -6697,10 +6700,13 @@
   // ------------------------------------------------------------------- wiring
   cloak.onDown((payload) => {
     if (payload.t === 'cmd') {
+      const done = watch.take(payload);
+      if (!done) return;
       Promise.resolve()
         .then(() => runCommand(payload.cmd))
         .then((result) => up({ t: 'reply', id: payload.id, ok: true, result }))
-        .catch((err) => up({ t: 'reply', id: payload.id, ok: false, error: describeError(err), retryAfter: err && err.body && err.body.retry_after }));
+        .catch((err) => up({ t: 'reply', id: payload.id, ok: false, error: describeError(err), retryAfter: err && err.body && err.body.retry_after }))
+        .then(done, done);
     }
   });
 

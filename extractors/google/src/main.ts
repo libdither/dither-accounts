@@ -18,17 +18,21 @@
  * the learn run's guarded steering (runLearn: a view or an operators-only search, a read thread opened, back, the
  * recorded traffic shapes collected). Mail calls with `background: true` (an app's archive) go in a background lane of
  * their own, paced, budgeted and stopped on any sign of a block ('Gmail background' layer); and an unread guard
- * refuses unread messages if reading one was ever seen to mark it read. docs/google.md.
+ * refuses unread messages if reading one was ever seen to mark it read. `mail.contacts` asks what Gmail's compose To
+ * field would suggest (src/gmail/contacts.ts), in a small lane of its own beside the Gmail page's, so keystrokes never
+ * wait behind mail and mail never waits behind them. docs/google.md.
  *
- * Config: { authuser?, mail?, gmailPollSeconds?, apiBase?, gmailApiBase?, testOrigin?, testMailOrigin?, noSandbox? }.
+ * Config: { authuser?, mail?, gmailPollSeconds?, apiBase?, gmailApiBase?, testOrigin?, testMailOrigin?, peopleApiBase?,
+ * noSandbox? } (peopleApiBase: tests only, and only one of the test origins).
  *
  * Logs ids and statuses, never cookies, keys, tokens, event contents or mail. Nothing here changes mail.
  */
 import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BridgeServer, pickFreeDisplay, type Reached, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, diagnoseSilence, pickFreeDisplay, type Reached, Sandbox } from '@dither-accounts/browser';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
 import type { OutgoingMail } from '@dither-accounts/interfaces';
+import { type ContactsAnswer, GmailContacts } from './gmail/contacts.ts';
 import { GmailMail, type PageKind, stateOf, type SyncAnswer, type Transport } from './gmail/mail.ts';
 import { DECIMAL_ID } from './gmail/protocol.ts';
 import { checkOutgoing, MAX_RECIPIENTS, SEND_CAP } from './gmail/send.ts';
@@ -54,8 +58,6 @@ const ATTACH_MS = 30_000;
 const PAGE_ANSWER_MS = 25_000;
 /** This many unanswered requests in a row to one page, and its tab is reloaded. */
 const SILENT_LIMIT = 2;
-/** When a page did not answer, the worker (the tab's state) and the hook (its own state, no network) answer within this. */
-const DIAGNOSE_MS = 5_000;
 /** The service worker's own commands (open or reload a tab) answer within this. */
 const TAB_COMMAND_MS = 10_000;
 /** The Gmail API probe: asked for by this file in the account's directory, answered in the other. */
@@ -75,6 +77,8 @@ const READS_FILE = 'gmail-reads.json';
 /** A message download may take this long (up to 50 MB); handed over in pieces of this size. */
 const RAW_ANSWER_MS = 90_000;
 const RAW_PIECE = 4 * 1024 * 1024;
+/** A suggestions call is answered within this (the hook gives Google 6 s), under the op's 10 s. */
+const CONTACTS_ANSWER_MS = 8_000;
 
 type Role = 'calendar' | 'gmail';
 type KeySource = 'calendar-request' | 'gmail-request' | 'page-request' | 'page-html' | 'embed';
@@ -117,6 +121,8 @@ type GmailCmd = { page?: Role } & (
   | { kind: 'gmail.write'; body: unknown }
   | { kind: 'gmail.uploadChunk'; token?: string; base64: string }
   | { kind: 'gmail.upload'; token: string; size: number; name: string; mime: string; meta: string }
+  // Suggesting people (src/gmail/contacts.ts): the To field's autocomplete call.
+  | { kind: 'gmail.contacts'; body: unknown[] }
 );
 /** The hook's own state, asked for (no network) when its page stops answering. */
 type PageStateCmd = { kind: 'page.state'; page?: Role };
@@ -173,6 +179,8 @@ const authuser = String(cfg.authuser ?? 0);
 const origin = (v: unknown) => (typeof v === 'string' && v ? v.replace(/\/$/, '') : null);
 const testOrigin = origin(cfg.testOrigin);
 const testMailOrigin = origin(cfg.testMailOrigin);
+/** Tests only: where the hook sends suggestion calls (it takes it only when it is one of the test origins). */
+const peopleApiBase = origin(cfg.peopleApiBase);
 const calendarOrigin = testOrigin ?? 'https://calendar.google.com';
 /** In tests, Gmail is wherever testMailOrigin says, and there is none without it: a test never opens the real one. */
 const mailOrigin = testMailOrigin ?? (testOrigin ? null : 'https://mail.google.com');
@@ -283,6 +291,8 @@ const pages: Record<Role, Page> = {
   calendar: newPage('calendar', 'Calendar', startUrl, new Lane(8, 0)),
   gmail: newPage('gmail', 'Gmail', mailOn ? mailStartUrl : null, new Lane(4, 100)),
 };
+/** The Gmail page's suggestion calls (mail.contacts): a lane of their own, so they neither wait for nor slow mail. */
+const contactsLane = new Lane(2, 0);
 const cal = pages.calendar;
 const gm = pages.gmail;
 const roleOf = (m: { role?: unknown }): Role => (m.role === 'gmail' ? 'gmail' : 'calendar');
@@ -432,6 +442,9 @@ function details(): Record<string, string | number | boolean | null | string[]> 
     canSend: sendNote() === null,
     sendNote: sendNote(),
     ...(mailOn ? { sendCap: SEND_CAP, maxRecipients: MAX_RECIPIENTS } : {}),
+    // Suggesting people as Gmail's To field does (mail.contacts): now, or why not.
+    contacts: contactsNote() === null,
+    contactsNote: contactsNote(),
     gmailWatch: !mailOn ? null : !pollMs ? 'off' : !watchOn ? 'starts with the first mail call' : watchInfo.error ? `failed at ${hhmm(watchInfo.at)}: ${watchInfo.error}` : watchInfo.at ? `looked at ${hhmm(watchInfo.at)}` : 'starting',
     gmailSelfCheckAt: gmailSelfCheck ? new Date(gmailSelfCheck.at).toISOString() : null,
     gmailSelfCheck: gmailSelfCheck?.summary ?? null,
@@ -446,6 +459,11 @@ function sendNote(): string | null {
   if (!s.signedIn) return 'Google is not signed in; sign in in the live view';
   if (!s.email) return "Gmail has not shown which address it is signed in as yet";
   return null;
+}
+
+/** Why mail.contacts cannot answer now (the page, or the call itself failing of late), in a sentence; null when it can. */
+function contactsNote(): string | null {
+  return contactsUnavailable() ?? contacts?.troubled() ?? null;
 }
 
 /** What is wrong with how a page answers, if anything: a reload under way or failed, silence, a reload not yet answered. */
@@ -665,12 +683,12 @@ async function reloadPage(p: Page) {
  * A request to one page, through its own lane. It is answered within PAGE_ANSWER_MS (time in the lane included) or
  * fails saying which page did not answer. Two unanswered in a row reload that page's tab.
  */
-async function pageRequest<T>(role: Role, cmd: PageCmd, answerMs = PAGE_ANSWER_MS): Promise<T> {
+async function pageRequest<T>(role: Role, cmd: PageCmd, answerMs = PAGE_ANSWER_MS, lane = pages[role].lane): Promise<T> {
   const p = pages[role];
   if (!bridge.connected) throw new StatusError('the sandbox browser is not attached', 503);
   const silence = () => new StatusError(`the ${p.name} page did not answer in ${answerMs / 1000} s`, 503);
   const deadline = Date.now() + answerMs;
-  if (!(await p.lane.take(deadline))) throw silence();
+  if (!(await lane.take(deadline))) throw silence();
   const generation = p.generation;
   const sentAt = Date.now();
   try {
@@ -687,7 +705,7 @@ async function pageRequest<T>(role: Role, cmd: PageCmd, answerMs = PAGE_ANSWER_M
     if (generation === p.generation && deadline - sentAt >= answerMs / 2) unanswered(p, cmd, ((e as { reached?: Reached }).reached ?? 'none'));
     throw silence();
   } finally {
-    p.lane.give();
+    lane.give();
   }
 }
 
@@ -710,34 +728,22 @@ function unanswered(p: Page, cmd: PageCmd, reached: Reached) {
 }
 
 /**
- * One line on a page that did not answer: how far the request got (the page's port, the page itself), what Chromium
- * says of the tab, and what the hook says when asked without the network (its visibility, lifecycle events, counts of
- * uncaught errors, the commands it still has open). Names of steps, paths and counts only, nothing from the page.
+ * One line on a page that did not answer (packages/browser's silence.ts): how far the request got (the page's port,
+ * the page itself), what Chromium says of the tab, and what the hook says when asked without the network (its
+ * visibility, lifecycle events, counts of uncaught errors, the commands it still has open). Names of steps, paths and
+ * counts only, nothing from the page.
  */
-async function diagnose(p: Page, cmd: PageCmd, reached: Reached) {
-  const ask = async <T>(c: PageCmd | TabCmd): Promise<{ ok: true; ms: number; v: T } | { ok: false; ms: number; error: string }> => {
-    const t0 = Date.now();
-    try {
-      const v = await bridge.request<T>(c, DIAGNOSE_MS);
-      return { ok: true, ms: Date.now() - t0, v };
-    } catch (e) {
-      return { ok: false, ms: Date.now() - t0, error: String((e as Error).message ?? e).slice(0, 200) };
-    }
-  };
-  if (!bridge.connected) return;
-  const [tab, hook] = await Promise.all([
-    ask<Record<string, unknown>>({ kind: 'tab.state', page: p.role, tabId: p.tabId }),
-    ask<Record<string, unknown>>({ kind: 'page.state', page: p.role }),
-  ]);
-  const said = {
+function diagnose(p: Page, cmd: PageCmd, reached: Reached) {
+  return diagnoseSilence(bridge, {
+    name: p.name,
     request: cmd.kind,
-    reached: { none: 'not acknowledged by the service worker', worker: 'handed to the page, which never said it had it', page: 'received by the page, which never answered' }[reached],
-    tab: tab.ok ? tab.v : `no answer: ${tab.error}`,
-    hook: hook.ok ? { answeredInMs: hook.ms, ...hook.v } : `no answer in ${DIAGNOSE_MS / 1000} s: ${hook.error}`,
-    lastAnswerAgoS: p.answeredAt ? Math.round((Date.now() - p.answeredAt) / 1000) : null,
-    hookUpAgoS: p.hookAt ? Math.round((Date.now() - p.hookAt) / 1000) : null,
-  };
-  log('warn', `the ${p.name} page's silence: request ${said.reached}; the hook ${hook.ok ? 'answers without the network' : 'does not answer either'}`, said);
+    reached,
+    log,
+    tab: { kind: 'tab.state', page: p.role, tabId: p.tabId },
+    page: { kind: 'page.state', page: p.role },
+    lastAnswerAt: p.answeredAt || null,
+    extra: { hookUpAgoS: p.hookAt ? Math.round((Date.now() - p.hookAt) / 1000) : null },
+  });
 }
 
 const gfetch = (cmd: Gfetch) => pageRequest<GResponse>('calendar', cmd);
@@ -1113,6 +1119,46 @@ const gmailTransport: Transport = {
 };
 const gmail = mailOn ? new GmailMail(gmailTransport, { log, onChange: () => status(), stateFile: join(link.accountDir, READS_FILE) }) : null;
 
+/**
+ * Why the Gmail page cannot suggest people now (then mail.contacts is 503 'unavailable' and details.contacts false),
+ * or null: the browser not attached, the page not open or not on Gmail (a sign-in or challenge page), signed out,
+ * being reloaded or failed to reload, or Google's verification seen on mail calls (the background lane's stop).
+ */
+function contactsUnavailable(): string | null {
+  if (!mailOn) return 'this account reads no mail';
+  if (!bridge.connected) return 'the sandbox browser is not attached yet';
+  const s = gm.hooked ? gm.session : null;
+  if (hostOf(gm.url) === SIGN_IN_HOST || (s && !s.signedIn)) return 'Google is not signed in; sign in in the live view';
+  if (!s || !onMail(gm.url)) return 'Gmail is not open in the sandbox';
+  if (gm.reloading) return 'the Gmail page is being reloaded';
+  const bad = trouble(gm);
+  if (bad?.failed) return bad.note;
+  if (gmail?.background().stopped === 'challenge') return 'Google showed the Gmail page a verification page; open the live view';
+  return null;
+}
+
+/** The To field's suggestion call, through the hook, in the suggestions' own lane; what went wrong as the op says it. */
+async function contactsTransport(body: unknown[]): Promise<ContactsAnswer> {
+  let r: { status?: unknown; json?: unknown; error?: unknown; page?: unknown; code?: unknown };
+  try {
+    r = await pageRequest('gmail', { kind: 'gmail.contacts', body }, CONTACTS_ANSWER_MS, contactsLane);
+  } catch (e) {
+    const msg = String((e as Error)?.message ?? e);
+    if (/did not answer/.test(msg)) throw new StatusError(msg, 504);
+    // The hook refusing the body, or not knowing the command (an older extension): ours, and trying again will not help.
+    if (/^gmail\.contacts: refused|^no command/.test(msg)) throw new StatusError(`the Gmail page would not make it (${msg.slice(0, 160)})`, 500);
+    throw new StatusError(msg, 503, 'unavailable');
+  }
+  return {
+    status: typeof r?.status === 'number' ? r.status : 0,
+    ...(r?.json !== undefined ? { json: r.json } : {}),
+    ...(typeof r?.error === 'string' ? { error: r.error } : {}),
+    page: pageKindOf(r?.page),
+    code: typeof r?.code === 'number' ? r.code : null,
+  };
+}
+const contacts = mailOn ? new GmailContacts(contactsTransport, { log, ready: contactsUnavailable, onChange: () => status() }) : null;
+
 /** The Gmail tab is up and signed in, or the reason it is not. */
 function gmailReady(): GmailMail {
   if (!gmail) throw new StatusError(cfg.mail === false ? 'this account reads no mail (mail: false in its config)' : 'this account has no Gmail tab', 501);
@@ -1381,6 +1427,10 @@ async function onCommand(cmd: Command): Promise<unknown> {
         return g.send(m, { email: s.email, name: s.name ?? null });
       });
     }
+    case 'mail.contacts':
+      // Not through mailOp: no watch started, no queue behind mail or background reading (src/gmail/contacts.ts).
+      if (!contacts) throw new StatusError(cfg.mail === false ? 'this account reads no mail (mail: false in its config)' : 'this account has no Gmail tab', 501);
+      return contacts.suggest({ query: cmd.query, limit: cmd.limit });
     default:
       throw new Error(`google has no operation "${cmd.t}"`);
   }
@@ -1417,7 +1467,7 @@ async function boot() {
       width: WIDTH,
       height: HEIGHT,
       extensionSrc: join(import.meta.dir, 'extension'),
-      config: { wsUrl: bridge.wsUrl, token: bridgeToken, authuser, testOrigin, testMailOrigin },
+      config: { wsUrl: bridge.wsUrl, token: bridgeToken, authuser, testOrigin, testMailOrigin, peopleApiBase },
       prepareExtension: testOrigin || testMailOrigin ? addTestOrigins : undefined,
       startUrl,
       noSandbox: !!cfg.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',

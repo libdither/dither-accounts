@@ -10,8 +10,9 @@
  * live in this process's memory only. When that unlock fails (the saved session's format moved, the ClientKey call
  * changed), they are opened in the page instead: the hook decrypts through the app's own crypto proxy with the app's
  * own keys, and only the plaintext asked for comes out. Sending is the page's too: the hook sends the safe subset of
- * what Proton's composer sends, with the app's API caller, crypto proxy and keys (send.ts). docs/proton.md has the
- * whole design and where each fact came from.
+ * what Proton's composer sends, with the app's API caller, crypto proxy and keys (send.ts). `mail.contacts` suggests
+ * addresses as Proton's composer does, from the store's contact emails (contacts.ts). docs/proton.md has the whole
+ * design and where each fact came from.
  *
  * Config: { testOrigin?, noSandbox?, pollSeconds?, modulesGraceSeconds? }. Keeps events.json (the last event id it
  * announced) in the account directory. Logs ids, counts, module names and statuses: never message contents, addresses,
@@ -22,6 +23,7 @@ import { join } from 'node:path';
 import { BridgeServer, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
 import { type ApiAnswer, type ApiRequest, ProtonApi, ProtonError } from './api.ts';
+import { ProtonContacts } from './contacts.ts';
 import { arrivals, ProtonMail, SYSTEM, stateOf, touched } from './mail.ts';
 import { type Decryptor, KeyError, localDecryptor, type ProtonAddress, type ProtonUser, type Unlocked, unlockKeys } from './pgp.ts';
 import { checkOutgoing, MAX_RECIPIENTS, SEND_CAP, type SendingAddress, send, sendingAddresses } from './send.ts';
@@ -63,7 +65,7 @@ type Up =
   | { t: 'hook'; page: string }
   | { t: 'modules'; found: Record<string, boolean>; runtimes?: number; factories?: number; ran?: number }
   | ({ t: 'session' } & Session);
-type Down = ({ kind: 'api' } & ApiRequest) | { kind: 'storage' } | { kind: 'pagekeys' } | { kind: 'decrypt'; armored?: string; keyPackets?: string; data?: string; addressID?: string } | ({ kind: 'send' } & Record<string, unknown>);
+type Down = ({ kind: 'api' } & ApiRequest) | { kind: 'storage' } | { kind: 'pagekeys' } | { kind: 'decrypt'; armored?: string; keyPackets?: string; data?: string; addressID?: string } | ({ kind: 'send' } & Record<string, unknown>) | { kind: 'contactEmails' };
 /** What the hook found in the app's modules: names and found or not, nothing else. */
 interface Modules {
   found: Record<string, boolean>;
@@ -85,6 +87,8 @@ const pollMs = Math.max(1, Number(cfg.pollSeconds) || 30) * 1000;
 /** How long the page may take to load the modules the hook looks for before a missing one is a failure. */
 const MODULES_GRACE_MS = Math.max(1, Number(cfg.modulesGraceSeconds) || 90) * 1000;
 const STARTED = Date.now();
+/** mail.contacts answers within this (under the op's 10 s), the page's list or the API's included. */
+const CONTACTS_MS = 8_000;
 
 // -------------------------------------------------------------------- state
 const eventsPath = join(link.accountDir, 'events.json');
@@ -138,6 +142,8 @@ const bridge = new BridgeServer<Up, Down>({
     modules = null;
     status();
   },
+  // A command that times out is told apart in the log: how far it got, the tab's state and the hook's own.
+  silence: { name: 'Mail', tab: true, page: true },
   log,
 });
 
@@ -185,6 +191,53 @@ const pageDecryptor: Decryptor = {
 const modulesFound = (names: readonly string[]) => !!modules && names.every((n) => modules!.found[n]);
 const modulesMissing = (names: readonly string[]) => names.filter((n) => !modules?.found[n]);
 const mail = new ProtonMail(api, keys, log);
+
+/** Why the page cannot suggest people now (mail.contacts 503 'unavailable', details.contacts false), or null. */
+function contactsUnavailable(): string | null {
+  if (!bridge.connected) return 'the sandbox browser is not attached yet';
+  const s = current();
+  if (signedOut || onSignIn() || s?.signedIn === false) return 'Proton is not signed in; sign in in the live view';
+  if (!s) return 'Proton Mail is not open in the sandbox';
+  if (!s.signedIn) return 'Proton Mail is still loading';
+  return null;
+}
+/** The store's contact emails from the page (null when it has none yet), or the API's pages. */
+const contacts = new ProtonContacts(
+  {
+    async store() {
+      if (!bridge.connected) throw new StatusError('the sandbox browser is not attached', 503, 'unavailable');
+      let r: { emails?: unknown };
+      try {
+        r = await bridge.request<{ emails?: unknown }>({ kind: 'contactEmails' }, CONTACTS_MS);
+      } catch (e) {
+        const msg = String((e as Error)?.message ?? e).slice(0, 200);
+        if (/^hook timed out/.test(msg)) throw new StatusError('the Mail page did not answer in time', 504);
+        // An older hook without the command: ours, and trying again will not help.
+        if (/^no command/.test(msg)) throw new StatusError(`the Mail page would not answer (${msg})`, 500);
+        throw new StatusError(msg, 503, 'unavailable');
+      }
+      return Array.isArray(r?.emails) ? r.emails : null;
+    },
+    page: (page, size) => api.call({ method: 'GET', path: 'contacts/v4/contacts/emails', query: { Page: page, PageSize: size } }),
+  },
+  { ready: contactsUnavailable },
+);
+
+/** mail.contacts, answered within CONTACTS_MS: Proton not able to now (signed out, a human check, busy) is 503 'unavailable'. */
+async function contactsOp(cmd: Command): Promise<unknown> {
+  let timer: Timer | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new StatusError("Proton's contacts did not answer in time", 504)), CONTACTS_MS);
+  });
+  try {
+    return await Promise.race([contacts.suggest({ query: cmd.query, limit: cmd.limit }), late]);
+  } catch (e) {
+    if (e instanceof ProtonError && (e.status === 401 || e.status === 403 || e.status === 429 || e.status >= 500)) throw new StatusError(e.message, 503, 'unavailable');
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // ------------------------------------------------------------------- status
 const LOGIN: Attention = { kind: 'login', message: 'Sign in to Proton in the live view (tick "Keep me signed in")', liveView: true };
@@ -264,6 +317,10 @@ function details(): Record<string, string | number | boolean | null> {
     events: watch ? (watch.error ? `failed: ${watch.error}` : `read ${new Date(watch.at).toISOString()}`) : null,
     pollSeconds: pollMs / 1000,
     ...sending(),
+    // Suggesting people as Proton's composer does (mail.contacts): now, or why not; and where the list last came from.
+    contacts: contactsUnavailable() === null,
+    contactsNote: contactsUnavailable(),
+    contactsFrom: contacts.from,
   };
 }
 
@@ -673,6 +730,8 @@ function ready() {
 }
 
 async function onCommand(cmd: Command): Promise<unknown> {
+  // Before ready(): a signed-out page is 503 'unavailable' to it, as the interface says, and an empty query answers anyway.
+  if (cmd.t === 'mail.contacts') return contactsOp(cmd);
   ready();
   const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
   switch (cmd.t) {

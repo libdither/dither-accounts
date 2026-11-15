@@ -10,6 +10,8 @@
  */
 'use strict';
 
+/*@include worker-watch@*/
+
 let CONFIG = null;
 let ws = null;
 let wsReady = false;
@@ -133,12 +135,16 @@ async function connect() {
     if (msg.t !== 'cmd') return; // pings only keep this worker awake
     if (msg.cmd && msg.cmd.kind === 'mediaFetch') return void mediaFetch(msg.id, String(msg.cmd.url || ''));
     const port = ports[ports.length - 1];
+    // tab.state: how Chromium sees the page's tab, asked when the page stops answering (packages/browser's silence.ts).
+    if (msg.cmd && msg.cmd.kind === 'tab.state') return void workerWatch.answer(sendUp, msg.id, port && port.sender && port.sender.tab ? port.sender.tab.id : null, { ports: ports.length });
     if (!port) {
       sendUp({ t: 'reply', id: msg.id, ok: false, error: 'the app is not open in the sandbox' });
       return;
     }
     try {
       port.postMessage(msg);
+      // Handed to the page's port: one never answered was lost in the page, not on the way to it.
+      workerWatch.got(sendUp, msg.id);
     } catch (err) {
       sendUp({ t: 'reply', id: msg.id, ok: false, error: 'the app page went away' });
     }

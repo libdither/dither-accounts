@@ -27,6 +27,14 @@ typed from the protocol, and every `AdapterEvent` but replies and logs is an eve
 `hello` and `status` are the account's own state: the manager keeps the latest of each and gives them to an app when it
 connects or when a grant first lets it see the account.
 
+**A Discord page that never starts or stops answering** (`extractors/discord/src/pagewatch.ts`). The extension's
+worker can be attached while its tab has no working page: after a restart under load, Chromium's network service
+crashed while the page loaded and the hook never ran. The worker now refuses a command it has no page for at once
+("the Discord page is not open in the sandbox") instead of dropping it, and the extractor reloads the tab through the
+worker (`tab.reload`: the Discord tab sent back to its start address, or a new one when there is none) when the page
+has not spoken 2 minutes after the worker attached, or left 3 requests in a row unanswered with no word between. Each
+reload with no word since doubles the next wait, up to 15 minutes.
+
 ## Network search and member walks
 
 dither-chat's network search and index jobs (its `netsearch.ts` and `jobs.ts`) ask an account to search the network's
@@ -180,6 +188,14 @@ Everything above is tested against fakes of the client's modules (`test/hook.tes
 `test/pipeline.test.ts` into dither-chat's hub store); the module shapes, the accept's captcha and screening
 answers, the 80013 refusal and the confirm, the spam and stranger flags, and the analytics contexts are what the
 client is known to use (read from its bundle as of November 2026), and are confirmed only on a live account.
+
+## A command the page does not answer (Discord)
+
+Each command to the Discord page that times out is told apart in the log at once, in one line: `the Discord page's
+silence: request …`, with how far the request got (the worker handed it to the page, the hook had it), how Chromium
+sees the tab, and what the hook says of itself without the network (`page.state`: visibility, lifecycle events, error
+counts, the commands still open). The hook also logs a command still open after 20 s. See
+[page-silence.md](page-silence.md); command names only, never a body or an id.
 
 ## The account itself (Discord)
 

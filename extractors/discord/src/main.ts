@@ -32,6 +32,7 @@ import { annotate, hookPhases, phase, sinceStart, traced } from './trace.ts';
 import { vncSocketPath } from '@dither-accounts/browser';
 import { Sandbox, pickDisplay } from './sandbox.ts';
 import { PageWatch } from './pagewatch.ts';
+import { StartupGate } from './startup.ts';
 import { callCapabilities, callEvents, CALL_EVENTS, newCallMemory } from './calls.ts';
 import { SERVER_DISPATCHES, ServerOps, serverCapabilities, serverDispatch } from './servers.ts';
 import { pollCapabilities, PollOps } from './polls.ts';
@@ -75,6 +76,9 @@ let lastPage: PageState = 'loading';
 let lastFinders: Record<string, boolean> = {};
 let gotFinders = false;
 let snapshotReceived = false;
+/** Commands sent while the client is still starting wait for its first snapshot, for at most this long (startup.ts). */
+const STARTUP_WAIT_MS = 15_000;
+const startup = new StartupGate(Date.now() + STARTUP_WAIT_MS);
 /** The sandbox started (display, browser, VNC), or why it did not. */
 let sandboxUp = false;
 let sandboxError: string | null = null;
@@ -452,6 +456,8 @@ function onLoginIssue(i: Extract<BridgeUp, { t: 'loginIssue' }>) {
 }
 
 function onPageState(state: PageState) {
+  // A page that needs the owner will not load by itself: commands stop waiting for it and fail as they would.
+  if (state === 'login' || state === 'captcha' || state === 'verify') startup.open();
   if (state === 'captcha') setStatus('attention', { kind: 'captcha', message: 'A captcha is on screen. Open the live view to solve it.', liveView: true });
   else if (state === 'verify') setStatus('attention', { kind: 'verify', message: 'Discord wants to verify this login. Open the live view.', liveView: true });
   else if (state === 'login') setStatus('attention', { kind: 'login', message: loginNote ?? 'Not logged in. Open the live view and sign in.', liveView: true });
@@ -481,6 +487,7 @@ function evaluateHealth(): boolean {
 // ------------------------------------------------------------------- snapshot
 function ingestSnapshot(data: Parameters<typeof translateSnapshot>[0]) {
   snapshotReceived = true;
+  startup.open();
   if (data.self) selfUser = data.self;
   const { events, backfillTargets, newest } = translateSnapshot(data, st);
   for (const ev of events) hub.emit(ev);
@@ -534,7 +541,11 @@ async function startupBackfill(targets: string[], newest: Record<string, string>
 // ------------------------------------------------------------- hub -> adapter
 /** A command the manager sent with its traceparent is a span of its own, sent up when done (trace.ts). */
 function commandTraced(cmd: P.AdapterCommand): Promise<unknown> {
-  return traced(cmd.t, (cmd as { trace?: unknown }).trace, (r) => hub.log('info', 'trace', r), () => onCommand(cmd));
+  return traced(cmd.t, (cmd as { trace?: unknown }).trace, (r) => hub.log('info', 'trace', r), async () => {
+    const waited = await startup.wait();
+    if (waited) phase('waited for the client to start', { ms: waited, ready: snapshotReceived });
+    return onCommand(cmd);
+  });
 }
 
 async function onCommand(cmd: P.AdapterCommand): Promise<unknown> {

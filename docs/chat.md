@@ -35,6 +35,12 @@ worker (`tab.reload`: the Discord tab sent back to its start address, or a new o
 has not spoken 2 minutes after the worker attached, or left 3 requests in a row unanswered with no word between. Each
 reload with no word since doubles the next wait, up to 15 minutes.
 
+**A command in the first seconds** (`extractors/discord/src/startup.ts`). A restart (a deploy) leaves the extractor
+a few seconds with no extension attached and then no client loaded, while the hub may already be sending (a
+`markRead` as the owner reads). A command that comes in then waits for the client's first snapshot, or for a sign-in
+page or captcha that will not go away by itself, for at most 15 s after the extractor started, and then runs; its span
+has a "waited for the client to start" event. After that window nothing waits: a later lost extension fails at once.
+
 ## Network search and member walks
 
 dither-chat's network search and index jobs (its `netsearch.ts` and `jobs.ts`) ask an account to search the network's

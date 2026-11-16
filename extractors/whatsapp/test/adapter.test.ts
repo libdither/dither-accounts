@@ -495,9 +495,10 @@ test('fetchMedia downloads through the bridge; avatars through the picture URL',
   await h.ctl({ result: { op: 'avatar', value: { url: 'https://pps.whatsapp.net/x', id: '9' } } });
   expect(await h.adapter.command({ t: 'fetchMedia', id: '2', url: `wa-avatar:${ALICE}?9` })).toEqual({ mime: 'image/png', base64: Buffer.from('png').toString('base64') });
   await h.ctl({ result: { op: 'avatar', value: null } });
-  await expect(h.adapter.command({ t: 'fetchMedia', id: '3', url: `wa-avatar:${BOB}` })).rejects.toThrow('no profile picture');
+  // A 404, an answer rather than a failure, both times
+  await expect(h.adapter.command({ t: 'fetchMedia', id: '3', url: `wa-avatar:${BOB}` })).rejects.toMatchObject({ message: 'no profile picture', status: 404 });
   // and does not ask again for a while
-  await expect(h.adapter.command({ t: 'fetchMedia', id: '4', url: `wa-avatar:${BOB}` })).rejects.toThrow('no profile picture');
+  await expect(h.adapter.command({ t: 'fetchMedia', id: '4', url: `wa-avatar:${BOB}` })).rejects.toMatchObject({ message: 'no profile picture', status: 404 });
   expect(h.cmds.filter((c) => c.op === 'avatar')).toHaveLength(2);
 });
 

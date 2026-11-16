@@ -585,7 +585,8 @@ export type AdapterEvent =
   /** saved, unsaved, reminderDue (sending.ts). */
   | SendEvent
   | { t: 'reply'; id: string; ok: true; result?: unknown }
-  | { t: 'reply'; id: string; ok: false; error: string }
+  /** status: the refusal's HTTP-like status (RefusalError), 404 for nothing there; 5xx or absent for a failure. */
+  | { t: 'reply'; id: string; ok: false; error: string; status?: number }
   | { t: 'log'; level: 'debug' | 'info' | 'warn' | 'error'; msg: string; data?: unknown }
   /** interaction, appModal (apps.ts). */
   | InteractEvent

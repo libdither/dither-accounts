@@ -25,6 +25,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type * as P from '@dither-chat/protocol';
 import { ABOUT_LABEL, ABOUT_RULES, createGroupNotBuilt, durationLabel } from '@dither-chat/protocol';
+import { RefusalError } from '@dither-chat/protocol/client';
 import { Bridge, type Logger } from './bridge.ts';
 import { toWhatsApp } from './format.ts';
 import { Aliases, avatarUrl, bare, checkAbout, contextOf, ignoredChat, isGroup, isPhoneJid, isUser, Mapper, type MapOut, mediaOf, msgId, phoneOf } from './mapping.ts';
@@ -1143,13 +1144,14 @@ export class WhatsAppAdapter {
     if (url.startsWith('wa-avatar:')) {
       const jid = url.slice('wa-avatar:'.length).split('?')[0];
       const miss = this.noAvatar.get(jid);
-      if (miss && Date.now() - miss < 6 * 3600_000) throw new Error('no profile picture');
+      // 404: an answer (this contact has none), not a failure; bugwatch passes over it.
+      if (miss && Date.now() - miss < 6 * 3600_000) throw new RefusalError('no profile picture', 404);
       const chat = this.state.chat(jid);
       const community = isGroup(jid) && !chat; // a community's parent group is a space, not a chat
       const p = await this.rpc.call<{ url: string; id: string } | null>('avatar', { jid, community });
       if (!p?.url) {
         this.noAvatar.set(jid, Date.now());
-        throw new Error('no profile picture');
+        throw new RefusalError('no profile picture', 404);
       }
       const res = await (this.opts.fetch ?? fetch)(p.url, { signal: AbortSignal.timeout(20_000) });
       if (!res.ok) throw new Error(`profile picture: HTTP ${res.status}`);

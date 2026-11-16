@@ -303,7 +303,10 @@ export class Router {
     try {
       c.span?.event('to the extractor');
       // The extractor's span (one that reads `trace`) is a child of the call's.
-      const r = await this.sup.command(c.account.id, { ...c.input, t: c.op, ...(c.span ? { trace: c.span.traceparent } : {}) }, c.iface.ops[c.op].timeoutMs ?? 30_000);
+      // chat's snapshot is read-level, so an app that only reads can ask for the facts again; extractors know it as
+      // the action resync, which needs manage when asked for by that name.
+      const cmd = c.iface.name === 'chat' && c.op === 'snapshot' ? { t: 'action', action: 'resync' } : { ...c.input, t: c.op };
+      const r = await this.sup.command(c.account.id, { ...cmd, ...(c.span ? { trace: c.span.traceparent } : {}) }, c.iface.ops[c.op].timeoutMs ?? 30_000);
       c.span?.event('the extractor answered');
       return r;
     } catch (e) {

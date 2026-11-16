@@ -1,0 +1,13 @@
+{
+  "name": "@dither-accounts/extractor-peer",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@dither-accounts/client": "workspace:*",
+    "@dither-accounts/interfaces": "workspace:*",
+    "@dither-accounts/link": "workspace:*",
+    "@dither-accounts/manager": "workspace:*",
+    "@dither-accounts/spec": "workspace:*"
+  }
+}

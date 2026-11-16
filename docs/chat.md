@@ -13,6 +13,7 @@ same wire as before: dither-chat's adapter protocol, copied as `packages/chat-pr
 | `matrix` | `extractors/matrix` | the Client-Server API with plain fetch; the Rust crypto (wasm) when encryption is on |
 | `whatsapp` | `extractors/whatsapp` | a whatsmeow sidecar (`bridge/`, Go, built with nix) as a linked device; adding and join requests: [whatsapp.md](whatsapp.md) |
 | `t3` | `extractors/t3` | T3 Code's coding threads on this machine, through its shell stream, MCP endpoint and command line ([t3.md](t3.md)): no adapter in dither-chat |
+| `peer` | `extractors/peer` | a chat account another manager holds, through that manager's grants, read only by default ([peer.md](peer.md)) |
 | `chat-fake` | `extractors/chat-fake` | a fake for tests: you and Alice in one DM |
 
 ## The `chat` interface
@@ -20,7 +21,8 @@ same wire as before: dither-chat's adapter protocol, copied as `packages/chat-pr
 `packages/interfaces/src/chat.ts`. Every `AdapterCommand` is an op whose input is the command without `t` and `id`,
 typed from the protocol, and every `AdapterEvent` but replies and logs is an event. Levels:
 
-- **read**: history, search, walkMembers, reactionContext, reactors, fetchMedia, about, profile, resolve
+- **read**: history, search, walkMembers, reactionContext, reactors, fetchMedia, about, profile, resolve, snapshot (the
+  facts again, run as the action resync: [peer.md](peer.md#snapshot))
 - **write**: send, forward, openDirect, markRead, typing, react, edit, redact, call, declineCall
 - **manage**: configure, action (relogin, startLink, resync), add, answer, lab
 

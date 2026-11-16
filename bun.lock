@@ -207,6 +207,16 @@
         "@dither-accounts/manager": "workspace:*",
       },
     },
+    "extractors/peer": {
+      "name": "@dither-accounts/extractor-peer",
+      "dependencies": {
+        "@dither-accounts/client": "workspace:*",
+        "@dither-accounts/interfaces": "workspace:*",
+        "@dither-accounts/link": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-accounts/spec": "workspace:*",
+      },
+    },
     "extractors/privacy": {
       "name": "@dither-accounts/extractor-privacy",
       "dependencies": {
@@ -458,6 +468,8 @@
     "@dither-accounts/extractor-monero": ["@dither-accounts/extractor-monero@workspace:extractors/monero"],
 
     "@dither-accounts/extractor-njalla": ["@dither-accounts/extractor-njalla@workspace:extractors/njalla"],
+
+    "@dither-accounts/extractor-peer": ["@dither-accounts/extractor-peer@workspace:extractors/peer"],
 
     "@dither-accounts/extractor-privacy": ["@dither-accounts/extractor-privacy@workspace:extractors/privacy"],
 

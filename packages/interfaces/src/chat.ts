@@ -73,6 +73,7 @@ export const chat = iface({
     setProfile: op('manage', 'Change your own profile: your bio or About, name, emoji, picture or username', input('setProfile'), out<PersonAbout>(), 60_000),
     mute: op('manage', 'Mute or unmute a conversation or space on the network itself, with a timer', input('mute'), out<NativeMute>(), 60_000),
     action: op('manage', 'An account action: relogin, startLink, resync', input('action'), out<unknown>(), 120_000),
+    snapshot: op('read', "Send the account's facts again (its snapshot), to every app that reads it: the manager runs it as the action resync", s.typed<Record<string, never>>('nothing'), out<unknown>(), 120_000),
     add: op('manage', 'Join or ask to join a server, group or room, or add someone: friend, follow, contact', input('add'), out<AddResult>(), 120_000),
     answer: op('manage', 'Answer a request waiting on you: accept, decline or block', input('answer'), out<AddResult>(), 60_000),
     remove: op('manage', 'End a relationship: unfriend, cancel a request, unblock, remove a contact, unfollow', input('remove'), out<AddResult>(), 60_000),

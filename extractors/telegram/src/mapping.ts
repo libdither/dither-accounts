@@ -286,6 +286,27 @@ export function attachmentsOf(base: string, m: tl.RawMessage): { attachments: P.
   }
 }
 
+/**
+ * A link preview as the embeds the hub shows (Discord's, Signal's): the page's site, title, words and picture, the
+ * picture fetched through fetchMedia as the message's own file would be (`image`: its tg://media link). None while
+ * Telegram is still making it (webPagePending: updateWebPage says when it is ready), when it could not (webPageEmpty),
+ * or when it has nothing to show beyond the link.
+ */
+export function webPageEmbed(page: tl.TypeWebPage, image: string): P.EmbedView | null {
+  if (page._ !== 'webPage') return null;
+  const e: P.EmbedView = { url: page.url };
+  let host = '';
+  try {
+    host = new URL(page.url).hostname;
+  } catch {}
+  if (page.siteName || host) e.provider = page.siteName || host;
+  if (page.title) e.title = page.title;
+  if (page.description) e.description = page.description;
+  if (page.author) e.author = page.author;
+  if (page.photo?._ === 'photo') e.image = image;
+  return e.title || e.description || e.image ? e : null;
+}
+
 export function forwardOf(ctx: MapCtx, f: tl.TypeMessageFwdHeader | undefined): P.ForwardFact | undefined {
   if (!f) return undefined;
   const out: P.ForwardFact = { ts: f.date * 1000 };
@@ -340,6 +361,8 @@ export function messageFact(ctx: MapCtx, m: tl.TypeMessage): P.MessageFact | nul
   if (m.postAuthor) extra.signature = m.postAuthor;
   if (m.ttlPeriod) extra.ttl = m.ttlPeriod;
   if (m.noforwards) extra.protected = true;
+  const preview = m.media?._ === 'messageMediaWebPage' ? webPageEmbed(m.media.webpage, mediaUrl(base, m.id)) : null;
+  if (preview) extra.embeds = [preview];
   if (Object.keys(extra).length) f.extra = extra;
   return f;
 }

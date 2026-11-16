@@ -98,6 +98,8 @@ export interface MessageModeration {
   delete: boolean;
   /** Remove others' reactions: all, one emoji's, one person's (Discord: Manage Messages). */
   reactions?: boolean;
+  /** Take the link previews off someone else's message (Discord: Manage Messages; its "Remove embeds"). */
+  embeds?: boolean;
 }
 
 /** Discord's timeout dialog: 60 seconds, 5 and 10 minutes, an hour, a day, a week (it allows up to 28 days). */

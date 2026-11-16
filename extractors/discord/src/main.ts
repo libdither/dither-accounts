@@ -679,8 +679,8 @@ async function onCommand(cmd: P.AdapterCommand): Promise<unknown> {
         existingOnly: r.existingOnly,
         custom: r.custom.map((g) => ({ id: g.guild.id, name: g.guild.name, icon: guildIconUrl(g.guild), emoji: g.emoji.map((e) => customEmoji(e)!) })),
         super: r.nitro ? { available: true } : { available: false, reason: 'Super reactions need Discord Nitro.' },
-        // Manage Messages here: others' messages and reactions (moderation.ts).
-        ...((r as { manageMessages?: boolean }).manageMessages === true ? { moderation: { delete: true, reactions: true } } : {}),
+        // Manage Messages here: others' messages, their embeds and reactions (moderation.ts, sending.ts).
+        ...((r as { manageMessages?: boolean }).manageMessages === true ? { moderation: { delete: true, reactions: true, embeds: true } } : {}),
       } satisfies P.ReactionContext;
     }
     case 'about':

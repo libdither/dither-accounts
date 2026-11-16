@@ -67,6 +67,7 @@ function client(opts: { grants?: bigint[]; mods?: boolean; outranked?: string[] 
     });
     e.H = rest;
     e.I = { deleteMessage: (c: string, m: string) => void calls.push(['deleteMessage', c, m]), sendMessage() {}, editMessage() {} };
+    e.L = store('MessageStore', { getMessage: (_c: string, id: string) => (id === '9' ? { id: '9', flags: 32 } : null) });
     if (opts.mods !== false) {
       e.J = {
         kickUser: (g: string, u: string, reason: string) => (calls.push(['kickUser', g, u, reason]), Promise.resolve()),
@@ -205,13 +206,20 @@ describe("hook.js's moderation section", () => {
       `/channels/${CHAN}/messages/9/reactions/blob%3A77`,
       `/channels/${CHAN}/messages/9/reactions/${encodeURIComponent('👍')}/0/${ANA}`,
     ]);
+    // Their embeds off: the same patch as on your own, keeping the flags the message has.
+    expect((await p.cmd({ kind: 'suppressEmbeds', channelId: CHAN, messageId: '9', moderator: true })).result).toEqual({});
+    expect(c.calls.at(-1)).toEqual(['rest', 'patch', `/channels/${CHAN}/messages/9`, { flags: 32 | 4 }]);
     expect((await p.cmd({ kind: 'modRedact', channelId: CHAN, messageId: '9' })).ok).toBe(true);
     expect(c.calls.at(-1)).toEqual(['deleteMessage', CHAN, '9']);
     expect((await p.cmd({ kind: 'reactionContext', channelId: CHAN })).result.manageMessages).toBe(true);
     // A DM has no moderators.
     expect((await p.cmd({ kind: 'reactionContext', channelId: DM })).result.manageMessages).toBe(false);
     expect((await p.cmd({ kind: 'modRedact', channelId: DM, messageId: '9' })).error).toMatch(/Manage Messages/);
-    const q = page(client({ grants: [] }));
+    expect((await p.cmd({ kind: 'suppressEmbeds', channelId: DM, messageId: '9', moderator: true })).error).toMatch(/Manage Messages/);
+    const qc = client({ grants: [] });
+    const q = page(qc);
     expect((await q.cmd({ kind: 'clearReactions', channelId: CHAN, messageId: '9' })).error).toMatch(/Manage Messages/);
+    expect((await q.cmd({ kind: 'suppressEmbeds', channelId: CHAN, messageId: '9', moderator: true })).error).toMatch(/Manage Messages/);
+    expect(qc.calls.filter((x) => x[1] === 'patch')).toEqual([]);
   });
 });

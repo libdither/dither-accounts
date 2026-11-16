@@ -438,7 +438,9 @@ later needs nothing here: it sends through the ordinary `send` at its time.
   `allowedMentions: { parse: [users, roles, everyone], replied_user: false }`, as its reply bar's @ toggle and @silent
   build them; on the REST path, the same as `flags` and `allowed_mentions`. Capabilities `silentSend`, `replyMention`.
 - `suppressEmbeds`: the patch its own Remove Embeds sends, with `SUPPRESS_EMBEDS` added to the flags the message has
-  (read first, as a jump to it does, when the client has not loaded it).
+  (read first, as a jump to it does, when the client has not loaded it). With `moderator`, someone else's message:
+  only where the client says Manage Messages here (`canModerateMessages`), as its × on their embed is offered; the
+  reaction context's `moderation.embeds` says so first.
 - Saved messages (`savedMessages`, needs `SavedMessagesStore` and its save module): `save` (with `dueAt`, a reminder)
   and remove through the client's own functions; `savedList` runs its Saved list's own fetch (the next page with
   `before`) and reads its store. `SAVED_MESSAGES_UPDATE` (loaded by the client itself on connecting),

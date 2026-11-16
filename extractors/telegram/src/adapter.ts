@@ -42,7 +42,7 @@ import { Long } from '@mtcute/bun';
 import { type ConnState, type DeskClient, type DesktopKey, floodSeconds, isAuthGone, isRpc, rpcText, type SentCode, type TgBackend, type tl, type UpdateInfo } from './backend.ts';
 import type { DesktopHost } from './desktop.ts';
 import { type OutEntity, toTelegram } from './entities.ts';
-import { baseConv, convId, convOwner, emojiUrl, inviteAvatarUrl, joinRequestId, markedId, msgId, parseAvatarUrl, parseConv, parseCustomKey, parseEmojiUrl, parseInviteAvatarUrl, parseJoinRequestId, parseMediaUrl, parseMsg, type ConvRef, type PeerRef, userId } from './ids.ts';
+import { baseConv, convId, convOwner, emojiUrl, inviteAvatarUrl, joinRequestId, markedId, mediaUrl, msgId, parseAvatarUrl, parseConv, parseCustomKey, parseEmojiUrl, parseInviteAvatarUrl, parseJoinRequestId, parseMediaUrl, parseMsg, type ConvRef, type PeerRef, userId } from './ids.ts';
 import {
   authorOf,
   avatarOfChat,
@@ -61,6 +61,7 @@ import {
   TYPING_TTL,
   topicConversation,
   usernameOf,
+  webPageEmbed,
 } from './mapping.ts';
 import { FloodError, Pacer, type PacerOptions } from './pacer.ts';
 import { TELEGRAM_DESKTOP } from './profile.ts';
@@ -70,7 +71,7 @@ import { State } from './state.ts';
 import { mentionablesOf, mentionQuery } from './mentions.ts';
 
 export const ADAPTER_VERSION = '0.1.0';
-export const CAPABILITIES: P.Capability[] = ['send', 'history', 'react', 'edit', 'redact', 'markRead', 'typing', 'threads', 'media', 'sendMedia', 'openDirect', 'forward', 'about', 'configure', 'profile', 'resolve', 'join', 'connect', 'requests', 'relationships', 'disconnect', 'addMembers', 'createGroup', 'search', 'mentionables'];
+export const CAPABILITIES: P.Capability[] = ['send', 'history', 'react', 'edit', 'redact', 'markRead', 'typing', 'threads', 'media', 'sendMedia', 'openDirect', 'forward', 'about', 'configure', 'profile', 'resolve', 'join', 'connect', 'requests', 'relationships', 'disconnect', 'addMembers', 'createGroup', 'search', 'mentionables', 'suppressEmbeds'];
 export const QR_MESSAGE = 'Scan this QR code in Telegram on your phone: Settings → Devices → Link Desktop Device';
 
 export interface Host {
@@ -178,6 +179,8 @@ export class TelegramAdapter {
   private pinnedTopics = new Set<string>();
   /** Recent message facts, for reaction snapshots and read timestamps. */
   private recent = new Map<string, P.MessageFact>();
+  /** Messages whose link preview Telegram was still making, by the preview's id: shown again once it is ready. */
+  private pendingPreviews = new Map<string, Set<string>>();
   private reactionNames = new Map<string, Set<string>>();
   private typingSent = new Map<string, number>();
   private users = new Map<number, tl.RawUser>();
@@ -1435,6 +1438,7 @@ export class TelegramAdapter {
     if (!f || m._ === 'messageEmpty') return null;
     if (live) this.newChat(m);
     this.remember(f, !!m.out);
+    this.watchPreview(m, f);
     this.host.emit({ t: 'message', message: f, live });
     if (m._ === 'messageService') {
       const a = m.action;
@@ -1470,6 +1474,32 @@ export class TelegramAdapter {
     this.recent.delete(f.nativeId);
     this.recent.set(f.nativeId, f);
     if (this.recent.size > 3000) for (const k of [...this.recent.keys()].slice(0, 500)) this.recent.delete(k);
+  }
+
+  /** A message whose link preview Telegram is still making (webPagePending): kept until updateWebPage says it is ready. */
+  private watchPreview(m: tl.TypeMessage, f: P.MessageFact) {
+    if (m._ !== 'message' || m.media?._ !== 'messageMediaWebPage' || m.media.webpage._ !== 'webPagePending') return;
+    const key = m.media.webpage.id.toString();
+    this.pendingPreviews.set(key, (this.pendingPreviews.get(key) ?? new Set<string>()).add(f.nativeId));
+    if (this.pendingPreviews.size > 200) this.pendingPreviews.delete(this.pendingPreviews.keys().next().value!);
+  }
+
+  /** Telegram made a link preview it was still making: the messages waiting for it, again with it. No request. */
+  private previewReady(page: tl.TypeWebPage) {
+    if (page._ === 'webPageNotModified') return;
+    const key = page.id.toString();
+    const ids = this.pendingPreviews.get(key);
+    if (!ids) return;
+    this.pendingPreviews.delete(key);
+    for (const id of ids) {
+      const f = this.recent.get(id);
+      const at = parseMsg(id);
+      const embed = at && webPageEmbed(page, mediaUrl(at.conv, at.id));
+      if (!f || !embed) continue;
+      const next: P.MessageFact = { ...f, extra: { ...f.extra, embeds: [embed] } };
+      this.recent.set(id, next);
+      this.host.emit({ t: 'message', message: next, live: false });
+    }
   }
 
   private snapshotSoon() {
@@ -1552,6 +1582,7 @@ export class TelegramAdapter {
           const f = messageFact(this.ctx, m);
           if (f) {
             this.remember(f, !!m.out);
+            this.watchPreview(m, f);
             this.host.emit({ t: 'message', message: f, live: true });
             this.reactionNames.set(f.nativeId, namedReactions(this.ctx, m.reactions));
           }
@@ -1559,6 +1590,10 @@ export class TelegramAdapter {
         }
         return null;
       }
+      case 'updateWebPage':
+      case 'updateChannelWebPage':
+        this.previewReady(upd.webpage);
+        return null;
       case 'updateDeleteMessages':
         for (const id of upd.messages) {
           const conv = this.state.msgConv.get(id);
@@ -1811,6 +1846,8 @@ export class TelegramAdapter {
         return this.send(cmd.conversation, cmd.body, cmd.replyTo, cmd.attachments);
       case 'edit':
         return this.edit(cmd.conversation, cmd.message, cmd.body);
+      case 'suppressEmbeds':
+        return this.suppressEmbeds(cmd.conversation, cmd.message);
       case 'redact':
         return this.redact(cmd.message);
       case 'react':
@@ -1980,6 +2017,29 @@ export class TelegramAdapter {
     const { text, entities } = this.text(body);
     const res = await this.call({ _: 'messages.editMessage', peer: this.inputPeer(m.ref.peer), id: m.id, message: text, entities }, { chat: baseConv(conversation) });
     this.applyResult(res);
+    return {};
+  }
+
+  /**
+   * The link preview off your own message. Telegram has no way to take one off by itself: its apps do it by editing the
+   * message and closing the preview, so this edits it with its own text and entities and no_webpage. Telegram allows
+   * that in a message's first 48 hours (Saved Messages and a channel's posts always) and says so after.
+   */
+  private async suppressEmbeds(conversation: string, message: string) {
+    const at = this.message(message);
+    const [m] = await this.fetchMessages(at.ref.peer, [at.id]);
+    if (!m || m._ !== 'message') throw new Error('Telegram does not have that message any more');
+    if (!m.out) throw new Error("Telegram has no way to take the preview off someone else's message");
+    if (m.media?._ !== 'messageMediaWebPage') return {};
+    // Its entities as Telegram gave them, a mention by name back in the form a request takes.
+    const entities = m.entities?.map((e): tl.TypeMessageEntity => (e._ === 'messageEntityMentionName' ? { _: 'inputMessageEntityMentionName', offset: e.offset, length: e.length, userId: this.inputUser(Number(e.userId)) } : e));
+    try {
+      const res = await this.call({ _: 'messages.editMessage', peer: this.inputPeer(at.ref.peer), id: at.id, message: m.message, ...(entities?.length ? { entities } : {}), noWebpage: true }, { chat: baseConv(conversation) });
+      this.applyResult(res);
+    } catch (e) {
+      if (isRpc(e, 'MESSAGE_EDIT_TIME_EXPIRED')) throw new Error('Telegram lets you change a message only in its first 48 hours');
+      throw e;
+    }
     return {};
   }
 
@@ -3687,12 +3747,13 @@ function rulesOf(banned: tl.TypeChatBannedRights | undefined, you: boolean): P.A
   ];
 }
 
-/** Where a message's file is, to download it. */
+/** Where a message's file is, to download it: its photo or document, or its link preview's picture. */
 export function locationOf(media: tl.TypeMessageMedia): { location: tl.TypeInputFileLocation; dcId: number; size: number; mime: string } | null {
-  if (media._ === 'messageMediaPhoto' && media.photo?._ === 'photo') {
-    const big = largestPhotoSize(media.photo.sizes);
+  const photo = media._ === 'messageMediaPhoto' ? media.photo : media._ === 'messageMediaWebPage' && media.webpage._ === 'webPage' ? media.webpage.photo : undefined;
+  if (photo?._ === 'photo') {
+    const big = largestPhotoSize(photo.sizes);
     if (!big) return null;
-    return { location: { _: 'inputPhotoFileLocation', id: media.photo.id, accessHash: media.photo.accessHash, fileReference: media.photo.fileReference, thumbSize: big.type }, dcId: media.photo.dcId, size: big.size, mime: 'image/jpeg' };
+    return { location: { _: 'inputPhotoFileLocation', id: photo.id, accessHash: photo.accessHash, fileReference: photo.fileReference, thumbSize: big.type }, dcId: photo.dcId, size: big.size, mime: 'image/jpeg' };
   }
   if (media._ === 'messageMediaDocument' && media.document?._ === 'document') {
     const d = media.document;

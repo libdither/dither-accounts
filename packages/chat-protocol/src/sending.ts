@@ -1,18 +1,23 @@
 /**
  * Sending with more than words (docs/sending.md): a reply that does not ping its author, a message sent silently,
- * sending later (the hub's own, on every network, with a network's own scheduled messages read beside them), taking a
- * link preview off your own message, and a network's saved messages and reminders (Discord's).
+ * sending later (the hub's own, on every network, with a network's own scheduled messages read beside them), taking the
+ * link previews off a message, and a network's saved messages and reminders (Discord's).
  *
  * All additive: an adapter says it has each with a capability, and the hub and the app offer it only then. The hub's
  * own Send later needs nothing from an adapter: it sends through the ordinary send path when the time comes.
  */
+import type { Network, Shape, Variant } from './ontology.ts';
 
 export type SendCapability =
   /** `send` takes `silent`: the message goes out without notifying anyone (Discord's @silent). */
   | 'silentSend'
   /** `send` takes `mentionReplied`: a reply pings its author or not, as the network's own reply toggle does. */
   | 'replyMention'
-  /** Takes the link previews off your own message (the `suppressEmbeds` command; Discord's "Remove embeds"). */
+  /**
+   * Takes the link previews off your own message (the `suppressEmbeds` command): Discord's "Remove embeds", or on Signal
+   * and Telegram your message sent again as an edit without its preview, as their apps do when you close the preview
+   * while editing. On Discord also someone else's where the reaction context says `moderation.embeds`.
+   */
   | 'suppressEmbeds'
   /** Says what you saved on the network and when it reminds you (the saved events), lists them and saves (`savedList`, `save`). */
   | 'savedMessages'
@@ -73,8 +78,12 @@ export type SendEvent =
 
 /** Adapter commands for the capabilities above. Each answers once the network took it. */
 export type SendCommand =
-  /** Take the link previews off your own message (capability 'suppressEmbeds'). The message fact again follows. reply.result: {} */
-  | { t: 'suppressEmbeds'; id: string; conversation: string; message: string }
+  /**
+   * Take the link previews off a message (capability 'suppressEmbeds'). The message fact again follows. `body`: its words
+   * as the hub has them, for a network that does it with an edit (Signal: the network keeps no copy to send again).
+   * `moderator`: someone else's message, as the reaction context's `moderation.embeds` allowed. reply.result: {}
+   */
+  | { t: 'suppressEmbeds'; id: string; conversation: string; message: string; body?: string; moderator?: true }
   /**
    * Save a message on the network, with a reminder at `dueAt` (ms epoch) where given, or (`remove`) stop keeping it
    * (capability 'savedMessages'). reply.result: SavedFact, or {} for a removal; a saved or unsaved event follows.
@@ -93,6 +102,23 @@ export type SendCommand =
 
 /** At most this many saved on Discord: reminders and saved messages, its own limits. */
 export const SAVED_LIMITS = { reminders: 50, saved: 500 } as const;
+
+// ------------------------------------------------------------------ previews off
+
+/** How long a network that takes previews off with an edit lets you edit: Signal's apps 24 hours, Telegram 48. */
+export const PREVIEW_EDIT_WINDOW_MS: Partial<Record<Network, number>> = { signal: 24 * 3_600_000, telegram: 48 * 3_600_000 };
+
+/**
+ * Whether the previews can still come off your own message sent at `sentAt`: where the network does it with an edit,
+ * only while the message may still be edited (Signal: its first 24 hours, Note to Self always; Telegram: its first 48,
+ * Saved Messages and a channel's posts always). Discord: always.
+ */
+export function previewsRemovable(network: Network, sentAt: number, place: { shape: Shape; variant?: Variant }, now = Date.now()): boolean {
+  const window = PREVIEW_EDIT_WINDOW_MS[network];
+  if (window === undefined || place.shape === 'self') return true;
+  if (network === 'telegram' && place.variant === 'announcement') return true;
+  return now - sentAt < window;
+}
 
 // ------------------------------------------------------------------ the hub's Send later
 

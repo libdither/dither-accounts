@@ -3,7 +3,7 @@ import { expect, test } from 'bun:test';
 import { Long } from '@mtcute/bun';
 import type { tl } from '../src/backend.ts';
 import { avatarUrl, convId, mediaUrl, msgId, parseAvatarUrl, parseConv, parseMediaUrl, parseMsg } from '../src/ids.ts';
-import { attachmentsOf, conversationOf, identityOfChat, identityOfUser, type MapCtx, messageFact, muteOf, reactionsOf, topicConversation } from '../src/mapping.ts';
+import { attachmentsOf, conversationOf, identityOfChat, identityOfUser, type MapCtx, messageFact, muteOf, reactionsOf, topicConversation, webPageEmbed } from '../src/mapping.ts';
 
 const SELF = 100;
 const FORUM = 9001;
@@ -128,4 +128,17 @@ test('forwards say where from', () => {
   expect(f.forward).toEqual({ ts: 1_600_000_000_000, conversation: 'channel:77', message: 'channel:77#9', author: 'channel:77' });
   const hidden = messageFact(ctx, msg({ peerId: pu(200), message: 'x', fwdFrom: { _: 'messageFwdHeader', date: 1, fromName: 'Private Person' } }))!;
   expect(hidden.forward).toEqual({ ts: 1000, authorName: 'Private Person' });
+});
+
+test('a link preview as an embed: only once made, and only with something to show', () => {
+  const id = Long.fromNumber(7);
+  const img = 'tg://media/dm:1:2/5';
+  const page = { _: 'webPage', id, url: 'https://example.com/a', displayUrl: 'example.com/a', hash: 0 } as const;
+  expect(webPageEmbed({ _: 'webPagePending', id, url: 'https://example.com/a', date: 1 }, img)).toBeNull();
+  expect(webPageEmbed({ _: 'webPageEmpty', id }, img)).toBeNull();
+  // A bare link: nothing beyond it to show.
+  expect(webPageEmbed(page, img)).toBeNull();
+  expect(webPageEmbed({ ...page, title: 'A', description: 'B', author: 'Ann' }, img)).toEqual({ url: 'https://example.com/a', provider: 'example.com', title: 'A', description: 'B', author: 'Ann' });
+  const photo: tl.TypePhoto = { _: 'photo', id, accessHash: id, fileReference: new Uint8Array(), date: 1, sizes: [], dcId: 2 };
+  expect(webPageEmbed({ ...page, siteName: 'Example', photo }, img)).toEqual({ url: 'https://example.com/a', provider: 'Example', image: img });
 });

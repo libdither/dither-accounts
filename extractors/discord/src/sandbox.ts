@@ -20,7 +20,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { markerKey, stampExtension } from '@dither-accounts/browser/markers';
 import type { Subprocess } from 'bun';
-import { prepareVncSocket, refreshWorker, vncSocketPath, waitForVncSocket, x11vncArgs } from '@dither-accounts/browser';
+import { MEMORY_DISABLED_FEATURES, mergeFeatureFlags, prepareVncSocket, refreshWorker, vncSocketPath, waitForVncSocket, x11vncArgs } from '@dither-accounts/browser';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const EXTENSION_SRC = join(HERE, 'extension');
@@ -183,6 +183,8 @@ export class Sandbox {
       `--load-extension=${this.extensionDir}`,
       // newer Chromium gates --load-extension behind this feature switch
       '--disable-features=DisableLoadExtensionCommandLineSwitch',
+      // processes every browser would start and no account uses (flags.ts)
+      `--disable-features=${MEMORY_DISABLED_FEATURES.join(',')}`,
       '--no-first-run',
       '--no-default-browser-check',
       '--disable-sync',
@@ -198,7 +200,7 @@ export class Sandbox {
     ];
     flags.push(...gpuFlags());
     if (this.opts.noSandbox) flags.push('--no-sandbox');
-    this.spawn('chromium', [bins.chromium, ...flags, this.opts.startUrl], { DISPLAY: d });
+    this.spawn('chromium', [bins.chromium, ...mergeFeatureFlags(flags), this.opts.startUrl], { DISPLAY: d });
 
     // 3. Live view: VNC on the account's own Unix socket and no TCP port, no password (the manager carries it,
     // behind its login). -forever so it survives client disconnects; -shared for multiple viewers.

@@ -20,7 +20,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, 
 import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type * as P from '@dither-chat/protocol';
-import { ADD_MEMBERS_MAX, createGroupProblem, GROUP_RULES, PIN_DURATIONS, pollDraftProblem, signalStickerLink, STICKER_PAGE_PACKS, STORIES_ACTION } from '@dither-chat/protocol';
+import { ADD_MEMBERS_MAX, createGroupProblem, GROUP_RULES, PIN_DURATIONS, pollDraftProblem, previewsRemovable, signalStickerLink, STICKER_PAGE_PACKS, STORIES_ACTION } from '@dither-chat/protocol';
 import { errorText, groupIdOfLink, isMessageRequest, joinError, lookupError, signalError, wantsCaptcha } from './add.ts';
 import { answerJoinParams, approvalParams, groupLeaving, groupModeration, isAdmin, joinRequests, labelOf, labelParams, moderateParams, ownLabel, parseJoinRequest, picturePath, quitParams } from './groups.ts';
 import { ChildRegistry, type Logger } from './cli.ts';
@@ -66,7 +66,7 @@ import { CallBook } from './calls.ts';
 
 export const ADAPTER_VERSION = '0.1.0';
 /** No 'connect': Signal has no friends, follows or contact requests; people are added by messaging them (openDirect). */
-export const CAPABILITIES: P.Capability[] = ['send', 'react', 'edit', 'redact', 'markRead', 'typing', 'media', 'sendMedia', 'openDirect', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'editProfile', 'resolve', 'join', 'requests', 'viewed', 'resetSession', 'callStates', 'relationships', 'disconnect', 'block', 'safetyNumbers', 'contactNotes', 'leave', 'moderate', 'memberLabels', 'setPicture', 'polls', 'pollVote', 'pollCreate', 'pollEnd', 'pin', 'sendStickers', 'installStickers', 'sendVoice', 'sendViewOnce', 'stories'];
+export const CAPABILITIES: P.Capability[] = ['send', 'react', 'edit', 'redact', 'markRead', 'typing', 'media', 'sendMedia', 'openDirect', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'editProfile', 'resolve', 'join', 'requests', 'viewed', 'resetSession', 'callStates', 'relationships', 'disconnect', 'block', 'safetyNumbers', 'contactNotes', 'leave', 'moderate', 'memberLabels', 'setPicture', 'polls', 'pollVote', 'pollCreate', 'pollEnd', 'pin', 'sendStickers', 'installStickers', 'sendVoice', 'sendViewOnce', 'stories', 'suppressEmbeds'];
 
 /**
  * The settings your phone syncs to this device (Settings → Privacy, Chats), as signal-cli keeps them: read-only from its
@@ -1188,6 +1188,8 @@ export class SignalAdapter {
         return this.openDirect(cmd.peer);
       case 'edit':
         return this.edit(cmd.conversation, cmd.message, cmd.body);
+      case 'suppressEmbeds':
+        return this.suppressEmbeds(cmd.conversation, cmd.message, cmd.body);
       case 'react': {
         const m = this.message(cmd.message);
         await this.refuseQuiet(cmd.conversation);
@@ -1555,6 +1557,22 @@ export class SignalAdapter {
     });
     this.state.remember(message, conversation, st.text, undefined, undefined, quoteSource(st.text, st.mentions, st.textStyles));
     return { nativeId: message };
+  }
+
+  /**
+   * The link preview off your own message. Signal has no way to take one off by itself: its apps do it by editing the
+   * message and closing the preview, so this edits it with the same words and quote and no preview (edit never sends
+   * one). `body` is its words as the hub has them, since signal-cli keeps no copy. Only in the message's first 24 hours,
+   * as the apps edit (Note to Self always).
+   */
+  private async suppressEmbeds(conversation: string, message: string, body: string | undefined) {
+    const m = this.message(message);
+    if (m.author !== this.self) throw new Error("Signal has no way to take the preview off someone else's message");
+    if (!body?.trim()) throw new Error('Taking a preview off needs the message\'s words from the hub (an older hub does not send them)');
+    const shape = parseConversation(conversation, this.self)?.kind === 'self' ? 'self' : 'direct';
+    if (!previewsRemovable('signal', m.ts, { shape })) throw new Error('Signal lets you change a message only in its first 24 hours');
+    await this.edit(conversation, message, body);
+    return {};
   }
 
   /**

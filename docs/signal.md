@@ -102,6 +102,10 @@ What you send:
 - **Link previews** (`send`'s `preview`, capability `linkPreviews`): `previewUrl/Title/Description/Image`, only while
   your phone's link-preview setting is on and only for a link that is in the text. The picture is copied into
   `attachments/sent-<ts>-preview` for the echo's embed.
+- **A preview taken off** your own message (`suppressEmbeds`): Signal has no way to do it by itself, so it goes as an
+  edit with the same words (the hub sends them as the command's `body`: signal-cli keeps no copy) and quote and no
+  preview, as Signal's apps do when you close the preview while editing. Only in the message's first 24 hours, as the
+  apps edit (Note to Self always). An ordinary `edit` sends no preview either.
 - **`viewed`**: `sendReceipt --type viewed` for someone else's message, once per message (in memory), only with read
   receipts on, never in a message request.
 - **`resetSession`**: `send --end-session` (`endSession: true`) in a 1:1, and a system line "You reset the secure

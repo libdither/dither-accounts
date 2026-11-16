@@ -63,6 +63,8 @@ describe('sending extras, adapter side', () => {
     expect(sendingHookCommand({ t: 'save', id: 'x', conversation: CHAN, message: MSG, remove: true })).toEqual({ kind: 'save', channelId: CHAN, messageId: MSG, remove: true });
     expect(sendingHookCommand({ t: 'savedList', id: 'x', before: 5 })).toEqual({ kind: 'savedList', more: true });
     expect(sendingHookCommand({ t: 'suppressEmbeds', id: 'x', conversation: CHAN, message: MSG })).toEqual({ kind: 'suppressEmbeds', channelId: CHAN, messageId: MSG });
+    // The hub's words for an edit mean nothing here; a moderator's goes along for the hook to check.
+    expect(sendingHookCommand({ t: 'suppressEmbeds', id: 'x', conversation: CHAN, message: MSG, body: 'hi', moderator: true })).toEqual({ kind: 'suppressEmbeds', channelId: CHAN, messageId: MSG, moderator: true });
     expect(() => sendingHookCommand({ t: 'cancelScheduled', id: 'x', nativeId: '../x' })).toThrow();
   });
 

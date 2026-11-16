@@ -332,6 +332,18 @@ describe('signal adapter against a fake signal-cli', () => {
     expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: 'fixed now', textStyle: ['6:3:ITALIC'], editTimestamp: ts });
     expect(of('message', mark)[0].message).toMatchObject({ nativeId: sent.nativeId, ts, editedTs: expect.any(Number), body: 'fixed *now*' });
 
+    // The preview off: the same words again as an edit, with no preview, as Signal's apps do it.
+    mark = events.length;
+    expect(await cmd({ t: 'suppressEmbeds', conversation: DM_ALICE, message: sent.nativeId, body: 'fixed *now*' })).toEqual({});
+    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: 'fixed now', textStyle: ['6:3:ITALIC'], editTimestamp: ts });
+    expect(of('message', mark)[0].message).toMatchObject({ nativeId: sent.nativeId, ts, editedTs: expect.any(Number), body: 'fixed *now*' });
+    const edits = calls('send').length;
+    await expect(cmd({ t: 'suppressEmbeds', conversation: DM_ALICE, message: sent.nativeId })).rejects.toThrow(/words from the hub/);
+    await expect(cmd({ t: 'suppressEmbeds', conversation: GROUP, message: `${ALICE}:${T + 1000}`, body: 'x' })).rejects.toThrow(/someone else's/);
+    // Past the first 24 hours Signal's apps edit no more.
+    await expect(cmd({ t: 'suppressEmbeds', conversation: DM_ALICE, message: `${SELF}:${T}`, body: 'x' })).rejects.toThrow(/first 24 hours/);
+    expect(calls('send').length).toBe(edits);
+
     mark = events.length;
     await cmd({ t: 'redact', conversation: DM_ALICE, message: sent.nativeId });
     expect(calls('remoteDelete').at(-1).params).toEqual({ recipient: [ALICE], targetTimestamp: ts });

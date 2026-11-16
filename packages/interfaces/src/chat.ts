@@ -96,7 +96,7 @@ export const chat = iface({
     savedList: op('read', 'What you saved on the network, with its reminders, as its own list reads it', input('savedList'), out<SavedListResult>(), 60_000),
     nativeScheduled: op('read', "Messages scheduled with the network's own Send later", input('nativeScheduled'), out<NativeScheduledResult>(), 60_000),
     save: op('write', 'Save a message on the network, with a reminder, or stop keeping it', input('save'), out<SavedFact | Record<string, never>>(), 60_000),
-    suppressEmbeds: op('write', 'Take the link previews off your own message', input('suppressEmbeds'), out<unknown>(), 60_000),
+    suppressEmbeds: op('write', "Take the link previews off your own message, or as a moderator off someone else's", input('suppressEmbeds'), out<unknown>(), 60_000),
     cancelScheduled: op('write', "Cancel a message scheduled with the network's own Send later", input('cancelScheduled'), out<unknown>(), 60_000),
     lab: op('manage', 'Call-lab probe (DITHER_LAB only)', input('lab'), out<unknown>(), 120_000),
     sessions: op('read', 'Where the account is signed in', input('sessions'), out<SessionsResult>(), 60_000),

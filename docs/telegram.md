@@ -320,7 +320,7 @@ own unread and mention counts), `receipt` (read, in private chats: Telegram says
 Telegram's apps), `pin`, `role` (admins given and taken), `identity`, `conversation`, `leave`.
 
 Commands: `send` (Markdown to entities, replies, into a topic, one file as a photo or document, several as an
-album), `edit`, `redact` (deleted for everyone), `react` (one reaction each without Premium, as REACTION_RULES says),
+album), `edit`, `suppressEmbeds` (below), `redact` (deleted for everyone), `react` (one reaction each without Premium, as REACTION_RULES says),
 `reactionContext`, `reactors`, `markRead` (topics too), `typing`, `history` (paged back by date), `fetchMedia` (up to
 64 MB), `openDirect` (@username, +phone, or a user id it knows; a public group's @name gives that group),
 `forward` (with a note first, as Telegram's apps send one; a chat that forbids forwarding answers with a fallback),
@@ -328,6 +328,19 @@ album), `edit`, `redact` (deleted for everyone), `react` (one reaction each with
 topic's name), `profile` (bio, username, phone where shown, groups in common, birthday; for you, your contacts).
 `resolve`, `add` and `answer`, with the `requests` events: [below](#joining-contacts-join-requests). `remove`, with
 the `relationships` events: [below](#contacts-and-blocks-relationships-and-remove). `call` is refused.
+
+## Link previews
+
+A message's link preview (`messageMediaWebPage`) is its `extra.embeds`, as Signal's and Discord's are: the page's
+site, title, words and author, and its picture as `tg://media/<chat>/<id>` (fetched through `fetchMedia` like the
+message's own file). A preview Telegram is still making (`webPagePending`, usual for a link just sent) shows nothing
+yet: the message is kept by the preview's id, and `updateWebPage` (`updateChannelWebPage`) sends it again with the
+preview, without asking Telegram for anything. A preview with nothing beyond the link is left out.
+
+`suppressEmbeds` takes the preview off your own message. Telegram has no way to do that by itself: its apps edit the
+message and close the preview, so this sends `messages.editMessage` with the message's own text and entities (read
+again first) and `no_webpage`. Telegram allows it in a message's first 48 hours, and always in a channel's posts and
+Saved Messages; past that its `MESSAGE_EDIT_TIME_EXPIRED` comes back as a sentence.
 
 ## Joining, contacts, join requests
 

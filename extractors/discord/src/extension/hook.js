@@ -6621,8 +6621,12 @@
     },
   };
 
-  /** Previews off your own message: the patch the client's own "Remove embeds" sends, with the flags it has. */
+  /**
+   * Previews off a message: the patch the client's own "Remove embeds" sends, with the flags it has. Someone else's
+   * (`moderator`) only where the client says Manage Messages here, as its × on their embed is offered.
+   */
   async function suppressEmbeds(cmd) {
+    if (cmd.moderator && !canModerateMessages(cmd.channelId)) throw new Error('You need the Manage Messages permission here');
     let flags = null;
     try {
       const held = mod.MessageStore && mod.MessageStore.getMessage(cmd.channelId, cmd.messageId);

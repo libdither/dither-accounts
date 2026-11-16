@@ -352,6 +352,33 @@ describe('signed in', () => {
     expect(h.fake.world.msgs[`channel:${FAKE_IDS.devs}`].some((m) => `${DEVS}#${m.id}` === nativeId)).toBe(false);
   });
 
+  test('a link preview: shown once Telegram made it, then taken off your own message by an edit', async () => {
+    const { nativeId } = (await h.cmd({ t: 'send', conversation: DM_ALICE, body: 'look https://example.com/a' })) as { nativeId: string };
+    const id = Number(nativeId.split('#')[1]);
+    const facts = (n: number) => h.since(n).filter((e): e is Extract<Ev, { t: 'message' }> => e.t === 'message' && e.message.nativeId === nativeId);
+    // Still being made when sent: no preview yet.
+    expect((h.events.filter((e): e is Extract<Ev, { t: 'message' }> => e.t === 'message' && e.message.nativeId === nativeId).at(-1)!.message.extra as any)?.embeds).toBeUndefined();
+    let n = h.events.length;
+    await h.fake.control({ op: 'pageReady', peer: `user:${FAKE_IDS.alice}`, id });
+    await h.until(() => facts(n).length > 0, 'the preview');
+    const image = `tg://media/${DM_ALICE}/${id}`;
+    expect((facts(n)[0].message.extra as any).embeds).toEqual([{ url: 'https://example.com/a', provider: 'example.com', title: 'A page at example.com', image }]);
+    expect(facts(n)[0].live).toBe(false);
+    // Its picture comes as the message's own file would.
+    const pic = (await h.cmd({ t: 'fetchMedia', url: image })) as { mime: string; base64: string };
+    expect(pic.mime).toBe('image/jpeg');
+
+    n = h.events.length;
+    expect(await h.cmd({ t: 'suppressEmbeds', conversation: DM_ALICE, message: nativeId })).toEqual({});
+    const edit = h.fake.calls.filter((c) => c.method === 'messages.editMessage').at(-1)!;
+    expect(edit.req).toMatchObject({ id, message: 'look https://example.com/a', noWebpage: true });
+    const after = facts(n).at(-1)!.message;
+    expect(after.editedTs).toBeGreaterThan(0);
+    expect((after.extra as any)?.embeds).toBeUndefined();
+    // Someone else's: Telegram has no way.
+    expect(await h.cmd({ t: 'suppressEmbeds', conversation: DEVS, message: `${DEVS}#1` }).catch((e) => e.message)).toContain("someone else's");
+  });
+
   test('react: one reaction each, replaced or removed; who reacted', async () => {
     const msg = `${DEVS}#1`;
     let n = h.events.length;

@@ -384,9 +384,11 @@ test('react: message keys for a DM and for a LID-addressed group, one reaction a
   expect(h.cmd('send').message.reactionMessage).toMatchObject({ key: { remoteJID: ALICE, fromMe: false, ID: 'A1' }, text: '👍' });
   expect(h.cmd('send').message.reactionMessage.key.participant).toBeUndefined();
   await h.adapter.command({ t: 'react', id: '2', conversation: ALICE, message: msgId(ALICE, 'A1'), key: '😂' });
+  // Both at the time the reaction was sent with.
+  const sentAt = Number(h.cmd('send', 1).message.reactionMessage.senderTimestampMS);
   expect(ofType(h.events, 'reaction').slice(-2)).toEqual([
-    { t: 'reaction', conversation: ALICE, message: msgId(ALICE, 'A1'), author: ME, key: '👍', remove: true },
-    { t: 'reaction', conversation: ALICE, message: msgId(ALICE, 'A1'), author: ME, key: '😂' },
+    { t: 'reaction', conversation: ALICE, message: msgId(ALICE, 'A1'), author: ME, key: '👍', remove: true, ts: sentAt },
+    { t: 'reaction', conversation: ALICE, message: msgId(ALICE, 'A1'), author: ME, key: '😂', ts: sentAt },
   ]);
   await h.adapter.command({ t: 'react', id: '3', conversation: ALICE, message: msgId(ALICE, 'A1'), key: '😂', remove: true });
   expect(h.cmd('send', 2).message.reactionMessage.text).toBe('');

@@ -1191,8 +1191,9 @@ export class SignalAdapter {
       case 'react': {
         const m = this.message(cmd.message);
         await this.refuseQuiet(cmd.conversation);
-        await this.call('sendReaction', { ...this.target(cmd.conversation), emoji: cmd.key, targetAuthor: m.author, targetTimestamp: m.ts, ...(cmd.remove ? { remove: true } : {}) });
-        this.host.emit({ t: 'reaction', conversation: cmd.conversation, message: cmd.message, author: this.self, key: cmd.key, ...(cmd.remove ? { remove: true } : {}) });
+        const res = await this.call('sendReaction', { ...this.target(cmd.conversation), emoji: cmd.key, targetAuthor: m.author, targetTimestamp: m.ts, ...(cmd.remove ? { remove: true } : {}) });
+        // Its time is the one it was sent with, as for anyone's.
+        this.host.emit({ t: 'reaction', conversation: cmd.conversation, message: cmd.message, author: this.self, key: cmd.key, ...(cmd.remove ? { remove: true } : {}), ts: res?.timestamp ?? Date.now() });
         return {};
       }
       case 'reactionContext':

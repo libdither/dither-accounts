@@ -1,6 +1,6 @@
 /**
  * Pins, roles, receipts and status messages (src/history.ts): the diffs on their own, then the adapter against a fake
- * homeserver that hands out one sync at a time.
+ * homeserver that hands out one sync at a time. Reactions' times ride along at the end.
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
@@ -380,5 +380,23 @@ describe('the adapter', () => {
     expect(pins()).toMatchObject([{ conversation: GROUP, message: '$g2', pinned: true, by: ME }]);
     await step({ rooms: { join: { [GROUP]: { timeline: { events: [{ type: 'm.room.pinned_events', state_key: '', event_id: '$written1', sender: ME, origin_server_ts: 5000, content: { pinned: ['$g1', '$g2'] } }] } } } } });
     expect(pins().length).toBe(1);
+  });
+
+  test("reactions carry their times: the reaction event's, and the redaction's when one is taken back", async () => {
+    const { step, events } = await startAdapter();
+    await step(initialSync());
+    const from = events.length;
+    const reactions = () => events.slice(from).filter((e) => e.t === 'reaction');
+    const react = (id: string, sender: string, key: string, ts: number) => ({ type: 'm.reaction', event_id: id, sender, origin_server_ts: ts, content: { 'm.relates_to': { rel_type: 'm.annotation', event_id: '$g1', key } } });
+    await step({ rooms: { join: { [GROUP]: { timeline: { events: [react('$r1', ALICE, '👍', 5000), react('$r2', BOB, '🔥', 5100)] } } } } });
+    // Alice takes hers back with a redaction; Bob's comes back already redacted, naming the redaction that did it.
+    await step({ rooms: { join: { [GROUP]: { timeline: { events: [{ type: 'm.room.redaction', event_id: '$x1', sender: ALICE, origin_server_ts: 6000, redacts: '$r1', content: { redacts: '$r1' } }] } } } } });
+    await step({ rooms: { join: { [GROUP]: { timeline: { events: [{ ...react('$r2', BOB, '🔥', 5100), content: {}, unsigned: { redacted_because: { type: 'm.room.redaction', event_id: '$x2', sender: BOB, origin_server_ts: 6100, content: {} } } }] } } } } });
+    expect(reactions()).toEqual([
+      { t: 'reaction', conversation: GROUP, message: '$g1', author: ALICE, key: '👍', ts: 5000 },
+      { t: 'reaction', conversation: GROUP, message: '$g1', author: BOB, key: '🔥', ts: 5100 },
+      { t: 'reaction', conversation: GROUP, message: '$g1', author: ALICE, key: '👍', remove: true, ts: 6000 },
+      { t: 'reaction', conversation: GROUP, message: '$g1', author: BOB, key: '🔥', remove: true, ts: 6100 },
+    ]);
   });
 });

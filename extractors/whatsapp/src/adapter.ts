@@ -1085,9 +1085,10 @@ export class WhatsAppAdapter {
     const me = this.selfIds().id;
     const prev = this.state.reaction(message, me);
     if (remove && prev !== key) return {};
-    await this.rpc.call('send', { chat: m.chat, message: { reactionMessage: { key: this.messageKey(m), text: remove ? '' : key, senderTimestampMS: String(Date.now()) } } });
-    if (prev && prev !== key) this.host.emit({ t: 'reaction', conversation, message, author: me, key: prev, remove: true });
-    this.host.emit({ t: 'reaction', conversation, message, author: me, key, ...(remove ? { remove: true } : {}) });
+    const ts = Date.now();
+    await this.rpc.call('send', { chat: m.chat, message: { reactionMessage: { key: this.messageKey(m), text: remove ? '' : key, senderTimestampMS: String(ts) } } });
+    if (prev && prev !== key) this.host.emit({ t: 'reaction', conversation, message, author: me, key: prev, remove: true, ts });
+    this.host.emit({ t: 'reaction', conversation, message, author: me, key, ...(remove ? { remove: true } : {}), ts });
     this.state.setReaction(message, me, remove ? null : key);
     return {};
   }

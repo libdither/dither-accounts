@@ -141,6 +141,8 @@ interface WMsg {
   edit?: number;
   media?: WMedia;
   reactions?: Record<string, number[]>;
+  /** When each person last reacted (seconds), as Telegram dates a messagePeerReaction; the message's date when unset. */
+  reactedAt?: Record<number, number>;
   counts?: Record<string, number>;
   service?: { kind: 'chatCreate' | 'topicCreate' | 'topicEdit' | 'editTitle' | 'pin' | 'addUser'; title?: string; users?: number[] };
   fwd?: { fromName?: string; from?: number; date: number; channel?: number; post?: number };
@@ -735,6 +737,9 @@ export class FakeTelegram implements TgBackend {
       if (!r[k].length) delete r[k];
     }
     for (const k of keys) (r[k] ??= []).push(who);
+    const at = (m.reactedAt ??= {});
+    if (keys.length) at[who] = now();
+    else delete at[who];
     this.save();
   }
 
@@ -857,7 +862,7 @@ export class FakeTelegram implements TgBackend {
       _: 'messageReactions',
       ...(broadcast ? {} : { canSeeList: true }),
       results: keys.map((k) => ({ _: 'reactionCount', reaction: { _: 'reactionEmoji', emoticon: k }, count: counts[k], ...(named[k]?.includes(this.world.self) ? { chosenOrder: 0 } : {}) })),
-      ...(broadcast ? {} : { recentReactions: Object.entries(named).flatMap(([k, who]) => who.map((u) => ({ _: 'messagePeerReaction', peerId: { _: 'peerUser', userId: u }, date: m.date, reaction: { _: 'reactionEmoji', emoticon: k } }))) }),
+      ...(broadcast ? {} : { recentReactions: Object.entries(named).flatMap(([k, who]) => who.map((u) => ({ _: 'messagePeerReaction', peerId: { _: 'peerUser', userId: u }, date: m.reactedAt?.[u] ?? m.date, reaction: { _: 'reactionEmoji', emoticon: k } }))) }),
     } as tl.TypeMessageReactions;
   }
 
@@ -1454,7 +1459,7 @@ export class FakeTelegram implements TgBackend {
         const m = this.msg(p, req.id);
         const key = req.reaction?._ === 'reactionEmoji' ? req.reaction.emoticon : null;
         const who = Object.entries(m.reactions ?? {}).flatMap(([k, us]) => (!key || k === key ? us.map((u) => ({ k, u })) : []));
-        return { _: 'messages.messageReactionsList', count: who.length, reactions: who.map(({ k, u }) => ({ _: 'messagePeerReaction', peerId: { _: 'peerUser', userId: u }, date: m.date, reaction: { _: 'reactionEmoji', emoticon: k } })), chats: [], users: who.map(({ u }) => this.tlUser(this.user(u))) };
+        return { _: 'messages.messageReactionsList', count: who.length, reactions: who.map(({ k, u }) => ({ _: 'messagePeerReaction', peerId: { _: 'peerUser', userId: u }, date: m.reactedAt?.[u] ?? m.date, reaction: { _: 'reactionEmoji', emoticon: k } })), chats: [], users: who.map(({ u }) => this.tlUser(this.user(u))) };
       }
       case 'messages.readHistory': {
         const p = this.peerOf(req.peer);

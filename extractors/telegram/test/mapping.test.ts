@@ -102,7 +102,7 @@ test('media: photos, files, stickers, places and polls', () => {
   expect(messageFact(ctx, poll)!.body).toBe('📊 Lunch?\n- Yes');
 });
 
-test('reactions: named reactors, totals, your own, custom emoji', () => {
+test('reactions: named reactors with their dates, totals, your own, custom emoji', () => {
   const r: tl.TypeMessageReactions = {
     _: 'messageReactions',
     results: [
@@ -111,12 +111,13 @@ test('reactions: named reactors, totals, your own, custom emoji', () => {
       { _: 'reactionCount', reaction: { _: 'reactionCustomEmoji', documentId: Long.fromNumber(42) }, count: 1 },
     ],
     recentReactions: [
-      { _: 'messagePeerReaction', peerId: pu(200), date: 0, reaction: { _: 'reactionEmoji', emoticon: '❤' } },
+      { _: 'messagePeerReaction', peerId: pu(200), date: 1_700_000_000, reaction: { _: 'reactionEmoji', emoticon: '❤' } },
       { _: 'messagePeerReaction', peerId: pu(300), date: 0, reaction: { _: 'reactionCustomEmoji', documentId: Long.fromNumber(42) } },
     ],
   };
   expect(reactionsOf(ctx, r)).toEqual([
-    { key: '❤️', authors: ['200', '100'] },
+    // Telegram dates each named reaction; yours, named only by chosenOrder, has none.
+    { key: '❤️', authors: ['200', '100'], at: { '200': 1_700_000_000_000 } },
     { key: '🔥', authors: [], count: 5 },
     { key: 'custom:42', authors: ['300'], emoji: { key: 'custom:42', name: 'custom', url: 'tg://emoji/42' } },
   ]);

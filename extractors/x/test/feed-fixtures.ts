@@ -2,7 +2,8 @@
  * X's GraphQL as the signed-in client gets it, built for the tests and the fake x.com (test/fake-x-feed.ts): users in
  * 2025's layout and the older one, posts, notification and tweet entries, cursors, and the NotificationsTimeline,
  * UserTweets, UserByRestId and TweetDetail answers around them; the answers of liking, reposting and posting, a post
- * read alone (TweetResultByRestId), and who liked or reposted one (Favoriters, Retweeters). Everyone in them is made up.
+ * read alone (TweetResultByRestId), who liked or reposted one (Favoriters, Retweeters), deleting one (DeleteTweet), and
+ * the home timelines (HomeTimeline: For you; HomeLatestTimeline: Following). Everyone in them is made up.
  */
 
 export interface Person {
@@ -26,6 +27,10 @@ export const CARA: Person = { id: '4004', handle: 'cara_c', name: 'Cara C', bio:
 export const DEV: Person = { id: '5005', handle: 'dev_d', name: 'Dev D', bio: 'builds things & breaks them', createdAt: Date.UTC(2012, 5, 9, 8), followers: 3400, following: 210, posts: 15000, followsYou: true, followedByMe: false };
 export const EMI: Person = { id: '6006', handle: 'emi_e', name: 'Emi E', createdAt: Date.UTC(2020, 0, 2, 3), followers: 12, following: 30, posts: 44, followsYou: false, followedByMe: false };
 export const FINN: Person = { id: '7007', handle: 'finn_f', name: 'Finn F', location: 'Oslo', createdAt: Date.UTC(2019, 7, 15, 12), followers: 800, following: 790, posts: 2100, followsYou: false, followedByMe: true };
+/** Someone you follow who shows up only in a For you line ("Ann Lee liked") and in who to follow. */
+export const ANN: Person = { id: '8008', handle: 'ann_lee', name: 'Ann Lee', createdAt: Date.UTC(2018, 3, 3, 9), followers: 210, following: 180, posts: 640, followsYou: true, followedByMe: true };
+/** An advertiser. */
+export const SHOP: Person = { id: '9009', handle: 'seed_shop', name: 'Seed Shop', followers: 9000, following: 3, posts: 120 };
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -452,3 +457,122 @@ export function reactorsTimeline(users: any[], bottom: string | null) {
 }
 export const favoritersResponse = (timeline: any) => ({ data: { favoriters_timeline: { timeline } } });
 export const retweetersResponse = (timeline: any) => ({ data: { retweeters_timeline: { timeline } } });
+export const deleteTweetResponse = () => ({ data: { delete_tweet: { tweet_results: {} } } });
+
+// ------------------------------------------------------------ home timelines
+// HomeTimeline (For you) and HomeLatestTimeline (Following), as x.com's Home gets them (`data.home.home_timeline_urt`):
+// `tweet-<id>` items (For you's with a social-context line), `home-conversation-<n>` modules (a thread, oldest first),
+// ads (`promoted-tweet-…`, promotedMetadata), who to follow (a module of users), prompts, and Top and Bottom cursors.
+/** "Ann Lee liked": X's line over a post someone you follow liked, linking to them. */
+export function likedContext(p: Person) {
+  return { type: 'TimelineGeneralContext', contextType: 'Like', text: `${p.name} liked`, landingUrl: { url: `twitter://user?id=${p.id}`, urlType: 'DeepLink' } };
+}
+/** "Followed by Ann Lee and 2 others" over a post by someone you don't follow. */
+export function followedByContext(p: Person, others: number) {
+  return { type: 'TimelineGeneralContext', contextType: 'Follow', text: `Followed by ${p.name} and ${others} others`, landingUrl: { url: `twitter://user?id=${p.id}`, urlType: 'DeepLink' } };
+}
+/** A topic's line ("Gardening"): X's TimelineTopicContext. */
+export function topicContext(name: string) {
+  return { type: 'TimelineTopicContext', topic: { id: b64(`Topic:${name}`), topic_id: '1700000000000000001', name, following: true, description: '' }, functionalType: 'Basic' };
+}
+/** A post as a home entry, with its social-context line when it has one. */
+export function homeTweetEntry(t: any, sortIndex: string, context?: any) {
+  return {
+    entryId: `tweet-${idOf(t)}`,
+    sortIndex,
+    content: {
+      entryType: 'TimelineTimelineItem',
+      __typename: 'TimelineTimelineItem',
+      itemContent: { ...tweetItemContent(t), ...(context ? { socialContext: context } : {}) },
+      feedbackInfo: { feedbackKeys: ['1a2b3c'] },
+      clientEventInfo: { component: context ? 'suggest_ranked_organic_tweet' : 'following_in_network', element: 'tweet', details: { timelinesDetails: { injectionType: 'RankedOrganicTweet', controllerData: 'DAACDAABDAAB' } } },
+    },
+  };
+}
+/** A thread as Home shows one: a `home-conversation-<n>` module, its posts oldest first. */
+export function homeConversation(posts: any[], sortIndex: string) {
+  const id = `home-conversation-${sortIndex}`;
+  return {
+    entryId: id,
+    sortIndex,
+    content: {
+      entryType: 'TimelineTimelineModule',
+      __typename: 'TimelineTimelineModule',
+      items: posts.map((t, i) => ({ entryId: `${id}-tweet-${idOf(t)}`, dispensable: i < posts.length - 1, item: { itemContent: tweetItemContent(t), clientEventInfo: { component: 'following_in_network', element: 'tweet' } } })),
+      displayType: 'VerticalConversation',
+      metadata: { conversationMetadata: { allTweetIds: posts.map(idOf), enableDeduplication: true } },
+      clientEventInfo: { component: 'following_in_network', element: 'conversation' },
+    },
+  };
+}
+/** An ad in Home. */
+export function promotedHomeEntry(t: any, sortIndex: string) {
+  return { entryId: `promoted-tweet-${idOf(t)}-5e6f7a`, sortIndex, content: { entryType: 'TimelineTimelineItem', __typename: 'TimelineTimelineItem', itemContent: { ...tweetItemContent(t), promotedMetadata: { advertiser_results: { result: { __typename: 'User', rest_id: t.core.user_results.result.rest_id } }, disclosureType: 'NoDisclosure', impressionId: 'imp', impressionString: 'imp', clickTrackingInfo: {} } }, clientEventInfo: { component: 'promoted_tweet', element: 'tweet' } } };
+}
+/** Who to follow: a module of users, with its header and "Show more". */
+export function whoToFollowModule(people: Person[], sortIndex: string) {
+  const id = `who-to-follow-${sortIndex}`;
+  return {
+    entryId: id,
+    sortIndex,
+    content: {
+      entryType: 'TimelineTimelineModule',
+      __typename: 'TimelineTimelineModule',
+      items: people.map((p) => ({ entryId: `${id}-user-${p.id}`, item: { itemContent: { itemType: 'TimelineUser', __typename: 'TimelineUser', user_results: { result: userNew(p) }, userDisplayType: 'User' }, clientEventInfo: { component: 'suggest_who_to_follow', element: 'user' } } })),
+      displayType: 'Vertical',
+      header: { displayType: 'Classic', text: 'Who to follow', sticky: false },
+      footer: { displayType: 'Classic', text: 'Show more', landingUrl: { url: 'twitter://connect_people?display_location=timeline', urlType: 'DeepLink' } },
+      clientEventInfo: { component: 'suggest_who_to_follow', element: 'module' },
+    },
+  };
+}
+/** A prompt X puts among the posts ("Turn on notifications"). */
+export function messagePromptEntry(sortIndex: string) {
+  return { entryId: `messageprompt-${sortIndex}`, sortIndex, content: { entryType: 'TimelineTimelineItem', __typename: 'TimelineTimelineItem', itemContent: { itemType: 'TimelineMessagePrompt', __typename: 'TimelineMessagePrompt', content: { contentType: 'TimelineInlinePrompt', headerText: 'Turn on notifications' } } } };
+}
+/** A gone post where a post was. */
+export function tombstoneHomeEntry(sortIndex: string) {
+  return { entryId: `tweet-1700000000000000099`, sortIndex, content: { entryType: 'TimelineTimelineItem', __typename: 'TimelineTimelineItem', itemContent: { itemType: 'TimelineTweet', __typename: 'TimelineTweet', tweet_results: { result: tombstone() } } } };
+}
+/** A home timeline's page: its entries, cursors among them (Top first, Bottom last, as X sends them). */
+export function homeTimeline(entries: any[], page: 'following' | 'for_you' = 'following') {
+  return { instructions: [{ type: 'TimelineAddEntries', entries }], responseObjects: { feedbackActions: [] }, metadata: { scribeConfig: { page } } };
+}
+/** The whole GraphQL answer of HomeTimeline or HomeLatestTimeline. */
+export const homeResponse = (timeline: any) => ({ data: { home: { home_timeline_urt: timeline } } });
+
+/**
+ * Home for the tests and the fake x.com. Following, newest first: Cara's post, Dev reposting Emi, Finn and Cara's okra
+ * thread (a home-conversation of three), an ad, who to follow (Ann, Emi), a prompt; then a second page with Dev's older
+ * post; then nothing (the end). For you: Emi's balcony post with "Ann Lee liked", Finn's on a topic, a gone post,
+ * Cara's with "Followed by Ann Lee and 2 others", an ad; a second page with one more of Cara's. Each page has Top and
+ * Bottom cursors; a Top cursor gives nothing new.
+ */
+export function homeWorld(now: number) {
+  const H = 3600_000;
+  const plain = tweet({ id: '1856000000000001001', by: CARA, text: 'first beans of the year', ts: now - H, counts: { likes: 2 } });
+  const reposted = tweet({ id: '1856000000000001002', by: EMI, text: 'seed swap on saturday', ts: now - 5 * H });
+  const repost = tweet({ id: '1856000000000001003', by: DEV, layout: 'old', text: '', ts: now - 2 * H, repost: reposted });
+  const okra1 = tweet({ id: '1856000000000001010', by: FINN, layout: 'old', text: 'anyone growing okra?', ts: now - 4 * H });
+  const okra2 = tweet({ id: '1856000000000001011', by: CARA, text: 'tried once, too cold here', ts: now - 3.5 * H, replyTo: { id: okra1.rest_id, by: FINN } });
+  const okra3 = tweet({ id: '1856000000000001012', by: FINN, layout: 'old', text: 'same, a greenhouse maybe', ts: now - 3 * H, replyTo: { id: okra2.rest_id, by: CARA }, root: okra1.rest_id });
+  const ad = tweet({ id: '1856000000000001020', by: SHOP, text: 'Seeds, half price', ts: now - 6 * H });
+  const older = tweet({ id: '1856000000000001030', by: DEV, layout: 'old', text: 'compost thermometer arrived', ts: now - 30 * H });
+  const balcony = tweet({ id: '1856000000000001040', by: EMI, text: 'my balcony jungle', ts: now - 8 * H, media: [{ url: 'https://t.co/b4lc0ny', type: 'photo', img: 'https://pbs.twimg.com/media/Fk7Balcony.jpg', w: 1600, h: 1200, alt: 'plants on a balcony' }], counts: { likes: 40 } });
+  const mulch = tweet({ id: '1856000000000001041', by: FINN, layout: 'old', text: 'mulch, explained', ts: now - 9 * H });
+  const rain = tweet({ id: '1856000000000001042', by: CARA, text: 'rain at last', ts: now - 10 * H });
+  const frost = tweet({ id: '1856000000000001043', by: CARA, text: 'first frost warning', ts: now - 40 * H });
+  const c = { followingTop: 'DAAHhome-following-top', following2: 'DAAHhome-following-2', following3: 'DAAHhome-following-3', foryouTop: 'DAAHhome-foryou-top', foryou2: 'DAAHhome-foryou-2', foryou3: 'DAAHhome-foryou-3' };
+  const si = (n: number) => String(1_900_000_000_000_000_000n - BigInt(n));
+  const following = [
+    homeTimeline([cursorEntry('Top', c.followingTop, 1), homeTweetEntry(plain, si(1)), homeTweetEntry(repost, si(2)), homeConversation([okra1, okra2, okra3], si(3)), promotedHomeEntry(ad, si(4)), whoToFollowModule([ANN, EMI], si(5)), messagePromptEntry(si(6)), cursorEntry('Bottom', c.following2, 2)]),
+    homeTimeline([cursorEntry('Top', c.followingTop, 1), homeTweetEntry(older, si(10)), cursorEntry('Bottom', c.following3, 2)]),
+    homeTimeline([cursorEntry('Top', c.followingTop, 1), cursorEntry('Bottom', c.following3, 2)]),
+  ];
+  const foryou = [
+    homeTimeline([cursorEntry('Top', c.foryouTop, 1), homeTweetEntry(balcony, si(1), likedContext(ANN)), homeTweetEntry(mulch, si(2), topicContext('Gardening')), tombstoneHomeEntry(si(3)), homeTweetEntry(rain, si(4), followedByContext(ANN, 2)), promotedHomeEntry(ad, si(5)), cursorEntry('Bottom', c.foryou2, 2)], 'for_you'),
+    homeTimeline([cursorEntry('Top', c.foryouTop, 1), homeTweetEntry(frost, si(10)), cursorEntry('Bottom', c.foryou3, 2)], 'for_you'),
+    homeTimeline([cursorEntry('Top', c.foryouTop, 1), cursorEntry('Bottom', c.foryou3, 2)], 'for_you'),
+  ];
+  return { plain, reposted, repost, okra1, okra2, okra3, ad, older, balcony, mulch, rain, frost, following, foryou, cursors: c };
+}

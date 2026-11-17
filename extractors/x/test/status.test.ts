@@ -118,7 +118,7 @@ test('past the conversation: each capability only where its hook was found', () 
 test('the feed: its own layer and details, never the account status; profile only with its hooks', () => {
   const feedHooks = (missing: string[] = [], pending: string[] = []) => {
     const t = selfTest();
-    t.feed = { webpack: { ok: true, via: 'chunk' }, store: { ok: true, via: 'provider' }, endpoints: { ok: true, via: 'thunk.api' }, notifications: { ok: true, via: 'loader' }, profiles: { ok: true, via: 'module' }, posts: { ok: true, via: 'module' }, actions: { ok: true, via: 'module' }, reactors: { ok: false, via: 'pending' } };
+    t.feed = { webpack: { ok: true, via: 'chunk' }, store: { ok: true, via: 'provider' }, endpoints: { ok: true, via: 'thunk.api' }, notifications: { ok: true, via: 'loader' }, profiles: { ok: true, via: 'module' }, posts: { ok: true, via: 'module' }, actions: { ok: true, via: 'module' }, reactors: { ok: false, via: 'pending' }, home: { ok: false, via: 'pending' }, upload: { ok: false, via: 'pending' } };
     for (const n of missing) t.feed![n as 'store'] = { ok: false, via: null };
     for (const n of pending) t.feed![n as 'store'] = { ok: false, via: 'pending' };
     return t;
@@ -152,6 +152,22 @@ test('the feed: its own layer and details, never the account status; profile onl
   const loaded = feedHooks();
   loaded.feed!.reactors = { ok: true, via: 'loader' };
   expect(compute(facts({ selfTest: loaded, feed: fd })).capabilities).toContain('postReactors');
+  // Home while its lazy chunk is pending or found; deleting with the actions; pictures and video with the actions and
+  // the uploader pending or found.
+  expect(waiting.capabilities).toEqual(expect.arrayContaining(['home', 'unpublish', 'postMedia']));
+  expect(waiting.details).toMatchObject({ 'hook.home': 'pending', 'hook.upload': 'pending' });
+  expect(noActions).not.toContain('unpublish');
+  expect(noActions).not.toContain('postMedia');
+  expect(noActions).toContain('home');
+  const noHome = compute(facts({ selfTest: feedHooks(['home']), feed: fd })).capabilities;
+  expect(noHome).not.toContain('home');
+  expect(noHome).toEqual(waiting.capabilities.filter((c) => c !== 'home'));
+  const noUpload = compute(facts({ selfTest: feedHooks(['upload']), feed: fd })).capabilities;
+  expect(noUpload).toEqual(waiting.capabilities.filter((c) => c !== 'postMedia'));
+  expect(noUpload).toContain('publish');
+  loaded.feed!.home = { ok: true, via: 'loader' };
+  loaded.feed!.upload = { ok: true, via: 'module' };
+  expect(compute(facts({ selfTest: loaded, feed: fd })).capabilities).toEqual(expect.arrayContaining(['home', 'postMedia']));
   const failed = compute(facts({ selfTest: feedHooks(), feed: { ...fd, lastFetch: NOW - 60_000, lastError: 'timed out' } }));
   expect(failed.layers.at(-1)).toEqual({ name: 'feed', state: 'failed', note: 'last read failed: timed out' });
 });

@@ -133,6 +133,8 @@ export interface GifPage {
 export interface GifView extends Omit<GifFact, 'src' | 'gif'> {
   src: string;
   gif: string | null;
+  /** `src` is a video (webm or mp4): drawn with <video>, else with <img>. */
+  video: boolean;
 }
 
 /**

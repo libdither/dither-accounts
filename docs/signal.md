@@ -276,7 +276,7 @@ sandbox, one JSON object per line.
 | start a call | `calling.startCallingLobby`, then `calling.startCall` with the lobby's call mode (groups: `setOutgoingRing` first, when the device asked to ring) |
 | answer (a `join` while it rings here) | `calling.acceptCall` |
 | decline | `calling.declineCall` |
-| leave, mute | `calling.hangUpActiveCall`, `calling.setLocalAudio` (deafen: the mix to the device is cut) |
+| leave, mute | `calling.hangUpActiveCall`, `calling.setLocalAudio` (deafen: the mix to the device is cut). A leave while a join still waits for the lobby or the call (the device's socket closed, its app gone) ends that join: it starts nothing more, hangs up what it opened, and fails "left before the call started" |
 | camera on or off | `calling.setLocalVideo`; when Signal then asks `getUserMedia` for a camera, it gets the device's camera from the bridge |
 | share a screen | `calling._setPresenting(source, stream)` with the device's screen (and its sound) from the bridge; off: `cancelPresenting` |
 | the device's microphone | played into the `mic_in` sink; its monitor is `device_mic`, the sandbox's default source, which RingRTC records |

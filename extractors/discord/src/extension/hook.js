@@ -1355,6 +1355,8 @@
     // The client keeps its own mute across sessions (its saved settings): a client left muted would join muted and never
     // send the device's microphone. The device's choice wins, before it connects, so it joins as the device asked.
     await syncMute(cmd);
+    // The device may have left while the mute was set (its socket closed): then the client must not walk into the channel.
+    if (call.id !== cmd.call) throw new Error('left before the call started');
     mod.VoiceActions.selectVoiceChannel(cmd.channelId);
     ringOthers(cmd);
     return {};
@@ -1568,6 +1570,8 @@
       await callLeave(false);
       throw e;
     }
+    // Left while Discord was asked (callLeave disconnected the client): the voice server is no one's.
+    if (call.id !== cmd.call) throw new Error('left before the call started');
     return { direct: { network: 'discord', endpoint: server.endpoint, token: server.token, serverId: guildId || cmd.channelId, channelId: cmd.channelId, userId: me.id, sessionId } };
   }
 

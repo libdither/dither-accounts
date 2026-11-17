@@ -501,26 +501,46 @@ function main() {
     const conversationId = conversationOf(req.target);
     const A = actions().calling;
     const existing = state().calling.callsByConversation[conversationId];
-    call = { id: req.call, conversationId, target: req.target, muted: !!req.muted, deafened: !!req.deafened, started: 0 };
+    const mine = { id: req.call, conversationId, target: req.target, muted: !!req.muted, deafened: !!req.deafened, started: 0 };
+    call = mine;
+    // The device can leave while this waits (its socket closed, the app gone): `leave` ends the call and clears it.
+    // Then nothing more happens here, above all no startCall, which would ring the other side after the hang-up.
+    const left = () => call !== mine;
+    const stillHere = (fn) => () => {
+      if (left()) throw new Error('left before the call started');
+      return fn();
+    };
     const ringingHere = existing && ((existing.callMode === 'Direct' && existing.isIncoming && existing.callState === 'ringing') || (existing.callMode === 'Group' && existing.ringId !== undefined && existing.joinState === 0));
     try {
       if (ringingHere) {
         A.acceptCall({ conversationId, asVideoCall: false });
       } else {
         A.startCallingLobby({ conversationId, isVideoCall: false });
-        const lobby = await until(() => {
-          const a = state().calling.activeCallState;
-          return a && a.conversationId === conversationId && a.state === 'Active' ? a : null;
-        }, 20000, 'the call lobby');
+        const lobby = await until(
+          stillHere(() => {
+            const a = state().calling.activeCallState;
+            return a && a.conversationId === conversationId && a.state === 'Active' ? a : null;
+          }),
+          20000,
+          'the call lobby',
+        );
         if (lobby.callMode !== 'Direct') A.setOutgoingRing(!!req.ring);
         A.startCall({ callMode: lobby.callMode, conversationId, hasLocalAudio: !req.muted, hasLocalVideo: false });
       }
-      call.started = Date.now();
+      mine.started = Date.now();
       // Muted as the device is, once Signal has the call.
-      await until(() => state().calling.activeCallState && state().calling.activeCallState.state === 'Active', 10000, 'the call');
+      await until(stillHere(() => state().calling.activeCallState && state().calling.activeCallState.state === 'Active'), 10000, 'the call');
+      if (left()) throw new Error('left before the call started');
       if (req.muted) A.setLocalAudio({ enabled: false });
     } catch (e) {
-      call = null;
+      if (left()) {
+        // Whatever this opened (a lobby, a call) goes too; `leave` hung up only what was active when it came. Not when
+        // a newer join holds the call by now: what is active is its.
+        if (call === null) try {
+          const a = state().calling.activeCallState;
+          if (a && a.conversationId === conversationId) A.hangUpActiveCall('left from dither before the call started');
+        } catch {}
+      } else call = null;
       throw e;
     }
     return { ok: true, answered: !!ringingHere };

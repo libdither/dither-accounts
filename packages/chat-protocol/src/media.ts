@@ -1,6 +1,6 @@
 /**
- * Kinds of message beyond text and files (docs/media-kinds.md): stickers sent from a picker, voice messages recorded
- * in the composer, view-once files, and Signal stories. All additive: an adapter says it has each with a capability,
+ * Kinds of message beyond text and files (docs/media-kinds.md): stickers sent from a picker, GIFs, voice messages
+ * recorded in the composer, view-once files, and Signal stories. All additive: an adapter says it has each with a capability,
  * and the hub and the app offer it only then.
  */
 import type { AttachmentFact, MediaUrl } from './adapter.ts';
@@ -11,6 +11,16 @@ export type MediaCapability =
   | 'sendStickers'
   /** Installs a sticker pack from its link (the `addStickerPack` command): Signal's signal.art links. */
   | 'installStickers'
+  /**
+   * Searches GIFs through the network's own GIF picker (the `gifs` command): Discord's, which asks its provider for the
+   * account. The results can be sent anywhere: on Discord as their link, elsewhere as a file.
+   */
+  | 'searchGifs'
+  /**
+   * Sends a file as the network's own GIF (an OutgoingAttachment with `gif`): Telegram's animation, WhatsApp's GIF
+   * playback. Without it, a GIF goes as an ordinary file.
+   */
+  | 'sendGifs'
   /**
    * Sends a recorded file as the network's own voice message (`send` with one attachment carrying `voice`): Discord's
    * voice message with its waveform, Signal's voice note. Without it, a recording goes as an ordinary audio file.
@@ -90,6 +100,70 @@ export function signalStickerLink(s: string): { packId: string; packKey: string 
   const packId = q.get('pack_id') ?? '';
   const packKey = q.get('pack_key') ?? '';
   return /^[0-9a-f]{32}$/i.test(packId) && /^[0-9a-f]{64}$/i.test(packKey) ? { packId: packId.toLowerCase(), packKey: packKey.toLowerCase() } : null;
+}
+
+// ------------------------------------------------------------------ GIFs
+
+/** One GIF from the network's GIF picker (the `gifs` command). */
+export interface GifFact {
+  /** The provider's id for it. */
+  id: string;
+  /** Its page link: what Discord's own picker sends as the message, and what Discord draws back as the GIF. */
+  url: string;
+  /** It as a looping video (webm or mp4), what the picker shows. */
+  src: MediaUrl;
+  /** It as a .gif file, where the provider has one: what goes to a network that takes no GIF links. */
+  gif?: MediaUrl;
+  width: number;
+  height: number;
+  /** Its words, where the provider gives some: the alt text. */
+  title?: string;
+}
+
+/** The `gifs` command's reply: one page of results, trending ones without a query. */
+export interface GifPage {
+  gifs: GifFact[];
+  /** Pass as `cursor` for more; null at the end. */
+  next: string | null;
+  /** Why there are none ("The Discord client has not loaded yet"). */
+  note?: string;
+}
+
+/** As the app gets them: the hub's own addresses, so the page never loads the provider's. */
+export interface GifView extends Omit<GifFact, 'src' | 'gif'> {
+  src: string;
+  gif: string | null;
+}
+
+/**
+ * GET /api/gifs?q=&cursor=&conversation=: through the conversation's account where it searches GIFs, else any
+ * connected account that does. `accountId` null: none can.
+ */
+export interface GifPageView {
+  accountId: string | null;
+  gifs: GifView[];
+  next: string | null;
+  note?: string;
+}
+
+/**
+ * GET /api/gifs/yours?before=: GIFs already in your chats, sent or received, newest first, one each. `src` is the
+ * picture or video to show; `url` is the link a Discord GIF came as, else null.
+ */
+export interface YourGif {
+  /** The message it came in. */
+  messageId: string;
+  ts: number;
+  url: string | null;
+  src: string;
+  mime: string;
+  width: number | null;
+  height: number | null;
+}
+export interface YourGifsView {
+  gifs: YourGif[];
+  /** Pass as `before` for older ones; null at the end. */
+  next: number | null;
 }
 
 // ------------------------------------------------------------------ voice messages
@@ -195,6 +269,11 @@ export type MediaCommand =
   | { t: 'stickers'; id: string; conversation: string; cursor?: string }
   /** Install the pack a link names (capability 'installStickers'). reply.result: { pack: StickerPackFact }. */
   | { t: 'addStickerPack'; id: string; uri: string }
+  /**
+   * One page of GIFs (capability 'searchGifs'): trending ones without `query`, else what it finds. reply.result:
+   * GifPage.
+   */
+  | { t: 'gifs'; id: string; query?: string; cursor?: string }
   /**
    * You opened someone's story (capability 'stories'): tell them where the network's rules allow (Signal: with read
    * receipts on, and never for a story from someone whose message request waits). reply.result: { sent: boolean }.

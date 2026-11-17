@@ -228,6 +228,10 @@ dither-chat's `docs/media-kinds.md` has the app's side; this is what the adapter
   --story-timestamp --story-author` (or `sendReaction --story` with an emoji), in the author's 1:1 or the group of a
   group story, refused in a message request.
 
+GIFs: signal-cli's JSON has no GIF flag on a received attachment (`JsonAttachment` in 0.14.9: content type, name,
+id, size, width, height, caption, upload time, `isVoiceNote`) and `send` has no option for one, so no attachment is
+marked `gif` and `sendGifs` is not advertised; a .gif goes as a file (docs/chat.md "GIFs").
+
 Only a live account can confirm: that a viewed receipt for a story is what Signal's apps send for one, that a story
 reply shows on the phone as a reply to that story, that `getSticker` answers `{ data }` over JSON-RPC as on the CLI,
 that `addStickerPack` takes `uri` as a list over JSON-RPC, and that an Ogg Opus voice note plays on an iPhone.

@@ -95,6 +95,10 @@ Mapped into `MessageFact.extra` under the keys dither-chat's protocol names (`ex
 
 What you send:
 
+- **Files** go with their own name and type (`src/attach.ts`): `attachment` is a data URI,
+  `data:<type>;filename=<URL-encoded name>;base64,…`. Given a path, signal-cli names the file by the path (the hub's
+  spool name) and takes its type from the extension, else from the first bytes, where a WebP's RIFF header reads as
+  WAV audio. A file over 25 MB, too big to carry in the request, still goes by its path.
 - **Quotes** carry the quoted message as Signal has it: `quoteMessage` with its mentions (`quoteMention`) and styles
   (`quoteTextStyle`), and its files (`quoteAttachment`, `contentType:filename[:preview]`; a picture of 256 KB or less is
   its own thumbnail, a colon in a name becomes `_`). That needs the message seen by this version (the state index keeps

@@ -239,7 +239,7 @@ own stores as they change, and written the way its own settings pages and button
 | `setPresence` | `SettingsActions.updateAsync('status', draft => ..., 0)` as the status picker: `status`, `statusExpiresAtMs`, `customStatus` (text, emoji name, expiry), made with the proto's own message types read from `ProtoClass.fields`. A server's own emoji cannot be named in text and is refused. |
 | `sessions` | `GET /auth/sessions` as the Devices page, the sandbox's own marked by `AuthenticationStore.getAuthSessionIdHash()`. Signing others out asks for the password: the live view. |
 | `setProfile` beyond the bio | Your own profile lists `editable`: `bio`, `name`, `avatar`, `pronouns`, `banner`, `accent`. `PATCH /users/@me` (`global_name` from `name`, `avatar` as a data URL) and `PATCH /users/@me/profile` (`bio`, `pronouns`, `banner`, `accent_color`), as the profile settings. `emoji` and `username` are refused in words. A banner without Nitro is Discord's refusal, passed on. |
-| `profile` | Also badges (`getUserProfile().badges`), theme colours, the avatar decoration's asset, and your note (above). |
+| `profile` | Also badges (`getUserProfile().badges`), theme colours, the avatar decoration's asset, and your note (above). Each shared server carries their own bio and pronouns there (`getGuildMemberProfile`, else the fetch's `guild_member_profile`) when set and not the same as the main ones. Facts add the server tag by their name (`primary_guild`, only while they show it, with the server's name when the client knows it), Nitro since and Boosting since, and a bot's app description (300 characters at most). |
 
 Untested against a live account: shapes are from the client's code (build of 2026-11-12) and the fakes in
 `test/self.test.ts`.

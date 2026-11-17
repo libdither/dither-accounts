@@ -692,6 +692,9 @@ export interface RawMutualGuild {
   /** Their roles there, when the client has them as a member. */
   roles?: RawRole[];
   joined_at?: string | null;
+  /** Their bio and pronouns on this server, when the client has their profile there. */
+  bio?: string | null;
+  pronouns?: string | null;
 }
 
 /**
@@ -731,6 +734,14 @@ export interface RawProfile {
   decoration?: string;
   /** Your note on them (never asked for yourself). null: none. */
   note?: string | null;
+  /** The server tag by their name (their primary guild): shown only when identity_enabled. */
+  primary_guild?: { tag: string | null; identity_enabled: boolean; identity_guild_id: string | null; guild_name: string | null } | null;
+  /** Since when they have had Nitro (ISO). */
+  premium_since?: string | null;
+  /** Since when they have boosted a server (ISO). */
+  premium_guild_since?: string | null;
+  /** A bot's application. */
+  application?: { id: string; name: string | null; description: string | null } | null;
 }
 
 // --------------------------------------------------------------------- adding

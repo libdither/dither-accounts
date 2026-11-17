@@ -2182,6 +2182,15 @@
     let guilds = ask('getMutualGuilds', who);
     if (!Array.isArray(guilds) && Array.isArray(b.mutual_guilds)) guilds = b.mutual_guilds.map((g) => g && { guild: guildOf(g.id) || { id: g.id }, nick: g.nick });
     const friends = ask('getMutualFriends', who);
+    // Their profile on one server (its own bio and pronouns): the store's copy, else the body's, which has the one
+    // server the fetch named (its bio on the member).
+    const guildProfile = (id) => {
+      const gp = ask('getGuildMemberProfile', who, id);
+      if (gp) return { bio: textOf(gp.bio), pronouns: textOf(gp.pronouns) };
+      const bgp = b.guild_member_profile;
+      if (!bgp || String(bgp.guild_id) !== id) return null;
+      return { bio: textOf(bgp.bio ?? (b.guild_member && b.guild_member.bio)), pronouns: textOf(bgp.pronouns) };
+    };
     const out = {
       user: pickUser(rec) || pickUser(b.user) || null,
       bio: textOf(p.bio ?? bp.bio ?? bu.bio),
@@ -2190,9 +2199,13 @@
       accent_color: numOf(p.accentColor ?? bp.accent_color ?? bu.accent_color),
       legacy_username: textOf(p.legacyUsername ?? b.legacy_username),
       connected_accounts: accounts.map(pickConnection).filter(Boolean),
-      mutual_guilds: Array.isArray(guilds) ? guilds.map((x) => x && mutualGuild(x.guild, x.nick, who)).filter(Boolean) : null,
+      mutual_guilds: Array.isArray(guilds) ? guilds.map((x) => x && mutualGuild(x.guild, x.nick, who, guildProfile)).filter(Boolean) : null,
       mutual_friends: Array.isArray(friends) ? friends.map((f) => pickUser(f && f.user)).filter(Boolean) : Array.isArray(b.mutual_friends) ? b.mutual_friends.map(pickUser).filter(Boolean) : null,
       mutual_friends_count: numOf(ask('getMutualFriendsCount', who) ?? b.mutual_friends_count),
+      primary_guild: primaryGuild((rec && rec.primaryGuild) || bu.primary_guild),
+      premium_since: isoOf(p.premiumSince ?? b.premium_since),
+      premium_guild_since: isoOf(p.premiumGuildSince ?? b.premium_guild_since),
+      application: pickApplication(p.application || b.application),
     };
     // The store keeps why its last fetch failed, also when the client skipped this one for it.
     if (p.fetchError) out.error = describeError(p.fetchError);
@@ -2207,8 +2220,33 @@
     }
   }
 
-  /** A shared server: its name, their nickname, and their roles and join date when the client has them as a member. */
-  function mutualGuild(g, nick, who) {
+  /**
+   * The server tag they wear by their name (the user's primary guild), with the server's name when the client knows
+   * that server. Whitelisted from the user record (camelCase) or the body's user (snake_case).
+   */
+  function primaryGuild(pg) {
+    if (!pg || typeof pg !== 'object') return null;
+    const id = pg.identityGuildId ?? pg.identity_guild_id;
+    const g = id != null ? guildOf(String(id)) : null;
+    return {
+      tag: textOf(pg.tag),
+      identity_enabled: (pg.identityEnabled ?? pg.identity_enabled) === true,
+      identity_guild_id: id != null ? String(id) : null,
+      guild_name: (g && textOf(g.name)) || null,
+    };
+  }
+
+  /** A bot's application, as its profile has it: its id, name and description only. */
+  function pickApplication(a) {
+    if (!a || typeof a !== 'object' || a.id == null) return null;
+    return { id: String(a.id), name: textOf(a.name), description: textOf(a.description) };
+  }
+
+  /**
+   * A shared server: its name, their nickname, their roles and join date when the client has them as a member, and
+   * their bio and pronouns there when the client has their profile on that server.
+   */
+  function mutualGuild(g, nick, who, guildProfile) {
     if (!g || !g.id) return null;
     let member = null;
     try {
@@ -2219,6 +2257,9 @@
       const byId = new Map(guildRoles(g).map((r) => [r.id, r]));
       out.roles = member.roles.map((id) => byId.get(id)).filter(Boolean);
     }
+    const gp = guildProfile ? guildProfile(String(g.id)) : null;
+    if (gp && gp.bio) out.bio = gp.bio;
+    if (gp && gp.pronouns) out.pronouns = gp.pronouns;
     return out;
   }
 

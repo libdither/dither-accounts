@@ -94,14 +94,25 @@ function accountLink(a: RawConnectedAccount): NonNullable<P.PersonAbout['links']
   };
 }
 
-function mutualSpace(g: RawMutualGuild): NonNullable<P.PersonAbout['mutualSpaces']>[number] {
+/** At most this many characters of a bot's app description go in its fact. */
+export const APP_MAX = 300;
+
+/** A server's own bio or pronouns: kept only when set and not the same as the main one. */
+const own = (v: string | null | undefined, main: string | null | undefined) => {
+  const t = v?.trim();
+  return t && t !== (main?.trim() ?? '') ? t : undefined;
+};
+
+function mutualSpace(g: RawMutualGuild, main: Pick<RawProfile, 'bio' | 'pronouns'>): NonNullable<P.PersonAbout['mutualSpaces']>[number] {
   // @everyone has the server's id, and is not a role anyone is shown with.
   const roles = g.roles
     ?.filter((r) => r.id !== g.id)
     .sort((a, b) => b.position - a.position)
     .map((r) => ({ name: r.name, ...(r.color ? { color: r.color } : {}) }));
   const joinedAt = isoToMs(g.joined_at);
-  return { id: g.id, ...(g.nick ? { nick: g.nick } : {}), ...(roles ? { roles } : {}), ...(joinedAt ? { joinedAt } : {}) };
+  const bio = own(g.bio, main.bio);
+  const pronouns = own(g.pronouns, main.pronouns);
+  return { id: g.id, ...(g.nick ? { nick: g.nick } : {}), ...(roles ? { roles } : {}), ...(joinedAt ? { joinedAt } : {}), ...(bio ? { bio } : {}), ...(pronouns ? { pronouns } : {}) };
 }
 
 /** The users a raw profile names, for identity facts ahead of the answer. */
@@ -130,7 +141,7 @@ export function mapProfile(raw: RawProfile, who: string): P.PersonAbout {
   if (created) out.createdAt = created;
 
   if (!self && raw.relationship != null) out.relationship = RELATIONSHIP[raw.relationship] ?? 'stranger';
-  if (raw.mutual_guilds) out.mutualSpaces = raw.mutual_guilds.map(mutualSpace);
+  if (raw.mutual_guilds) out.mutualSpaces = raw.mutual_guilds.map((g) => mutualSpace(g, raw));
   if (raw.mutual_friends) out.mutualFriends = raw.mutual_friends.map((f) => f.id);
   if (self && raw.friends) out.friends = raw.friends.map((f) => f.id);
   const links = (raw.connected_accounts ?? []).map(accountLink).filter((l) => !!l);
@@ -141,6 +152,14 @@ export function mapProfile(raw: RawProfile, who: string): P.PersonAbout {
   if (out.relationship === 'friend' && since) facts.push({ label: 'Friends since', value: day(since) });
   if (!raw.mutual_friends && raw.mutual_friends_count) facts.push({ label: 'Mutual friends', value: String(raw.mutual_friends_count) });
   if (raw.legacy_username) facts.push({ label: 'Originally known as', value: raw.legacy_username });
+  const tag = raw.primary_guild?.identity_enabled ? raw.primary_guild.tag?.trim() : undefined;
+  if (tag) facts.push({ label: 'Server tag', value: raw.primary_guild!.guild_name ? `${tag} (${raw.primary_guild!.guild_name})` : tag });
+  const nitro = isoToMs(raw.premium_since);
+  if (nitro) facts.push({ label: 'Nitro since', value: day(nitro) });
+  const boosting = isoToMs(raw.premium_guild_since);
+  if (boosting) facts.push({ label: 'Boosting since', value: day(boosting) });
+  const app = u?.bot ? raw.application?.description?.trim() : undefined;
+  if (app) facts.push({ label: 'App', value: [...app].length > APP_MAX ? [...app].slice(0, APP_MAX - 1).join('') + '…' : app });
   if (facts.length) out.facts = facts;
   // What the profile shows beyond its text, and your note on them (asked with the profile only).
   const badges = (raw.badges ?? []).filter((b) => b?.description).map((b) => ({ name: b.description!, ...(b.icon && /^[\w-]+$/.test(b.icon) ? { icon: `https://cdn.discordapp.com/badge-icons/${b.icon}.png` } : {}) }));

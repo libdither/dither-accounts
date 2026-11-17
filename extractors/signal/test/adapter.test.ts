@@ -233,12 +233,12 @@ describe('signal adapter against a fake signal-cli', () => {
     expect(calls('send').at(-1).params).toEqual({ recipient: [STRANGER], message: 'first' });
   });
 
-  test('files go by path, and our copy is what the echo points at', async () => {
+  test('files go with their own name and type, and our copy is what the echo points at', async () => {
     const src = join(dir, 'spool-file');
     writeFileSync(src, 'png bytes');
     const mark = events.length;
     const res = (await cmd({ t: 'send', conversation: DM_ALICE, body: '', attachments: [{ path: src, name: 'a.png', mime: 'image/png', size: 9, kind: 'image' }] })) as { nativeId: string };
-    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: '', attachment: [src] });
+    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: '', attachment: ['data:image/png;filename=a.png;base64,cG5nIGJ5dGVz'] });
     const echo = of('message', mark).find((e) => e.message.nativeId === res.nativeId)!.message;
     expect(echo.kind).toBe('media');
     expect(echo.attachments).toHaveLength(1);
@@ -283,11 +283,11 @@ describe('signal adapter against a fake signal-cli', () => {
     writeFileSync(src, 'ogg bytes');
     let mark = events.length;
     const voice = (await cmd({ t: 'send', conversation: DM_ALICE, body: '', attachments: [{ path: src, name: 'voice.ogg', mime: 'audio/ogg', size: 9, kind: 'audio', voice: { seconds: 2 } }] })) as { nativeId: string };
-    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: '', attachment: [src], voiceNote: true });
+    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: '', attachment: ['data:audio/ogg;filename=voice.ogg;base64,b2dnIGJ5dGVz'], voiceNote: true });
     expect(of('message', mark).find((e) => e.message.nativeId === voice.nativeId)!.message.extra).toMatchObject({ attachmentNotes: [{ voiceNote: true }] });
     mark = events.length;
     const once = (await cmd({ t: 'send', conversation: DM_ALICE, body: '', viewOnce: true, attachments: [{ path: src, name: 'a.png', mime: 'image/png', size: 9, kind: 'image' }] })) as { nativeId: string };
-    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: '', attachment: [src], viewOnce: true });
+    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: '', attachment: ['data:image/png;filename=a.png;base64,b2dnIGJ5dGVz'], viewOnce: true });
     const echo = of('message', mark).find((e) => e.message.nativeId === once.nativeId)!.message;
     expect(echo).toMatchObject({ kind: 'media', body: '📷 View-once media', extra: { viewOnce: true } });
     expect(echo.attachments).toBeUndefined();

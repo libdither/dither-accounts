@@ -23,6 +23,7 @@ import type * as P from '@dither-chat/protocol';
 import { ADD_MEMBERS_MAX, createGroupProblem, GROUP_RULES, PIN_DURATIONS, pollDraftProblem, previewsRemovable, signalStickerLink, STICKER_PAGE_PACKS, STORIES_ACTION } from '@dither-chat/protocol';
 import { errorText, groupIdOfLink, isMessageRequest, joinError, lookupError, signalError, wantsCaptcha } from './add.ts';
 import { answerJoinParams, approvalParams, groupLeaving, groupModeration, isAdmin, joinRequests, labelOf, labelParams, moderateParams, ownLabel, parseJoinRequest, picturePath, quitParams } from './groups.ts';
+import { attachmentArg } from './attach.ts';
 import { ChildRegistry, type Logger } from './cli.ts';
 import { Daemon, type DaemonExit } from './daemon.ts';
 import { DesktopCalls } from './desktop/calls.ts';
@@ -1450,7 +1451,8 @@ export class SignalAdapter {
     if (replyTo) Object.assign(params, this.quoteParams(replyTo));
     if (sticker) params.sticker = `${sticker.packId}:${sticker.stickerId}`;
     if (files.length) {
-      params.attachment = files.map((f) => f.path);
+      // Each with its own name and type (attach.ts): by path, signal-cli knows neither.
+      params.attachment = files.map((f) => attachmentArg(f));
       // Recorded in the composer: Signal's voice note (one file).
       if (files.length === 1 && files[0].voice) params.voiceNote = true;
       if (o.viewOnce) params.viewOnce = true;

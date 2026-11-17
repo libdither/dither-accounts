@@ -586,7 +586,11 @@ self-check reports the counts as `evidence.hex55`.
   `removed` (they may never have been there: ignore ids you do not know). One answer is one batch (`more: false`). Not
   known yet: what `s` answers for a sync point Gmail no longer keeps (it is read as any answer; a layout it does not
   expect fails the fingerprint), and whether a message deleted for ever shows at all; a message older than the state
-  that gains the mailbox comes as `changed`.
+  that gains the mailbox comes as `changed`. A message in a changed thread whose label list is null (seen live on one
+  message, its id and date in place; what it is, deleted for ever or a discarded draft, is not known) is left out of
+  `added`, `changed` and `removed`, the rest of the answer is used, and the watch counts Inbox and All Mail as changed
+  so a reader lists them again; the self-check's `evidence.sUnlabelled` counts them. A label list that is anything
+  else still fails the answer.
 - **The watch** (`mail.changed`, `mail.arrived`): once a mail call was made (an account nobody reads mail from makes
   no Gmail calls of its own), `s` every `gmailPollSeconds` (config, default 60; 0: never) from where it got to
   (`gmail-watch.json` in the account's directory: the sync point and when, so a restart announces what came

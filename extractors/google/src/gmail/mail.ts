@@ -366,6 +366,8 @@ export class GmailMail {
     /** Where the last mail.mailboxes got its labels and counts, and where lastCounts came from. */
     mailboxesFrom: null as 's' | 'bv' | null,
     countsFrom: null as 's' | 'bv' | null,
+    /** Messages Gmail's sync answered with a null label list, left out (protocol.ts parseS), over all answers. */
+    sUnlabelled: 0,
   };
   /** The latest sync point this class got from Gmail's sync. */
   history: string | null = null;
@@ -821,6 +823,10 @@ export class GmailMail {
         throw this.noPoint();
       }
       this.evidence.sFromBvPoint = 'ok';
+    }
+    if (r.unlabelled) {
+      this.evidence.sUnlabelled += r.unlabelled;
+      this.o.log('info', `gmail s: left out ${r.unlabelled} message${r.unlabelled === 1 ? '' : 's'} with no label list`);
     }
     if (r.labels) this.learnLabels(r.labels);
     this.history = r.history;
@@ -1288,7 +1294,8 @@ export class GmailMail {
       for (const l of x.m.labels) if (this.userLabels.has(l)) boxes.add(l);
       if (x.m.labels.includes(L.INBOX) && !x.m.labels.includes(L.SENT) && x.m.date > watch.at - SKEW && !this.announced.has(x.m.id)) arrived.push(this.summary(x, L.INBOX));
     }
-    if (!items.length && r.history !== watch.history) for (const b of [L.INBOX, 'all']) boxes.add(b);
+    // A message left out (no label list) may have left any mailbox: Inbox and All Mail, so a reader lists them again.
+    if ((!items.length && r.history !== watch.history) || r.unlabelled) for (const b of [L.INBOX, 'all']) boxes.add(b);
     arrived.sort((a, b) => a.receivedAt - b.receivedAt);
     const out = arrived.slice(-CATCH_UP);
     for (const m of out) this.announced.add(m.id);

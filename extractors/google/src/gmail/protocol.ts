@@ -295,6 +295,11 @@ export interface SAnswer {
   rows: ThreadRow[];
   counts: Map<string, Count>;
   trailer: number | null;
+  /**
+   * Messages in the changed threads whose label list is null (seen live, 2026-11-16, on one message of a thread):
+   * left out of the rows, since what they are (deleted for ever, a discarded draft, labels not sent) is not known.
+   */
+  unlabelled: number;
 }
 
 type Found = { path: string; rec: unknown[] };
@@ -356,7 +361,10 @@ export function resolveLocalIds(rows: { messages: GMessage[] }[]): void {
       }
 }
 
-function message(ep: Endpoint, m: unknown, where: string): GMessage {
+/** A message in an s answer whose [10] is null, its id and date in place: left out of its row and counted. */
+const UNLABELLED = Symbol('unlabelled');
+
+function message(ep: Endpoint, m: unknown, where: string): GMessage | typeof UNLABELLED {
   if (!Array.isArray(m)) throw new LayoutError(ep, where, 'a message (a list)', kindOf(m));
   if (!isAnyMsgId(m[0])) throw new LayoutError(ep, `${where}[0]`, 'a message id (msg-…:…)', kindOf(m[0]));
   if (!isMsgId(m[0]) || !m[0].startsWith('msg-f:')) {
@@ -364,6 +372,7 @@ function message(ep: Endpoint, m: unknown, where: string): GMessage {
     localIdKinds[k] = (localIdKinds[k] ?? 0) + 1;
   }
   if (!isMs(m[6])) throw new LayoutError(ep, `${where}[6]`, "the message's date in ms (13 digits)", kindOf(m[6]));
+  if (ep === 's' && m[10] === null) return UNLABELLED;
   if (!isLabelList(m[10])) throw new LayoutError(ep, `${where}[10]`, "the message's labels (^…)", kindOf(m[10]));
   let id = fDecimal(m[0]);
   const h = decimalOfHex(m[55]);
@@ -388,13 +397,19 @@ function message(ep: Endpoint, m: unknown, where: string): GMessage {
 }
 
 /** A thread row: [0] subject, [1] snippet, [2] date, [3] thread id, [4] its messages, [19] its id in hex. */
-function row(ep: Endpoint, r: unknown[], where: string): ThreadRow {
+function row(ep: Endpoint, r: unknown[], where: string, skipped = { unlabelled: 0 }): ThreadRow {
   const msgs = r[4] as unknown[];
+  const messages: GMessage[] = [];
+  for (const [i, m] of msgs.entries()) {
+    const g = message(ep, m, `${where}[4][${i}]`);
+    if (g === UNLABELLED) skipped.unlabelled++;
+    else messages.push(g);
+  }
   return {
     thread: fDecimal(r[3] as string) ?? decimalOfHex(r[19]),
     subject: typeof r[0] === 'string' ? r[0] : '',
     date: r[2] as number,
-    messages: msgs.map((m, i) => message(ep, m, `${where}[4][${i}]`)),
+    messages,
   };
 }
 
@@ -521,7 +536,8 @@ export function parseFd(json: unknown): FdAnswer {
  * s's answer. Recorded: [writes|null, [0, null, labels|null, null, [d, d], updates|null, 1, history, null, null, d],
  * [[counts]], [n]]: labels [[id, name, …, (17) type, …], n], each update [thread-f, null, [null ×6, threadRow, …]],
  * counts [id, unread, total]. Fingerprint: json[1][0] is 0 and json[1][7] the new sync point (a number); thread rows
- * only at json[1][5][n][0][2][6][0]; label entries an id (^…) and a name; json[2][0] the counts.
+ * only at json[1][5][n][0][2][6][0]; label entries an id (^…) and a name; json[2][0] the counts. A message whose labels
+ * are null is left out and counted (unlabelled); any other label list that is not one still fails the answer.
  */
 export function parseS(json: unknown): SAnswer {
   const ep = 's';
@@ -532,13 +548,14 @@ export function parseS(json: unknown): SAnswer {
   for (const f of findRows(json)) if (!/^json\[1\]\[5\]\[\d+\]\[0\]\[2\]\[6\]\[0\]$/.test(f.path)) throw new LayoutError(ep, f.path, 'thread rows only at json[1][5][n][0][2][6][0]', 'a thread row');
   const labels = block[2] !== null && block[2] !== undefined ? labelList(ep, block[2], 'json[1][2]', true) : null;
   const rows: ThreadRow[] = [];
+  const skipped = { unlabelled: 0 };
   if (block[5] !== null && block[5] !== undefined) {
     if (!Array.isArray(block[5])) throw new LayoutError(ep, 'json[1][5]', 'the list of changed threads', kindOf(block[5]));
-    for (const f of findRows(block[5], 'json[1][5]')) rows.push(row(ep, f.rec, f.path));
+    for (const f of findRows(block[5], 'json[1][5]')) rows.push(row(ep, f.rec, f.path, skipped));
   }
   const counts = countList(ep, Array.isArray(json[2]) ? json[2][0] : undefined, 'json[2][0]');
   resolveLocalIds(rows);
-  return { history: String(block[7]), labels, rows, counts, trailer: trailerOf(json[3]) };
+  return { history: String(block[7]), labels, rows, counts, trailer: trailerOf(json[3]), unlabelled: skipped.unlabelled };
 }
 
 // ------------------------------------------------------------------ the download route

@@ -242,6 +242,17 @@ test("answers are read by their anchors; one laid out otherwise is refused, sayi
   const s = await t.sync('s', sRequest(String(fake.gmail.history() - 1), Date.now()));
   expect(parseS(s.json).history).toBe(String(fake.gmail.history()));
   expect(() => parseS([null, [0, null, null, null, [], null, 0, 'x'], [[]], [1]])).toThrow('at json[1][7]: expected the new sync point (a number), got a string');
+  // In s, a message whose label list is null is left out and counted; any other non-list still fails the answer.
+  const sRows = (parseS(s.json).rows as unknown[]).length;
+  const sNull = structuredClone(s.json) as any[];
+  const sMsgs = sNull[1][5][0][0][2][6][0][4] as unknown[][];
+  sMsgs[0]![10] = null;
+  const skipped = parseS(sNull);
+  expect(skipped.unlabelled).toBe(1);
+  expect(skipped.rows.length).toBe(sRows);
+  expect(skipped.rows[0]!.messages.length).toBe(sMsgs.length - 1);
+  sMsgs[0]![10] = 'x';
+  expect(() => parseS(sNull)).toThrow("at json[1][5][0][0][2][6][0][4][0][10]: expected the message's labels (^…), got a string");
   // The download route: a message, or not (an HTML page, no header block).
   expect(notAMessage(Buffer.from(fakeEml(fake.gmail.messages[0]!)), 'message/rfc822')).toBeNull();
   expect(notAMessage(Buffer.from('<html><body>Sign in</body></html>'), 'text/html')).toBe('an HTML page, not a message');
@@ -456,6 +467,33 @@ test('changes from Gmail sync: a state, then what arrived, changed and left the 
   }
   // Nothing in all of this wrote to Gmail.
   expect(fake.gmail.writes).toBe(0);
+});
+
+test('changes and the watch: a message Gmail\'s sync answers with no label list is left out, the rest of the answer is used', async () => {
+  const mail = mailOf();
+  const start = await mail.changes({ mailboxId: '^i' });
+  const st = parseState(start.state);
+  const [a, b] = fake.gmail.messages.filter((m) => !m.pending && m.labels.includes('^i') && !m.labels.includes('^t') && m.date < Date.now() - 40 * DAY);
+  fake.gmail.relabel(a!.id, ['^t'], []);
+  fake.gmail.relabel(b!.id, ['^t'], []);
+  fake.gmail.sNullLabels(a!.id);
+  try {
+    const c = await mail.changes({ mailboxId: '^i', state: start.state });
+    const all = [...c.added.map((m) => m.id), ...c.changed.map((x) => x.id), ...c.removed];
+    expect(all).not.toContain(a!.id);
+    expect(c.changed.find((x) => x.id === b!.id)).toMatchObject({ flags: { flagged: true } });
+    expect(parseState(c.state).history).toBe(String(fake.gmail.history()));
+    expect(mail.evidence.sUnlabelled).toBe(1);
+    // The watch: Inbox and All Mail, so a reader lists them again; the answer's own mailboxes too.
+    const w = await mail.poll({ history: st.history, at: st.at });
+    expect(w.mailboxes).toEqual(expect.arrayContaining(['^i', 'all', '^t']));
+    expect(w.history).toBe(String(fake.gmail.history()));
+    expect(mail.layer()).toMatchObject({ state: 'ok' });
+  } finally {
+    fake.gmail.sNullLabels();
+    fake.gmail.relabel(a!.id, [], ['^t']);
+    fake.gmail.relabel(b!.id, [], ['^t']);
+  }
 });
 
 test('a changed layout: the call is refused with 502 and a plain sentence, nothing returned, the layer failed; back when the layout is', async () => {

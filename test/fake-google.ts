@@ -247,6 +247,8 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
   const xsrf = `xsrf-${mark.replace(/\W/g, '')}-token`;
   const ik = '0a1b2c3d4e';
   let layout: 'normal' | 'swapped' = 'normal';
+  /** Messages whose label list s answers as null (as a live s answer did for one message, 2026-11-16). */
+  const sUnlabelled = new Set<string>();
   let bvMode: 'own' | 'page' | 'third' = 'own';
   let block: 'verify' | 'captcha429' | 'signin' | 'blank' | null = null;
   let marksRead = false;
@@ -415,7 +417,11 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
     const changed = [...new Set(visible().filter((m) => m.history > from).map((m) => m.thread))];
     const updates = changed.map((t) => {
       const ms = threadOf(t);
-      return [[`thread-f:${t}`, null, [null, null, null, null, null, null, [threadRec(t, ms.at(-1)!.date, true), 7777]]]];
+      const rec = threadRec(t, ms.at(-1)!.date, true);
+      (rec[4] as unknown[][]).forEach((r, i) => {
+        if (sUnlabelled.has(ms[i]!.id)) r[10] = null;
+      });
+      return [[`thread-f:${t}`, null, [null, null, null, null, null, null, [rec, 7777]]]];
     });
     return [null, [0, null, labelEntries(), null, ['1', '2'], updates, 1, history, null, null, '3'], counts(), [history]];
   }
@@ -606,6 +612,11 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
     history: () => history,
     layout(mode: 'normal' | 'swapped') {
       layout = mode;
+    },
+    /** s answers these messages' label lists as null; none: as usual. */
+    sNullLabels(...ids: string[]) {
+      sUnlabelled.clear();
+      for (const id of ids) sUnlabelled.add(id);
     },
     /** Which bv layout it answers in: 'own' (the default, as live), 'page' (as recorded from the page), 'third' (rows elsewhere). */
     bvLayout(mode: 'own' | 'page' | 'third') {

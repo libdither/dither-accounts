@@ -1118,6 +1118,8 @@
         return { ...reactionContext(cmd.channelId), manageMessages: canModerateMessages(cmd.channelId) };
       case 'stickers':
         return stickerPage(cmd);
+      case 'gifs':
+        return gifs(cmd);
       case 'guildFolders':
         return guildFolders();
       case 'about':
@@ -1353,6 +1355,8 @@
     // The client keeps its own mute across sessions (its saved settings): a client left muted would join muted and never
     // send the device's microphone. The device's choice wins, before it connects, so it joins as the device asked.
     await syncMute(cmd);
+    // The device may have left while the mute was set (its socket closed): then the client must not walk into the channel.
+    if (call.id !== cmd.call) throw new Error('left before the call started');
     mod.VoiceActions.selectVoiceChannel(cmd.channelId);
     ringOthers(cmd);
     return {};
@@ -1566,6 +1570,8 @@
       await callLeave(false);
       throw e;
     }
+    // Left while Discord was asked (callLeave disconnected the client): the voice server is no one's.
+    if (call.id !== cmd.call) throw new Error('left before the call started');
     return { direct: { network: 'discord', endpoint: server.endpoint, token: server.token, serverId: guildId || cmd.channelId, channelId: cmd.channelId, userId: me.id, sessionId } };
   }
 
@@ -5363,6 +5369,39 @@
     return { nativeId: res && res.body ? res.body.id : null, nonce: cmd.nonce };
   }
 
+
+  // ------------------------------------------------------------------- GIFs
+  // The client's GIF picker's own requests (read from its bundle, 2026-11-16): /gifs/search with a query, else
+  // /gifs/trending-gifs, in the format and locale its stores hold. Only the requests: the picker's analytics
+  // (SEARCH_STARTED, /gifs/select) are not mirrored, as nothing else here mirrors analytics.
+  Object.assign(FINDERS, {
+    // Its picker's state: getSelectedFormat() is "webm", or "tinywebp" on some clients.
+    GIFPickerViewStore: isStore('GIFPickerViewStore'),
+    // Its language, the `locale` every picker request sends.
+    LocaleStore: isStore('LocaleStore'),
+  });
+  const pickGif = (g) =>
+    g && typeof g.url === 'string' && typeof g.src === 'string'
+      ? { id: String(g.id ?? g.url), ...(typeof g.title === 'string' && g.title ? { title: g.title } : {}), url: g.url, src: g.src, ...(typeof g.gif_src === 'string' && g.gif_src ? { gif_src: g.gif_src } : {}), width: Number(g.width) || 0, height: Number(g.height) || 0 }
+      : null;
+  async function gifs(cmd) {
+    if (!mod.Rest) return { gifs: [], note: 'The Discord client has not loaded yet.' };
+    let format = 'webm';
+    try {
+      const f = mod.GIFPickerViewStore && mod.GIFPickerViewStore.getSelectedFormat();
+      if (typeof f === 'string' && f) format = f;
+    } catch (e) {}
+    let locale = null;
+    try {
+      locale = mod.LocaleStore && mod.LocaleStore.locale;
+    } catch (e) {}
+    if (typeof locale !== 'string' || !locale) locale = navigator.language || 'en-US';
+    const limit = Math.max(1, Math.min(200, Number(cmd.limit) || 50));
+    const q = typeof cmd.query === 'string' ? cmd.query.trim() : '';
+    const res = q ? await rest('get', '/gifs/search', { q, media_format: format, locale, limit }) : await rest('get', '/gifs/trending-gifs', { media_format: format, locale, limit });
+    const list = res && Array.isArray(res.body) ? res.body : [];
+    return { gifs: list.map(pickGif).filter(Boolean) };
+  }
 
   // ------------------------------------------------------------------- polls and pins
   // A poll's question, answers and counts as the client keeps them (its votes ride on the message's reactions, as a

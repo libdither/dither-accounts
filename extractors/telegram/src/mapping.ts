@@ -249,14 +249,18 @@ export function attachmentsOf(base: string, m: tl.RawMessage): { attachments: P.
         else if (at._ === 'documentAttributeImageSize') Object.assign(a, { width: at.w, height: at.h });
         else if (at._ === 'documentAttributeVideo') Object.assign(a, { kind: 'video', width: at.w, height: at.h });
         else if (at._ === 'documentAttributeAudio') a.kind = 'audio';
-        else if (at._ === 'documentAttributeAnimated') a.kind = 'video';
+        // An animation (Telegram's GIF): a silent looping video, drawn as a GIF.
+        else if (at._ === 'documentAttributeAnimated') Object.assign(a, { kind: 'video', gif: true });
         else if (at._ === 'documentAttributeSticker') {
           kind = 'sticker';
           text = at.alt || undefined;
         }
       }
       if (a.kind === 'file' && /^(image|video|audio)\//.test(d.mimeType) && kind !== 'sticker') a.kind = d.mimeType.split('/')[0] as P.AttachmentKind;
-      if (kind === 'sticker') a.kind = 'image';
+      if (kind === 'sticker') {
+        a.kind = 'image';
+        delete a.gif;
+      }
       return { attachments: [a], kind, ...(text ? { text } : {}) };
     }
     case 'messageMediaGeo':

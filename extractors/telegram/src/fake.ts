@@ -129,6 +129,8 @@ interface WMedia {
   h?: number;
   sticker?: string;
   video?: boolean;
+  /** An animation (documentAttributeAnimated): Telegram's GIF. */
+  animated?: boolean;
 }
 /** A link preview: Telegram makes one for the first link of a message (pending until `pageReady` says it is made). */
 interface WPage {
@@ -880,6 +882,7 @@ export class FakeTelegram implements TgBackend {
     const attributes: tl.TypeDocumentAttribute[] = [];
     if (media.name) attributes.push({ _: 'documentAttributeFilename', fileName: media.name });
     if (media.video) attributes.push({ _: 'documentAttributeVideo', duration: 1, w: media.w ?? 1, h: media.h ?? 1 });
+    if (media.animated) attributes.push({ _: 'documentAttributeAnimated' });
     if (media.sticker) attributes.push({ _: 'documentAttributeSticker', alt: media.sticker, stickerset: { _: 'inputStickerSetEmpty' } });
     return { _: 'messageMediaDocument', document: { _: 'document', id: Long.fromString(media.id), accessHash: Long.fromNumber(7), fileReference: ref, date, mimeType: media.mime, size: media.size, dcId: DC, attributes } };
   }
@@ -1066,7 +1069,7 @@ export class FakeTelegram implements TgBackend {
       const f = this.fileOf(media.file);
       this.world.files[f.id] = f.bytes.toString('base64');
       const name = media.attributes.find((a): a is tl.RawDocumentAttributeFilename => a._ === 'documentAttributeFilename')?.fileName ?? f.name;
-      return { kind: 'document', id: f.id, mime: media.mimeType, size: f.bytes.length, name, ...(media.attributes.some((a) => a._ === 'documentAttributeVideo') ? { video: true } : {}) };
+      return { kind: 'document', id: f.id, mime: media.mimeType, size: f.bytes.length, name, ...(media.attributes.some((a) => a._ === 'documentAttributeVideo') ? { video: true } : {}), ...(media.attributes.some((a) => a._ === 'documentAttributeAnimated') ? { animated: true } : {}) };
     }
     if (media._ === 'inputMediaPhoto' && media.id._ === 'inputPhoto') {
       const id = media.id.id.toString();

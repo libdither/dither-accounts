@@ -76,6 +76,18 @@ function transport(o: { calls?: { ep: string; at: number; hex?: string }[]; page
   };
 }
 const quiet = () => {};
+/** A thread's messages in the fake, oldest first, as its rows list them. */
+const threadMsgs = (thread: string) => fake.gmail.messages.filter((m) => m.thread === thread && !m.pending).sort((a, b) => a.date - b.date);
+/** The thread row for a thread in an s answer (found by its anchor, as the parser finds it). */
+function findRow(v: unknown, thread: string): any[] {
+  if (!Array.isArray(v)) return null as never;
+  if (v[3] === `thread-f:${thread}` && Array.isArray(v[4])) return v;
+  for (const x of v) {
+    const r = findRow(x, thread);
+    if (r) return r;
+  }
+  return null as never;
+}
 const mailOf = (t = transport()) => new GmailMail(t, { log: quiet, gapMs: 0 });
 /** A GmailMail with a background lane of small numbers (and a file of its own for what it keeps). */
 const laneMail = (o: { t?: Transport; rules?: Partial<BackgroundRules>; now?: () => number; file?: string; onChange?: () => void } = {}) =>
@@ -455,6 +467,40 @@ test('changes from Gmail sync: a state, then what arrived, changed and left the 
     fake.gmail.relabel(gone.id, ['^i'], []);
   }
   // Nothing in all of this wrote to Gmail.
+  expect(fake.gmail.writes).toBe(0);
+});
+
+test("a message its thread lists with null labels: left out (not claimed removed), the rest of the thread read; any other kind still refused", async () => {
+  const mail = mailOf();
+  const start = await mail.changes({ mailboxId: '^i' });
+  const watch = { history: parseState(start.state).history, at: parseState(start.state).at };
+  // A thread whose first message is in the inbox: a later one (with Gmail's id) deleted for good, the first starred.
+  const fits = (ms: FakeMessage[]) => ms.length > 1 && ms[0]!.labels.includes('^i') && !ms[0]!.labels.includes('^t') && ms.slice(1).some((m) => !m.localId);
+  const thread = fake.gmail.messages.find((m) => fits(threadMsgs(m.thread)))!.thread;
+  const first = threadMsgs(thread)[0]!;
+  const gone = threadMsgs(thread).slice(1).find((m) => !m.localId)!;
+  fake.gmail.purge(gone.id);
+  fake.gmail.relabel(first.id, ['^t'], []);
+  try {
+    const c = await mail.changes({ mailboxId: '^i', state: start.state });
+    expect([...c.added.map((x) => x.id), ...c.changed.map((x) => x.id), ...c.removed]).not.toContain(gone.id);
+    expect(c.changed.find((x) => x.id === first.id)).toMatchObject({ flags: { flagged: true } });
+    expect((await mail.poll(watch)).mailboxes).toEqual(expect.arrayContaining(['^i', '^t']));
+    // fd's summaries likewise.
+    const t = transport();
+    const fd = parseFd((await t.sync('fd', fdThreadsRequest([thread]))).json);
+    expect(fd.threads[0]!.messages.length).toBe(fake.gmail.messages.filter((m) => m.thread === thread).length - 1);
+    expect(fd.threads[0]!.messages.map((m) => m.id)).not.toContain(gone.id);
+    expect(fd.threads[0]!.nullLabels).toEqual([gone.id]);
+    // Null is the one new thing taken there: a string is still a changed layout.
+    const s = (await t.sync('s', sRequest(watch.history, Date.now()))).json as any[];
+    const row = findRow(s, thread);
+    row[4][0][10] = 'x';
+    expect(() => parseS(s)).toThrow("expected the message's labels (^…), got a string");
+  } finally {
+    fake.gmail.purge(gone.id, true);
+    fake.gmail.relabel(first.id, [], ['^t']);
+  }
   expect(fake.gmail.writes).toBe(0);
 });
 

@@ -1236,7 +1236,8 @@ export class GmailMail {
   /**
    * What changed since a state: Gmail's sync call (s) from the state's sync point gives every thread changed since,
    * as it is now. A message of those in the mailbox is `added` when it is dated after the state was handed out (less
-   * SKEW), else `changed`; one not in it is `removed` (it may never have been there: ignore ids you do not know).
+   * SKEW), else `changed`; one not in it is `removed` (it may never have been there: ignore ids you do not know). A
+   * message its thread lists with null labels is in none of these (what it means is not known yet).
    * Without a state: the current sync point, as a starting point. One answer is one batch: `more` is false.
    */
   async changes(input: { mailboxId: unknown; state?: unknown }): Promise<MailChanges> {
@@ -1262,13 +1263,15 @@ export class GmailMail {
   private items(rows: ThreadRow[]): Item[] {
     const out: Item[] = [];
     const seen = new Set<string>();
-    for (const row of rows)
+    for (const row of rows) {
+      for (const id of row.nullLabels) this.known.delete(id);
       for (const g of row.messages) {
         if (!g.id || seen.has(g.id)) continue;
         seen.add(g.id);
         this.remember(g as Msg, row);
         out.push({ m: g as Msg, row });
       }
+    }
     return out;
   }
 

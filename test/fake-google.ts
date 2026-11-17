@@ -104,6 +104,8 @@ export interface FakeMessage {
   headerless?: boolean;
   /** The sync point (history id) of its last change. */
   history: number;
+  /** Gone from every mailbox (deleted for good) while its thread still lists it: its labels null, as live Gmail's s once sent. */
+  gone?: boolean;
   /** Written through the page's own writes (a draft, or sent): the id the page made for it (msg-a:r-…), its record's [0]. */
   aId?: string;
   bcc?: FakeAddress[];
@@ -308,6 +310,7 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
     const bins = tokens.some((t) => /^in:(spam|trash|anywhere)$/.test(t));
     const latest = new Map<string, number>();
     for (const m of visible()) {
+      if (m.gone) continue;
       if (!bins && (m.labels.includes('^s') || m.labels.includes('^k'))) continue;
       if (!tokens.every((t) => test(m, t, now))) continue;
       latest.set(m.thread, Math.max(latest.get(m.thread) ?? 0, m.date));
@@ -334,7 +337,7 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
     }
     r[6] = m.date;
     r[9] = m.body.slice(0, 60);
-    r[10] = m.labels;
+    r[10] = m.gone ? null : m.labels;
     r[11] = m.attachment ? [[m.attachment.name, m.attachment.mime, m.attachment.data.length, 'pdf', null, `https://mail.example.com/att/${m.id}`, 0, [null, null, B64, null, null, null, null, null, B64], null, null, 1]] : [];
     const details: unknown[] = Array(31).fill(null);
     details[27] = idOf(m);
@@ -365,7 +368,7 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
   const counts = () => {
     const out: unknown[] = [];
     for (const l of box.labels) {
-      const ms = visible().filter((m) => !m.pending && m.labels.includes(l.id));
+      const ms = visible().filter((m) => !m.pending && !m.gone && m.labels.includes(l.id));
       const unread = ms.filter((m) => m.labels.includes('^u')).length;
       // As the live counts for your labels: some give no total (0).
       out.push([l.id, unread, l.id === '^x_2' ? 0 : ms.length]);
@@ -402,7 +405,7 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
       Object.assign(meta, { 0: `thread-f:${t}`, 1: ms[0]!.subject, 2: ms.at(-1)!.body.slice(0, 60), 3: ms.at(-1)!.date, 9: 77777, 12: 0, 15: hex(t), 20: [[0], 'a', 'b'] });
       const summaries = ms.map((m) => {
         const r: unknown[] = Array(40).fill(null);
-        Object.assign(r, { 0: idOf(m), 1: [1, m.from.email, m.from.name ?? m.from.email], 2: m.date, 3: m.labels, 6: m.date, 10: m.body.slice(0, 60), 15: m.date, 27: hex(m.id.replace(/\D/g, '') || '0') });
+        Object.assign(r, { 0: idOf(m), 1: [1, m.from.email, m.from.name ?? m.from.email], 2: m.date, 3: m.gone ? null : m.labels, 6: m.date, 10: m.body.slice(0, 60), 15: m.date, 27: hex(m.id.replace(/\D/g, '') || '0') });
         return r;
       });
       const fulls = ms.map((m) => [idOf(m), [[[1, m.to[0]!.email]], null, null, [[1, m.from.email, m.from.name ?? '']], m.subject, [null, [[0, null, [null, `<p>${m.body}</p>`], 99]]], m.from.email, m.from.email]]);
@@ -638,6 +641,12 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
       box.messages.push(msg);
       bump(msg);
       return msg;
+    },
+    /** A message deleted for good, its thread still naming it with null labels (as live Gmail's s did); undone by `back`. */
+    purge(id: string, back = false) {
+      const msg = box.messages.find((x) => x.id === id)!;
+      msg.gone = !back;
+      bump(msg);
     },
     /** Labels added to and taken off a message, as Gmail's own app would. */
     relabel(id: string, add: string[], remove: string[]) {

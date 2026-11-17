@@ -254,6 +254,13 @@ export interface ThreadRow {
   /** The row's own date: no message in it is newer. */
   date: number;
   messages: GMessage[];
+  /**
+   * Gmail's ids of messages the row lists with null where the labels go. Seen live in s's answers (2026-11-16), on two
+   * accounts at once; what it means is not known (a message deleted for good that the thread still names, most
+   * likely). Never read as a message, never listed, never reported removed (not proven gone); forgotten, so a later
+   * read asks Gmail again.
+   */
+  nullLabels: string[];
 }
 export interface LabelDef {
   id: string;
@@ -286,7 +293,7 @@ export interface BvAnswer {
   counts: Map<string, Count> | null;
 }
 export interface FdAnswer {
-  threads: { thread: string | null; messages: GMessage[] }[];
+  threads: { thread: string | null; messages: GMessage[]; nullLabels: string[] }[];
   trailer: number | null;
 }
 export interface SAnswer {
@@ -341,6 +348,14 @@ const addresses = (v: unknown): MailAddress[] => (Array.isArray(v) ? v.map(addre
  * against). The counts go to the self-check.
  */
 export const hex55 = { agree: 0, disagree: 0, absent: 0, used: 0 };
+/** Messages read with null labels, left out, by endpoint, for the self-check. */
+export const noLabels: Record<string, number> = {};
+const NO_LABELS = Symbol('no labels');
+/** A message's labels null: the one other thing its labels' place may hold. Counted; the caller leaves the message out. */
+function nullLabelsId(ep: Endpoint, id: unknown): string | null {
+  noLabels[ep] = (noLabels[ep] ?? 0) + 1;
+  return typeof id === 'string' ? fDecimal(id) : null;
+}
 const hex55Trusted = () => hex55.agree >= 5 && hex55.disagree === 0;
 
 /** After a whole answer is read (its msg-f messages counted first): msg-a messages take their [55] id when it is trusted. */
@@ -356,7 +371,7 @@ export function resolveLocalIds(rows: { messages: GMessage[] }[]): void {
       }
 }
 
-function message(ep: Endpoint, m: unknown, where: string): GMessage {
+function message(ep: Endpoint, m: unknown, where: string): GMessage | typeof NO_LABELS {
   if (!Array.isArray(m)) throw new LayoutError(ep, where, 'a message (a list)', kindOf(m));
   if (!isAnyMsgId(m[0])) throw new LayoutError(ep, `${where}[0]`, 'a message id (msg-…:…)', kindOf(m[0]));
   if (!isMsgId(m[0]) || !m[0].startsWith('msg-f:')) {
@@ -364,6 +379,7 @@ function message(ep: Endpoint, m: unknown, where: string): GMessage {
     localIdKinds[k] = (localIdKinds[k] ?? 0) + 1;
   }
   if (!isMs(m[6])) throw new LayoutError(ep, `${where}[6]`, "the message's date in ms (13 digits)", kindOf(m[6]));
+  if (m[10] === null) return NO_LABELS;
   if (!isLabelList(m[10])) throw new LayoutError(ep, `${where}[10]`, "the message's labels (^…)", kindOf(m[10]));
   let id = fDecimal(m[0]);
   const h = decimalOfHex(m[55]);
@@ -390,12 +406,17 @@ function message(ep: Endpoint, m: unknown, where: string): GMessage {
 /** A thread row: [0] subject, [1] snippet, [2] date, [3] thread id, [4] its messages, [19] its id in hex. */
 function row(ep: Endpoint, r: unknown[], where: string): ThreadRow {
   const msgs = r[4] as unknown[];
-  return {
-    thread: fDecimal(r[3] as string) ?? decimalOfHex(r[19]),
-    subject: typeof r[0] === 'string' ? r[0] : '',
-    date: r[2] as number,
-    messages: msgs.map((m, i) => message(ep, m, `${where}[4][${i}]`)),
-  };
+  const messages: GMessage[] = [];
+  const nullLabels: string[] = [];
+  for (const [i, m] of msgs.entries()) {
+    const g = message(ep, m, `${where}[4][${i}]`);
+    if (g !== NO_LABELS) messages.push(g);
+    else {
+      const id = nullLabelsId(ep, (m as unknown[])[0]);
+      if (id !== null) nullLabels.push(id);
+    }
+  }
+  return { thread: fDecimal(r[3] as string) ?? decimalOfHex(r[19]), subject: typeof r[0] === 'string' ? r[0] : '', date: r[2] as number, messages, nullLabels };
 }
 
 /** A Message-ID as Gmail's records carry them, with its brackets. */
@@ -502,17 +523,23 @@ export function parseFd(json: unknown): FdAnswer {
     const w = `json[1][${i}]`;
     if (!Array.isArray(e) || !isThreadId(e[0])) throw new LayoutError(ep, `${w}[0]`, 'a thread id (thread-f:…)', kindOf(Array.isArray(e) ? e[0] : e));
     const messages: GMessage[] = [];
+    const nullLabels: string[] = [];
     if (e[1] !== null && e[1] !== undefined) {
       if (!Array.isArray(e[1]) || !Array.isArray(e[1][1])) throw new LayoutError(ep, `${w}[1][1]`, "the thread's message summaries", kindOf(Array.isArray(e[1]) ? e[1][1] : e[1]));
       for (const [j, m] of (e[1][1] as unknown[]).entries()) {
         const mw = `${w}[1][1][${j}]`;
         if (!Array.isArray(m) || !isMsgId(m[0])) throw new LayoutError(ep, `${mw}[0]`, 'a message id (msg-f:…)', kindOf(Array.isArray(m) ? m[0] : m));
         if (!isMs(m[2])) throw new LayoutError(ep, `${mw}[2]`, "the message's date in ms (13 digits)", kindOf(m[2]));
+        if (m[3] === null) {
+          const id = nullLabelsId(ep, m[0]);
+          if (id !== null) nullLabels.push(id);
+          continue;
+        }
         if (!isLabelList(m[3])) throw new LayoutError(ep, `${mw}[3]`, "the message's labels (^…)", kindOf(m[3]));
         messages.push({ id: fDecimal(m[0]), from: address(m[1]), to: [], cc: [], date: m[2], labels: m[3], snippet: typeof m[10] === 'string' ? m[10] : null, attachments: 0, messageId: null, inReplyTo: null, references: [] });
       }
     }
-    threads.push({ thread: fDecimal(e[0]), messages });
+    threads.push({ thread: fDecimal(e[0]), messages, nullLabels });
   }
   return { threads, trailer: trailerOf(json[4]) };
 }

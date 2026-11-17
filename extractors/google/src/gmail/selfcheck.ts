@@ -9,7 +9,7 @@ import type { MailSummary } from '@dither-accounts/interfaces';
 import type { GmailMail, SyncInfo } from './mail.ts';
 import { parseMessage } from './mime.ts';
 import { ENDPOINTS } from './protocol.ts';
-import { hex55, localIdKinds } from './protocol.ts';
+import { hex55, localIdKinds, noLabels } from './protocol.ts';
 
 const DAY = 86_400_000;
 const Y2K = Date.UTC(2000, 0, 1);
@@ -210,6 +210,8 @@ export async function selfCheck(mail: GmailMail, info: () => Promise<SyncInfo>, 
     notYetGmail: ev.notYetGmail,
     hex55: { ...hex55 },
     localIdKinds: { ...localIdKinds },
+    // Messages listed with null labels, left out, by endpoint.
+    noLabels: { ...noLabels },
   };
   const fingerprints = Object.fromEntries(ENDPOINTS.map((e) => [e, { calls: mail.fp[e].calls, ok: mail.fp[e].ok, failed: mail.fp[e].failed, firstMismatch: mail.fp[e].first }]));
   const errors = [page.error, boxes.error, (inbox as { error?: string }).error, (allMail as { error?: string }).error, ids.error, pool.error].filter(Boolean).length;

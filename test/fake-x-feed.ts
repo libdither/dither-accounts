@@ -170,7 +170,7 @@ export async function startFeedFake(self: Person = ME): Promise<FeedFake> {
   files.set(`${RW}/bundle.TweetActivity.f4ke9005c0ffee9aa.js`, chunk('9005', 'rw-activity.js'));
   files.set(`${RW}/shared~bundle.Compose~bundle.HomeTimeline~bundle.LoggedInMain.f4ke9006c0ffeebca.js`, chunk('9006', 'rw-home.js'));
   files.set(`${RW}/bundle.HomeTimeline.f4ke9007c0ffeedea.js`, chunk('9007', 'rw-home.js'));
-  files.set(`${RW}/9010.f4ke9010c0ffeef0a.js`, chunk('9010', 'rw-compose.js'));
+  files.set(`${RW}/bundle.Compose.f4ke9010c0ffeef0a.js`, chunk('9010', 'rw-compose.js'));
 
   const home = homeWorld(now);
   for (const t of [home.plain, home.reposted, home.okra1, home.okra2, home.okra3, home.older, home.balcony, home.mulch, home.rain, home.frost]) know(t);

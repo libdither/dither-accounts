@@ -256,7 +256,7 @@ missing one takes only the feed, `profile`, `posts` or answering on X away.
 | `actions` | the tweet actions factory: the export whose source has `sendTweet:function(` and also `unretweet(` (in x.com's main bundle, one factory with `like`, `unlike`, `retweet`, `unretweet`, `sendTweet`, `destroy`, bookmarks and more), found the same way (`module`) | no `postActions`, no `publish`, no `unpublish` |
 | `reactors` | the factory whose source has `fetchLikedBy:(` (`fetchLikedBy`: Favoriters, `fetchRetweetedBy`: Retweeters, `fetchEditHistory`). Its chunk is lazy: `shared~bundle.QuoteTweetActivity~bundle.TweetActivity` (also `bundle.TweetEditHistory`). At the first `postReactors` the route table's loader with a chunk named `bundle.TweetActivity` by `require.u` (else `bundle.TweetEditHistory`) is run as opening a post's likes would: its chunks, then its module (`loader`); found already loaded when someone opened a post's likes in the page (`module`). `pending` until then, and `postReactors` is offered while pending | no `postReactors` |
 | `home` | the factory whose source has `fetchHomeLatest(` and `home_timeline_urt` (`fetchHome`: HomeTimeline, For you; `fetchHomeLatest`: HomeLatestTimeline, Following). Its chunk is lazy: `shared~bundle.Compose~bundle.HomeTimeline~bundle.LoggedInMain` (the same module is also in `loader.WideLayout` and others). Found loaded (`module`: Home or the wide layout was opened in the page); else at the first `home` the route table's loader with a chunk named `bundle.HomeTimeline` by `require.u` (else one sharing a chunk with it, `…~bundle.HomeTimeline~…`) is run as opening Home would (`loader`). `pending` until then, and `home` is offered while pending | no `home` |
-| `upload` | the composer's media uploader: in a module with `imageCategory`, the export whose source has `imageCategory` and `withMediaUploadMetrics` (x.com's `upload(file, options)`, export `o7` in the bundle read, answering `{ mediaId, mediaKey }`). Its chunk is lazy and unnamed (the reply composer's: `12745` in the bundle read). Found loaded (`module`: a composer was opened in the page); else at the first post with media the lazy component loader named `TweetReplyInlineComposer` (else any whose name has `Compos`) is run as the composer would be (`loader`). `pending` until then, and `postMedia` is offered while pending. **That loader sits in chunks of their own in the bundle read**, which nothing on /i/chat loads: on a page that never opened a post or a composer, expect `missing` (see "Pictures and video") | no `postMedia` |
+| `upload` | the composer's media uploader. Since 2026-11 x.com's composer uploads through its store: in the module that says `Media has no uploader`, an export adding files as media items (arity 2, its source has `withDimensionsAndOrientation` and `Promise.all`: `MR` in the bundle read, `(files, { location })`), one uploading items by id (its source has `Media has no uploader`: `o7`), and one dropping them (arity 1, short, `.dispose()` and `abort()`: `m9`); the location `Tweet` comes from the media kinds' module (the one with `TweetImage:"tweet_image"`, export `rz`). The older shape, an `upload(file, options)` export in a module with `imageCategory` and `withMediaUploadMetrics`, is still taken where a page has it. Found loaded (`module`: a composer was opened in the page); else at the first post with media a lazy component loader is run as the composer would be (`loader`): one named for composing (x.com named it `TweetReplyInlineComposer` until its names were minified), else the loaders whose chunks are the composer's own by their file names (`bundle.Compose`, `bundle.ComposeMedia`, then `bundle\|ondemand\|loader.…Compos…`), at most 8. `pending` until then, and `postMedia` is offered while pending | no `postMedia` |
 The notifications module also exports `updateLastSeenCursor`, the thunk that marks notifications seen on X. It is
 never called; reading the timeline does not mark anything seen (the tab calls that thunk separately).
 
@@ -432,10 +432,12 @@ new post: with `replyTo` the call is refused before the page is asked, and so is
 video (MP4, MOV), checked before the page is asked (`postMediaProblem` in `src/feed.ts`): anything else, a mix, a
 fifth picture, a GIF over 15 MB, or more than 40 MB in all (the bytes cross to the page in one message) is refused in
 plain words. The text may then be empty. Each file is handed to the page and uploaded there, one after another, by
-the composer's own uploader (`upload` above) with the file as a `File`: it chooses the kind and `media_category`
-itself (`tweet_image`, `tweet_gif`, `amplify_video`), runs INIT, APPEND (in segments), FINALIZE and STATUS until X has
-processed it, and answers its media id. A video is given `videoLimits` (140 s, 512 MB: X's ordinary limits, a guess at
-what the composer passes; X checks again). The ids go into `sendTweet`'s options as `media_ids: '<id>,<id>'`, which
+the composer's own uploader (`upload` above) with the files as `File`s: they are added to the composer's store as
+media items for a post and uploaded side by side, and the uploader chooses the kind and `media_category` itself
+(`tweet_image`, `tweet_gif`, `amplify_video`), runs INIT, APPEND (in segments), FINALIZE and STATUS until X has
+processed each, and keeps its media id on the item (`uploadId`). The items are dropped from the store once the post
+is made or has failed. (On a page with the older `upload(file, options)`, each file goes one after another, and a
+video is given `videoLimits`: 140 s, 512 MB.) The ids go into `sendTweet`'s options as `media_ids: '<id>,<id>'`, which
 the builder turns into `media.media_entities`. A file X refuses fails the call with X's words ("X did not take file 2:
 …"), and nothing is posted. A post with a video may take up to 5 minutes (the call's own limit).
 
@@ -487,13 +489,13 @@ Read from the public bundle (2026-11-12), run only against the fake:
   X answers 144 with data, `destroy` resolves without `delete_tweet` and the call says to look on X);
 - who may reply: the option names (`my_network`, `by_invitation`, `verified`) are the builder's; that X takes
   `conversation_control` on CreateTweet as the composer sends it;
-- the uploader: the marker words (`imageCategory`, `withMediaUploadMetrics`), its export (`o7` in the bundle read;
-  the hook takes any export whose source has both words), that it takes a plain `File` and an options object (a
-  `signal`, `videoLimits` for a video; `imageCategory` left to it), that it answers `{ mediaId }`, and where a
-  failed processing's words are (`detailMessage` is assumed, else the error's `errors`, else its message). **Finding
-  it is the weak part**: its chunk loads only through the reply composer's lazy component, and that loader is in
-  chunks that /i/chat does not load in the bundle read. Media work when a composer was opened in the page (it is
-  then `module`), and otherwise only if some chunk the page has loaded carries that loader.
+- the uploader: the marker words (`Media has no uploader`; `TweetImage:"tweet_image"` for the locations), the three
+  thunks told apart by arity and words, that adding takes plain `File`s and `{ location }` and answers the items
+  (each with an `id`), that uploading by those ids answers the items with the upload done (or each one's
+  `uploadPromise`), that the media id is the item's `uploadId` (or the promise's `mediaId`), and where a failed
+  processing's words are (`detailMessage` is assumed, else the error's `errors`, else its message). Seen live
+  2026-11-17: one picture posted and deleted through this path. **Finding it is the weak part**: its chunk loads
+  only through a lazy component's loader, found by the chunk's file name since x.com minified the components' names.
 
 **What a live check should look at**: after one like and unlike of a post of your own, one repost and unrepost, one
 reply to your own post (then delete it on X), and `postReactors` on a post of yours with likes: `hook.actions` should
@@ -508,11 +510,13 @@ For Home, deleting, who may reply and media: read a page of each timeline (`home
 `more`): `hook.home` should say `found (loader)` or `(module)`, and the items should match the app's Home, with For
 you's lines as reasons and no ads. Make a post with `replies: 'following'` and check its reply setting on X, then
 `unpublish` it and see it gone on the phone. Post one picture: `hook.upload` should say `found`; if it says `missing`,
-`diagnostics.json`'s `feed.upload` lists the lazy components the page had (`loaders`) and how many modules had
-`imageCategory` (`marked`): open a post's reply box in the live view once and try again. `feed.home` has the
+`diagnostics.json`'s `feed.upload` lists the lazy components' names the page had (`loaders`), the chunks named for
+composing or media (`chunks`), the loaders it tried (`tried`), how many loaded modules hold each of the uploader's
+words (`words`) and how many had `imageCategory` (`marked`): open a post's reply box in the live view once and try
+again. `feed.home` has the
 factory's method names (`fetchHome`, `fetchHomeLatest`) and the chunk it loaded (or the loaders' home chunks);
-`feed.upload` the uploader module's export names, the one used, how many arguments it takes and the chunk it came
-in; `responses.home`, `responses.deleted` and `responses.upload` the last answers' shapes.
+`feed.upload` the uploader module's export names and the chunk it came in, with `via: 'store'` and the shapes of the
+last items added and uploaded (or, for the older shape, the one used and how many arguments it takes); `responses.home`, `responses.deleted` and `responses.upload` the last answers' shapes.
 
 ### Users in both layouts
 
@@ -560,8 +564,9 @@ counts; and `feed`: the feed hooks and how they were found, webpack's module cou
 store's own keys and its state's top-level keys, the endpoints object's keys, the notifications module's keys and
 creation options' shape and the chunk it loaded, the post actions factory's method names, the activity chunk loaded
 for who liked (or the loaders' activity chunks when none worked), the home factory's method names and the chunk it
-came in (or the loaders' home chunks), the uploader module's export names, the one used, its argument count and the
-lazy component and chunk it came in (or the names of the lazy components seen), and the shapes of the last
+came in (or the loaders' home chunks), the uploader module's export names, how it uploads (`via: 'store'`, or the
+export used and its argument count) and the loader and chunk it came in (or the lazy components' names, the chunks
+named for composing or media, the loaders tried and the uploader's words counted), and the shapes of the last
 notifications, user, posts, thread, act, made post, reactors, home, delete and upload answers (keys and types, arrays
 as their length and first element, ids as `<id>`). Never a value.
 
@@ -635,8 +640,8 @@ one, its chunks loaded once by the route's loader, who reposted it, and nobody f
 `feed.test.ts` covers `viewer` in every kind of post, `parsePublished`'s three ways and `parseReactors`.
 
 Home, deleting, who may reply and media, the same way (`rw-home.js`: Home's two lazy chunks, the factory as x.com's,
-which sends `seenTweetIds` when given a `userId`; `rw-compose.js`: the reply composer's unnamed chunk with an uploader
-shaped as x.com's, loaded by a lazy component in the main chunk; the server answers HomeTimeline and
+which sends `seenTweetIds` when given a `userId`; `rw-compose.js`: the composer's chunk, `bundle.Compose`, with its media
+thunks and locations shaped as x.com's, loaded by a lazy component in the main chunk whose name is minified; the server answers HomeTimeline and
 HomeLatestTimeline from `homeWorld`, DeleteTweet, and `/i/media/upload.json`): Following and For you page by page to
 the end, Home's chunks loaded once by its route's loader, the repost, the home conversation with the posts above it,
 the reasons with whom they name (a bare identity for Ann), the ad, who to follow, the prompt and the gone post left

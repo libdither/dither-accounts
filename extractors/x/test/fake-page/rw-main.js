@@ -44,7 +44,7 @@
     // Lazy components, as x.com makes them: a loader, the component's name, options. The reply composer's chunk has the
     // media uploader.
     310990(e,t,n){"use strict";n.d(t,{s:()=>r});let r=(e,t,n)=>{let r=()=>null;return r.displayName=t,r.preload=e,r}},
-    310991(e,t,a){"use strict";a.d(t,{Rc:()=>nz,Gs:()=>nq});var nB=a(310990);let nq=(0,nB.s)(()=>Promise.all([a.e(9003)]).then(()=>a(901200)),"GifSearchPanel",{name:"gif-search"}),nz=(0,nB.s)(()=>Promise.all([a.e(9010)]).then(()=>a(900010)),"TweetReplyInlineComposer",{name:"tweet-reply-inline-composer",fallback:null})},
+    310991(e,t,a){"use strict";a.d(t,{Rc:()=>nz,Gs:()=>nq});var nB=a(310990);let nq=(0,nB.s)(()=>Promise.all([a.e(9003)]).then(()=>a(901200)),"GifSearchPanel",{name:"gif-search"}),nz=(0,nB.s)(()=>Promise.all([a.e(9010)]).then(()=>a(900010)),"Sl",{name:"tweet-reply-inline-composer",fallback:null})},
     100001(e,t,n){"use strict";let r=n(350100).A;self.__FAKE_STORE__=r},
   },
   (n) => {

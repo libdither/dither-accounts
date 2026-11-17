@@ -554,7 +554,7 @@ it(
   async () => {
     const creates = () => fake.calls.filter((c) => c.op === 'graphql' && c.name === 'CreateTweet');
     const uploads = () => fake.calls.filter((c) => c.op.startsWith('upload.'));
-    const composer = () => fake.calls.filter((c) => c.op === 'chunk' && c.name === '9010');
+    const composer = () => fake.calls.filter((c) => c.op === 'chunk' && c.name === 'bundle.Compose');
     const n0 = creates().length;
     // Who can reply, as the composer's menu sets it.
     for (const [replies, mode] of [['following', 'MyNetwork'], ['mentioned', 'ByInvitation'], ['verified', 'Verified'], ['everyone', undefined]] as const) {
@@ -568,19 +568,22 @@ it(
     expect(uploads()).toEqual([]);
     expect(composer()).toEqual([]);
 
-    // Two pictures: each INIT, APPEND, FINALIZE as tweet_image, then the post naming both.
+    // Two pictures, uploaded side by side as the composer does: each INIT, APPEND, FINALIZE as tweet_image, then the
+    // post naming both.
     const png = join(dir, 'post-pixel.png');
     writeFileSync(png, PIXEL);
     const pic = (name: string) => ({ path: png, name, mime: 'image/png', size: PIXEL.length, kind: 'image' });
     const pics = await call('publish', { text: 'two tiny pictures', media: [pic('a.png'), pic('b.png')] });
     expect(pics.media.map((m: any) => m.kind)).toEqual(['image', 'image']);
-    expect(uploads().map((c) => c.op)).toEqual(['upload.INIT', 'upload.APPEND', 'upload.FINALIZE', 'upload.INIT', 'upload.APPEND', 'upload.FINALIZE']);
-    expect(uploads()[0]!.variables).toEqual({ total_bytes: String(PIXEL.length), media_type: 'image/png', media_category: 'tweet_image' });
     const ids = [...fake.feed.uploads.keys()];
+    expect(uploads().map((c) => c.op).sort()).toEqual(['upload.APPEND', 'upload.APPEND', 'upload.FINALIZE', 'upload.FINALIZE', 'upload.INIT', 'upload.INIT']);
+    for (const id of ids) expect(uploads().filter((c) => c.op !== 'upload.INIT' && c.variables?.media_id === id).map((c) => c.op)).toEqual(['upload.APPEND', 'upload.FINALIZE']);
+    expect(uploads().filter((c) => c.op === 'upload.INIT').map((c) => c.variables)).toEqual([0, 1].map(() => ({ total_bytes: String(PIXEL.length), media_type: 'image/png', media_category: 'tweet_image' })));
     expect(ids.length).toBe(2);
     expect(fake.feed.uploads.get(ids[0]!)!.bytes).toEqual([PIXEL]);
     expect(creates().at(-1)!.variables!.media).toEqual({ media_entities: ids.map((id) => ({ media_id: id, tagged_users: [] })), possibly_sensitive: false });
-    // The uploader came with the reply composer's chunk, loaded once by its lazy component.
+    // The uploader came with the composer's chunk (bundle.Compose), found by its name and loaded once by its loader,
+    // whose component's name is minified as on x.com; the media items were taken out of the store again after posting.
     expect(composer().length).toBe(1);
     await until(() => statusOf(acc)?.details?.['hook.upload'] === 'found (loader)', 20_000, 'the upload hook');
 
@@ -735,14 +738,15 @@ it(
     for (const secret of ['legacy line', 'saturday', 'pizza', 'hello', 'Weekend plans', ALICE.displayName, ALICE.screenName, BOB.screenName, 'fake-session', SELF.displayName, CARA.name, CARA.handle, FINN.handle, ANN.name, ANN.handle, 'tomatoes', 'love this', 'garden', 'Lisbon', 'balcony', 'okra', 'Gardening']) expect(text).not.toContain(secret);
     // The feed's part: what was found and the shapes of what X answered.
     expect(d.page.feed).toMatchObject({ hooks: { webpack: { ok: true }, store: { ok: true }, endpoints: { ok: true }, notifications: { ok: true }, profiles: { ok: true }, posts: { ok: true, via: 'timeline' }, actions: { ok: true }, reactors: { ok: true, via: 'loader' }, home: { ok: true, via: 'loader' }, upload: { ok: true, via: 'loader' } }, endpoints: { via: 'thunk.api' }, notifications: { chunk: 'bundle.Notifications' }, reactors: { chunk: 'shared~bundle.QuoteTweetActivity~bundle.TweetActivity' } });
-    // Home: the factory's two calls and the chunk it came with; the uploader: its module's exports, the one used, its
-    // arguments, and the lazy component and chunk it came with.
+    // Home: the factory's two calls and the chunk it came with; the uploader: through the store (the composer's media
+    // thunks), its module's exports, and the loader and chunk it came with.
     expect(d.page.feed.home).toEqual({ keys: ['fetchHome', 'fetchHomeLatest'], chunk: 'bundle.HomeTimeline' });
-    expect(d.page.feed.upload).toEqual({ keys: ['KC', 'o7'], key: 'o7', arity: 1, chunk: 'TweetReplyInlineComposer: 9010' });
+    expect(d.page.feed.upload).toMatchObject({ via: 'store', keys: ['MR', 'iK', 'm9', 'o7'], drop: true, where: 'string', chunk: 'Sl: bundle.Compose' });
     expect(d.page.feed.actions.keys).toContain('destroy');
     expect(d.page.feed.responses.home).toMatchObject({ instructions: { array: 1 } });
     expect(d.page.feed.responses.deleted).toEqual({ delete_tweet: { tweet_results: {} } });
-    expect(d.page.feed.responses.upload).toEqual({ mediaId: 'string', mediaKey: 'string' });
+    // The last upload as the store answered it: its media items, each keeping its media id as `uploadId`.
+    expect(d.page.feed.responses.upload).toMatchObject({ array: 1, first: { id: 'string', location: 'string', uploadId: 'string', uploadPromise: 'undefined' } });
     expect(d.page.feed.actions.keys).toEqual(expect.arrayContaining(['like', 'unlike', 'retweet', 'unretweet', 'sendTweet']));
     expect(d.page.feed.responses.created).toMatchObject({ entities: { tweets: { '<id>': { full_text: 'string' } } }, result: 'string' });
     // The last reactors read was of someone else's post: a timeline with nothing in it.

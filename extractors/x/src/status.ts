@@ -105,12 +105,18 @@ export function capabilitiesOf(st: SelfTest | null): P.Capability[] {
   // Answering on X: the post actions factory (like, repost, sendTweet); who liked or reposted, whose chunk is loaded at
   // the first ask (pending until then, and offered: it fails with "not found" and is withdrawn if it is not there).
   // Its "Translate post" lives on the same factory (fetchTranslation).
-  if (feedOk(st, 'store') && feedOk(st, 'endpoints') && feedOk(st, 'actions')) caps.push('postActions', 'publish', 'translate');
-  if (feedOk(st, 'store') && feedOk(st, 'endpoints') && (feedOk(st, 'reactors') || st?.feed?.reactors?.via === 'pending')) caps.push('postReactors');
+  // Deleting a post is the same factory's `destroy`; pictures on a post need the composer's uploader as well (lazy,
+  // like who liked: offered while pending). The home timelines' factory is lazy too, found at the first read.
+  const api = feedOk(st, 'store') && feedOk(st, 'endpoints');
+  if (api && feedOk(st, 'actions')) caps.push('postActions', 'publish', 'translate', 'unpublish');
+  if (api && feedOkOrPending(st, 'reactors')) caps.push('postReactors');
+  if (api && feedOkOrPending(st, 'home')) caps.push('home');
+  if (api && feedOk(st, 'actions') && feedOkOrPending(st, 'upload')) caps.push('postMedia');
   return caps;
 }
 
 const feedOk = (st: SelfTest | null, n: FeedHookName) => !!st?.feed?.[n]?.ok;
+const feedOkOrPending = (st: SelfTest | null, n: FeedHookName) => feedOk(st, n) || st?.feed?.[n]?.via === 'pending';
 const hhmmss = (ms: number) => new Date(ms).toISOString().slice(11, 19);
 
 /** The feed's layer and details (docs/x.md "Notifications and profiles"): it never decides the account's status. */

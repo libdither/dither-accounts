@@ -15,7 +15,7 @@ import { markerName, resolveBins } from '../packages/browser/src/index.ts';
 import { inetSockets, rfbBanner, x11vncs } from '../packages/browser/test/inet.ts';
 import { pageMarkerKey } from '../packages/manager/src/supervisor.ts';
 import { ALICE, BOB, CAROL, DAVE, DIRECT, ERIN, type FakeX, GROUP, LEGACY, PIXEL, REQUEST, SELF, startFakeX } from './fake-x.ts';
-import { CARA, DEV, EMI, FINN, TRANSLATIONS } from './fake-x-feed.ts';
+import { ANN, CARA, DEV, EMI, FINN, TRANSLATIONS } from './fake-x-feed.ts';
 
 const ROOT = join(import.meta.dir, '..');
 let bins: ReturnType<typeof resolveBins> | null = null;
@@ -152,6 +152,8 @@ it(
       'hook.posts': 'found (timeline)',
       'hook.actions': 'found (module)',
       'hook.reactors': 'pending',
+      'hook.home': 'pending',
+      'hook.upload': 'pending',
       'hook.requests': 'found (graph)',
       'hook.answer': 'found (list:module)',
       'hook.openDirect': 'found (search)',
@@ -161,7 +163,7 @@ it(
       'hook.typing': 'found (composer)',
       'hook.forward': 'found (action)',
     });
-    expect(helloOf(acc)).toMatchObject({ network: 'x', capabilities: ['liveView', 'media', 'history', 'markRead', 'send', 'sendMedia', 'edit', 'redact', 'react', 'typing', 'forward', 'openDirect', 'requests', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'posts', 'postActions', 'publish', 'translate', 'postReactors'] });
+    expect(helloOf(acc)).toMatchObject({ network: 'x', capabilities: ['liveView', 'media', 'history', 'markRead', 'send', 'sendMedia', 'edit', 'redact', 'react', 'typing', 'forward', 'openDirect', 'requests', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'posts', 'postActions', 'publish', 'translate', 'unpublish', 'postReactors', 'home', 'postMedia'] });
     const lv = m!.router.liveView(acc)!;
     expect(lv).toEqual({ vncSocket: join(m!.store.account(acc)!.dir, 'vnc.sock'), width: 1280, height: 800 });
     expect(await rfbBanner(lv.vncSocket)).toMatch(/^RFB \d{3}\.\d{3}/);
@@ -469,6 +471,146 @@ it(
 );
 
 it(
+  "home: Following newest first and For you with X's reasons, page by page, from Home's own chunks; ads, who to follow and prompts left out; nothing seen sent",
+  async () => {
+    const h = fake.feed.home;
+    const chunks = () => fake.calls.filter((c) => c.op === 'chunk' && /Home/.test(c.name!)).map((c) => c.name);
+    const asked = () => fake.calls.filter((c) => c.op === 'graphql' && /^Home/.test(c.name!));
+    expect(chunks()).toEqual([]);
+    const one = await call('home', { feed: 'following' });
+    expect(one.items.map((i: any) => i.post.id)).toEqual([h.plain.rest_id, h.repost.rest_id, h.okra3.rest_id]);
+    expect(one.items[0].post).toMatchObject({ author: CARA.id, text: 'first beans of the year', url: `https://x.com/${CARA.handle}/status/${h.plain.rest_id}` });
+    // A repost: Dev's, with Emi's post in it.
+    expect(one.items[1].post).toMatchObject({ author: DEV.id, text: '', repostOf: { id: h.reposted.rest_id, author: EMI.id, text: 'seed swap on saturday' } });
+    // A home-conversation: its last post, the ones above it oldest first.
+    expect(one.items[2].above.map((p: any) => p.id)).toEqual([h.okra1.rest_id, h.okra2.rest_id]);
+    expect(one.items.some((i: any) => i.reason)).toBe(false);
+    expect(one.more).toBe(h.cursors.following2);
+    expect(one.top).toBe(h.cursors.followingTop);
+    // Loaded as opening Home would: its route's chunks, once.
+    expect(chunks().sort()).toEqual(['bundle.HomeTimeline', 'shared~bundle.Compose~bundle.HomeTimeline~bundle.LoggedInMain']);
+    await until(() => statusOf(acc)?.details?.['hook.home'] === 'found (loader)', 20_000, 'the home hook');
+    const two = await call('home', { feed: 'following', cursor: one.more });
+    expect(two.items.map((i: any) => i.post.id)).toEqual([h.older.rest_id]);
+    // The end: nothing but cursors.
+    expect(await call('home', { feed: 'following', cursor: two.more })).toEqual({ items: [], more: null, top: h.cursors.followingTop });
+    // For you, with X's lines: who it names is known to the hub (Ann by her id alone), before the page.
+    const fy = await call('home', { feed: 'foryou', count: 100 });
+    expect(fy.items.map((i: any) => [i.post.id, i.reason ?? null])).toEqual([
+      [h.balcony.rest_id, { text: `${ANN.name} liked`, kind: 'like', who: ANN.id }],
+      [h.mulch.rest_id, { text: 'Gardening', kind: 'topic' }],
+      [h.rain.rest_id, { text: `Followed by ${ANN.name} and 2 others`, kind: 'follow', who: ANN.id }],
+    ]);
+    expect(fy.items[0].post.media).toEqual([expect.objectContaining({ kind: 'image', width: 1600, height: 1200, alt: 'plants on a balcony' })]);
+    expect(fy.more).toBe(h.cursors.foryou2);
+    await until(() => evs(acc).some((e) => e.t === 'identity' && e.identity.nativeId === ANN.id), 10_000, "Ann's identity");
+    const ids = evs(acc).filter((e) => e.t === 'identity');
+    expect(ids.filter((e) => e.identity.nativeId === ANN.id).map((e) => e.identity)).toEqual([{ nativeId: ANN.id }]);
+    for (const p of [CARA, DEV, EMI, FINN]) expect(ids.some((e) => e.identity.nativeId === p.id)).toBe(true);
+    expect((await call('home', { feed: 'foryou', cursor: fy.more })).items.map((i: any) => i.post.id)).toEqual([h.frost.rest_id]);
+    // As Home asks: Following unranked, For you X's; the count asked for, at most 40; GETs with no list of posts seen.
+    expect(asked().map((c) => [c.name, c.variables!.cursor ?? null])).toEqual([
+      ['HomeLatestTimeline', null],
+      ['HomeLatestTimeline', h.cursors.following2],
+      ['HomeLatestTimeline', h.cursors.following3],
+      ['HomeTimeline', null],
+      ['HomeTimeline', h.cursors.foryou2],
+    ]);
+    expect(asked()[0]!.variables).toEqual({ count: 20, enableRanking: false, includePromotedContent: true });
+    expect(asked()[3]!.variables).toEqual({ count: 40, includePromotedContent: true, withCommunity: false });
+    for (const c of asked()) expect([c.method ?? 'GET', 'seenTweetIds' in c.variables!]).toEqual(['GET', false]);
+    // What was left out, counted: the two ads (one on each timeline), who to follow, the prompt, the gone post.
+    expect((await call('action', { action: 'diagnose' })).extractor.feed.dropped).toMatchObject({ 'home.promoted': 2, 'home.module-who-to-follow': 1, 'home.item-TimelineMessagePrompt': 1, 'home.tombstone': 1 });
+    expect(chunks().length).toBe(2);
+    await expect(call('home', { feed: 'latest' })).rejects.toThrow('not a home timeline');
+    expect(asked().length).toBe(5);
+  },
+  90_000,
+);
+
+it(
+  "answering on X: deleting a post of yours as its menu does, once; one gone already counts as deleted; X's words otherwise",
+  async () => {
+    const deletes = () => fake.calls.filter((c) => c.op === 'graphql' && c.name === 'DeleteTweet');
+    const post = await call('publish', { text: 'a typo in this one' });
+    expect(fake.feed.made.has(post.id)).toBe(true);
+    expect(await call('unpublish', { post: post.id })).toEqual({ deleted: true });
+    expect(fake.feed.made.has(post.id)).toBe(false);
+    expect(deletes().map((c) => [c.variables, c.method])).toEqual([[{ tweet_id: post.id }, 'POST']]);
+    // Gone already (X's 144): what was asked for.
+    expect(await call('unpublish', { post: post.id })).toEqual({ deleted: true });
+    expect(deletes().length).toBe(2);
+    // Someone else's: X's words, asked once.
+    await expect(call('unpublish', { post: fake.feed.thread.focal.rest_id })).rejects.toThrow('You cannot delete a post that is not yours.');
+    expect(deletes().length).toBe(3);
+    await expect(call('unpublish', { post: 'nope' })).rejects.toThrow('not an X post id');
+    expect(deletes().length).toBe(3);
+  },
+  60_000,
+);
+
+it(
+  "answering on X: who can reply on a new post; pictures and a video uploaded by the composer's own uploader, from its chunk",
+  async () => {
+    const creates = () => fake.calls.filter((c) => c.op === 'graphql' && c.name === 'CreateTweet');
+    const uploads = () => fake.calls.filter((c) => c.op.startsWith('upload.'));
+    const composer = () => fake.calls.filter((c) => c.op === 'chunk' && c.name === '9010');
+    const n0 = creates().length;
+    // Who can reply, as the composer's menu sets it.
+    for (const [replies, mode] of [['following', 'MyNetwork'], ['mentioned', 'ByInvitation'], ['verified', 'Verified'], ['everyone', undefined]] as const) {
+      await call('publish', { text: `who may answer: ${replies}`, replies });
+      expect(creates().at(-1)!.variables!.conversation_control).toEqual(mode === undefined ? undefined : { mode });
+    }
+    // On a reply, or a choice X has not: refused before the page is asked.
+    await expect(call('publish', { text: 'no', replyTo: fake.feed.thread.focal.rest_id, replies: 'following' })).rejects.toThrow('X lets you choose who can reply only on a new post');
+    await expect(call('publish', { text: 'no', replies: 'friends' })).rejects.toThrow('not a choice of who can reply');
+    expect(creates().length).toBe(n0 + 4);
+    expect(uploads()).toEqual([]);
+    expect(composer()).toEqual([]);
+
+    // Two pictures: each INIT, APPEND, FINALIZE as tweet_image, then the post naming both.
+    const png = join(dir, 'post-pixel.png');
+    writeFileSync(png, PIXEL);
+    const pic = (name: string) => ({ path: png, name, mime: 'image/png', size: PIXEL.length, kind: 'image' });
+    const pics = await call('publish', { text: 'two tiny pictures', media: [pic('a.png'), pic('b.png')] });
+    expect(pics.media.map((m: any) => m.kind)).toEqual(['image', 'image']);
+    expect(uploads().map((c) => c.op)).toEqual(['upload.INIT', 'upload.APPEND', 'upload.FINALIZE', 'upload.INIT', 'upload.APPEND', 'upload.FINALIZE']);
+    expect(uploads()[0]!.variables).toEqual({ total_bytes: String(PIXEL.length), media_type: 'image/png', media_category: 'tweet_image' });
+    const ids = [...fake.feed.uploads.keys()];
+    expect(ids.length).toBe(2);
+    expect(fake.feed.uploads.get(ids[0]!)!.bytes).toEqual([PIXEL]);
+    expect(creates().at(-1)!.variables!.media).toEqual({ media_entities: ids.map((id) => ({ media_id: id, tagged_users: [] })), possibly_sensitive: false });
+    // The uploader came with the reply composer's chunk, loaded once by its lazy component.
+    expect(composer().length).toBe(1);
+    await until(() => statusOf(acc)?.details?.['hook.upload'] === 'found (loader)', 20_000, 'the upload hook');
+
+    // A video, no words: amplify_video, processed (STATUS until done) before the post.
+    const mp4 = join(dir, 'clip.mp4');
+    writeFileSync(mp4, 'not really a video, but the fake does not look');
+    const u0 = uploads().length;
+    const clip = await call('publish', { text: '', media: [{ path: mp4, name: 'clip.mp4', mime: 'video/mp4', size: 47, kind: 'video' }] });
+    expect(clip.media.map((m: any) => m.kind)).toEqual(['video']);
+    expect(uploads().slice(u0).map((c) => c.op)).toEqual(['upload.INIT', 'upload.APPEND', 'upload.FINALIZE', 'upload.STATUS', 'upload.STATUS']);
+    expect(uploads()[u0]!.variables).toMatchObject({ media_type: 'video/mp4', media_category: 'amplify_video' });
+    // One X cannot process: X's words, and no post.
+    const bad = join(dir, 'broken.mp4');
+    writeFileSync(bad, 'BROKEN video');
+    const n1 = creates().length;
+    await expect(call('publish', { text: 'this will not go', media: [{ path: bad, name: 'broken.mp4', mime: 'video/mp4', size: 12, kind: 'video' }] })).rejects.toThrow('X did not take the file: Unsupported video format.');
+    expect(creates().length).toBe(n1);
+    // What X does not take: refused before the page is asked.
+    const u1 = uploads().length;
+    await expect(call('publish', { text: 'five', media: [1, 2, 3, 4, 5].map((n) => pic(`${n}.png`)) })).rejects.toThrow('X takes at most 4 pictures on a post');
+    await expect(call('publish', { text: 'mixed', media: [pic('a.png'), { path: mp4, name: 'clip.mp4', mime: 'video/mp4', size: 47, kind: 'video' }] })).rejects.toThrow('X takes up to 4 pictures, or one GIF, or one video on a post');
+    await expect(call('publish', { text: 'a pdf', media: [{ path: png, name: 'a.pdf', mime: 'application/pdf', size: 10, kind: 'file' }] })).rejects.toThrow('X takes pictures (PNG, JPEG, WebP), a GIF or a video (MP4, MOV) on a post, not application/pdf');
+    expect(uploads().length).toBe(u1);
+    expect(creates().length).toBe(n1);
+    expect(composer().length).toBe(1);
+  },
+  120_000,
+);
+
+it(
   'a message arriving is live, with its sender; someone typing is relayed',
   async () => {
     fake.typing(GROUP, BOB.id);
@@ -590,9 +732,17 @@ it(
     const file = join(dir, 'accounts', acc, 'diagnostics.json');
     expect(existsSync(file)).toBe(true);
     const text = readFileSync(file, 'utf8');
-    for (const secret of ['legacy line', 'saturday', 'pizza', 'hello', 'Weekend plans', ALICE.displayName, ALICE.screenName, BOB.screenName, 'fake-session', SELF.displayName, CARA.name, CARA.handle, FINN.handle, 'tomatoes', 'love this', 'garden', 'Lisbon']) expect(text).not.toContain(secret);
+    for (const secret of ['legacy line', 'saturday', 'pizza', 'hello', 'Weekend plans', ALICE.displayName, ALICE.screenName, BOB.screenName, 'fake-session', SELF.displayName, CARA.name, CARA.handle, FINN.handle, ANN.name, ANN.handle, 'tomatoes', 'love this', 'garden', 'Lisbon', 'balcony', 'okra', 'Gardening']) expect(text).not.toContain(secret);
     // The feed's part: what was found and the shapes of what X answered.
-    expect(d.page.feed).toMatchObject({ hooks: { webpack: { ok: true }, store: { ok: true }, endpoints: { ok: true }, notifications: { ok: true }, profiles: { ok: true }, posts: { ok: true, via: 'timeline' }, actions: { ok: true }, reactors: { ok: true, via: 'loader' } }, endpoints: { via: 'thunk.api' }, notifications: { chunk: 'bundle.Notifications' }, reactors: { chunk: 'shared~bundle.QuoteTweetActivity~bundle.TweetActivity' } });
+    expect(d.page.feed).toMatchObject({ hooks: { webpack: { ok: true }, store: { ok: true }, endpoints: { ok: true }, notifications: { ok: true }, profiles: { ok: true }, posts: { ok: true, via: 'timeline' }, actions: { ok: true }, reactors: { ok: true, via: 'loader' }, home: { ok: true, via: 'loader' }, upload: { ok: true, via: 'loader' } }, endpoints: { via: 'thunk.api' }, notifications: { chunk: 'bundle.Notifications' }, reactors: { chunk: 'shared~bundle.QuoteTweetActivity~bundle.TweetActivity' } });
+    // Home: the factory's two calls and the chunk it came with; the uploader: its module's exports, the one used, its
+    // arguments, and the lazy component and chunk it came with.
+    expect(d.page.feed.home).toEqual({ keys: ['fetchHome', 'fetchHomeLatest'], chunk: 'bundle.HomeTimeline' });
+    expect(d.page.feed.upload).toEqual({ keys: ['KC', 'o7'], key: 'o7', arity: 1, chunk: 'TweetReplyInlineComposer: 9010' });
+    expect(d.page.feed.actions.keys).toContain('destroy');
+    expect(d.page.feed.responses.home).toMatchObject({ instructions: { array: 1 } });
+    expect(d.page.feed.responses.deleted).toEqual({ delete_tweet: { tweet_results: {} } });
+    expect(d.page.feed.responses.upload).toEqual({ mediaId: 'string', mediaKey: 'string' });
     expect(d.page.feed.actions.keys).toEqual(expect.arrayContaining(['like', 'unlike', 'retweet', 'unretweet', 'sendTweet']));
     expect(d.page.feed.responses.created).toMatchObject({ entities: { tweets: { '<id>': { full_text: 'string' } } }, result: 'string' });
     // The last reactors read was of someone else's post: a timeline with nothing in it.
@@ -607,7 +757,7 @@ it(
 it('the log and the status hold ids, counts and names of hooks: no message, no other person, no cookie', () => {
   const text = logOf(acc) + JSON.stringify(evs(acc).filter((e) => e.t === 'status'));
   expect(text.length).toBeGreaterThan(1000);
-  for (const secret of ['legacy line', 'saturday', 'pizza', 'hello from', 'Weekend plans', ALICE.displayName, ALICE.screenName, BOB.displayName, BOB.screenName, 'fake-session', CARA.name, CARA.handle, DEV.handle, EMI.handle, FINN.handle, 'tomatoes', 'love this', 'garden', 'liked your post', 'Lisbon']) expect(text).not.toContain(secret);
+  for (const secret of ['legacy line', 'saturday', 'pizza', 'hello from', 'Weekend plans', ALICE.displayName, ALICE.screenName, BOB.displayName, BOB.screenName, 'fake-session', CARA.name, CARA.handle, DEV.handle, EMI.handle, FINN.handle, ANN.name, ANN.handle, 'tomatoes', 'love this', 'garden', 'liked your post', 'Lisbon', 'balcony', 'okra', 'Gardening']) expect(text).not.toContain(secret);
 });
 
 // ----------------------------------------------------------------- requests, new chats, groups, typing, forwarding
@@ -823,7 +973,7 @@ it(
     expect(st.attention.message).toMatch(/only reads/);
     expect(st.layers.find((l: any) => l.name === 'sending')).toMatchObject({ state: 'failed', note: 'read-only: the composer events were not found' });
     expect(st.details).toMatchObject({ 'hook.send': 'missing', 'hook.edit': 'missing', 'hook.history': 'found (event)', 'hook.classes': 'found (module)' });
-    expect(helloOf(id).capabilities).toEqual(['liveView', 'media', 'history', 'markRead', 'redact', 'react', 'forward', 'openDirect', 'requests', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'posts', 'postActions', 'publish', 'translate', 'postReactors']);
+    expect(helloOf(id).capabilities).toEqual(['liveView', 'media', 'history', 'markRead', 'redact', 'react', 'forward', 'openDirect', 'requests', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'posts', 'postActions', 'publish', 'translate', 'unpublish', 'postReactors', 'home', 'postMedia']);
     // It still reads.
     await until(() => evs(id).some((e) => e.t === 'message' && e.message.conversation === GROUP), 60_000, 'messages while read-only');
     const d = await call('action', { action: 'diagnose' }, id);

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { FeedTracker, feedConvId, LIVE_MS, parseNotifications, parsePost, parseProfileUser, parsePublished, parseReactors, parseTweetDetail, parseUser, parseUserTweets, personAbout, X_ACTOR, xDate } from '../src/feed.ts';
+import { FeedTracker, feedConvId, HOME_ABOVE, LIVE_MS, parseHome, parseNotifications, parsePost, parseProfileUser, parsePublished, parseReactors, parseTweetDetail, parseUser, parseUserTweets, personAbout, postMediaProblem, REPLY_CONTROL, X_ACTOR, xDate } from '../src/feed.ts';
 import { Drops } from '../src/validate.ts';
-import { CARA, favoritersResponse, normalizedTweet, reactorsTimeline, retweetersResponse, tweetResultResponse, conversationModule, cursorEntry, DEV, detailCursorEntry, detailTweetEntry, EMI, FINN, gardenThread, ME, notificationEntry, notificationsResponse, notificationsTimeline, tweet, tweetDetailResponse, tweetDetailTimeline, tweetEntry, userByRestIdResponse, userFlat, userNew, userOld, userTweetsResponse, userTweetsTimeline, withVisibility, xDateStr } from './feed-fixtures.ts';
+import { ANN, CARA, followedByContext, homeConversation, homeResponse, homeTimeline, homeTweetEntry, homeWorld, likedContext, topicContext, favoritersResponse, normalizedTweet, reactorsTimeline, retweetersResponse, tweetResultResponse, conversationModule, cursorEntry, DEV, detailCursorEntry, detailTweetEntry, EMI, FINN, gardenThread, ME, notificationEntry, notificationsResponse, notificationsTimeline, tweet, tweetDetailResponse, tweetDetailTimeline, tweetEntry, userByRestIdResponse, userFlat, userNew, userOld, userTweetsResponse, userTweetsTimeline, withVisibility, xDateStr } from './feed-fixtures.ts';
 
 const NOW = Date.now();
 const MIN = 60_000;
@@ -337,6 +337,123 @@ describe('answering on X', () => {
     const drops = new Drops();
     expect(parseReactors(reactorsTimeline([{ __typename: 'UserUnavailable', rest_id: '9' }], 'x'), drops).page.who).toEqual([]);
     expect(drops.summary()).toMatch(/user\.UserUnavailable 1/);
+  });
+});
+
+describe('home timelines', () => {
+  const h = homeWorld(NOW);
+  test("Following: posts in X's order, a repost with its original, a conversation as its last post with those above; the rest left out and counted", () => {
+    const drops = new Drops();
+    const { page: p, users, named } = parseHome(homeResponse(h.following[0]), drops);
+    expect(p.items.map((i) => i.post.id)).toEqual([h.plain.rest_id, h.repost.rest_id, h.okra3.rest_id]);
+    expect(p.items[0]).toEqual({ post: expect.objectContaining({ id: h.plain.rest_id, author: CARA.id, text: 'first beans of the year', counts: expect.objectContaining({ likes: 2 }) }) });
+    expect(p.items[1]!.post).toMatchObject({ author: DEV.id, text: '', repostOf: { id: h.reposted.rest_id, author: EMI.id, text: 'seed swap on saturday' } });
+    expect(p.items[2]!.post).toMatchObject({ id: h.okra3.rest_id, author: FINN.id, replyTo: { id: h.okra2.rest_id, author: CARA.id }, root: h.okra1.rest_id });
+    expect(p.items[2]!.above!.map((x) => x.id)).toEqual([h.okra1.rest_id, h.okra2.rest_id]);
+    expect(p).toMatchObject({ more: h.cursors.following2, top: h.cursors.followingTop });
+    // Authors (and the original's) are known; the ad's advertiser and who-to-follow's people are not.
+    expect([...users.keys()].sort()).toEqual([CARA.id, DEV.id, EMI.id, FINN.id].sort());
+    expect(named).toEqual([]);
+    expect(Object.fromEntries(drops.counts)).toEqual({ 'home.promoted': 1, 'home.module-who-to-follow': 1, 'home.item-TimelineMessagePrompt': 1 });
+    // The page's own call gives the timeline itself.
+    expect(parseHome(h.following[0], new Drops()).page).toEqual(p);
+  });
+  test('the end: a page of nothing but cursors has no more; one whose entries were all left out does', () => {
+    expect(parseHome(h.following[2], new Drops()).page).toEqual({ items: [], more: null, top: h.cursors.followingTop });
+    const onlyAds = homeTimeline([h.following[0]!.instructions[0]!.entries.find((e: any) => /^promoted-/.test(e.entryId)), h.following[0]!.instructions[0]!.entries.at(-1)]);
+    expect(parseHome(onlyAds, new Drops()).page).toEqual({ items: [], more: h.cursors.following2, top: null });
+    const drops = new Drops();
+    expect(parseHome({ data: {} }, drops).page).toEqual({ items: [], more: null, top: null });
+    expect(drops.summary()).toBe('home.no-instructions 1');
+  });
+  test("For you: X's social-context lines as reasons, with whom they name; a gone post left out", () => {
+    const drops = new Drops();
+    const { page: p, users, named } = parseHome(homeResponse(h.foryou[0]), drops);
+    expect(p.items.map((i) => [i.post.id, i.reason ?? null])).toEqual([
+      [h.balcony.rest_id, { text: `${ANN.name} liked`, kind: 'like', who: ANN.id }],
+      [h.mulch.rest_id, { text: 'Gardening', kind: 'topic' }],
+      [h.rain.rest_id, { text: `Followed by ${ANN.name} and 2 others`, kind: 'follow', who: ANN.id }],
+    ]);
+    expect(p.items[0]!.post.media).toEqual([expect.objectContaining({ kind: 'image', width: 1600, height: 1200, alt: 'plants on a balcony' })]);
+    // Ann is named by her id alone: she needs an identity, which this page cannot give.
+    expect(named).toEqual([ANN.id]);
+    expect(users.has(ANN.id)).toBe(false);
+    expect(Object.fromEntries(drops.counts)).toEqual({ 'home.tombstone': 1, 'home.promoted': 1 });
+  });
+  test("a reason's person: by id, by handle when the page knows it, or nobody; X's other lines in its words", () => {
+    const post = (id: string) => tweet({ id, by: CARA, text: 'hi', ts: NOW });
+    const ctx = (landing: string, contextType = 'Like', text = 'Someone liked') => ({ type: 'TimelineGeneralContext', contextType, text, landingUrl: { url: landing, urlType: 'DeepLink' } });
+    const { page: p } = parseHome(
+      homeTimeline([
+        homeTweetEntry(post('1856000000000002001'), '9', ctx('twitter://user?screen_name=cara_c')),
+        homeTweetEntry(post('1856000000000002002'), '8', ctx('https://x.com/cara_c')),
+        homeTweetEntry(post('1856000000000002003'), '7', ctx('https://x.com/someone_unseen')),
+        homeTweetEntry(post('1856000000000002004'), '6', ctx('https://x.com/i/lists/1234')),
+        homeTweetEntry(post('1856000000000002005'), '5', ctx('twitter://community?id=55', 'Community', 'From Gardeners')),
+        homeTweetEntry(post('1856000000000002006'), '4', ctx('https://evil.example/cara_c')),
+        homeTweetEntry(post('1856000000000002007'), '3', { type: 'TimelineGeneralContext', contextType: 'Conversation', text: 'Cara C replied' }),
+        homeTweetEntry(post('1856000000000002008'), '2', { type: 'TimelineGeneralContext', contextType: 'TrendingTopic', text: 'Trending now' }),
+        homeTweetEntry(post('1856000000000002009'), '1', { type: 'TimelineGeneralContext', contextType: 'Like', text: '   ' }),
+      ]),
+      new Drops(),
+    );
+    expect(p.items.map((i) => i.reason ?? null)).toEqual([
+      { text: 'Someone liked', kind: 'like', who: CARA.id },
+      { text: 'Someone liked', kind: 'like', who: CARA.id },
+      { text: 'Someone liked', kind: 'like' },
+      { text: 'Someone liked', kind: 'like' },
+      { text: 'From Gardeners', kind: 'community' },
+      { text: 'Someone liked', kind: 'like' },
+      { text: 'Cara C replied', kind: 'reply' },
+      { text: 'Trending now', kind: 'other' },
+      null,
+    ]);
+    expect(likedContext(ANN).landingUrl.url).toBe(`twitter://user?id=${ANN.id}`);
+    expect(followedByContext(ANN, 2).contextType).toBe('Follow');
+    expect(topicContext('Rust').topic.name).toBe('Rust');
+  });
+  test('a conversation: a post seen already is not repeated, at most HOME_ABOVE above, nothing above a lone one', () => {
+    const chain = Array.from({ length: HOME_ABOVE + 3 }, (_, i) => tweet({ id: `18560000000000030${String(i).padStart(2, '0')}`, by: i % 2 ? CARA : FINN, text: `step ${i}`, ts: NOW - (20 - i) * H }));
+    const { page: p } = parseHome(homeTimeline([homeTweetEntry(chain[0], '9'), homeConversation(chain, '8'), homeConversation([chain[0]], '7')]), new Drops());
+    expect(p.items.map((i) => i.post.id)).toEqual([chain[0].rest_id, chain.at(-1).rest_id]);
+    expect(p.items[1]!.above!.length).toBe(HOME_ABOVE);
+    expect(p.items[1]!.above![0]!.id).toBe(chain[2].rest_id);
+    expect(p.items[0]!.above).toBeUndefined();
+  });
+  test('the tracker: a bare identity for someone known only by id, once, never for yourself or someone announced', () => {
+    const t = new FeedTracker();
+    expect(t.stubs([ANN.id, ME.id, 'not-an-id'], ME.id)).toEqual([{ t: 'identity', identity: { nativeId: ANN.id } }]);
+    expect(t.stubs([ANN.id], ME.id)).toEqual([]);
+    const { users } = parseHome(homeResponse(h.following[0]), new Drops());
+    const evs = t.identities(users.values(), ME.id);
+    expect(evs.length).toBe(4);
+    expect(t.stubs([CARA.id], ME.id)).toEqual([]);
+    // Seen in full later, the stub's person is announced in full.
+    const ann = new Map([[ANN.id, { id: ANN.id, handle: ANN.handle, name: ANN.name }]]) as any;
+    expect(t.identities(ann.values(), ME.id)).toEqual([{ t: 'identity', identity: expect.objectContaining({ nativeId: ANN.id, handle: ANN.handle, displayName: ANN.name }) }]);
+  });
+});
+
+describe('writing on X: who can reply, pictures and video', () => {
+  test("who can reply, as the composer's option names it; everyone is no option", () => {
+    expect(REPLY_CONTROL).toEqual({ everyone: null, following: 'my_network', mentioned: 'by_invitation', verified: 'verified' });
+    expect(Object.hasOwn(REPLY_CONTROL, 'toString')).toBe(false);
+  });
+  test('what X takes on one post: up to 4 pictures, or one GIF, or one video', () => {
+    const f = (mime: string, size = 1000) => ({ name: 'f', mime, size });
+    expect(postMediaProblem([])).toBeNull();
+    expect(postMediaProblem([f('image/png'), f('image/jpeg'), f('image/webp'), f('IMAGE/PNG')])).toBeNull();
+    expect(postMediaProblem([f('image/gif')])).toBeNull();
+    expect(postMediaProblem([f('video/mp4')])).toBeNull();
+    expect(postMediaProblem([f('video/quicktime')])).toBeNull();
+    expect(postMediaProblem(Array.from({ length: 5 }, () => f('image/png')))).toBe('X takes at most 4 pictures on a post');
+    expect(postMediaProblem([f('image/png'), f('image/gif')])).toBe('X takes up to 4 pictures, or one GIF, or one video on a post');
+    expect(postMediaProblem([f('video/mp4'), f('video/mp4')])).toBe('X takes up to 4 pictures, or one GIF, or one video on a post');
+    expect(postMediaProblem([f('application/pdf')])).toBe('X takes pictures (PNG, JPEG, WebP), a GIF or a video (MP4, MOV) on a post, not application/pdf');
+    expect(postMediaProblem([f('image/heic')])).toMatch(/not image\/heic$/);
+    expect(postMediaProblem([f('image/gif', 16 * 1024 * 1024)])).toBe('X takes a GIF of at most 15 MB');
+    expect(postMediaProblem([f('video/mp4', 41 * 1024 * 1024)])).toBe('too big to post from here: at most 40 MB of pictures or video on one post');
+    expect(postMediaProblem([f('image/png', 11 * 1024 * 1024), f('image/png', 11 * 1024 * 1024), f('image/png', 11 * 1024 * 1024), f('image/png', 11 * 1024 * 1024)])).toMatch(/^too big/);
   });
 });
 

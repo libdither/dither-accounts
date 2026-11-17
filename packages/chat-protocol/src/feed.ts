@@ -1,7 +1,8 @@
 /**
  * A network's notifications about your posts, and posts themselves (docs/feed.md). X's notifications (who liked,
  * reposted, replied to or quoted your posts, mentioned or followed you) arrive as messages in one read-only
- * conversation per account, variant 'feed'; a person's recent posts arrive in their profile (PersonAbout.posts).
+ * conversation per account, variant 'feed'; a person's recent posts arrive in their profile (PersonAbout.posts); an
+ * account's home timelines (Following, For you) are read a page at a time on request (the `home` command, HomePage).
  */
 
 import type { MediaUrl } from './adapter.ts';
@@ -108,6 +109,30 @@ export interface PostThread {
   replies: PostFact[][];
   /** Ask again with this `cursor` for more replies (X's "Show more replies"), or null when there are no more. */
   more: string | null;
+}
+
+/** Which of an account's home timelines: X's Following (newest first) or For you (X's own ranking). */
+export type HomeFeed = 'following' | 'foryou';
+/** Why a post is in a home timeline beyond following its author: the network's social-context line. */
+export interface HomeReason {
+  /** The network's own words ("Ann Lee liked", "Followed by Ann Lee and 2 others", "Popular in Rust"). */
+  text: string;
+  kind?: 'like' | 'follow' | 'reply' | 'topic' | 'community' | 'pinned' | 'other';
+  /** A native identity id the line names, when it names one person. */
+  who?: string;
+}
+export interface HomeItem {
+  post: PostFact;
+  reason?: HomeReason;
+  /** A conversation shown with it (X's home-conversation modules): the posts above it, oldest first. */
+  above?: PostFact[];
+}
+export interface HomePage {
+  items: HomeItem[];
+  /** Ask with this cursor for older posts (the Bottom cursor), or null. */
+  more: string | null;
+  /** Ask with this cursor for what came since (the Top cursor), or null. */
+  top: string | null;
 }
 
 /** A post's message id in its network: posts and the DMs of one network never share an id. */

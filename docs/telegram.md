@@ -309,7 +309,7 @@ snapshot.
 
 Messages: text with its entities as the hub's Markdown (`src/entities.ts`: bold, italic, underline, strike, spoiler,
 code, pre with its language, links, quotes, mentions by name as `<@id>`), replies (across chats too), forwards with
-where from, edits, `mentionsSelf` from Telegram's own flag, photos, files, video, voice, stickers (kind `sticker`,
+where from, edits, `mentionsSelf` from Telegram's own flag, photos, files, video, GIFs (animations, `gif: true`), voice, stickers (kind `sticker`,
 body the emoji), places, contacts, polls and dice as text, service messages in words (joins, renames, calls, topics,
 timers), views and album ids under `extra`. Reactions: a message's whole set as a snapshot (`reactions`, with the
 people Telegram names, when each reacted, and its totals), and live changes as `reaction` events for those it names
@@ -320,7 +320,7 @@ own unread and mention counts), `receipt` (read, in private chats: Telegram says
 Telegram's apps), `pin`, `role` (admins given and taken), `identity`, `conversation`, `leave`.
 
 Commands: `send` (Markdown to entities, replies, into a topic, one file as a photo or document, several as an
-album), `edit`, `suppressEmbeds` (below), `redact` (deleted for everyone), `react` (one reaction each without Premium, as REACTION_RULES says),
+album, a file with `gif` as an animation: `sendGifs`, docs/chat.md "GIFs"), `edit`, `suppressEmbeds` (below), `redact` (deleted for everyone), `react` (one reaction each without Premium, as REACTION_RULES says),
 `reactionContext`, `reactors`, `markRead` (topics too), `typing`, `history` (paged back by date), `fetchMedia` (up to
 64 MB), `openDirect` (@username, +phone, or a user id it knows; a public group's @name gives that group),
 `forward` (with a note first, as Telegram's apps send one; a chat that forbids forwarding answers with a fallback),

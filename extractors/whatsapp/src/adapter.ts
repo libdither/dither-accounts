@@ -37,7 +37,7 @@ export const WHATSAPP_TYPING_TTL = 25_000;
 
 export const ADAPTER_VERSION = '0.1.0';
 /** No 'connect': WhatsApp has no friend requests or follows, only a chat (openDirect). */
-export const CAPABILITIES: P.Capability[] = ['send', 'history', 'react', 'edit', 'redact', 'markRead', 'typing', 'media', 'sendMedia', 'e2ee', 'openDirect', 'forward', 'about', 'configure', 'profile', 'editProfile', 'resolve', 'join', 'requests'];
+export const CAPABILITIES: P.Capability[] = ['send', 'history', 'react', 'edit', 'redact', 'markRead', 'typing', 'media', 'sendMedia', 'e2ee', 'openDirect', 'forward', 'about', 'configure', 'profile', 'editProfile', 'resolve', 'join', 'requests', 'sendGifs'];
 export const LINK_MESSAGE = 'Scan this QR code in WhatsApp → Settings → Linked devices → Link a device';
 /** WhatsApp lets you edit for 15 minutes. */
 export const EDIT_WINDOW_MS = 15 * 60_000;
@@ -996,6 +996,9 @@ export class WhatsAppAdapter {
       if (up.height) media.height = up.height;
       return { imageMessage: media };
     }
+    // A GIF is WhatsApp's video with GIF playback, which must be an mp4. A .gif (no converter here) or another video
+    // goes as it would without the flag: a .gif as a document, which keeps it moving where a photo would not.
+    if (kind === 'video' && a.gif && /^video\/mp4\b/.test(a.mime)) media.gifPlayback = true;
     if (kind === 'video') return { videoMessage: media };
     if (kind === 'audio') return { audioMessage: media };
     media.fileName = a.name;

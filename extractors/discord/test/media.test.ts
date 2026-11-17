@@ -1,6 +1,9 @@
-/** Stickers and voice messages going out (src/media.ts): the picker's page in hub terms, and when a file is a voice message. */
+/**
+ * Stickers, GIFs and voice messages going out (src/media.ts): the pickers' pages in hub terms, and when a file is a
+ * voice message.
+ */
 import { describe, expect, test } from 'bun:test';
-import { stickerPageOf, voiceOut } from '../src/media.ts';
+import { GIF_MOST, GIF_STEP, gifLimitOf, gifPageOf, stickerPageOf, voiceOut } from '../src/media.ts';
 
 describe('the sticker page', () => {
   test("each sticker's picture where the client draws it from; its emoji only when the tag is one", () => {
@@ -47,5 +50,41 @@ describe('a voice message', () => {
     expect(voiceOut([{ ...file, mime: 'audio/webm', voice: { seconds: 2 } }])).toBeNull();
     expect(voiceOut([{ ...file, voice: { seconds: 2 } }, file])).toBeNull();
     expect(voiceOut(undefined)).toBeNull();
+  });
+});
+
+describe('the GIF page', () => {
+  const gif = (n: number) => ({ id: `k${n}`, url: `https://klipy.example/gifs/${n}`, src: `//media.example/${n}.webm`, gif_src: `//media.example/${n}.gif`, width: 200, height: 100 });
+  const many = (n: number) => Array.from({ length: n }, (_, i) => gif(i));
+
+  test('each GIF with its page link, https pictures and title; one with no link or picture is left out', () => {
+    const page = gifPageOf({ gifs: [{ ...gif(1), title: ' Cat waves ' }, { ...gif(2), src: 'https://media.example/2.mp4', gif_src: undefined }, { ...gif(3), url: '' }, { ...gif(4), src: 'data:x' }] }, GIF_STEP);
+    expect(page.gifs).toEqual([
+      { id: 'k1', url: 'https://klipy.example/gifs/1', src: 'https://media.example/1.webm', gif: 'https://media.example/1.gif', width: 200, height: 100, title: 'Cat waves' },
+      { id: 'k2', url: 'https://klipy.example/gifs/2', src: 'https://media.example/2.mp4', width: 200, height: 100 },
+    ]);
+    expect(page.next).toBeNull();
+  });
+
+  test('pages are the next limit: a full page asks for more and keeps only the new tail', () => {
+    expect(gifLimitOf(undefined)).toBe(GIF_STEP);
+    const first = gifPageOf({ gifs: many(GIF_STEP) }, GIF_STEP);
+    expect(first.gifs).toHaveLength(GIF_STEP);
+    expect(first.next).toBe(String(GIF_STEP * 2));
+    const limit = gifLimitOf(first.next!);
+    expect(limit).toBe(GIF_STEP * 2);
+    const second = gifPageOf({ gifs: many(limit - 7) }, limit);
+    expect(second.gifs.map((g) => g.id)).toEqual(many(limit - 7).slice(GIF_STEP).map((g) => g.id));
+    // Fewer than asked: the end.
+    expect(second.next).toBeNull();
+    // Never past GIF_MOST, whatever the cursor says.
+    expect(gifLimitOf('100000')).toBe(GIF_MOST);
+    expect(gifLimitOf('nonsense')).toBe(GIF_STEP);
+    expect(gifPageOf({ gifs: many(GIF_MOST) }, GIF_MOST).next).toBeNull();
+  });
+
+  test("the hook's note comes through", () => {
+    expect(gifPageOf({ gifs: [], note: 'The Discord client has not loaded yet.' }, GIF_STEP)).toEqual({ gifs: [], next: null, note: 'The Discord client has not loaded yet.' });
+    expect(gifPageOf(null, GIF_STEP)).toEqual({ gifs: [], next: null });
   });
 });

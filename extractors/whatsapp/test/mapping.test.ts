@@ -91,6 +91,12 @@ test('media: one attachment served through the adapter, caption as body', () => 
   expect(JSON.stringify(st.msg(img.nativeId)!.content)).not.toContain('JPEGThumbnail');
   expect(st.msg(img.nativeId)!.content!.imageMessage!.mediaKey).toBeTruthy();
 
+  // A video with GIF playback is WhatsApp's GIF.
+  const gif = fx('image');
+  gif.message = { videoMessage: { ...gif.message.imageMessage, mimetype: 'video/mp4', gifPlayback: true, caption: '' } };
+  delete gif.message.videoMessage.JPEGThumbnail;
+  expect(facts(run(gif))[0].attachments![0]).toMatchObject({ kind: 'video', mime: 'video/mp4', gif: true });
+
   const [doc] = facts(run(fx('document')));
   expect(doc.attachments![0]).toMatchObject({ kind: 'file', name: 'plan.pdf', mime: 'application/pdf' });
   expect(doc.body).toBe('the plan');

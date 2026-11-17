@@ -396,6 +396,11 @@ export interface AttachmentFact {
   explicit?: boolean;
   /** A voice message (rich.ts VoiceFact): drawn as a player with its waveform. */
   voice?: VoiceFact;
+  /**
+   * A GIF the network sends as a video (Telegram's animation, WhatsApp's GIF playback, Signal's GIF flag): drawn
+   * looping and silent, as a GIF, with no player.
+   */
+  gif?: true;
 }
 
 /** A file to send, in the hub's spool. The adapter reads it during the send; the hub deletes it afterwards. */
@@ -407,6 +412,11 @@ export interface OutgoingAttachment {
   kind: AttachmentKind;
   /** Send it as the network's voice message (capability 'sendVoice', media.ts): the only file of its send. */
   voice?: VoiceOut;
+  /**
+   * Send it as the network's GIF (capability 'sendGifs', media.ts): a .gif or a video, which the adapter turns into
+   * what its network calls a GIF (Telegram: an animation; WhatsApp: a video with GIF playback).
+   */
+  gif?: true;
 }
 
 /** What the `setProfile` command changes: only the fields given (see it there). */

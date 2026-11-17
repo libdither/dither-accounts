@@ -7,6 +7,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as P from '@dither-chat/protocol';
+import type { tl } from '../src/backend.ts';
 import { readSecretFile, writeSecretFile } from '@dither-chat/protocol/secret-file';
 import { type AdapterOptions, contactsHash, type Host, TELEGRAM_DESKTOP, TelegramAdapter } from '../src/adapter.ts';
 import { FAKE_IDS, FAKE_INVITES, FakeTelegram } from '../src/fake.ts';
@@ -315,6 +316,23 @@ describe('signed in', () => {
     await h.until(() => h.since(n).some((e) => e.t === 'message' && e.message.author === String(FAKE_IDS.bot)), 'the answer');
     const ans = h.since(n).find((e): e is Extract<Ev, { t: 'message' }> => e.t === 'message' && e.message.author === String(FAKE_IDS.bot))!;
     expect(ans).toMatchObject({ live: true, message: { body: 'You said: ping', conversation: DM_BOT, mentionsSelf: true } });
+  });
+
+  test('a GIF goes as an animation: an mp4 marked animated and a video, a .gif marked animated; it comes back as a GIF', async () => {
+    const sent = (from: number) => h.fake.calls.slice(from).filter((c) => c.method === 'messages.sendMedia').map((c) => (c.req as { media: tl.RawInputMediaUploadedDocument }).media);
+    const c0 = h.fake.calls.length;
+    const n = h.events.length;
+    const mp4 = (await h.cmd({ t: 'send', conversation: DM_BOB, body: '', attachments: [{ path: file, name: 'cat.mp4', mime: 'video/mp4', size: 70, kind: 'video', gif: true }] })) as { nativeId: string };
+    await h.cmd({ t: 'send', conversation: DM_BOB, body: '', attachments: [{ path: file, name: 'cat.gif', mime: 'image/gif', size: 70, kind: 'image', gif: true }] });
+    const [a, b] = sent(c0);
+    expect(a).toMatchObject({ _: 'inputMediaUploadedDocument', mimeType: 'video/mp4' });
+    expect(a.attributes.map((x) => x._)).toEqual(['documentAttributeFilename', 'documentAttributeAnimated', 'documentAttributeVideo']);
+    expect(a.forceFile).toBeUndefined();
+    expect(b).toMatchObject({ _: 'inputMediaUploadedDocument', mimeType: 'image/gif' });
+    expect(b.attributes.map((x) => x._)).toEqual(['documentAttributeFilename', 'documentAttributeAnimated']);
+    const fact = h.since(n).find((e): e is Extract<Ev, { t: 'message' }> => e.t === 'message' && e.message.nativeId === mp4.nativeId)!.message;
+    expect(fact.attachments).toMatchObject([{ kind: 'video', gif: true }]);
+    expect(h.of('hello')[0].capabilities).toContain('sendGifs');
   });
 
   test('files: one as a photo, several as an album, and fetchMedia gives the bytes back', async () => {

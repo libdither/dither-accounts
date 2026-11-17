@@ -468,7 +468,34 @@ A sticker goes through `MessageActions.sendStickers` (REST `sticker_ids` without
 same upload path files take (upload URL, PUT, the message), as the client's recorder sends one: flag IS_VOICE_MESSAGE,
 no text, the file named `voice-message.ogg` with `duration_secs` and `waveform`; only an Ogg file is sent that way.
 Checked against the bundle replica in `test/hook.test.ts`, not on a live account. dither-chat's `docs/media-kinds.md`
-has the app's side (and why there is no GIF picker).
+has the app's side.
+
+## GIFs
+
+`searchGifs` (Discord) and `sendGifs` (Telegram, WhatsApp), with `gif: true` on an attachment both ways: incoming, a
+GIF the network sends as a video (drawn looping and silent); outgoing, a file to send as the network's own GIF.
+
+- **Discord: the `gifs` command** (hook.js `gifs`, `src/media.ts` `gifPageOf`) makes the requests the client's own
+  GIF picker makes: `GET /gifs/search` with `{ q, media_format, locale, limit }`, or with no query `GET
+  /gifs/trending-gifs` with `{ media_format, locale, limit }`. `media_format` is the picker store's
+  (`GIFPickerViewStore.getSelectedFormat()`: "webm", or "tinywebp" on some clients; "webm" without the store), `locale`
+  is `LocaleStore.locale` (the browser's language without it). Each result's `url` is the page link the picker sends
+  as the message, `src` its video and `gif_src` its .gif, made https where they come as `//…`. The picker has no
+  offset, only a limit, so a page asks for the next limit (50, 100, … up to 200) and keeps the new tail; fewer results
+  than asked is the end. The picker's analytics (`/gifs/select`, its search events) are not sent. These shapes are
+  read from the client's bundle (2026-11-16), checked against the replica in `test/hook.test.ts`, and not tried on a
+  live account. Sending one to Discord is the hub sending its link as text; an incoming gifv embed is already drawn as
+  a GIF.
+- **Telegram**: an incoming document with `documentAttributeAnimated` is a GIF. One sent with `gif` goes as an
+  animation, as Telegram's apps send one: an mp4 with the animated and video attributes, a .gif with the animated one
+  (Telegram makes the mp4).
+- **WhatsApp**: an incoming video with `gifPlayback` is a GIF. One sent with `gif` that is an mp4 goes as a video
+  with `gifPlayback`. WhatsApp takes only an mp4 for that and nothing here converts, so a .gif goes as it does without
+  the flag: a document (as an image WhatsApp would show one still frame).
+- **Signal**: signal-cli's JSON (`JsonAttachment`, 0.14.9) has no GIF flag on a received attachment and `send` has no
+  option to send one, so nothing is marked and `sendGifs` is not advertised. A .gif goes as a file, which Signal's
+  apps play.
+- Matrix: nothing.
 
 ## Making a group
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { bannerUrl, checkBio, mapProfile, profileUsers } from '../src/profile.ts';
+import { APP_MAX, bannerUrl, checkBio, mapProfile, profileUsers } from '../src/profile.ts';
 import type { RawProfile } from '../src/discord-types.ts';
 
 // Invented ids. WHO's snowflake says the account was made on 1 May 2019.
@@ -110,6 +110,35 @@ describe('mapProfile', () => {
     expect(none.mutualSpaces).toEqual([]);
     expect(none.mutualFriends).toEqual([]);
     expect(none.facts).toBeUndefined();
+  });
+
+  test("a server's own bio and pronouns, only where they differ; the server tag, Nitro and boosting since, a bot's app", () => {
+    const p = mapProfile(
+      {
+        ...full,
+        mutual_guilds: [
+          { id: GUILD, nick: null, joined_at: null, bio: 'Mod here, ask me about the rules', pronouns: 'she/her' },
+          { id: OTHER_GUILD, nick: null, joined_at: null, bio: ' ', pronouns: 'they/them' },
+        ],
+        primary_guild: { tag: 'TRN', identity_enabled: true, identity_guild_id: GUILD, guild_name: 'Example server' },
+        premium_since: '2020-06-07T08:09:10.000000+00:00',
+        premium_guild_since: '2023-02-03T04:05:06.000000+00:00',
+      },
+      WHO,
+    );
+    expect(p.mutualSpaces).toEqual([{ id: GUILD, bio: 'Mod here, ask me about the rules' }, { id: OTHER_GUILD, pronouns: 'they/them' }]);
+    expect(p.facts).toEqual([
+      { label: 'Friends since', value: '2021-03-04' },
+      { label: 'Originally known as', value: 'alice#1234' },
+      { label: 'Server tag', value: 'TRN (Example server)' },
+      { label: 'Nitro since', value: '2020-06-07' },
+      { label: 'Boosting since', value: '2023-02-03' },
+    ]);
+    // A tag they turned off is not shown; an app's description only for a bot, cut short.
+    const off = mapProfile({ selfId: SELF, user: { id: WHO, username: 'x' }, primary_guild: { tag: 'TRN', identity_enabled: false, identity_guild_id: GUILD, guild_name: null }, application: { id: '1', name: 'X', description: 'not a bot' } }, WHO);
+    expect(off.facts).toBeUndefined();
+    const bot = mapProfile({ selfId: SELF, user: { id: WHO, username: 'helper', bot: true }, application: { id: '1', name: 'Helper', description: 'y'.repeat(APP_MAX + 50) } }, WHO);
+    expect(bot.facts).toEqual([{ label: 'App', value: 'y'.repeat(APP_MAX - 1) + '…' }]);
   });
 
   test("links: the client's table when the hook reached it, the same rules when it did not, and only what it shows", () => {

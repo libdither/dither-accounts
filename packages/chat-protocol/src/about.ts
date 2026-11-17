@@ -532,8 +532,11 @@ export interface PersonAbout {
   createdAt?: number;
   /** Your standing with them on this network. */
   relationship?: PersonRelationship;
-  /** Spaces you share, native ids, with their name and roles there. All of them, not only where they posted. */
-  mutualSpaces?: { id: string; nick?: string; roles?: { name: string; color?: string }[]; joinedAt?: number }[];
+  /**
+   * Spaces you share, native ids, with their name and roles there. All of them, not only where they posted. bio and
+   * pronouns: their own on that space (Discord's server profile), only when set and not the same as the main ones.
+   */
+  mutualSpaces?: { id: string; nick?: string; roles?: { name: string; color?: string }[]; joinedAt?: number; bio?: string; pronouns?: string }[];
   /** Friends you share: native identity ids (identity facts for them are emitted first). */
   mutualFriends?: string[];
   /** When the person is you: your friends or contacts on this network, native identity ids. */

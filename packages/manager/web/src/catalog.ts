@@ -61,6 +61,7 @@ const KIND_MARK: Record<string, Mark> = {
   njalla: { glyph: 'server' },
   fake: { glyph: 'flask' },
   'chat-fake': { glyph: 'flask' },
+  peer: { glyph: 'server' },
 };
 /** An account's kind as a mark: its brand, else a glyph for what it is. */
 export function markOf(kind: string, interfaces: string[] = []): Mark {

@@ -13,7 +13,9 @@ the account's log as it happens, in one line:
   command to the page's port, and the hook says `got` (at `page`) when the command arrives:
   - "not acknowledged by the service worker": lost between the extractor and the worker (the bridge, a worker that
     Chromium put to sleep);
-  - "handed to the page, which never said it had it": lost in the page's port or content script;
+  - "handed to the page, which never said it had it": lost in the page's port or content script. The content script
+    swaps its port every 250 s; until 2026-11 it closed the old one before opening the new, and a command the worker
+    sent in that moment was lost this way (now the old port keeps listening for 10 s after the new one opens);
   - "received by the page, which never answered": the page has it and is still working on it, or is stuck;
   - "taken by the service worker, which never answered": the statements kinds, whose worker runs commands itself.
 - **The tab, as Chromium sees it** (`tab`, from the worker's `tab.state`): `status` (loading or complete),

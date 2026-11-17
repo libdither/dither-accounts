@@ -15,20 +15,26 @@ const UP = '__MARK_up__';
 const DOWN = '__MARK_down__';
 let port = null;
 const queue = [];
+/** How long a port we have replaced keeps listening: what the worker sent it before it saw the new one still arrives. */
+const RETIRE_MS = 10000;
 
 const toHook = (detail) => window.dispatchEvent(new CustomEvent(DOWN, { detail }));
 
 function connect() {
+  let p;
   try {
-    port = chrome.runtime.connect({ name: 'bridge' });
+    p = chrome.runtime.connect({ name: 'bridge' });
   } catch (e) {
     // service worker not ready yet; retry shortly
     port = null;
     setTimeout(connect, 1000);
     return;
   }
-  port.onMessage.addListener((payload) => toHook(payload));
-  port.onDisconnect.addListener(() => {
+  port = p;
+  p.onMessage.addListener((payload) => toHook(payload));
+  p.onDisconnect.addListener(() => {
+    // Only the current port's end is news: one we replaced is already being let go.
+    if (port !== p) return;
     port = null;
     setTimeout(connect, 1000);
   });
@@ -49,12 +55,21 @@ window.addEventListener(UP, (e) => {
   }
 });
 
-// Chrome caps a port's lifetime; open a new one well before the 5-minute limit so the pipe never goes stale.
+/*
+ * Chrome caps a port's lifetime; open a new one well before the 5-minute limit so the pipe never goes stale. The new
+ * one opens first and the old one closes RETIRE_MS later: the worker sends each command to a page's newest port, and
+ * until it has seen (and, for some kinds, placed) the new one it still sends to the old. Closing the old one first
+ * dropped a command sent in that moment without a word, and its caller waited out its whole timeout.
+ */
 setInterval(() => {
-  try {
-    port && port.disconnect();
-  } catch (e) {}
+  const old = port;
   connect();
+  if (old && old !== port)
+    setTimeout(() => {
+      try {
+        old.disconnect();
+      } catch (e) {}
+    }, RETIRE_MS);
 }, 250000);
 
 connect();

@@ -15,8 +15,8 @@ import { join } from 'node:path';
 import { linkHub } from '@dither-chat/protocol/client';
 import type * as P from '@dither-chat/protocol';
 import { createGroupProblem, STICKER_PAGE_PACKS } from '@dither-chat/protocol';
-import { stickerPageOf, voiceOut } from './media.ts';
-import type { BridgeUp, HookCommand, PageState, RawAbout, RawAddRecipients, RawCreateGroupDM, RawChannel, RawEmoji, RawFriend, RawGuild, RawInvite, RawJoin, RawPerson, RawProfile, RawStickerPage, RawUser } from './discord-types.ts';
+import { gifLimitOf, gifPageOf, stickerPageOf, voiceOut } from './media.ts';
+import type { BridgeUp, HookCommand, PageState, RawAbout, RawAddRecipients, RawCreateGroupDM, RawChannel, RawEmoji, RawFriend, RawGuild, RawInvite, RawJoin, RawPerson, RawProfile, RawGifPage, RawStickerPage, RawUser } from './discord-types.ts';
 import { addCapabilities, addCommand, answerCommand, answerOutcome, friendOutcome, invitePreview, isRelationshipEvent, isRequestEvent, joinOutcome, personPreview, RELATIONSHIP_EVENTS, relationshipEvents, relationshipsEvent, removeCommand, removeOutcome, requestsEvent, resolveCommand, snapshotRelationships, snapshotRequests } from './add.ts';
 import { aboutSeenMembers, aboutUsers, addPlan, configurePlan, mapAbout, NOT_GROUP, withChange, withRecipients } from './about.ts';
 import { mapMentionables, mentionablesCommand, mentionCapabilities, type RawMentionables } from './mentionables.ts';
@@ -43,7 +43,7 @@ import { forumFact as mapForum, ThreadOps, threadCapabilities, threadDispatch, T
 import { attentionCapabilities, attentionDispatch, attentionSnapshot, markReadManyHookCommand, markUnreadHookCommand, mentionEvents, MentionsPacer, messageAnswerOutcome, messageRequestChannel, muteHookCommand, muteOutcome, newAttention, withMessageRequests, type RawMuted } from './attention.ts';
 import { commandsOutcome, interactCapabilities, interactCapability, interactDispatch, interactHookCommand, INTERACT_DISPATCHES, type RawCommands } from './interact.ts';
 
-const CAPABILITIES: P.Capability[] = ['send', 'history', 'react', 'edit', 'redact', 'markRead', 'typing', 'threads', 'media', 'liveView', 'sendMedia', 'openDirect', 'calls', 'forward', 'about', 'configure', 'profile', 'editProfile', 'members', 'search', 'walkMembers', 'listThreads', 'moderate', 'setPicture', 'sendStickers', 'sendVoice'];
+const CAPABILITIES: P.Capability[] = ['send', 'history', 'react', 'edit', 'redact', 'markRead', 'typing', 'threads', 'media', 'liveView', 'sendMedia', 'openDirect', 'calls', 'forward', 'about', 'configure', 'profile', 'editProfile', 'members', 'search', 'walkMembers', 'listThreads', 'moderate', 'setPicture', 'sendStickers', 'searchGifs', 'sendVoice'];
 const VERSION = '0.1.0';
 const WIDTH = 1280;
 const HEIGHT = 800;
@@ -670,6 +670,13 @@ async function onCommand(cmd: P.AdapterCommand): Promise<unknown> {
       const offset = Math.max(0, Number(cmd.cursor ?? 0) || 0);
       const r = await bridge.request<RawStickerPage>({ kind: 'stickers', channelId: cmd.conversation, offset, limit: STICKER_PAGE_PACKS }, 15_000);
       return stickerPageOf(r);
+    }
+    case 'gifs': {
+      // The client's GIF picker's own calls (hook.js gifs); the page is the next limit (media.ts gifLimitOf).
+      const limit = gifLimitOf(cmd.cursor);
+      const query = cmd.query?.trim();
+      const r = await bridge.request<RawGifPage>({ kind: 'gifs', ...(query ? { query } : {}), limit }, 20_000);
+      return gifPageOf(r, limit);
     }
     case 'reactionContext': {
       const r = await bridge.request<RawReactionContext>({ kind: 'reactionContext', channelId: cmd.conversation }, 10_000);

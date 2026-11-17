@@ -7,7 +7,7 @@
  * themselves, and the types here keep apps honest at build time.
  */
 import type { About, AdapterCommand, AdapterEvent, AddMembersResult, AddPreview, AddResult, AppAutocompleteResult, AppCommandsResult, BansResult, CreateGroupResult, DirectVoiceSession, GateResult, HistoryResult, InteractResult, LeaveResult, NativeMute, NativeScheduledResult, NetworkSearchResult, OpenDirectResult, NetworkTranslation, OwnPresence, PersonAbout, PostFact, PostThread, PostViewer, ReactionContext, ReactorsPage, SavedFact, SavedListResult, ScheduledEventFact, ScheduledEventsResult, SessionsResult, SpaceGate, ThreadsResult } from '@dither-chat/protocol';
-import type { StickerPackFact, StickerPage } from '@dither-chat/protocol';
+import type { GifPage, StickerPackFact, StickerPage } from '@dither-chat/protocol';
 import type { CreateThreadResult, ThreadFact } from '@dither-chat/protocol';
 import { ev, iface, op, type Schema, s } from '@dither-accounts/spec';
 import type { Mentionables } from '@dither-chat/protocol';
@@ -50,6 +50,7 @@ export const chat = iface({
     appCommands: op('read', "The bots' slash commands (or apps' message commands) you may run in a conversation", input('appCommands'), out<AppCommandsResult>(), 60_000),
     appAutocomplete: op('read', "A bot's suggestions for an option of its command as you type it", input('appAutocomplete'), out<AppAutocompleteResult>(), 30_000),
     stickers: op('read', 'A page of the stickers you may send in a conversation', input('stickers'), out<StickerPage>(), 30_000),
+    gifs: op('read', "A page of GIFs from the network's own GIF picker: trending ones, or what a search finds", input('gifs'), out<GifPage>(), 30_000),
     send: op('write', 'Send a message', input('send'), out<{ nativeId?: string } | undefined>(), 120_000),
     forward: op('write', 'Forward a message', input('forward'), out<{ nativeId?: string; fallback?: string }>(), 60_000),
     postAct: op('write', 'Like or repost a post, or take it back', input('postAct'), out<PostViewer>(), 60_000),

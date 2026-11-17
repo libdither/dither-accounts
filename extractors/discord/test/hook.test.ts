@@ -489,6 +489,67 @@ describe('hook.js with several rspack runtimes', () => {
     });
   });
 
+  describe('GIFs', () => {
+    const item = { id: 'k1', title: 'Cat waves', url: 'https://klipy.example/gifs/cat-waves', src: '//media.example/k1.webm', gif_src: '//media.example/k1.gif', width: 320, height: 240, preview: 'x' };
+    /** A page with the GIF picker's stores loaded (or not), and GETs answered with `item` and kept. */
+    function gifPage(withStores = true) {
+      handlers.clear();
+      const p = page();
+      p.runHook();
+      const web = runtime(p.win, 'web');
+      chunk(p.win, '700', {
+        stores: storeModule,
+        ...(withStores
+          ? {
+              gifStores: (_m: any, e: any) => {
+                e.A = store('GIFPickerViewStore', { getSelectedFormat: () => 'tinywebp' });
+                e.B = store('LocaleStore', { locale: 'fr' });
+              },
+            }
+          : {}),
+      });
+      web.T('stores');
+      if (withStores) web.T('gifStores');
+      p.tick();
+      return p;
+    }
+    /** The reply to command `id`, as soon as the hook posts it. */
+    const replyTo = (p: ReturnType<typeof page>, id: string) =>
+      new Promise<any>((resolve) => {
+        const push = p.posted.push.bind(p.posted);
+        p.posted.push = (...items: any[]) => {
+          for (const m of items) if (m.t === 'reply' && m.id === id) resolve(m);
+          return push(...items);
+        };
+      });
+    const realGet = rest.get;
+    afterEach(() => {
+      rest.get = realGet;
+    });
+
+    test("a search is the picker's own GET, in its format and locale, and only the results' fields come back", async () => {
+      const p = gifPage();
+      const gets: any[] = [];
+      rest.get = (req: any) => (gets.push(req), Promise.resolve({ body: [item, { id: 'bad' }] }));
+      const reply = replyTo(p, 'g1');
+      p.win.down({ t: 'cmd', id: 'g1', cmd: { kind: 'gifs', query: ' cat ', limit: 50 } });
+      const r = await reply;
+      expect(gets).toEqual([{ url: '/gifs/search', query: { q: 'cat', media_format: 'tinywebp', locale: 'fr', limit: 50 }, body: undefined }]);
+      expect(r).toMatchObject({ ok: true, result: { gifs: [{ id: 'k1', title: 'Cat waves', url: item.url, src: item.src, gif_src: item.gif_src, width: 320, height: 240 }] } });
+      expect(r.result.gifs[0].preview).toBeUndefined();
+    });
+
+    test('no query is trending; without the stores, webm and the browser language', async () => {
+      const p = gifPage(false);
+      const gets: any[] = [];
+      rest.get = (req: any) => (gets.push(req), Promise.resolve({ body: [] }));
+      const reply = replyTo(p, 'g2');
+      p.win.down({ t: 'cmd', id: 'g2', cmd: { kind: 'gifs', limit: 100 } });
+      expect(await reply).toMatchObject({ ok: true, result: { gifs: [] } });
+      expect(gets).toEqual([{ url: '/gifs/trending-gifs', query: { media_format: 'webm', locale: 'en-US', limit: 100 }, body: undefined }]);
+    });
+  });
+
   describe('reacting', () => {
     const emojiA = { id: '1', name: 'here', animated: false, available: true, guildId: 'g1' };
     const emojiB = { id: '2', name: 'there', animated: true, available: true, guildId: 'g2' };

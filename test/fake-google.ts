@@ -747,6 +747,8 @@ export function startFakeGoogle(opts: { web?: WebOpts } = {}) {
   const stalls: Record<FakePage, Stall> = { calendar: 'off', gmail: 'off' };
   const held: Record<FakePage, (() => void)[]> = { calendar: [], gmail: [] };
   const loads = new Map<string, number>();
+  /** The next load of a page answers this much later (slowLoad): the old page stays up meanwhile, and its held calls are let go only after it is gone. */
+  const slowLoads: Record<FakePage, number> = { calendar: 0, gmail: 0 };
   const loaded = (page: FakePage, authuser: string) => {
     const k = `${page}:${authuser}`;
     loads.set(k, (loads.get(k) ?? 0) + 1);
@@ -823,6 +825,16 @@ export function startFakeGoogle(opts: { web?: WebOpts } = {}) {
 
       let m: RegExpMatchArray | null;
       if (web && req.method === 'GET' && (m = path.match(/^\/calendar\/u\/(\d+)\/r$/))) {
+        if (slowLoads.calendar) {
+          const ms = slowLoads.calendar;
+          slowLoads.calendar = 0;
+          await Bun.sleep(ms);
+          // The old page's held calls answer only once it is gone, as a fetch the unload cut.
+          const late = held.calendar.splice(0);
+          setTimeout(() => {
+            for (const r of late) r();
+          }, 10_000);
+        }
         loaded('calendar', m[1]!);
         return calendarPage(m[1] === '0');
       }
@@ -1159,6 +1171,10 @@ setTimeout(() => {
     stall(page: FakePage, mode: Stall) {
       if (mode === 'off') release(page);
       else stalls[page] = mode;
+    },
+    /** The next Calendar page load answers `ms` later, as a slow reload: until then the old page is up. */
+    slowLoad(page: 'calendar', ms: number) {
+      slowLoads[page] = ms;
     },
     /** How many of a page's API calls are hanging now. */
     held: (page: FakePage) => held[page].length,

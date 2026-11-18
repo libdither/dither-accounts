@@ -74,6 +74,12 @@ const READY_WAIT_MS = 10_000;
 const LONG_KINDS = new Set(['gmail.raw', 'gmail.upload']);
 /** tab.state, asked before a reload, answers within this. */
 const TAB_STATE_MS = 5_000;
+/**
+ * A request made while its page's tab is being reloaded waits up to this (within its own time) for the new page's
+ * hook, rather than going to the old page, which drops it as it unloads ("Failed to fetch"). Past it, the request is
+ * sent as before: a reload that never brings the hook back still shows up as silence, and leads to the next reload.
+ */
+const RELOAD_SETTLE_MS = 15_000;
 /** This many unanswered requests in a row to one page, and its tab is reloaded. */
 const SILENT_LIMIT = 2;
 /** The service worker's own commands (open or reload a tab) answer within this. */
@@ -754,7 +760,16 @@ async function reloadPage(p: Page) {
   } finally {
     p.reloading = false;
     status();
+    readiness.changed();
   }
+}
+
+/** Why a request to this page should wait: its tab is being reloaded, and the new page's hook is not up yet. */
+function reloadUnsettled(p: Page): string | null {
+  if (p.reloading) return 'its tab is being reloaded';
+  const r = p.lastReload;
+  if (r && !r.error && p.hookAt <= r.at && Date.now() - r.at < RELOAD_SETTLE_MS) return 'its hook is not up again since the reload';
+  return null;
 }
 
 /** Whether the page's tab is loading as Chromium sees it (the worker's tab.state), or null when it did not say. */
@@ -782,6 +797,13 @@ async function pageRequest<T>(role: Role, cmd: PageCmd, answerMs = PAGE_ANSWER_M
   const silence = () => new StatusError(`the ${p.name} page did not answer in ${Math.max(1, Math.round(ms / 1000))} s`, 503);
   if (ms <= 0) throw new StatusError(`the ${p.name} page did not answer within this call's time (none of it was left for this request)`, 503);
   const deadline = Date.now() + ms;
+  // 2026-11-18: calls made in the moment between a reload's order and the old page unloading reached the old page,
+  // whose fetch the unload cut ("Failed to fetch", a 503). They wait for the new page instead.
+  if (reloadUnsettled(p)) {
+    const r = p.lastReload;
+    await readiness.until(() => reloadUnsettled(p), Math.min(deadline - Date.now(), r ? r.at + RELOAD_SETTLE_MS - Date.now() : RELOAD_SETTLE_MS));
+    if (Date.now() >= deadline) throw new StatusError(`the ${p.name} page is being reloaded, and the new page was not up within this request's time, so it was not sent`, 503, 'unavailable');
+  }
   if (!(await lane.take(deadline))) throw new StatusError(`the ${p.name} page is busy: ${lane.max} of its requests ahead of this one did not finish within ${Math.max(1, Math.round(ms / 1000))} s, so this one was not sent`, 503, 'unavailable');
   const generation = p.generation;
   const sentAt = Date.now();
@@ -793,6 +815,8 @@ async function pageRequest<T>(role: Role, cmd: PageCmd, answerMs = PAGE_ANSWER_M
     const msg = String((e as Error).message ?? e);
     if (!msg.startsWith('hook timed out')) {
       answered(p, false);
+      // One that was in the page when its tab was reloaded: the unload cut it, and the log should say so.
+      if (generation !== p.generation) throw new StatusError(`the ${p.name} page was reloaded while it had this request (${msg})`, 503);
       throw new StatusError(msg, 503);
     }
     // One cut short (by its wait in the lane, or its op's time) is not the page's silence; one sent to a page since

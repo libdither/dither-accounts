@@ -22,9 +22,9 @@
  * field would suggest (src/gmail/contacts.ts), in a small lane of its own beside the Gmail page's, so keystrokes never
  * wait behind mail and mail never waits behind them. docs/google.md.
  *
- * Config: { authuser?, mail?, gmailPollSeconds?, apiBase?, gmailApiBase?, testOrigin?, testMailOrigin?, peopleApiBase?,
- * testFetchMs?, noSandbox? } (peopleApiBase: tests only, and only one of the test origins; testFetchMs: tests only, how
- * long the hook gives a Gmail call before it cuts it off, with a test Gmail origin only).
+ * Config: { authuser?, mail?, gmailPollSeconds?, gmailCanaryHours?, apiBase?, gmailApiBase?, testOrigin?, testMailOrigin?,
+ * peopleApiBase?, testFetchMs?, noSandbox? } (peopleApiBase: tests only, and only one of the test origins; testFetchMs:
+ * tests only, how long the hook gives a Gmail call before it cuts it off, with a test Gmail origin only).
  *
  * Logs ids and statuses, never cookies, keys, tokens, event contents or mail. Nothing here changes mail.
  */
@@ -38,6 +38,7 @@ import { GmailMail, type PageKind, stateOf, type SyncAnswer, type Transport } fr
 import { DECIMAL_ID } from './gmail/protocol.ts';
 import { checkOutgoing, gmailMayHaveSent, gmailSendOnce, MAX_RECIPIENTS, SEND_CAP } from './gmail/send.ts';
 import { selfCheck } from './gmail/selfcheck.ts';
+import { type CanaryRun, runCanary } from './gmail/canary.ts';
 import { OP_MARGIN_MS, opMs, outsideOp, remainingMs, withDeadline } from './deadline.ts';
 import { checkLearnScript, describeStep, type LearnStep } from './learn.ts';
 import { Readiness } from './ready.ts';
@@ -89,6 +90,10 @@ const LEARN_SHAPES = 'gmail-shapes.json';
 /** The Gmail self-check: asked for by this file, answered in the other (counts, booleans and types only). */
 const SELFCHECK_REQUEST = 'gmail-selfcheck.request';
 const SELFCHECK_RESULT = 'gmail-selfcheck.json';
+/** The canary (src/gmail/canary.ts): its last run and the answers' shapes, in the account's directory. */
+const CANARY_FILE = 'gmail-canary.json';
+/** It runs once the Gmail page has been ready this long after a start, then once a day. */
+const CANARY_SETTLE_MS = 2 * 60_000;
 /** Where the mail watch got to (Gmail's sync point and when), so a restart announces what came meanwhile. */
 const WATCH_FILE = 'gmail-watch.json';
 /** What reading Gmail has done that must outlive a restart: bytes downloaded in the last 24 h, and the unread guard. */
@@ -208,6 +213,8 @@ const mailOrigin = testMailOrigin ?? (testOrigin ? null : 'https://mail.google.c
 const mailOn = cfg.mail !== false && !!mailOrigin;
 /** How often the mail watch asks Gmail what changed (0: never); it starts with the first mail call. */
 const pollMs = Math.max(0, Number(cfg.gmailPollSeconds ?? 60) || 0) * 1000;
+/** How often the canary runs (0: never); off by default in tests (a test Gmail origin), which turn it on by setting it. */
+const canaryMs = Math.max(0, Number(cfg.gmailCanaryHours ?? (testMailOrigin ? 0 : 24)) || 0) * 3600_000;
 const apiBase = String(cfg.apiBase ?? 'https://clients6.google.com').replace(/\/$/, '');
 const gmailApiBase = String(cfg.gmailApiBase ?? 'https://gmail.googleapis.com').replace(/\/$/, '');
 const startUrl = `${calendarOrigin}/calendar/u/${encodeURIComponent(authuser)}/r`;
@@ -348,6 +355,7 @@ let gmailLearn: { at: number; summary: string } | null = null;
 let learning = false;
 let gmailSelfCheck: { at: number; summary: string } | null = null;
 let selfChecking = false;
+let canary: { readySince: number | null; last: CanaryRun | null; lastAt: number } = { readySince: null, last: null, lastAt: 0 };
 const timers: Timer[] = [];
 
 function readKept(): Partial<Winner> {
@@ -488,6 +496,8 @@ function details(): Record<string, string | number | boolean | null | string[]> 
     gmailWatch: !mailOn ? null : !pollMs ? 'off' : !watchOn ? 'starts with the first mail call' : watchInfo.error ? `failed at ${hhmm(watchInfo.at)}: ${watchInfo.error}` : watchInfo.at ? `looked at ${hhmm(watchInfo.at)}` : 'starting',
     gmailSelfCheckAt: gmailSelfCheck ? new Date(gmailSelfCheck.at).toISOString() : null,
     gmailSelfCheck: gmailSelfCheck?.summary ?? null,
+    gmailCanaryAt: canary.last?.at ?? null,
+    gmailCanary: canary.last?.summary ?? null,
   };
 }
 
@@ -590,8 +600,10 @@ function layers(): Layer[] {
         : { name: 'Calendar API', state: 'ok', note: `answered ${probe.status}, ${new Date(probe.at).toISOString().slice(0, 16).replace('T', ' ')} UTC` }
       : { name: 'Calendar API', state: 'waiting', note: probe && !probe.ok ? `waits for a key (it answered ${probe.status ?? 'nothing'})` : 'waits for a key' };
   const protocol: Layer = gmail ? gmail.layer() : { name: 'Gmail protocol', state: 'off', note: 'no Gmail tab' };
+  const c = canary.last;
+  const canaryLayer: Layer = !gmail || !canaryMs ? { name: 'Gmail canary', state: 'off', note: canaryMs ? 'no Gmail tab' : 'gmailCanaryHours is 0' } : !c ? { name: 'Gmail canary', state: 'waiting', note: 'not run yet' } : canaryTrouble() ? { name: 'Gmail canary', state: 'failed', note: `Gmail changed how it answers (${c.changes.length ? c.changes.map((x) => x.endpoint).join(', ') : c.problems[0]}); mail reads what it still can, and ${CANARY_FILE} in the account's directory says where` } : { name: 'Gmail canary', state: 'ok', note: c.summary };
   const background: Layer = gmail ? gmail.backgroundLayer() : { name: 'Gmail background', state: 'off', note: 'no Gmail tab' };
-  return [screen, browser, extension, signedIn, only('google.calendar', key), only('google.calendar', calendar), only('mail', gmailLayer()), only('mail', protocol), only('mail', background)];
+  return [screen, browser, extension, signedIn, only('google.calendar', key), only('google.calendar', calendar), only('mail', gmailLayer()), only('mail', protocol), only('mail', background), only('mail', canaryLayer)];
 }
 
 let lastSent = '';
@@ -600,7 +612,9 @@ function status(force = false) {
   const email = current()?.email;
   const g = gm.hooked ? gm.session : null;
   const name = g?.email && g.email === email ? (g.name ?? null) : null;
-  const ev = { t: 'status', status: st.status, attention: st.attention, liveView, ...(email ? { self: { email, ...(mailOn ? { addresses: [{ email, name }] } : {}) } } : {}), details: details(), layers: layers() };
+  // `changed`: the canary saw Gmail's answers change or fail (src/gmail/canary.ts), until a run is clean again. The
+  // manager announces it (a `changed` notice) without the account needing you: Calendar stays as it is.
+  const ev = { t: 'status', status: st.status, attention: st.attention, changed: canaryTrouble(), liveView, ...(email ? { self: { email, ...(mailOn ? { addresses: [{ email, name }] } : {}) } } : {}), details: details(), layers: layers() };
   const s = JSON.stringify(ev);
   if (s === lastSent && !force) return;
   lastSent = s;
@@ -722,6 +736,8 @@ async function reloadPage(p: Page) {
   p.reloads++;
   p.lastReload = { at: Date.now(), how: null };
   if (p.role === 'calendar') recheck = true;
+  // A reloaded Gmail page may answer what it did not: no request stays held for failing alike before (mail.ts REPEAT).
+  if (p.role === 'gmail') gmail?.clearHolds();
   log('warn', `the ${p.name} page did not answer ${n} requests in a row; ${fresh ? 'opening its tab anew' : 'reloading its tab'}, and only that one`);
   status();
   try {
@@ -1375,7 +1391,7 @@ async function pollMail() {
       const state = stateOf(r.history, r.at);
       for (const b of r.mailboxes) link.emit({ t: 'mail.changed', mailboxId: b, state });
       for (const m of r.arrived) link.emit({ t: 'mail.arrived', message: m });
-      if (r.mailboxes.length || r.arrived.length) log('info', `gmail watch: ${r.mailboxes.length} mailbox${r.mailboxes.length === 1 ? '' : 'es'} changed, ${r.arrived.length} arrived`);
+      if (r.mailboxes.length || r.arrived.length) log('info', `gmail watch: ${r.mailboxes.length} mailbox${r.mailboxes.length === 1 ? '' : 'es'} changed, ${r.arrived.length} arrived${r.skipped.length ? `, ${r.skipped.length} left out (mail.changes names them)` : ''}`);
       // Gmail's sync answered: its point is one (a list answer's, once taken, is confirmed).
       if (r.history !== watch.history || r.mailboxes.length || watch.guess) saveWatch({ history: r.history, at: r.at });
     }
@@ -1437,6 +1453,45 @@ function checkSelfCheckRequest() {
       log('info', `gmail self-check: ${summary}; written to ${SELFCHECK_RESULT}`);
     })
     .catch((e) => log('warn', 'gmail self-check failed', String((e as Error).message ?? e).slice(0, 200)))
+    .finally(() => {
+      selfChecking = false;
+      status();
+    });
+}
+
+/** The canary's last run found a layout refused, records left out, or the answers' shapes changed. */
+function canaryTrouble(): boolean {
+  const c = canary.last;
+  return !!c && (c.problems.length > 0 || c.changes.length > 0);
+}
+
+/**
+ * The canary (src/gmail/canary.ts): once the Gmail page has been ready CANARY_SETTLE_MS after a start, then every
+ * gmailCanaryHours, the self-check without reading a message, its answers' shapes compared with the last run's. Waits
+ * as the watch does (a reload, silence, a learn run, the probe, the self-check). Looks without waiting (it runs on a
+ * timer): ready, synced included, or not this time.
+ */
+function checkCanary() {
+  if (!gmail || !canaryMs || selfChecking || learning || gmailProbing || cleaning) return;
+  if (gmailNotReady()) {
+    canary.readySince = null;
+    return;
+  }
+  const g = gmail;
+  if (gm.reloading || gm.silent > 0 || trouble(gm)) return;
+  const now = Date.now();
+  canary.readySince ??= now;
+  if (now - canary.readySince < CANARY_SETTLE_MS || (canary.lastAt && now - canary.lastAt < canaryMs)) return;
+  selfChecking = true;
+  canary.lastAt = now;
+  void runCanary(g, () => gmailTransport.info(), join(link.accountDir, CANARY_FILE))
+    .then((r) => {
+      canary.last = r;
+      // Not through for a passing reason (the page busy, a 5xx): again in an hour rather than a day.
+      if (!r.ok && !r.problems.length) canary.lastAt = now - canaryMs + Math.min(canaryMs, 3600_000);
+      log(r.ok && !r.changes.length ? 'info' : 'warn', `gmail canary: ${r.summary}${r.problems.length ? `; ${r.problems.join('; ')}` : ''}`);
+    })
+    .catch((e) => log('warn', 'gmail canary failed', String((e as Error).message ?? e).slice(0, 200)))
     .finally(() => {
       selfChecking = false;
       status();
@@ -1639,6 +1694,7 @@ async function boot() {
   timers.push(setInterval(checkProbeRequest, PROBE_POLL_MS));
   timers.push(setInterval(checkLearnRequest, PROBE_POLL_MS));
   timers.push(setInterval(checkSelfCheckRequest, PROBE_POLL_MS));
+  timers.push(setInterval(checkCanary, PROBE_POLL_MS));
 }
 
 // ---------------------------------------------------------------- lifecycle

@@ -207,6 +207,7 @@ it(
       ['Gmail page', 'ok', 'mail'],
       ['Gmail protocol', 'waiting', 'mail'],
       ['Gmail background', 'ok', 'mail'],
+      ['Gmail canary', 'off', 'mail'],
     ]);
     expect(layerOf(signedIn, 'Gmail background')).toEqual({ name: 'Gmail background', state: 'ok', note: 'idle', interface: 'mail' });
     expect([fake.pageLoads('calendar', 0), fake.pageLoads('gmail', 0)]).toEqual([1, 1]);
@@ -765,7 +766,8 @@ it(
       const e = (await mailCall('mail.list', { mailboxId: '^i', limit: 5 }).catch((x) => x)) as CallFailed;
       expect([e.code, e.status]).toEqual(['failed', 502]);
       bvRefused++;
-      expect(e.message).toBe("Gmail's list and search (bv) answer is not laid out as this extractor knows it (at json[2][0][0][2]: expected the row's date in ms (13 digits), got an id); nothing was returned rather than possibly wrong mail");
+      // Every row failing alike: a changed layout, refused whole (not that many bad rows).
+      expect(e.message).toMatch(/^Gmail's list and search \(bv\) answer is not laid out as this extractor knows it \(at json\[2\]\[0\]\[0\]\[2\]: expected the row's date in ms \(13 digits\), got an id, and (\d+) of \1 records failed\); nothing was returned rather than possibly wrong mail$/);
       await until(() => layerOf(signedIn, 'Gmail protocol')?.state === 'failed', 5000, 'the layer failed');
       expect(layerOf(signedIn, 'Gmail protocol').note).toContain("bv: at json[2][0][0][2]: expected the row's date in ms (13 digits), got an id");
       // Calendar does not rest on it.

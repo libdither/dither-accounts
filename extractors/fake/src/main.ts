@@ -55,12 +55,13 @@ const link = linkManager({
     // config.vncSocket: pretend to offer a live view on that Unix socket (the page's live view proxy test).
     const lv = typeof link.config.vncSocket === 'string' ? { liveView: { vncSocket: link.config.vncSocket, width: 800, height: 600 } } : {};
     // config.crash: end at once (the manager's notices count crashes); config.attention: say it needs you, with that
-    // message (and config.attentionKind, and config.attentionStatus: a passing state such as connecting).
+    // message (and config.attentionKind, and config.attentionStatus: a passing state such as connecting); config.changed:
+    // say a service it reads changed (status `changed: true`).
     if (link.config.crash) process.exit(3);
     // config.throw: crash with an uncaught TypeError of that message (the manager's error file records it).
     if (typeof link.config.throw === 'string') setTimeout(() => crashWith(String(link.config.throw)));
     const at = typeof link.config.attention === 'string' ? { status: String(link.config.attentionStatus ?? 'attention'), attention: { kind: String(link.config.attentionKind ?? 'login'), message: link.config.attention } } : { status: 'online' };
-    link.emit({ t: 'status', ...at, self: { displayName: 'Fake', handle: 'fake-one' }, ...lv, ...layers(link.config) });
+    link.emit({ t: 'status', ...at, ...(link.config.changed ? { changed: true } : {}), self: { displayName: 'Fake', handle: 'fake-one' }, ...lv, ...layers(link.config) });
     link.log('info', 'fake extractor up');
   },
     // config.slowExit: a shutdown takes that long (an extractor closing its browser).

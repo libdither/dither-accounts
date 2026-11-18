@@ -29,6 +29,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { MailChanges, MailFlags, MailMessage, MailMoveAnswer, MailSummary, MailWriteAnswer, Mailbox } from '@dither-accounts/interfaces';
 import { StatusError } from '@dither-accounts/link';
+import { bindToOp } from '../deadline.ts';
 import { shape } from '../gmail-learn.js';
 import { parseMessage } from './mime.ts';
 import type { OutgoingChecked } from './send.ts';
@@ -442,7 +443,9 @@ export class GmailMail {
    * a background call goes only when no foreground call waits, at its kind's pace, after any back-off, and not at all
    * while the background is stopped (then it answers 503 'paused') or when it could not start in waitMs (503 'backoff').
    */
-  private paced<T extends Answer>(lane: LaneName, kind: Kind, f: () => Promise<T>): Promise<T> {
+  private paced<T extends Answer>(lane: LaneName, kind: Kind, call: () => Promise<T>): Promise<T> {
+    // Run under the deadline of the op that queued it, not of whichever call's callback starts it (../deadline.ts).
+    const f = bindToOp(call);
     return new Promise<T>((resolve, reject) => {
       const deadline = Date.now() + this.rules.waitMs;
       if (lane === 'bg') {
@@ -710,7 +713,7 @@ export class GmailMail {
 
   private async call<T>(ep: 'bv' | 'fd' | 's', body: unknown, parse: (json: unknown) => T, lane: LaneName): Promise<T> {
     const r = await this.paced(lane, 'list', () => this.t.sync(ep, body));
-    if (r.status === 0) throw new StatusError(r.error === 'no-sync-yet' ? 'the Gmail page has not made a sync call of its own yet, so the headers it sends are not known; try again in a moment' : `the Gmail page could not make the call (${String(r.error ?? 'no reason').slice(0, 80)})`, 503);
+    if (r.status === 0) throw new StatusError(r.error === 'no-sync-yet' ? 'the Gmail page has not made a sync call of its own yet, so the headers it sends are not known; try again in a moment' : `the Gmail page could not make the call (${String(r.error ?? 'no reason').slice(0, 80)})`, 503, r.error === 'no-sync-yet' ? 'unavailable' : undefined);
     if (r.page) {
       const what = r.page === 'signin' ? 'a sign-in page' : 'a verification page';
       this.note(ep, false, `the answer is ${what}`);
@@ -1067,7 +1070,7 @@ export class GmailMail {
   /** The original from Gmail's download route (the same bytes "Show original" downloads); its bytes count against the budget. */
   private async fetchRaw(id: string, lane: LaneName): Promise<Buffer> {
     const r = await this.paced(lane, 'message', () => this.t.raw(hexOf(id), RAW_CAP));
-    if (r.status === 0) throw new StatusError(r.error === 'no-ik' ? 'the Gmail page has not shown its account key yet; try again in a moment' : `the Gmail page could not download the message (${String(r.error ?? 'no reason').slice(0, 80)})`, 503);
+    if (r.status === 0) throw new StatusError(r.error === 'no-ik' ? 'the Gmail page has not shown its account key yet; try again in a moment' : `the Gmail page could not download the message (${String(r.error ?? 'no reason').slice(0, 80)})`, 503, r.error === 'no-ik' ? 'unavailable' : undefined);
     if (r.page) {
       const what = r.page === 'signin' ? 'a sign-in page' : 'a verification page';
       this.note('raw', false, `the download is ${what}`);

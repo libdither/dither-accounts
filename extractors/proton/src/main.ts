@@ -147,6 +147,9 @@ const bridge = new BridgeServer<Up, Down>({
   },
   // A command that times out is told apart in the log: how far it got, the tab's state and the hook's own.
   silence: { name: 'Mail', tab: true, page: true },
+  // A read the page has not said it has after 3 s is sent again (the page takes an id once): an api GET, never another
+  // method, nor a send (packages/browser bridge.ts).
+  resend: { kinds: ['page.state', 'api', 'storage', 'pagekeys', 'decrypt', 'contactEmails'], when: (c) => c.kind !== 'api' || String((c as { method?: unknown }).method ?? 'get').toLowerCase() === 'get' },
   log,
 });
 

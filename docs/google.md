@@ -94,7 +94,9 @@ never), `apiBase` (default
 `testMailOrigin` are for tests: the start pages, the extension's matches and the hook's allowed origins then include
 them. With `testOrigin` and no `testMailOrigin` there is no Gmail tab, so a test never opens the real Gmail.
 `peopleApiBase` is for tests too: where the hook sends people suggestions ("Suggesting people"), taken only when it is
-one of the test origins; otherwise it is always Google's.
+one of the test origins; otherwise it is always Google's. `testFetchMs`, for tests with a `testMailOrigin` only: how
+long the hook gives a Gmail call before it cuts it off (20 s otherwise). The environment's `DITHER_GOOGLE_RELOAD_GAP_MS`
+(tests only) sets the first gap between reloads of a silent page (0: at once).
 
 ### Two tabs: Calendar and Gmail
 
@@ -121,17 +123,48 @@ inside its own signed-in page ("Gmail mail" below), and the diagnostic, the lear
 
 ### A page that stops answering
 
-Every request to a page is answered within **25 s** (under the manager's 30 s for an op, so the caller hears this
-account's own sentence first), its time in the lane included, or the call fails with 503 and the page's name: "the
-Calendar page did not answer in 25 s", "the Gmail page did not answer in 25 s".
+Every request to a page is answered within **25 s**, its time in the lane included, or the call fails with 503 and
+the page's name: "the Calendar page did not answer in 25 s", "the Gmail page did not answer in 25 s". Each op runs
+under its own time (the interface's `timeoutMs`, or the manager's 30 s where it names none, less 2 s:
+`src/deadline.ts`), and each page request it makes is cut to what is left of it, so an op that makes several (a write
+makes up to three; `mail.flag`, `mail.move` and `mail.trash` have 90 s, `mail.mailboxes` 60 s) still answers with
+this account's own sentence before the manager's timeout. A request that waited its whole time for a place in the
+page's lane (four Gmail requests ahead of it did not finish) was never sent, and says so: 503 `unavailable`, "the
+Gmail page is busy: 4 of its requests ahead of this one did not finish within 25 s, so this one was not sent".
 
-**Two unanswered requests in a row to one page reload that page's tab, and only it**: the service worker sends the tab
-back to its start page. If the page has still not answered since the last reload, the next one opens a new tab on the
+**Lost commands are sent again.** A command's id is the extractor's own (a random part per start, then a count), so a
+page that outlives an extractor restart never takes a new command for an old one. A command the page has not said it
+has (`got` at `page`) within 3 s is sent again, the same id, up to three times; the page passes each id to its hook
+once, so a copy that did arrive is dropped. A command lost between the extractor and the page costs about 3 s, not
+25. Only reads and label changes are sent again (`src/resend.ts`): a page's id memory ends with the page, so a copy
+that arrived just before a reload could run twice. Never a Calendar write (any gfetch but a GET), a draft, a send, an
+upload, a learn run's steering, or the worker's own `tab.*` (packages/browser `BridgeServer`'s `resend`).
+
+**Gmail's own calls are cut off in the page.** The hook gives each sync, write and download call to Gmail 20 s (a
+download 80 s in all) and then aborts it: a Gmail request that hangs fails as itself (`{ status: 0, error: 'timeout'
+}`: 503, or 504 for a write, which may have been made), before the extractor's 25 s, and is not counted as the page's
+silence.
+
+**At start, an op waits for its page** rather than refusing at once: up to 10 s (within the op's own time) for the
+browser to attach, the page to open and, for mail, the Gmail page to make its first sync call of its own (the hook says
+`synced` when it does). Then it is refused with **503, code `unavailable`** ("the sandbox browser is not attached yet",
+"Gmail is not open in the sandbox yet", "Google Calendar is not open in the sandbox", "the Gmail page has not made a
+sync call of its own yet…"): a page still coming up, worth trying again, told apart from a broken one. Signed out
+answers 401 at once, as before.
+
+**Two unanswered requests in a row to one page reload that page's tab, and only it** (`src/reload.ts` says when): the
+service worker sends the tab back to its start page. Not a tab still loading (as Chromium sees it): reloading would
+only start it over; one still loading through three silences in a row is stuck, and is reloaded. And backing off: after
+a reload, the next waits 1 min, then twice as long after each further one that brought no answer, up to 10 min between
+them; an answer from the page starts it over. (Seen live: a Calendar tab reloaded about 17 times, every 30 s, each
+reload setting it loading again.) A reload held back is logged once (`the Calendar page did not answer 2 requests in a
+row; not reloading its tab yet: its tab is still loading`). If the page has still not answered since the last reload, the next one opens a new tab on the
 start page and then closes the old one (new first: the last tab closing would end the browser). The other tab and
 the browser are left alone. It is logged (`the Gmail page did not answer 2 requests in a row; reloading its tab, and
 only that one`, then `the Gmail tab was sent back to its start page` or `… was reopened`) and counted in the details
 (`calendarReloads`, `gmailReloads`). Requests sent to a page before its reload do not count against the new page,
-nor does one cut short by its wait in the lane. After a Calendar reload, one `calendarList` call shows it answers
+nor does one cut short by its wait in the lane or by its op's time (given less than 12.5 s), nor a download or
+upload the page said it has (it is working on it; the hook cuts Gmail off at 80 s, more than `mail.get`'s 60 s). After a Calendar reload, one `calendarList` call shows it answers
 again; Gmail makes no call of its own, so its hook coming back up is its answer. A dead Chromium still exits for a
 supervised restart, as before.
 
@@ -341,7 +374,8 @@ details show both; `mail: false` opens none; the probe's answer has statuses, fi
 a stalled Gmail page holds up no Calendar call and a stalled Calendar page no Gmail call; a stalled Calendar page
 makes each call fail within 25 s with its name, and after two its tab alone is reloaded and answers again, with the
 Gmail tab not loaded again and the extractor not restarted; a stalled Gmail page is reloaded, then, still silent,
-opened anew in a new tab with the old one closed. The learn run (the stand-in Gmail page has a thread list with
+opened anew in a new tab with the old one closed; a Gmail list call that hangs is cut off in the page and fails as
+itself (503, "could not make the call (timeout)"), not counted as the page's silence. The learn run (the stand-in Gmail page has a thread list with
 Gmail's row markers, unread and uncertain rows first, and calls its own /sync endpoints on load, when a row is opened
 and when the hash comes back to a list, with positional JSON after an XSSI prefix full of a marker): a run goes to an
 operators-only search, opens the first and second read rows only, goes back, finds no read row 9, and collects
@@ -429,7 +463,7 @@ self-check (next section) settles most of them on the live account without readi
   replayed, `?hl=…&c=<next>&rt=…&pt=…`, a JSON body, the page's cookies; the answer's JSON after its `)]}'` prefix. An
   `s` body that carries label changes (anything at element 1, or a list inside element 0: how the page's own writes
   look) is refused in the hook, whatever the extractor sent: writes go through `gmail.write` ("Writing to Gmail").
-  Until the page has made a sync call of its own: 503. The sync point the hook notes comes from the page's reading `s`
+  Until the page has made a sync call of its own: 503 `unavailable` (an op waits for it first, at start). The sync point the hook notes comes from the page's reading `s`
   calls only: in its writes, [3][4] holds another number (48 or 49 in every one seen).
 - **`gmail.raw`**: the page's own "Download message" route, `GET /mail/u/<n>/?ik=<ik>&view=att&th=<id in
   hex>&attid=0&disp=comp&safe=1&zw` (what "Show original" → "Download original" fetches; the hex id is Gmail's message
@@ -768,8 +802,8 @@ change is a label added or taken off, so making it twice changes nothing more.
   and named in `unknown`; none placed is 404. One change per thread and kind of change, at most 100 a call.
 - **Answers**: `{}` when every change applied; otherwise the ids Gmail answered a non-zero status for are `refused`
   (and null in `mail.move`'s `ids`); 422 `refused` when nothing applied. `mail.move` answers the same ids (a message
-  keeps its id in Gmail). A call that fails is 503 when nothing can have reached Gmail (the browser not attached, the
-  page not synced yet), 504 when the page did not answer in time and 502 when Gmail's answer was not one known (both
+  keeps its id in Gmail). A call that fails is 503 `unavailable` when nothing can have reached Gmail (the browser not
+  attached, the page not synced yet, its lane busy), 504 when the page did not answer in time and 502 when Gmail's answer was not one known (both
   may have made the change; label changes are harmless to send again), and 500 when the page refused the body (an
   older extension, or a body not one of the known writes; trying again will not help).
 - **Not written**: Spam (`mail.move` to `^s` is 501: Gmail's "Report spam" may report the sender to Google, and its

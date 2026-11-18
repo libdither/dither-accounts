@@ -210,6 +210,11 @@ const bridge = new BridgeServer({
   log,
   // A command that times out is told apart in the log: how far it got, the tab's state and the hook's own.
   silence: { name: 'Discord', tab: true, page: true },
+  // A read (or a mark read) the page has not said it has after 3 s is sent again (the page takes an id once); never a
+  // send, a reaction, an edit or anything else others see (packages/browser bridge.ts).
+  resend: {
+    kinds: ['page.state', 'history', 'browse', 'search', 'walkMembers', 'mentionables', 'threads', 'myArchivedThreads', 'reactors', 'reactionContext', 'stickers', 'gifs', 'about', 'profile', 'person', 'refreshUrls', 'inviteResolve', 'recentMentions', 'savedList', 'pinnedList', 'bans', 'selfSessions', 'ixCommands', 'ixSuggest', 'markRead', 'markReadMany'],
+  },
 });
 
 /** Reload the Discord tab through the worker when the page watch says so. */

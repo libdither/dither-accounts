@@ -142,6 +142,8 @@ it(
   async () => {
     await until(() => statusOf(signedIn)?.status === 'online' && statusOf(signedIn)?.details?.email === WEB.email && statusOf(signedIn)?.details?.endpointsSeen === 2, 60_000, 'online');
     await until(() => layerOf(signedIn, 'Gmail page')?.state === 'ok', 30_000, 'the Gmail page up');
+    // The name comes from the page's account button, which the hook reads on its own round after signing in.
+    await until(() => !!statusOf(signedIn)?.self?.addresses?.[0]?.name, 10_000, "the Gmail page's account name");
     const st = statusOf(signedIn);
     expect(st.attention).toBeNull();
     // Apps get the live view's size, not its socket (an app opens it through the manager); the manager keeps the socket,

@@ -78,6 +78,8 @@ const TAB_COMMAND_MS = 10_000;
 const PROBE_REQUEST = 'probe-gmail.request';
 const PROBE_RESULT = 'probe-gmail.json';
 const PROBE_POLL_MS = 3000;
+/** The probe waits up to this for the Gmail page to say which keys it carries. */
+const PROBE_KEYS_MS = 5000;
 /** A learn run: asked for by this script in the account's directory; `collect` writes the shapes to the other. */
 const LEARN_REQUEST = 'gmail-learn.json';
 const LEARN_SHAPES = 'gmail-shapes.json';
@@ -938,6 +940,9 @@ function gmailKeys(): { key: string; source: KeySource }[] {
  * and the number of labels: never a value, an address, a label's name or a key.
  */
 async function gmailApiProbe() {
+  // A page that has just come up (a reload) says which keys it carries a moment after it says it is signed in: wait
+  // for that, briefly, rather than try without them.
+  if (gm.hooked && gm.session?.signedIn) await readiness.until(() => (gm.keys.length ? null : 'no keys yet'), PROBE_KEYS_MS);
   const s = gm.hooked ? gm.session : null;
   const keys = gmailKeys();
   const out = {

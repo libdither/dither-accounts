@@ -198,6 +198,7 @@ it(
       ['Gmail page', 'ok', 'mail'],
       ['Gmail protocol', 'waiting', 'mail'],
       ['Gmail background', 'ok', 'mail'],
+      ['Gmail canary', 'off', 'mail'],
     ]);
     expect(layerOf(signedIn, 'Gmail background')).toEqual({ name: 'Gmail background', state: 'ok', note: 'idle', interface: 'mail' });
     expect([fake.pageLoads('calendar', 0), fake.pageLoads('gmail', 0)]).toEqual([1, 1]);

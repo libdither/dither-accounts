@@ -87,14 +87,15 @@ What it says, each under an id stable per account and condition, so a repeat rep
 | `stopped:<account>` | enabled, not running, with an error (its directory locked by another process, no extractor), for 5 minutes | high | "<label> stopped", "It is not running: its page on the manager says why." |
 | `no-device:<account>` | a passkey approval asked of a device that is not paired here (outcome `no-device`) | high | "<label>: no device for a passkey approval", the site |
 | `crashing:<account>` | its extractor ended on its own 3 times in 10 minutes | normal | "<label> keeps restarting" |
+| `changed:<account>` | its status says `changed: true`: a service it reads changed its layout, and it goes on reading around it (the Gmail canary, docs/google.md) | normal, at once | "<label>: a service it reads changed" |
 
 - `url` is the account's page on the manager (`<public URL>/#/accounts/<id>`) when the manager has a public URL
   (`--public-url`), else null. `context` is the account's kind; `reason` the condition; `subject` `{ kind: 'account',
   title: <label>, url, state: <condition> }`; `actors` empty.
 - **Read again on its own** when the condition goes: the attention cleared (the account online and saying no
-  attention), the account running, disabled or removed, or 10 quiet minutes after crashes. That is a `notify.read`, as
-  if you had read it. A condition that cannot be told (an account whose extractor is not connected yet) changes
-  nothing. A `no-device` notice stays until it is read.
+  attention), the account running, disabled or removed, 10 quiet minutes after crashes, or a status no longer saying
+  `changed`. That is a `notify.read`, as if you had read it. A condition that cannot be told (an account whose
+  extractor is not connected yet) changes nothing. A `no-device` notice stays until it is read.
 - **At most once per 30 minutes** for each id: a flapping account (an attention that comes and goes) is announced again
   only when 30 minutes have passed since the last time and the condition still holds. Once announced, an id is not
   announced again while its condition lasts, also after a restart of the manager (a notice kept from before it, read

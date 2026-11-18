@@ -79,8 +79,9 @@ and a test fails when it is stale.
 
 An extractor's `status` event may carry `liveView: { vncSocket, width, height }` (its VNC server's Unix socket), `self`
 (who it is signed in as: `displayName`/`handle`/`avatarUrl`, or `email`), `details` (flat, non-secret session facts
-the pane lists), `layers` (what the account rests on) and `attention` (what it needs: a message, `qr` to draw,
-`liveView` to open); the page shows each when it is there.
+the pane lists), `layers` (what the account rests on), `attention` (what it needs: a message, `qr` to draw,
+`liveView` to open) and `changed: true` (a service it reads changed how it answers, and it reads around it: a notice,
+docs/notifications.md, without the account needing you); the page shows each when it is there.
 
 - `layers` is the account's dependency chain, outermost first, sent whole with each status:
   `[{ name, state: 'ok' | 'waiting' | 'failed' | 'off', note? }]`, e.g. Discord's display → browser → extension →

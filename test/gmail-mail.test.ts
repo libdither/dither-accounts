@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { MailSummary } from '@dither-accounts/interfaces';
-import { type BackgroundRules, type Clock, GmailMail, parseState, REPEAT, SEND_LIMITS, type Transport } from '../extractors/google/src/gmail/mail.ts';
+import { type BackgroundRules, type Clock, GmailMail, parseState, REPEAT, RETRY, SEND_LIMITS, type Transport } from '../extractors/google/src/gmail/mail.ts';
 import { parseMessage } from '../extractors/google/src/gmail/mime.ts';
 import { bvRequest, categoryOf, fdThreadsRequest, flagsOf, isUserLabel, LayoutError, labelsOf, notAMessage, operatorsOnly, parseBv, parseFd, parseS, readOnlySync, sRequest } from '../extractors/google/src/gmail/protocol.ts';
 import { runCanary } from '../extractors/google/src/gmail/canary.ts';
@@ -61,7 +61,8 @@ function transport(o: TransportOpts = {}): Transport {
       const text = await r.text();
       try {
         const json = JSON.parse(text.replace(/^\)\]\}'[^\n]*\n?/, ''));
-        if (r.status === 200 && (body as any)?.[1] == null) o.mutate?.(ep, json);
+        // Not a write's answer (a write goes as s with its changes at [1]).
+        if (r.status === 200 && !(ep === 's' && (body as any)?.[1] != null)) o.mutate?.(ep, json);
         return { status: r.status, json };
       } catch {
         return { status: r.status, error: 'not-json', page: pageKind(r.status, r.headers.get('content-type'), text, r.url) };
@@ -283,6 +284,18 @@ test("answers are read by their anchors; one laid out otherwise is refused, sayi
   both[19] = [[2, both[2], 1]];
   const b = parseBv(both);
   expect([b.layout, b.rows.length, b.stray, b.skipped]).toEqual(['own', 50, 50, []]);
+  // Rows only in the other place: left out of the rows, but each message named in skipped (its id, else its thread).
+  const split = structuredClone(ok.json) as any[];
+  const elsewhere = split[2].splice(0, 2);
+  split[19] = [[2, elsewhere, 1]];
+  const sp = parseBv(split);
+  const movedThreads = elsewhere.map((e: any) => e[0][3].replace('thread-f:', ''));
+  expect([sp.layout, sp.rows.length, sp.stray]).toEqual(['own', 48, 2]);
+  expect(sp.skipped.length).toBe(elsewhere.reduce((n: number, e: any) => n + e[0][4].length, 0));
+  for (const k of sp.skipped) {
+    expect(movedThreads).toContain(k.thread);
+    expect(k.reason).toContain('in the other place');
+  }
   // json[2] holding an entry that is not a row: that entry left out, saying where and why; an empty answer of each layout.
   const odd = structuredClone(ok.json) as any[];
   odd[2] = [[['x'], 1]];
@@ -1087,7 +1100,7 @@ test('one bad message costs that message: list, search and changes read the rest
   expect(fake.gmail.writes).toBe(0);
 });
 
-test("whole-answer anchors still refuse; the same failure twice is held 1 minute, then 2, up to 15, without asking Gmail; a clean answer ends it", async () => {
+test("whole-answer anchors still refuse; the same failure twice is held 1 minute, then 2, up to 5 for the sync call (15 for others), without asking Gmail; a page reload or a clean answer ends it", async () => {
   const clock = new FakeClock();
   let bad = true;
   const mutate = (ep: string, json: any) => {
@@ -1114,18 +1127,28 @@ test("whole-answer anchors still refuse; the same failure twice is held 1 minute
   clock.advance(2 * REPEAT.minMs - 1);
   await expect(mail.changes({ mailboxId: '^i', state: st })).rejects.toMatchObject({ status: 502 });
   expect(asks()).toBe(n0 + 3);
-  // Doubling stops at the most.
-  for (let i = 0; i < 6; i++) {
-    clock.advance(REPEAT.maxMs);
+  // Doubling stops at 5 minutes for the sync call (the watch's: how new mail is heard of).
+  for (let i = 0; i < 4; i++) {
+    clock.advance(REPEAT.syncMaxMs);
     await expect(mail.changes({ mailboxId: '^i', state: st })).rejects.toMatchObject({ status: 502 });
   }
+  expect(asks()).toBe(n0 + 7);
+  clock.advance(REPEAT.syncMaxMs - 1);
+  await expect(mail.changes({ mailboxId: '^i', state: st })).rejects.toMatchObject({ status: 502 });
+  expect(asks()).toBe(n0 + 7);
+  clock.advance(1);
+  await expect(mail.changes({ mailboxId: '^i', state: st })).rejects.toMatchObject({ status: 502 });
+  expect(asks()).toBe(n0 + 8);
+  // The Gmail page reloaded: every hold ends, and Gmail is asked at once.
+  mail.clearHolds();
+  await expect(mail.changes({ mailboxId: '^i', state: st })).rejects.toMatchObject({ status: 502 });
   expect(asks()).toBe(n0 + 9);
   // Another request (another sync point) is not held by it.
   await expect(mail.changes({ mailboxId: '^i', state: `g1.${fake.gmail.history() - 1}.${clock.now()}` })).rejects.toMatchObject({ status: 502 });
   expect(asks()).toBe(n0 + 10);
   // Gmail answering well again: read once the hold is over, and not held after.
   bad = false;
-  clock.advance(REPEAT.maxMs);
+  clock.advance(REPEAT.syncMaxMs);
   expect(parseState((await mail.changes({ mailboxId: '^i', state: st })).state).history).toBe(String(fake.gmail.history()));
   await mail.changes({ mailboxId: '^i', state: st });
   expect(asks()).toBe(n0 + 12);
@@ -1211,6 +1234,195 @@ test('the canary: the self-check reading no message, its answers\' shapes kept a
   const r4 = await runCanary(mailOf(transport({ mutate: breakMessage(() => victim.id) })), () => transport().info(), file);
   expect(r4.ok).toBe(false);
   expect(r4.problems).toEqual(expect.arrayContaining([expect.stringMatching(/^bv: \d+ records left out$/)]));
+});
+
+test('a sync answer with a thread row at a place no layout has, or a record left out with neither a message nor a thread id, is refused whole: the sync point does not move past what could not be asked for again', async () => {
+  const msgs = fake.gmail.messages.filter((m) => !m.pending && !m.localId && m.labels.includes('^i'));
+  const threads = [...new Set(msgs.map((m) => m.thread))].slice(0, 4);
+  const firstOf = (t: string) => threadMsgs(t)[0]!;
+  let how: 'stray' | 'anon' | null = null;
+  const mutate = (ep: string, json: any) => {
+    if (ep !== 's' || !how) return;
+    const u = json[1][5][0];
+    if (how === 'stray') json[9] = [structuredClone(u[0][2][6][0])];
+    else {
+      // The first changed thread's ids all gone: its update's, its row's (and its hex), and its messages'.
+      u[0][0] = 7;
+      const row = u[0][2][6][0];
+      row[3] = 7;
+      row[19] = null;
+      for (const m of row[4]) m[0] = 7;
+    }
+  };
+  const mail = mailOf(transport({ mutate }));
+  const start = await mail.changes({ mailboxId: 'all' });
+  for (const t of threads) fake.gmail.relabel(firstOf(t).id, ['^t'], []);
+  try {
+    how = 'stray';
+    const e = await mail.changes({ mailboxId: 'all', state: start.state }).catch((x) => x);
+    expect(e.status).toBe(502);
+    expect(e.message).toContain('at json[9][0]: expected thread rows only at json[1][5][n][0][2][6][0], got a thread row');
+    how = 'anon';
+    const e2 = await mail.changes({ mailboxId: 'all', state: start.state }).catch((x) => x);
+    expect(e2.status).toBe(502);
+    expect(e2.message).toContain('in a record with neither a message id nor a thread id');
+    // The watch is refused alike: it does not move on.
+    await expect(mail.poll({ history: parseState(start.state).history, at: parseState(start.state).at })).rejects.toMatchObject({ status: 502 });
+    // Read whole again (the hold on that request ended, as a page reload ends it): every changed thread there.
+    how = null;
+    mail.clearHolds();
+    const c = await mail.changes({ mailboxId: 'all', state: start.state });
+    for (const t of threads) expect(c.changed.map((x) => x.id)).toContain(firstOf(t).id);
+    expect(c.skipped).toBeUndefined();
+  } finally {
+    for (const t of threads) fake.gmail.relabel(firstOf(t).id, [], ['^t']);
+  }
+});
+
+test('a record left out is asked for again on its own (its thread fetched), backing off, kept across a restart; once it reads, mail.changes from before reports it as added and the watch flags its mailboxes', async () => {
+  const clock = new FakeClock();
+  const file = join(tmp, 'reads-pending.json');
+  rmSync(file, { force: true });
+  const victim = fake.gmail.messages.find((m) => !m.pending && !m.localId && m.labels.includes('^i') && !m.labels.includes('^u') && threadMsgs(m.thread).length > 1)!;
+  const sibling = threadMsgs(victim.thread).find((m) => m.id !== victim.id && !m.pending)!;
+  let broken: string | null = victim.id;
+  const t = transport({ mutate: breakMessage(() => broken), now: clock.now });
+  const mail = laneMail({ t, clock, file });
+  const start = await drive(clock, mail.changes({ mailboxId: '^i' }));
+  fake.gmail.relabel(sibling.id, ['^t'], []);
+  try {
+    clock.advance(1000);
+    const c = await drive(clock, mail.changes({ mailboxId: '^i', state: start.state }));
+    expect(c.skipped).toEqual([victim.id]);
+    expect(mail.leftOut).toEqual({ pending: 1, recovered: 0 });
+    // Kept by ids only.
+    const kept = JSON.parse(readFileSync(file, 'utf8'));
+    expect(kept.pending).toEqual([{ id: victim.id, thread: victim.thread, since: clock.now(), tries: 0 }]);
+    expect(new GmailMail(t, { log: quiet, gapMs: 0, clock, stateFile: file }).leftOut.pending).toBe(1);
+    // Not due yet: not asked for. Then due: its thread fetched, still bad: tried again 1 minute later, then 2.
+    const fd0 = fake.gmail.calls.fd;
+    const look = () => drive(clock, mail.changes({ mailboxId: '^i', state: c.state }));
+    await look();
+    expect(fake.gmail.calls.fd).toBe(fd0);
+    // (The lane's pace moves the clock a little on each call: the steps are half a wait either side.)
+    clock.advance(RETRY.firstMs);
+    await look();
+    expect(fake.gmail.calls.fd).toBe(fd0 + 1);
+    expect(mail.leftOut).toEqual({ pending: 1, recovered: 0 });
+    clock.advance(RETRY.firstMs / 2);
+    await look();
+    expect(fake.gmail.calls.fd).toBe(fd0 + 1);
+    clock.advance(RETRY.firstMs);
+    await look();
+    expect(fake.gmail.calls.fd).toBe(fd0 + 2);
+    clock.advance(RETRY.firstMs);
+    await look();
+    expect(fake.gmail.calls.fd).toBe(fd0 + 2);
+    clock.advance(RETRY.firstMs * 1.5);
+    await look();
+    expect(fake.gmail.calls.fd).toBe(fd0 + 3);
+    expect(JSON.parse(readFileSync(file, 'utf8')).pending[0].tries).toBe(3);
+    // Gmail answering it well again: read on the next due try, with no caller asking for it.
+    broken = null;
+    const watchAt = clock.now();
+    clock.advance(1);
+    clock.advance(RETRY.firstMs * 4);
+    const w = await drive(clock, mail.poll({ history: parseState(c.state).history, at: watchAt }));
+    expect(fake.gmail.calls.fd).toBe(fd0 + 4);
+    expect(mail.leftOut).toEqual({ pending: 0, recovered: 1 });
+    expect(w.mailboxes).toEqual(expect.arrayContaining(['^i', 'all']));
+    expect(w.skipped).toEqual([]);
+    // mail.changes from the state that left it out: added now (the caller never had it); from a later state, not again.
+    const after = await drive(clock, mail.changes({ mailboxId: '^i', state: c.state }));
+    expect(after.added.map((x) => x.id)).toEqual([victim.id]);
+    expect(after.skipped).toBeUndefined();
+    clock.advance(1);
+    const later = await drive(clock, mail.changes({ mailboxId: '^i', state: after.state }));
+    expect(later.added).toEqual([]);
+    // Kept by id for a while yet (a restart asks for it again, so a caller not yet told is told).
+    expect(JSON.parse(readFileSync(file, 'utf8')).pending).toEqual([{ id: victim.id, thread: victim.thread, since: expect.any(Number), tries: 0 }]);
+  } finally {
+    fake.gmail.relabel(sibling.id, [], ['^t']);
+  }
+  expect(fake.gmail.writes).toBe(0);
+});
+
+test('a record left out too often is given up, logged once, never by its value', async () => {
+  const clock = new FakeClock();
+  const victim = fake.gmail.messages.find((m) => !m.pending && !m.localId && m.labels.includes('^i') && threadMsgs(m.thread).length > 1)!;
+  const sibling = threadMsgs(victim.thread).find((m) => m.id !== victim.id && !m.pending)!;
+  const logs: string[] = [];
+  const mail = new GmailMail(transport({ mutate: breakMessage(() => victim.id), now: clock.now }), { log: (_l, m) => logs.push(m), gapMs: 0, clock });
+  const start = await drive(clock, mail.changes({ mailboxId: '^i' }));
+  fake.gmail.relabel(sibling.id, ['^t'], []);
+  try {
+    const c = await drive(clock, mail.changes({ mailboxId: '^i', state: start.state }));
+    for (let i = 0; i < RETRY.tries; i++) {
+      clock.advance(RETRY.maxMs);
+      await drive(clock, mail.changes({ mailboxId: '^i', state: c.state }));
+    }
+    expect(mail.leftOut.pending).toBe(0);
+    expect(logs.filter((l) => l.includes('no longer asked for'))).toEqual([`gmail: a record left out ${RETRY.tries} times is no longer asked for (a message)`]);
+  } finally {
+    fake.gmail.relabel(sibling.id, [], ['^t']);
+  }
+});
+
+test('the unread guard, tripped: a lookup that fails for now (the page not answering) is said as it is, 503, never 409', async () => {
+  const clock = new FakeClock();
+  const file = join(tmp, 'reads-guard-passing.json');
+  writeFileSync(file, JSON.stringify({ fetched: [], unreadGuard: 'tripped', unreadGuardAt: Date.now() }));
+  const readOne = fake.gmail.messages.find((m) => !m.pending && !m.localId && m.labels.includes('^i') && !m.labels.includes('^u'))!;
+  const base = transport({ now: clock.now });
+  let down = false;
+  const t: Transport = { ...base, sync: (ep, body) => (down ? Promise.resolve({ status: 0, error: 'no-page' }) : base.sync(ep, body)) };
+  const mail = laneMail({ t, clock, file });
+  await drive(clock, mail.list({ mailboxId: '^i', limit: 500 }));
+  // Its labels no longer fresh: looked up again, and the page does not answer.
+  clock.advance(DAY);
+  down = true;
+  const fetched = fake.gmail.rawFetched.length;
+  const e = await drive(clock, mail.raw({ id: readOne.id })).catch((x) => x);
+  expect([e.status, e.callCode]).toEqual([503, undefined]);
+  expect(e.message).not.toContain('unread');
+  // A Gmail 5xx on the lookup is said as Gmail's (502), not as unread either.
+  down = false;
+  fake.gmail.failNext(503);
+  const e2 = await drive(clock, mail.raw({ id: readOne.id })).catch((x) => x);
+  expect(e2.status).toBe(502);
+  expect(e2.message).toContain('Gmail answered 503');
+  expect(fake.gmail.rawFetched.length).toBe(fetched);
+  // Answering again: it reads.
+  expect((await drive(clock, mail.raw({ id: readOne.id }))).size).toBeGreaterThan(0);
+});
+
+test('the canary flags only places stable over two runs and well populated: churn is not a change; a change is said once, and the next clean run clears it', async () => {
+  const file = join(tmp, 'canary-stable.json');
+  rmSync(file, { force: true });
+  // An extra field of six entries on each list answer, in some runs: a place that comes and goes with the mail.
+  let extra = false;
+  const mutate = (ep: string, json: any) => {
+    if (ep === 'bv' && extra) json[50] = [1, 2, 3, 4, 5, 6];
+  };
+  const run = () => runCanary(mailOf(transport({ mutate })), () => transport().info(), file);
+  // Seen in one run only, then gone: not stable, no change.
+  extra = true;
+  expect((await run()).changes).toEqual([]);
+  extra = false;
+  expect((await run()).changes).toEqual([]);
+  // A place seen fewer than FREQUENT times (once per answer, in one answer of several) is not stable either.
+  // Seen in two runs in a row, then gone: a change.
+  extra = true;
+  await run();
+  await run();
+  extra = false;
+  const r = await run();
+  expect(r.changes).toEqual([{ endpoint: 'bv', gone: expect.arrayContaining(['json[50][*]']), newKinds: [] }]);
+  expect(r.summary).toContain('shapes changed (bv: ');
+  // The next run as this one: clean, nothing to say.
+  const r2 = await run();
+  expect(r2).toMatchObject({ ok: true, changes: [], problems: [] });
+  expect(r2.summary).toStartWith('ok, shapes as last time');
 });
 
 // ------------------------------------------------------------------ writing (write.ts, GmailMail's writes and send)

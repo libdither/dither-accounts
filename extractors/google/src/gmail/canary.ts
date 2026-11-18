@@ -6,10 +6,10 @@
  *
  * A fingerprint is positions and kinds of things only, never a value: each place in an answer (`json[2][*][0][4][*][6]`,
  * a list of records' places as `[*]`) with the kinds of thing seen there (a list, a number, a date in ms, a string, a
- * label id, an id, a boolean) and how many times. A place the last run saw at least FREQUENT times that this run did not
- * see at all, or a new kind at such a place, is a change; places that come and go with the mail (a Cc that one run's
- * messages have and another's do not) are seen fewer times and not counted. Endpoints are compared only when both runs
- * had answers from them.
+ * label id, an id, a boolean) and how many times. A place is well populated in a run when it was seen at least FREQUENT
+ * times, or in every one of two or more answers, and **stable** once it was well populated in STABLE_RUNS runs in a row. A stable place this run did not see at all, or a new kind at one, is a change; places
+ * that come and go with the mail (a Cc, attachments, a label some messages have) do not become stable and are not
+ * counted. Endpoints are compared only when both runs had answers from them.
  */
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { GmailMail, SyncInfo } from './mail.ts';
@@ -18,13 +18,14 @@ import { selfCheck } from './selfcheck.ts';
 
 /** How deep into an answer the fingerprint looks: a message's own fields are at depth 6 in bv's own layout. */
 const DEPTH = 8;
-/** A place seen this many times in a run is part of the layout, not of one message. */
-export const FREQUENT = 3;
+/** A place seen this many times in a run (or in each of its answers), in STABLE_RUNS runs in a row, is part of the layout, not of some messages. */
+export const FREQUENT = 5;
+export const STABLE_RUNS = 2;
 /** Places kept per endpoint (an answer laid out wildly otherwise is not kept whole). */
 const MAX_PLACES = 4000;
 
 /** Per endpoint: place → kinds seen there and how many times. */
-export type Shapes = Record<string, Record<string, { kinds: string[]; n: number }>>;
+export type Shapes = Record<string, Record<string, { kinds: string[]; n: number; stable?: number }>>;
 
 /** What a value is, coarsely; null for nothing there. */
 function coarse(v: unknown): string | null {
@@ -73,7 +74,7 @@ export function compareShapes(prev: Shapes, next: Shapes): ShapeChange[] {
     const gone: string[] = [];
     const newKinds: string[] = [];
     for (const [place, was] of Object.entries(a)) {
-      if (was.n < FREQUENT) continue;
+      if ((was.stable ?? 0) < STABLE_RUNS) continue;
       const now = b[place];
       if (!now) gone.push(place);
       else {
@@ -125,7 +126,11 @@ export async function runCanary(mail: GmailMail, info: () => Promise<SyncInfo>, 
   const shapes: Shapes = {};
   const failedBefore = Object.fromEntries(Object.entries(mail.fp).map(([e, f]) => [e, f.failed]));
   const skippedBefore = { ...mail.evidence.skipped };
-  mail.answerTap = (ep, json) => addShape((shapes[ep] ??= {}), json);
+  const answers: Record<string, number> = {};
+  mail.answerTap = (ep, json) => {
+    answers[ep] = (answers[ep] ?? 0) + 1;
+    addShape((shapes[ep] ??= {}), json);
+  };
   let report: Awaited<ReturnType<typeof selfCheck>> | null = null;
   let error: string | null = null;
   try {
@@ -139,7 +144,12 @@ export async function runCanary(mail: GmailMail, info: () => Promise<SyncInfo>, 
   // A layout's failures only ("at <where>: expected …"): a 5xx or a busy page says nothing of how Gmail lays answers out.
   for (const [ep, f] of Object.entries(mail.fp)) if (f.failed > (failedBefore[ep] ?? 0) && f.note?.startsWith('at ')) problems.push(`${ep}: ${f.note}`);
   for (const [ep, n] of Object.entries(mail.evidence.skipped)) if (n > (skippedBefore[ep] ?? 0)) problems.push(`${ep}: ${n - (skippedBefore[ep] ?? 0)} records left out`);
-  // Keep the last run's shapes for an endpoint this run did not reach, so the next comparison still has them.
+  // How many runs in a row each place was well populated; the last run's shapes kept for an endpoint this run did not
+  // reach, so the next comparison still has them.
+  for (const [ep, places] of Object.entries(shapes)) {
+    const k = answers[ep] ?? 0;
+    for (const [place, now] of Object.entries(places)) now.stable = now.n >= FREQUENT || (k >= 2 && now.n >= k) ? (last?.shapes[ep]?.[place]?.stable ?? 0) + 1 : 0;
+  }
   const kept: Shapes = { ...(last?.shapes ?? {}), ...shapes };
   const changes = last ? compareShapes(last.shapes, shapes) : [];
   const ok = !!report?.ok && !problems.length;

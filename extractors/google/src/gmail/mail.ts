@@ -116,7 +116,14 @@ const BV_POINT_GAP = 1_000_000n;
 /** Label names that could not be had are not asked for again (unless a call needs them) for this long. */
 const NAMES_RETRY = 60_000;
 /** A request that failed the same way twice is answered from here for this long, doubling to the most. */
-export const REPEAT = { minMs: 60_000, maxMs: 15 * 60_000 };
+export const REPEAT = { minMs: 60_000, maxMs: 15 * 60_000, syncMaxMs: 5 * 60_000 };
+/**
+ * Records left out of an answer, asked for again here (a thread fetch) so recovery does not wait on the caller: the
+ * first try after firstMs, doubling to maxMs, at most perCall a look, given up after tries. Kept in the state file.
+ */
+export const RETRY = { firstMs: 60_000, maxMs: 6 * 3600_000, perCall: 3, tries: 12, max: 500 };
+/** A record read cleanly after it was left out is reported to mail.changes callers whose state is older, for this long. */
+const RECOVERED_KEEP = 7 * 86_400_000;
 
 /** Gmail turned a read request down (a 4xx but 401, 403 and 429): of the s call, the one answer that blames its sync point. */
 export class SyncRefusal extends StatusError {
@@ -428,6 +435,19 @@ export class GmailMail {
   private skipLogged = new Set<string>();
   /** The last answer that left records out, for the layer's note. */
   private lastSkip: { ep: Endpoint; at: number; reason: string } | null = null;
+  /** Records left out and not read since: by `skipKey` (a message id, or thread:<id>). */
+  private pending = new Map<string, { id: string | null; thread: string | null; since: number; tries: number; next: number }>();
+  /** Messages read cleanly after they were left out, and when: mail.changes from an older state reports them. */
+  private recovered: { at: number; item: Item }[] = [];
+  /**
+   * The last time stamped on a state handed out or a record recovered: each stamp is later than the one before (stamp),
+   * so a record recovered in the same millisecond as a state is handed out is still told apart from it.
+   */
+  private lastStamp = 0;
+  private stamp(): number {
+    this.lastStamp = Math.max(this.now(), this.lastStamp + 1);
+    return this.lastStamp;
+  }
   // What is kept in the account's directory: the bytes downloaded (per minute, the last window), and the unread guard.
   private fetched: [number, number][] = [];
   private guard: { tripped: boolean; at: number | null } = { tripped: false, at: null };
@@ -453,6 +473,13 @@ export class GmailMail {
       const v = JSON.parse(readFileSync(f, 'utf8'));
       if (Array.isArray(v?.fetched)) this.fetched = v.fetched.filter((e: unknown) => Array.isArray(e) && Number.isFinite(e[0]) && Number.isFinite(e[1]) && e[1] >= 0).map((e: number[]) => [e[0]!, e[1]!]);
       if (v?.unreadGuard === 'tripped') this.guard = { tripped: true, at: Number.isFinite(v.unreadGuardAt) ? v.unreadGuardAt : null };
+      // Left out and not read since; and recovered ones a caller may not have heard of yet (by id only: asked again).
+      for (const e of Array.isArray(v?.pending) ? v.pending.slice(0, RETRY.max) : []) {
+        const id = typeof e?.id === 'string' && DECIMAL_ID.test(e.id) ? e.id : null;
+        const thread = typeof e?.thread === 'string' && DECIMAL_ID.test(e.thread) ? e.thread : null;
+        const key = id ?? (thread ? `thread:${thread}` : null);
+        if (key) this.pending.set(key, { id, thread, since: Number(e.since) || 0, tries: Number(e.tries) || 0, next: 0 });
+      }
     } catch (e) {
       this.o.log('warn', 'gmail: the kept lane state could not be read; starting from none', String((e as Error).message ?? e).slice(0, 120));
     }
@@ -462,7 +489,10 @@ export class GmailMail {
     const f = this.o.stateFile;
     if (!f) return;
     try {
-      const v = { fetched: this.fetched, ...(this.guard.tripped ? { unreadGuard: 'tripped', unreadGuardAt: this.guard.at } : {}) };
+      const now = this.now();
+      // Ids only, never what a message says: a recovered message not yet old enough to be heard of is kept as pending.
+      const pending = [...this.pending.values(), ...this.recovered.filter((r) => now - r.at < 10 * 60_000).map((r) => ({ id: r.item.m.id, thread: r.item.row.thread, since: r.at, tries: 0, next: 0 }))].map((e) => ({ id: e.id, thread: e.thread, since: e.since, tries: e.tries }));
+      const v = { fetched: this.fetched, ...(this.guard.tripped ? { unreadGuard: 'tripped', unreadGuardAt: this.guard.at } : {}), ...(pending.length ? { pending } : {}) };
       writeFileSync(`${f}.tmp`, JSON.stringify(v), { mode: 0o600 });
       renameSync(`${f}.tmp`, f);
     } catch (e) {
@@ -783,6 +813,7 @@ export class GmailMail {
     this.repeats.delete(key);
     this.note(ep, true);
     this.noteSkips(ep, out.skipped, out);
+    this.noteRead(out as unknown as Partial<BvAnswer & FdAnswer>);
     this.answerTap?.(ep, r.json);
     return out;
   }
@@ -796,9 +827,80 @@ export class GmailMail {
       this.repeats.set(key, { where, message, until: 0, ms: 0 });
       return;
     }
-    const ms = prev.ms ? Math.min(prev.ms * 2, REPEAT.maxMs) : REPEAT.minMs;
+    // The watch's sync call is held 5 minutes at most: it is how new mail is heard of.
+    const ms = Math.min(prev.ms ? prev.ms * 2 : REPEAT.minMs, ep === 's' ? REPEAT.syncMaxMs : REPEAT.maxMs);
     this.repeats.set(key, { where, message, until: this.now() + ms, ms });
     this.o.log('warn', `gmail ${ep}: the same request failed at ${where} again; answered with that failure for ${Math.round(ms / 60_000)} min without asking Gmail`);
+  }
+
+  /** Every hold on a request that failed alike (the Gmail page was reloaded: its answers may read again). */
+  clearHolds() {
+    this.repeats.clear();
+  }
+
+  /**
+   * Records read cleanly that were left out earlier: no longer pending, and kept as recovered, so mail.changes from an
+   * older state reports them and the watch says their mailboxes changed. A thread left out whole is recovered when an
+   * answer reads it with nothing left out of it.
+   */
+  private noteRead(a: Partial<BvAnswer & FdAnswer>) {
+    if (!this.pending.size) return;
+    const now = this.now();
+    const rows: { row: ThreadRow; skipped: boolean }[] = [];
+    for (const r of a.rows ?? []) rows.push({ row: r, skipped: r.skipped.length > 0 });
+    for (const t of a.threads ?? []) {
+      const k = t.messages[0]?.id ? this.known.get(t.messages[0].id) : undefined;
+      rows.push({ row: { thread: t.thread, subject: k?.subject ?? '', date: Math.max(0, ...t.messages.map((m) => m.date)), messages: t.messages, nullLabels: t.nullLabels, skipped: [] }, skipped: (a.skipped ?? []).some((k) => k.thread === t.thread) });
+    }
+    let any = false;
+    for (const { row, skipped } of rows) {
+      const whole = row.thread && !skipped && this.pending.delete(`thread:${row.thread}`);
+      for (const g of row.messages) {
+        if (!g.id || !(whole || this.pending.delete(g.id))) continue;
+        this.recovered.push({ at: this.stamp(), item: { m: g as Msg, row: { ...row, messages: [], skipped: [] } } });
+        any = true;
+        this.o.log('info', 'gmail: a message left out of an earlier answer read cleanly; mail.changes reports it');
+      }
+    }
+    if (!any) return;
+    this.recovered = this.recovered.filter((r) => now - r.at < RECOVERED_KEEP).slice(-RETRY.max);
+    this.save();
+  }
+
+  /**
+   * Records left out, asked for again (their thread fetched) when due: so they come back without the caller asking.
+   * Those still left out back off (RETRY); after RETRY.tries, given up (logged). The fetch's answer resolves them
+   * (noteRead).
+   */
+  private async retryPending(lane: LaneName) {
+    const now = this.now();
+    const due = [...this.pending.entries()].filter(([, p]) => p.next <= now).slice(0, RETRY.perCall);
+    if (!due.length) return;
+    for (const [key, p] of due) {
+      const thread = p.thread ?? (p.id ? this.known.get(p.id)?.thread : null) ?? null;
+      if (thread) {
+        try {
+          await this.fd([thread], lane);
+        } catch (e) {
+          const st = (e as StatusError).status;
+          // The page or Gmail not answering now: no try counted, tried again on the next look.
+          if (st === 503 || st === 504 || st === 429) return;
+        }
+      }
+      const still = this.pending.get(key);
+      if (!still) continue;
+      still.tries++;
+      if (still.tries >= RETRY.tries) {
+        this.pending.delete(key);
+        this.o.log('warn', `gmail: a record left out ${RETRY.tries} times is no longer asked for (${key.startsWith('thread:') ? 'a thread' : 'a message'})`);
+      } else still.next = this.now() + Math.min(RETRY.firstMs * 2 ** (still.tries - 1), RETRY.maxMs);
+    }
+    this.save();
+  }
+
+  /** What is left out and not read since (for the self-check and tests): counts only. */
+  get leftOut(): { pending: number; recovered: number } {
+    return { pending: this.pending.size, recovered: this.recovered.length };
   }
 
   /** Records left out of an answer: counted per endpoint, each logged once (where and why, never a value). */
@@ -818,8 +920,16 @@ export class GmailMail {
       this.skipLogged.add(once);
       this.o.log('warn', `gmail ${ep}: ${name} left out, ${k.reason}`);
     }
-    // Ids skipped are forgotten: a later mail.get asks Gmail again rather than trust what was last seen.
-    for (const k of skipped) if (k.id) this.known.delete(k.id);
+    // Ids skipped are forgotten: a later mail.get asks Gmail again rather than trust what was last seen. And kept to be
+    // asked for again from here (retryPending), so a caller that does not read `skipped` still hears of them.
+    const now = this.now();
+    for (const k of skipped) {
+      if (k.id) this.known.delete(k.id);
+      const key = skipKey(k);
+      if (!key || this.pending.has(key) || this.pending.size >= RETRY.max) continue;
+      this.pending.set(key, { id: k.id, thread: k.thread, since: now, tries: 0, next: now + RETRY.firstMs });
+    }
+    this.save();
     this.o.onChange?.();
   }
 
@@ -1230,7 +1340,9 @@ export class GmailMail {
    */
   private async guardRefuse(id: string, lane: LaneName) {
     if (!this.guard.tripped) return;
-    const k = await this.locate(id, null, lane).catch(() => null);
+    // A lookup that failed (the page or Gmail not answering now: 503, 'paused', 'backoff'; a 5xx; a layout refused) is
+    // said as it is, never as "unread": the message is not downloaded either way, and a passing failure stays passing.
+    const k = await this.locate(id, null, lane);
     if (!k) throw new StatusError('reading a message here was seen to mark it read in Gmail, and whether this one is unread is not known; it is not read here (open it in Gmail, or list its mailbox first)', 409, 'unread');
     if (k.labels.includes(L.UNREAD)) throw new StatusError('this message is unread, and reading one here was seen to mark it read in Gmail; it is not read here while it is unread (open it in Gmail)', 409, 'unread');
   }
@@ -1345,20 +1457,29 @@ export class GmailMail {
     const box = await this.box(input.mailboxId, 'fg');
     if (input.state === undefined || input.state === null || input.state === '') {
       const p = await this.pointInfo();
-      return { state: stateOf(p.history, this.now(), p.guess), added: [], changed: [], removed: [], more: false };
+      return { state: stateOf(p.history, this.stamp(), p.guess), added: [], changed: [], removed: [], more: false };
     }
     const st = parseState(input.state);
     const r = await this.s(st.history, 'fg', st.guess ? 'bv' : 'ours');
     const added: MailSummary[] = [];
     const changed: MailChanges['changed'] = [];
     const removed: string[] = [];
+    await this.retryPending('fg');
+    const told = new Set<string>();
     for (const x of this.items(r.rows)) {
+      told.add(x.m.id);
       if (!box.member(x.m)) removed.push(x.m.id);
       else if (x.m.date > st.at - SKEW) added.push(this.summary(x, box.id));
       else changed.push({ id: x.m.id, flags: flagsOf(x.m.labels), labels: labelsOf(x.m.labels, this.userLabels) });
     }
+    // Read cleanly since this state was handed out, after an answer left them out: added (the caller never had them).
+    for (const rc of this.recovered)
+      if (rc.at > st.at && !told.has(rc.item.m.id) && box.member(rc.item.m)) {
+        told.add(rc.item.m.id);
+        added.push(this.summary(rc.item, box.id));
+      }
     added.sort((a, b) => a.receivedAt - b.receivedAt);
-    return { state: stateOf(r.history, this.now()), added, changed, removed, more: false, ...skippedOf(r.skipped.map(skipKey)) };
+    return { state: stateOf(r.history, this.stamp()), added, changed, removed, more: false, ...skippedOf(r.skipped.map(skipKey).filter((k) => !k || !told.has(k))) };
   }
 
   private items(rows: ThreadRow[]): Item[] {
@@ -1383,7 +1504,8 @@ export class GmailMail {
    */
   async poll(watch: { history: string; at: number; guess?: boolean }): Promise<{ history: string; at: number; mailboxes: string[]; arrived: MailSummary[]; skipped: string[] }> {
     const r = await this.s(watch.history, 'fg', watch.guess ? 'bv' : 'ours');
-    const at = this.now();
+    await this.retryPending('fg');
+    const at = this.stamp();
     const boxes = new Set<string>();
     const arrived: MailSummary[] = [];
     const items = this.items(r.rows);
@@ -1395,6 +1517,12 @@ export class GmailMail {
     // Nothing to show for a move of the sync point, or a message left out (its mailboxes not known): Inbox and All Mail,
     // so an app looks (its mail.changes reports the skipped ids).
     if ((!items.length && r.history !== watch.history) || r.skipped.length) for (const b of [L.INBOX, 'all']) boxes.add(b);
+    // Recovered since the last look: their mailboxes changed (an app's mail.changes from before reports them as added).
+    for (const rc of this.recovered)
+      if (rc.at > watch.at) {
+        for (const b of SYSTEM) if (b.label ? rc.item.m.labels.includes(b.label) : inAllMail(rc.item.m.labels)) boxes.add(b.id);
+        for (const l of rc.item.m.labels) if (this.userLabels.has(l)) boxes.add(l);
+      }
     arrived.sort((a, b) => a.receivedAt - b.receivedAt);
     const out = arrived.slice(-CATCH_UP);
     for (const m of out) this.announced.add(m.id);

@@ -387,9 +387,6 @@ function state(): { status: string; attention: Attention | null } {
     if (t && !onCalendar(t)) return signedInOnce ? att({ kind: 'unknown', message: `Google Calendar is not open in the sandbox (it is on ${t}); open the live view and go back to it`, liveView: true }) : att(LOGIN);
     return { status: 'connecting', attention: null };
   }
-  // The canary saw Gmail's answers change or fail (src/gmail/canary.ts): until a run is clean again.
-  const c = canary.last;
-  if (c && (c.problems.length || c.changes.length)) return att({ kind: 'selector_broken', message: `Gmail changed how it answers (${c.changes.length ? c.changes.map((x) => x.endpoint).join(', ') : c.problems[0]}); mail reads what it still can, and ${CANARY_FILE} in the account's directory says where`, liveView: false });
   if (verified) return { status: 'online', attention: null };
   if (probe && !probe.ok && !probing) return att({ kind: 'api_refused', message: `Signed in, but Google refused the Calendar API with every key it was tried with (${probe.statuses.join(', ')})`, liveView: false });
   return { status: 'connecting', attention: null };
@@ -563,8 +560,10 @@ function layers(): Layer[] {
         : { name: 'Calendar API', state: 'ok', note: `answered ${probe.status}, ${new Date(probe.at).toISOString().slice(0, 16).replace('T', ' ')} UTC` }
       : { name: 'Calendar API', state: 'waiting', note: probe && !probe.ok ? `waits for a key (it answered ${probe.status ?? 'nothing'})` : 'waits for a key' };
   const protocol: Layer = gmail ? gmail.layer() : { name: 'Gmail protocol', state: 'off', note: 'no Gmail tab' };
+  const c = canary.last;
+  const canaryLayer: Layer = !gmail || !canaryMs ? { name: 'Gmail canary', state: 'off', note: canaryMs ? 'no Gmail tab' : 'gmailCanaryHours is 0' } : !c ? { name: 'Gmail canary', state: 'waiting', note: 'not run yet' } : canaryTrouble() ? { name: 'Gmail canary', state: 'failed', note: `Gmail changed how it answers (${c.changes.length ? c.changes.map((x) => x.endpoint).join(', ') : c.problems[0]}); mail reads what it still can, and ${CANARY_FILE} in the account's directory says where` } : { name: 'Gmail canary', state: 'ok', note: c.summary };
   const background: Layer = gmail ? gmail.backgroundLayer() : { name: 'Gmail background', state: 'off', note: 'no Gmail tab' };
-  return [screen, browser, extension, signedIn, only('google.calendar', key), only('google.calendar', calendar), only('mail', gmailLayer()), only('mail', protocol), only('mail', background)];
+  return [screen, browser, extension, signedIn, only('google.calendar', key), only('google.calendar', calendar), only('mail', gmailLayer()), only('mail', protocol), only('mail', background), only('mail', canaryLayer)];
 }
 
 let lastSent = '';
@@ -573,7 +572,9 @@ function status(force = false) {
   const email = current()?.email;
   const g = gm.hooked ? gm.session : null;
   const name = g?.email && g.email === email ? (g.name ?? null) : null;
-  const ev = { t: 'status', status: st.status, attention: st.attention, liveView, ...(email ? { self: { email, ...(mailOn ? { addresses: [{ email, name }] } : {}) } } : {}), details: details(), layers: layers() };
+  // `changed`: the canary saw Gmail's answers change or fail (src/gmail/canary.ts), until a run is clean again. The
+  // manager announces it (a `changed` notice) without the account needing you: Calendar stays as it is.
+  const ev = { t: 'status', status: st.status, attention: st.attention, changed: canaryTrouble(), liveView, ...(email ? { self: { email, ...(mailOn ? { addresses: [{ email, name }] } : {}) } } : {}), details: details(), layers: layers() };
   const s = JSON.stringify(ev);
   if (s === lastSent && !force) return;
   lastSent = s;
@@ -672,6 +673,8 @@ async function reloadPage(p: Page) {
   p.reloads++;
   p.lastReload = { at: Date.now(), how: null };
   if (p.role === 'calendar') recheck = true;
+  // A reloaded Gmail page may answer what it did not: no request stays held for failing alike before (mail.ts REPEAT).
+  if (p.role === 'gmail') gmail?.clearHolds();
   log('warn', `the ${p.name} page did not answer ${n} requests in a row; ${fresh ? 'opening its tab anew' : 'reloading its tab'}, and only that one`);
   status();
   try {
@@ -1341,6 +1344,12 @@ function checkSelfCheckRequest() {
  * gmailCanaryHours, the self-check without reading a message, its answers' shapes compared with the last run's. Waits
  * as the watch does (a reload, silence, a learn run, the probe, the self-check).
  */
+/** The canary's last run found a layout refused, records left out, or the answers' shapes changed. */
+function canaryTrouble(): boolean {
+  const c = canary.last;
+  return !!c && (c.problems.length > 0 || c.changes.length > 0);
+}
+
 function checkCanary() {
   if (!gmail || !canaryMs || selfChecking || learning || gmailProbing || cleaning) return;
   let g: GmailMail;

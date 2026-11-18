@@ -166,7 +166,9 @@ only that one`, then `the Gmail tab was sent back to its start page` or `… was
 (`calendarReloads`, `gmailReloads`). Requests sent to a page before its reload do not count against the new page,
 nor does one cut short by its wait in the lane or by its op's time (given less than 12.5 s), nor a download or
 upload the page said it has (it is working on it; the hook cuts Gmail off at 80 s, more than `mail.get`'s 60 s). After a Calendar reload, one `calendarList` call shows it answers
-again; Gmail makes no call of its own, so its hook coming back up is its answer. A dead Chromium still exits for a
+again; Gmail makes no call of its own, so its hook coming back up is its answer. A request made while a page's tab is
+being reloaded waits (up to 15 s, within its own time) for the new page's hook, instead of reaching the old page, whose
+unload would cut its fetch ("Failed to fetch"); past that it is sent as before. A dead Chromium still exits for a
 supervised restart, as before.
 
 **Each unanswered request is told apart in the log, before any reload**, so the cause of a silence can be found from

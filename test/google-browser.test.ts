@@ -460,6 +460,8 @@ it(
     const before = starts();
     const loads = { calendar: fake.pageLoads('calendar', 0), gmail: fake.pageLoads('gmail', 0) };
     fake.stall('calendar', 'until-reload');
+    // The reload's new page comes 3 s late, so a call made in that moment would reach the old page (2026-11-18).
+    fake.slowLoad('calendar', 3000);
     const t0 = Date.now();
     const first = app.call(googleCalendar, signedIn, 'calendar.calendarList.list', {}).catch((x: any) => x) as Promise<CallFailed>;
     // Meanwhile the Gmail page answers as ever: the probe runs through while the Calendar call hangs.
@@ -483,6 +485,12 @@ it(
     }
     // Two in a row: the Calendar tab, and only it, is sent back to its start page.
     await until(() => logOf(signedIn).includes('the Calendar page did not answer 2 requests in a row; reloading its tab, and only that one'), 10_000, 'the reload');
+    // A call made while the tab is being reloaded waits for the new page: it is not sent to the old one, whose unload
+    // would cut its fetch ("Failed to fetch").
+    expect(fake.pageLoads('calendar', 0)).toBe(loads.calendar);
+    const during = await app.call(googleCalendar, signedIn, 'calendar.calendarList.list', {}).catch((x: any) => x);
+    expect(during.message).toBeUndefined();
+    expect(during.items.length).toBeGreaterThan(0);
     // Before that, each silence was told apart: the page had the request, its fetch was still open (the hook said so at
     // 20 s, and again when asked without the network), and the tab was neither discarded nor frozen. Each line has its time.
     const lines = logOf(signedIn).split('\n');

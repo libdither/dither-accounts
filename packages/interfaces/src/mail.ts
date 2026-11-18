@@ -242,6 +242,13 @@ export interface OutgoingMail {
   /** A reply to this message (its id): sets In-Reply-To and References, and marks the original answered. */
   replyTo?: string;
   attachments?: OutgoingFile[];
+  /**
+   * The app's own name for this send (1 to 200 characters), so it goes at most once however often the call arrives:
+   * the account keeps it for 7 days. Sent again after it went, the call answers the first send's answer (or fails
+   * `duplicate`, 409, when that answer was not kept); sent again after a send whose outcome is unknown, it fails
+   * `unsure`, 504, and sends nothing. A new message wants a new key; the same message sent again on purpose too.
+   */
+  idempotencyKey?: string;
 }
 
 /** One person `mail.contacts` suggests: an address to write to, and the name the service shows with it. */
@@ -351,6 +358,17 @@ export const mail = iface({
      *
      * Any other refusal has code `failed` and its status (400 bad input, 413 too big, 501 the account cannot send at
      * all: `details.canSend` is false).
+     *
+     * With an `idempotencyKey` (OutgoingMail), a key this account has seen in the last 7 days is not sent again:
+     *
+     * - sent: the first send's answer, again; or `duplicate` (409) when that answer was not kept.
+     * - still sending: the first send's answer, once it has one.
+     * - started, outcome unknown (the extractor stopped mid-send, or the send failed in a way that may have sent it):
+     *   `unsure` (504). Look in Sent; send with a new key if it did not go.
+     *
+     * A send that failed before anything went (a refusal above, the page not ready) forgets its key, so the same key
+     * may try again. `unsure` (504) is also what the app's client answers for any write (mail.send among them) in
+     * flight when its socket to the manager dropped (packages/client): it is not sent again.
      */
     'mail.send': op('write', 'Send a message as you; a copy goes to Sent where the server keeps one', s.typed<OutgoingMail>('an outgoing message'), s.typed<{ messageId: string; sentId: string | null }>(), 120_000),
   },

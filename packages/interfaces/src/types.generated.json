@@ -1129,7 +1129,7 @@
     }
    },
    "mail.send": {
-    "input": "{\n  /** The address to send as: one of the account's own (`status.self.addresses`), any other is refused (422). Without it, the first of them (Proton: a reply goes from the address the original came to). */\n  from?: string;\n  to: MailAddress[];\n  cc?: MailAddress[];\n  bcc?: MailAddress[];\n  subject: string;\n  /** At least one of text and html. */\n  text?: string;\n  html?: string;\n  /** A reply to this message (its id): sets In-Reply-To and References, and marks the original answered. */\n  replyTo?: string;\n  attachments?: OutgoingFile[];\n}",
+    "input": "{\n  /** The address to send as: one of the account's own (`status.self.addresses`), any other is refused (422). Without it, the first of them (Proton: a reply goes from the address the original came to). */\n  from?: string;\n  to: MailAddress[];\n  cc?: MailAddress[];\n  bcc?: MailAddress[];\n  subject: string;\n  /** At least one of text and html. */\n  text?: string;\n  html?: string;\n  /** A reply to this message (its id): sets In-Reply-To and References, and marks the original answered. */\n  replyTo?: string;\n  attachments?: OutgoingFile[];\n  /** The app's own name for this send (1 to 200 characters), so it goes at most once however often the call arrives: the account keeps it for 7 days. Sent again after it went, the call answers the first send's answer (or fails `duplicate`, 409,  */\n  idempotencyKey?: string;\n}",
     "output": "{ messageId: string; sentId: null | string }",
     "example": {
      "to": [],

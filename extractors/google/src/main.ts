@@ -35,7 +35,7 @@ import type { OutgoingMail } from '@dither-accounts/interfaces';
 import { type ContactsAnswer, GmailContacts } from './gmail/contacts.ts';
 import { GmailMail, type PageKind, stateOf, type SyncAnswer, type Transport } from './gmail/mail.ts';
 import { DECIMAL_ID } from './gmail/protocol.ts';
-import { checkOutgoing, MAX_RECIPIENTS, SEND_CAP } from './gmail/send.ts';
+import { checkOutgoing, gmailMayHaveSent, gmailSendOnce, MAX_RECIPIENTS, SEND_CAP } from './gmail/send.ts';
 import { selfCheck } from './gmail/selfcheck.ts';
 import { checkLearnScript, describeStep, type LearnStep } from './learn.ts';
 
@@ -1421,11 +1421,13 @@ async function onCommand(cmd: Command): Promise<unknown> {
       return mailOp((g) => g.trash({ ids: cmd.ids, threadIds: cmd.threadIds }));
     case 'mail.send': {
       const m = checkOutgoing(cmd as unknown as OutgoingMail, link.accountDir);
-      return mailOp((g) => {
-        const s = gm.hooked ? gm.session : null;
-        if (!s?.email) throw new StatusError("Gmail has not shown which address it is signed in as yet; try again in a moment", 503, 'unavailable');
-        return g.send(m, { email: s.email, name: s.name ?? null });
-      });
+      const send = () =>
+        mailOp((g) => {
+          const s = gm.hooked ? gm.session : null;
+          if (!s?.email) throw new StatusError("Gmail has not shown which address it is signed in as yet; try again in a moment", 503, 'unavailable');
+          return g.send(m, { email: s.email, name: s.name ?? null });
+        });
+      return gmailSendOnce(link.accountDir).run(cmd.idempotencyKey, send, { unknown: gmailMayHaveSent });
     }
     case 'mail.contacts':
       // Not through mailOp: no watch started, no queue behind mail or background reading (src/gmail/contacts.ts).

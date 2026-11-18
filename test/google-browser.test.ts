@@ -662,6 +662,33 @@ it(
 );
 
 it(
+  "mail.send with an idempotencyKey: sent once however often it is asked, at once or after; a refused key may try again; a key whose send may have gone is refused unsure",
+  async () => {
+    await until(() => layerOf(signedIn, 'Gmail page')?.state === 'ok', 30_000, 'the Gmail page up');
+    const msg = { to: [{ email: 'ann@example.org', name: 'Ann Lee' }], subject: `Once only ${WEB.mailMark}`, text: `one copy ${WEB.mailMark}` };
+    const before = fake.gmail.sent.length;
+    const [a, b] = await Promise.all([mailCall('mail.send', { ...msg, idempotencyKey: 'once-1' }), mailCall('mail.send', { ...msg, idempotencyKey: 'once-1' })]);
+    expect(b).toEqual(a);
+    expect(await mailCall('mail.send', { ...msg, idempotencyKey: 'once-1' })).toEqual(a);
+    expect(fake.gmail.sent.length).toBe(before + 1);
+    expect(a).toEqual({ messageId: fake.gmail.sent.at(-1)!.messageId, sentId: fake.gmail.sent.at(-1)!.id });
+    // Refused before anything went (another From): the key is forgotten, and the same key sends.
+    expect(((await mailCall('mail.send', { ...msg, from: 'other@example.org', idempotencyKey: 'once-2' }).catch((x) => x)) as CallFailed).code).toBe('from');
+    await mailCall('mail.send', { ...msg, idempotencyKey: 'once-2' });
+    expect(fake.gmail.sent.length).toBe(before + 2);
+    // A send that started and never said how it ended (the extractor stopped mid-send): refused, nothing sent.
+    const keys = join(accountDir(signedIn), 'send-keys.json');
+    const kept = JSON.parse(readFileSync(keys, 'utf8'));
+    kept.keys['once-3'] = { at: Date.now(), state: 'started' };
+    writeFileSync(keys, JSON.stringify(kept), { mode: 0o600 });
+    const e = (await mailCall('mail.send', { ...msg, idempotencyKey: 'once-3' }).catch((x) => x)) as CallFailed;
+    expect([e.code, e.status]).toEqual(['unsure', 504]);
+    expect(fake.gmail.sent.length).toBe(before + 2);
+  },
+  120_000,
+);
+
+it(
   "mail.contacts: what Gmail's To field suggests, through the page with the key in Gmail's config, beside mail; another layout refused",
   async () => {
     await until(() => layerOf(signedIn, 'Gmail page')?.state === 'ok', 30_000, 'the Gmail page up');

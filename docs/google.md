@@ -796,6 +796,10 @@ the op's 120 s, nothing new starts late (`SEND_LIMITS`): no upload past 60 s, no
 no send past 90 s (502, the draft left in Drafts). A file is handed to the page in pieces; a piece for an upload the
 page no longer holds (it reloaded) is refused rather than started anew, and the upload checks the size it got.
 
+An `idempotencyKey` sends at most once (docs/mail.md, "Sending once"). GmailMail.send says a send that may have gone
+with 504 and nothing else, so only a 504 (or an error it did not explain) leaves the key as `unsure`; any other failure
+forgets it.
+
 ## Suggesting people
 
 `mail.contacts { query, limit? }` answers what Gmail's own compose To field suggests while you type an address: the

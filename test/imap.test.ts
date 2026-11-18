@@ -452,6 +452,27 @@ describe('writing', () => {
     expect(await h.fails(acc, 'mail.send', { to: [{ name: null, email: bob.email }], subject: 'x', text: 'y', attachments: [{ filename: 's', mime: 'text/plain', path: secret }] })).toMatchObject({ status: 403 });
     expect(await h.fails(acc, 'mail.send', { to: [{ name: null, email: bob.email }], subject: 'x', text: 'y', attachments: [{ filename: 's', mime: 'text/plain', path: 'relative.txt' }] })).toMatchObject({ status: 400 });
   });
+
+  it('mail.send with an idempotencyKey: sent once however often it is asked, at once or after; a refused key may try again; a key whose send may have gone is refused unsure', async () => {
+    const msg = { to: [{ name: null, email: bob.email }], subject: 'Once only', text: 'one copy' };
+    const before = sink.received.length;
+    const [a, b] = await Promise.all([h.call(acc, 'mail.send', { ...msg, idempotencyKey: 'once-1' }), h.call(acc, 'mail.send', { ...msg, idempotencyKey: 'once-1' })]);
+    expect(b).toEqual(a);
+    expect(await h.call(acc, 'mail.send', { ...msg, idempotencyKey: 'once-1' })).toEqual(a);
+    expect(sink.received.length).toBe(before + 1);
+    expect(sink.received.at(-1)!.raw.toString()).toContain(a.messageId);
+    // Refused before anything went (another From): the key is forgotten, and the same key sends.
+    expect(await h.fails(acc, 'mail.send', { ...msg, from: 'mallory@example.test', idempotencyKey: 'once-2' })).toMatchObject({ code: 'from' });
+    await h.call(acc, 'mail.send', { ...msg, idempotencyKey: 'once-2' });
+    expect(sink.received.length).toBe(before + 2);
+    // A send that started and never said how it ended (the extractor stopped mid-send): refused, nothing sent.
+    const keys = join(h.accountDir(acc), 'send-keys.json');
+    const kept = JSON.parse(readFileSync(keys, 'utf8'));
+    kept.keys['once-3'] = { at: Date.now(), state: 'started' };
+    writeFileSync(keys, JSON.stringify(kept), { mode: 0o600 });
+    expect(await h.fails(acc, 'mail.send', { ...msg, idempotencyKey: 'once-3' })).toMatchObject({ code: 'unsure', status: 504 });
+    expect(sink.received.length).toBe(before + 2);
+  }, 30_000);
 });
 
 describe('when things go wrong', () => {

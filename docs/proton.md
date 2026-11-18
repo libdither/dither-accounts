@@ -293,7 +293,8 @@ Ids (`src/mail.ts`), opaque to apps:
   message id of this account, attachments `{ filename, mime, base64 | path }` (a path absolute, a regular file, not one
   of the account's own files), at most 25 MB together (Proton's limit): 400, 404, 403 or 413. Answers `{ messageId:
   <the Message-ID Proton gave>, sentId: <its id> }`; the sent message is the copy in Sent. A message it will not send as
-  it stands is **422** with code `recipients` or `settings` and a sentence for a person ("Sending").
+  it stands is **422** with code `recipients` or `settings` and a sentence for a person ("Sending"). An
+  `idempotencyKey` sends at most once (docs/mail.md, "Sending once"); `details.sent` counts what went, not repeats.
 
 ### Threading and bulk headers: which calls carry them
 

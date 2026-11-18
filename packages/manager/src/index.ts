@@ -56,6 +56,8 @@ export interface ManagerOpts {
   restartOnlineMs?: number;
   /** Tests only: how long an adopted extractor has to connect (60 s). */
   adoptConnectMs?: number;
+  /** Tests only: how often adopted extractors are looked at in /proc (1 s). */
+  watchMs?: number;
   /** Tests only: what a `scope` launch goes through instead of systemd-run. */
   systemdRun?: string;
   /** Tests only: how long a surviving extractor waits for a manager before it ends itself (1800 s). */
@@ -134,6 +136,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     fingerprint: o.fingerprint,
     restartPauseMs: o.restartPauseMs,
     adoptConnectMs: o.adoptConnectMs,
+    watchMs: o.watchMs,
     restartOnlineMs: o.restartOnlineMs,
     systemdRun: o.systemdRun,
     managerGoneExitS: o.managerGoneExitS,

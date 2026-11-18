@@ -80,6 +80,15 @@ function insertAccount(store: Store, dir: string, id: string, config: Record<str
 }
 
 const online = (m: Manager, id: string) => m.sup.state(id).online;
+/** Lets go of the pauses a manager's restarts for changed code wait in now (a test holds them with a long restartPauseMs). */
+const endPauses = (m: Manager) => {
+  const pauses = (m.sup as any).pauses as Set<{ timer: Timer; done: () => void }>;
+  for (const p of pauses) {
+    clearTimeout(p.timer);
+    pauses.delete(p);
+    p.done();
+  }
+};
 const pidsOf = async (m: Manager, id: string) => (await m.sup.command(id, { t: 'pid' })) as { pid: number; children: number[] };
 const allGone = (pids: number[]) => pids.every((p) => !procAlive(p));
 
@@ -133,7 +142,8 @@ test('an adopted extractor that is SIGKILLed is a crash ("killed"): recorded, it
   const p = await started(m1, dir, 'acc-killed-1');
   const port = m1.http.server.port!;
   await m1.stop({ leaveExtractors: true });
-  const m2 = await manager(dir, { port, errors: true });
+  // Its end is seen on the next look in /proc: often here, rather than a second's wait out of the test's 5 s.
+  const m2 = await manager(dir, { port, errors: true, watchMs: 50 });
   await until(() => online(m2, 'acc-killed-1'), 15_000, 'adopted and back');
   process.kill(p.pid, 'SIGKILL');
   await until(() => m2.sup.details('acc-killed-1').lastExit?.signal === 'killed', 10_000, 'its end seen');
@@ -152,15 +162,18 @@ test('an account stopped while staggered restarts wait stays stopped; the others
   const b = await started(m1, dir, 'acc-stagger-b', {});
   const port = m1.http.server.port!;
   await m1.stop({ leaveExtractors: true });
-  const m2 = await manager(dir, { port, fingerprint: () => 'v2', restartPauseMs: 700 });
+  // The pause before each restart is held until the test lets it go, so both still wait however slow the start was.
+  const m2 = await manager(dir, { port, fingerprint: () => 'v2', restartPauseMs: 600_000 });
   await until(() => online(m2, 'acc-stagger-a') && online(m2, 'acc-stagger-b'), 15_000, 'both adopted and back');
-  expect(m2.sup.codeRestarts()).toMatchObject({ queued: 2, restarted: 0 });
+  expect(m2.sup.codeRestarts()).toMatchObject({ queued: 2, active: 0, restarted: 0 });
   // Stopped on purpose (the page, an app) while it waits its turn.
   await m2.sup.stop('acc-stagger-a');
   expect(procAlive(a.pid)).toBe(false);
-  await until(() => online(m2, 'acc-stagger-b') && !m2.sup.details('acc-stagger-b').adopted, 20_000, 'b restarted');
+  // The pauses let go as each comes: a's turn (passed over), then b's.
+  await until(() => (endPauses(m2), online(m2, 'acc-stagger-b') && !m2.sup.details('acc-stagger-b').adopted), 20_000, 'b restarted');
   expect((await pidsOf(m2, 'acc-stagger-b')).pid).not.toBe(b.pid);
-  await Bun.sleep(1000);
+  // The restarts are over: a was passed over, and nothing is left to start it.
+  await until(() => m2.sup.codeRestarts().active === 0, 10_000, 'the restarts over');
   expect(m2.sup.state('acc-stagger-a').running).toBe(false);
   expect(m2.sup.codeRestarts()).toEqual({ queued: 0, active: 0, restarted: 1, online: 1, crashed: 0 });
   const health = (await (await fetch(`${m2.url}/api/health`)).json()) as any;
@@ -433,16 +446,24 @@ test('restarts for changed code: one at a time per kind, different kinds side by
   await until(() => ids.every((id) => online(m1, id)), 15_000, 'all online');
   const port = m1.http.server.port!;
   await m1.stop({ leaveExtractors: true });
-  const m2 = await manager(dir, { kinds: two, port, fingerprint: () => 'v2', restartPauseMs: 300 });
-  await until(() => ids.every((id) => online(m2, id)), 15_000, 'all adopted and back');
+  // The pauses are held until the count below is in place, then let go as they come.
+  const m2 = await manager(dir, { kinds: two, port, fingerprint: () => 'v2', restartPauseMs: 600_000 });
+  // Each restart as it begins, counted where it is recorded, not sampled.
   let maxActive = 0;
+  const rollingNow = (m2.sup as any).rollingNow as Set<string>;
+  const add = rollingNow.add.bind(rollingNow);
+  rollingNow.add = (id: string) => {
+    add(id);
+    maxActive = Math.max(maxActive, rollingNow.size);
+    return rollingNow;
+  };
+  await until(() => ids.every((id) => online(m2, id)), 15_000, 'all adopted and back');
   let bothFakeDown = false;
   const watch = setInterval(() => {
-    maxActive = Math.max(maxActive, m2.sup.codeRestarts().active);
     if (!online(m2, 'acc-pk-a1') && !online(m2, 'acc-pk-a2')) bothFakeDown = true;
   }, 5);
   try {
-    await until(() => ids.every((id) => online(m2, id) && !m2.sup.details(id).adopted), 30_000, 'all restarted');
+    await until(() => (endPauses(m2), ids.every((id) => online(m2, id) && !m2.sup.details(id).adopted)), 30_000, 'all restarted');
   } finally {
     clearInterval(watch);
   }

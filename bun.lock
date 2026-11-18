@@ -330,6 +330,7 @@
     "packages/client": {
       "name": "@dither-accounts/client",
       "dependencies": {
+        "@dither-accounts/interfaces": "workspace:*",
         "@dither-accounts/manager": "workspace:*",
         "@dither-accounts/spec": "workspace:*",
       },

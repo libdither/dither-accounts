@@ -164,7 +164,8 @@ export class Smtp {
     return { name: a.name ?? '', address: a.email };
   }
 
-  async send(mail: OutgoingMail, accountDir: string): Promise<{ messageId: string; sentId: string | null }> {
+  /** `sending`: called just before the message is handed to the server (SendOnce: a failure before it sent nothing). */
+  async send(mail: OutgoingMail, accountDir: string, sending: () => void = () => {}): Promise<{ messageId: string; sentId: string | null }> {
     const msg = checkOutgoing(mail);
     const from = this.sender(msg.from);
     const files = (msg.attachments ?? []).map((a, i) => outgoingFile(a, i, accountDir));
@@ -198,13 +199,14 @@ export class Smtp {
     const rcpt = [...msg.to, ...(msg.cc ?? []), ...(msg.bcc ?? [])].map((a) => a.email);
     await this.session(
       (conn) =>
-        new Promise<void>((res, rej) =>
+        new Promise<void>((res, rej) => {
+          sending();
           conn.send({ from: from.address, to: rcpt }, raw, (err: Error | null, info: any) => {
             if (err) return rej(err);
             if (info?.rejected?.length && !info?.accepted?.length) return rej(Object.assign(new Error(`every recipient was refused: ${info.rejected.join(', ')}`), { code: 'EENVELOPE' }));
             res();
-          }),
-        ),
+          });
+        }),
     );
 
     let sentId: string | null = null;

@@ -195,7 +195,23 @@ never \Seen). From those:
   before anything is sent; it sets From (with the configured name) and the SMTP envelope sender. `replyTo` sets In-Reply-To and References from the original
   and marks it answered. Attachments: `base64`, or `path`, an absolute path to a regular file of at most 25 MB that is
   not one of the account's own files (its secret.json above all); 35 MB together. The copy to Sent per "Copy to Sent"
-  above; `sentId` is its id, or null.
+  above; `sentId` is its id, or null. With `idempotencyKey`, see "Sending once" below.
+
+### Sending once
+
+`mail.send` takes an optional `idempotencyKey` (1 to 200 characters, the app's own name for this send). Each mail
+kind (imap, google, proton) keeps the keys it saw in the account's `send-keys.json` (0600) for 7 days, through
+`SendOnce` in `packages/link/src/once.ts`, so a resent call never sends twice, also after the extractor restarted:
+
+- A key that sent: the first send's answer again, nothing sent (`duplicate`, 409, if that answer was not kept).
+- A key still sending: the first send's answer once it has one.
+- A key whose send started and never finished (the extractor stopped mid-send), or failed in a way that may have sent
+  it (a 5xx or an unexplained error once the message was handed to the server; for Gmail, its 504): **`unsure`**
+  (504), nothing sent. Look in Sent; send with a new key if it did not go.
+- A key whose send failed before anything went (refused input, `from`, the page not ready) is forgotten: the same key
+  may send.
+
+The key is written down (and flushed) before the message is handed over, so even a crash mid-send leaves it as started.
 
 Events: `hello` (once per start, with `startedAt`), `status` (status, attention, `self: { email, displayName,
 addresses }`, `details`, `layers`), `mail.arrived { message }` for the inbox, `mail.changed { mailboxId, state }` for the inbox (from

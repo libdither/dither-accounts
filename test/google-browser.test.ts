@@ -16,6 +16,8 @@ import { inetSockets, rfbBanner, x11vncs } from '../packages/browser/test/inet.t
 import { type FakeGoogle, type FakeMessage, fakeEml, GMAIL_ROWS, startFakeGoogle } from './fake-google.ts';
 
 const LA = 'America/Los_Angeles';
+/** How long the hook gives a Gmail call here before it cuts it off (testFetchMs; 20 s live). */
+const TEST_FETCH_MS = 5000;
 const PRIMARY = 'pat@example.com';
 const WEB = {
   sapisid: 'sapisid-that-must-not-leak',
@@ -50,6 +52,7 @@ let signedOut: string;
 let mailOff: string;
 const events: Record<string, any[]> = {};
 const saved = process.env.DITHER_GOOGLE_BACKOFF_MS;
+const savedGap = process.env.DITHER_GOOGLE_RELOAD_GAP_MS;
 
 const until = async (f: () => boolean | Promise<boolean>, ms: number, what: string) => {
   const end = Date.now() + ms;
@@ -99,6 +102,8 @@ function processesOf(ids: string[]): number[] {
 beforeAll(async () => {
   if (!bins) return;
   process.env.DITHER_GOOGLE_BACKOFF_MS = '1';
+  // A silent page's second reload comes at once here, not after the first gap (reload.ts; its back-off: google-transport.test.ts).
+  process.env.DITHER_GOOGLE_RELOAD_GAP_MS = '0';
   fake = startFakeGoogle({ web: WEB });
   fake.addCalendar({ id: PRIMARY, summary: PRIMARY, timeZone: LA, accessRole: 'owner', primary: true, selected: true, backgroundColor: '#9fe1e7' });
   dir = mkdtempSync(join(tmpdir(), 'dacc-gweb-'));
@@ -109,7 +114,7 @@ beforeAll(async () => {
   await until(() => app.connected, 5000, 'the app connected');
   // The signed-in account most tests use, made here rather than in the first test, so that any one of them runs alone
   // (bun test -t): each test below that uses it starts from it up, its Gmail page too.
-  signedIn = (await app.admin({ do: 'create', kind: 'google', label: 'Google (test)', config: config(0, { gmailPollSeconds: 2 }) })).id;
+  signedIn = (await app.admin({ do: 'create', kind: 'google', label: 'Google (test)', config: config(0, { gmailPollSeconds: 2, testFetchMs: TEST_FETCH_MS }) })).id;
   await until(() => statusOf(signedIn)?.status === 'online' && statusOf(signedIn)?.details?.email === WEB.email && statusOf(signedIn)?.details?.endpointsSeen === 2, 60_000, 'online');
   await until(() => layerOf(signedIn, 'Gmail page')?.state === 'ok', 30_000, 'the Gmail page up');
 }, 120_000);
@@ -128,6 +133,8 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true });
   if (saved === undefined) delete process.env.DITHER_GOOGLE_BACKOFF_MS;
   else process.env.DITHER_GOOGLE_BACKOFF_MS = saved;
+  if (savedGap === undefined) delete process.env.DITHER_GOOGLE_RELOAD_GAP_MS;
+  else process.env.DITHER_GOOGLE_RELOAD_GAP_MS = savedGap;
 }, 30_000);
 
 it(
@@ -135,6 +142,8 @@ it(
   async () => {
     await until(() => statusOf(signedIn)?.status === 'online' && statusOf(signedIn)?.details?.email === WEB.email && statusOf(signedIn)?.details?.endpointsSeen === 2, 60_000, 'online');
     await until(() => layerOf(signedIn, 'Gmail page')?.state === 'ok', 30_000, 'the Gmail page up');
+    // The name comes from the page's account button, which the hook reads on its own round after signing in.
+    await until(() => !!statusOf(signedIn)?.self?.addresses?.[0]?.name, 10_000, "the Gmail page's account name");
     const st = statusOf(signedIn);
     expect(st.attention).toBeNull();
     // Apps get the live view's size, not its socket (an app opens it through the manager); the manager keeps the socket,
@@ -663,6 +672,33 @@ it(
 );
 
 it(
+  "mail.send with an idempotencyKey: sent once however often it is asked, at once or after; a refused key may try again; a key whose send may have gone is refused unsure",
+  async () => {
+    await until(() => layerOf(signedIn, 'Gmail page')?.state === 'ok', 30_000, 'the Gmail page up');
+    const msg = { to: [{ email: 'ann@example.org', name: 'Ann Lee' }], subject: `Once only ${WEB.mailMark}`, text: `one copy ${WEB.mailMark}` };
+    const before = fake.gmail.sent.length;
+    const [a, b] = await Promise.all([mailCall('mail.send', { ...msg, idempotencyKey: 'once-1' }), mailCall('mail.send', { ...msg, idempotencyKey: 'once-1' })]);
+    expect(b).toEqual(a);
+    expect(await mailCall('mail.send', { ...msg, idempotencyKey: 'once-1' })).toEqual(a);
+    expect(fake.gmail.sent.length).toBe(before + 1);
+    expect(a).toEqual({ messageId: fake.gmail.sent.at(-1)!.messageId, sentId: fake.gmail.sent.at(-1)!.id });
+    // Refused before anything went (another From): the key is forgotten, and the same key sends.
+    expect(((await mailCall('mail.send', { ...msg, from: 'other@example.org', idempotencyKey: 'once-2' }).catch((x) => x)) as CallFailed).code).toBe('from');
+    await mailCall('mail.send', { ...msg, idempotencyKey: 'once-2' });
+    expect(fake.gmail.sent.length).toBe(before + 2);
+    // A send that started and never said how it ended (the extractor stopped mid-send): refused, nothing sent.
+    const keys = join(accountDir(signedIn), 'send-keys.json');
+    const kept = JSON.parse(readFileSync(keys, 'utf8'));
+    kept.keys['once-3'] = { at: Date.now(), state: 'started' };
+    writeFileSync(keys, JSON.stringify(kept), { mode: 0o600 });
+    const e = (await mailCall('mail.send', { ...msg, idempotencyKey: 'once-3' }).catch((x) => x)) as CallFailed;
+    expect([e.code, e.status]).toEqual(['unsure', 504]);
+    expect(fake.gmail.sent.length).toBe(before + 2);
+  },
+  120_000,
+);
+
+it(
   "mail.contacts: what Gmail's To field suggests, through the page with the key in Gmail's config, beside mail; another layout refused",
   async () => {
     await until(() => layerOf(signedIn, 'Gmail page')?.state === 'ok', 30_000, 'the Gmail page up');
@@ -742,6 +778,26 @@ it(
     }
     expect((await mailCall('mail.list', { mailboxId: '^i', limit: 5 })).messages.length).toBe(5);
     await until(() => layerOf(signedIn, 'Gmail protocol')?.state === 'ok', 5000, 'the layer ok again');
+  },
+  60_000,
+);
+
+it(
+  "a Gmail call that hangs is cut off in the page: it fails as itself, not as the page's silence, and no reload",
+  async () => {
+    await until(() => layerOf(signedIn, 'Gmail page')?.state === 'ok', 30_000, 'the Gmail page up');
+    const reloads = statusOf(signedIn).details.gmailReloads;
+    const logged = logOf(signedIn).length;
+    // The next list call (bv) hangs on Gmail's side well past the hook's cut-off; the watch's s calls go on.
+    fake.gmail.delayNext(TEST_FETCH_MS * 3, 1, 'bv');
+    const e = (await mailCall('mail.list', { mailboxId: '^i', limit: 5 }).catch((x) => x)) as CallFailed;
+    expect(e.status).toBe(503);
+    expect(e.message).toBe('the Gmail page could not make the call (timeout)');
+    // The page answered (Gmail did not): not counted as its silence.
+    expect(logOf(signedIn).slice(logged)).not.toContain('the Gmail page did not answer');
+    expect(statusOf(signedIn).details.gmailReloads).toBe(reloads);
+    expect(layerOf(signedIn, 'Gmail page').state).toBe('ok');
+    expect((await mailCall('mail.list', { mailboxId: '^i', limit: 5 })).messages.length).toBe(5);
   },
   60_000,
 );

@@ -97,6 +97,9 @@ const bridge = new BridgeServer<Up, Down>({
   log,
   // A command that times out is told apart in the log: how far it got, the tab's state and the hook's own.
   silence: { name: 'x.com', tab: true, page: true },
+  // A read (or a mark read) the page has not said it has after 3 s is sent again (the page takes an id once); never a
+  // send, a post, a reply, a like or anything else others see (packages/browser bridge.ts).
+  resend: { kinds: ['page.state', 'about', 'feed', 'history', 'home', 'inbox', 'media', 'profile', 'reactors', 'requests', 'sync', 'translate', 'markRead'] },
 });
 
 /** Writes: a person's pace. Opening conversations to read (catching up, history, media): slower. */

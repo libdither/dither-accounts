@@ -33,6 +33,23 @@ named its reason (`new StatusError(message, 422, 'recipients')` in packages/link
 `status`. The interface documents its words (Proton's `mail.send`: `from`, `recipients`, `settings`, in
 packages/interfaces/src/mail.ts). An extractor cannot use one of the manager's words: those arrive as `failed`.
 
+### A call runs once
+
+An app's client resends what it was waiting for when its socket drops and comes back (a deploy restarts the manager,
+while the extractors keep running: docs/supervisor.md). So that a resend never makes a write go twice:
+
+- **The manager** runs each call id of an app once (`REPEATS` in router.ts: 10 minutes, at most 10 000 ids, in memory).
+  A call or admin action sent again with the same id waits for the first one's answer, or gets it again, and does not
+  run; the same id for another call is `invalid`. A read is remembered only until it answers (running one again is
+  harmless, and its answer can be large).
+- **The client** (`packages/client`) sends reads again on the new socket, since the manager may have restarted and
+  forgotten the ids. A write, manage call or admin change already sent is not: it fails at once with code `unsure`
+  (status 504), meaning it may or may not have gone through; the app decides (looks in Sent, asks the person). A call
+  made while the socket was down was never sent, so it waits and goes on the next socket. The client finds an op's
+  level in `@dither-accounts/interfaces` by its name; an op it does not know counts as a write.
+- **An extractor** keeps its own record where a write cannot be undone: `mail.send`'s `idempotencyKey`
+  (packages/link `once.ts`, docs/mail.md "Sending once").
+
 Only code in this repo runs as an extractor. Apps ask for operations; they never bring code.
 
 ## The page

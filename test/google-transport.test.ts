@@ -8,6 +8,8 @@ import { afterEach, expect, jest, test } from 'bun:test';
 import { googleCalendar, mail } from '@dither-accounts/interfaces';
 import { bindToOp, deadline, MANAGER_DEFAULT_MS, opMs, outsideOp, remainingMs, withDeadline } from '../extractors/google/src/deadline.ts';
 import { Readiness } from '../extractors/google/src/ready.ts';
+import { labelsOnly, RESEND_KINDS, resendable } from '../extractors/google/src/resend.ts';
+import { DRAFT_LABELS, EDITS, labelChange, writeRequest } from '../extractors/google/src/gmail/write.ts';
 import { LOADING_DEFERS, RELOAD_FIRST_GAP_MS, RELOAD_MAX_GAP_MS, ReloadPolicy } from '../extractors/google/src/reload.ts';
 
 afterEach(() => {
@@ -126,8 +128,8 @@ test('reloads back off while they bring no answer, up to a cap between them; an 
     gaps.push(p.nextAt - now);
     now = p.nextAt;
   }
-  expect(gaps).toEqual([2, 4, 8, 16, 30, 30, 30, 30].map((m) => m * 60_000));
-  expect(RELOAD_MAX_GAP_MS).toBe(30 * 60_000);
+  expect(gaps).toEqual([2, 4, 8, 10, 10, 10, 10, 10].map((m) => m * 60_000));
+  expect(RELOAD_MAX_GAP_MS).toBe(10 * 60_000);
   p.answered();
   expect(p.decide(now + 1, false)).toEqual({ go: true });
 });
@@ -150,4 +152,22 @@ test('in tests the first gap can be 0: the next reload comes at once', () => {
   const p = new ReloadPolicy(0);
   p.reloaded(5);
   expect(p.decide(5, false)).toEqual({ go: true });
+});
+
+test('sent again: reads and label changes only; never a Calendar write, a draft, a send, an upload or steering', () => {
+  const labels = writeRequest([labelChange(1, '700000000000000001', ['700000000000000002'], EDITS.trash), labelChange(2, '700000000000000003', ['700000000000000004'], EDITS.read)], { history: '42', now: 1 });
+  expect(labelsOnly(labels)).toBe(true);
+  expect(resendable({ kind: 'gmail.write', body: labels })).toBe(true);
+  // A draft's first save (change part 2) and a send (part 13, with the sending head), laid out as write.ts makes them.
+  const record = ['msg-a:r-1', ...Array(9).fill(null), DRAFT_LABELS, ...Array(67).fill(null)];
+  const draft = writeRequest([[1, ['thread-a:r-1', [null, null, [[null, null, null, 'thread-a:r-1', [record]]], null, null, null, null]]]], { history: '42', now: 1 });
+  const send = writeRequest([[1, ['thread-a:r-1', [...Array(13).fill(null), [record, null]]]]], { history: '42', now: 1, sending: true });
+  for (const body of [draft, send, null, [], [null, [[]]]]) expect(resendable({ kind: 'gmail.write', body })).toBe(false);
+  expect(resendable({ kind: 'gfetch', method: 'GET' })).toBe(true);
+  for (const method of ['POST', 'PATCH', 'DELETE', undefined]) expect(resendable({ kind: 'gfetch', method })).toBe(false);
+  for (const kind of ['gmail.sync', 'gmail.raw', 'gmail.rawChunk', 'gmail.contacts', 'page.state']) expect(resendable({ kind })).toBe(true);
+  for (const kind of ['gmail.upload', 'gmail.uploadChunk', 'gmail.nav', 'gmail.openRead', 'gmail.back', 'tab.reload']) {
+    expect(RESEND_KINDS).not.toContain(kind);
+    expect(resendable({ kind })).toBe(false);
+  }
 });

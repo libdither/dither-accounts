@@ -42,9 +42,12 @@ left running across an extractor restart) never mistakes a new command for one i
 passes each id to its hook only once, and would drop a recycled `c1`. A bridge made with `resend` sends a command
 again, the same id, when its page has not said `got` within 3 s (`RESEND_MS`), up to three times (`RESEND_MAX`); the
 copy that did arrive is dropped by the content script, so a command lost on the way costs about 3 s, not the whole
-timeout. Never sent again: the worker's own commands (every `tab.*`, and a kind's `workerKinds`: meta's `mediaFetch`,
-privacy's `webauthn.answer`; the worker has no such check), and what the kind's `when` leaves out (Google: a send). On
-for google, discord, messenger and instagram, proton, x and privacy; the statements kinds have no hook to say `got`.
+timeout. Only the kinds a kind lists (`resend.kinds`, narrowed by `when`): reads, and writes that are the same done
+twice (a mark read, a Gmail label). The id check lasts as long as the page: a copy that arrived just before a reload,
+whose `got` was lost, would run again in the new page. So nothing that sends or posts what other people see (a
+message, a post, a reply, a reaction, an edit, a delete, a Calendar event, a Proton API call other than GET) is listed,
+nor the worker's own commands (every `tab.*`, meta's `mediaFetch`, privacy's `webauthn.answer`). On for google,
+discord, messenger and instagram, proton, x and privacy; the statements kinds have no hook to say `got`.
 A resend is logged at debug (`<kind>: no word from the page in 3 s (…); sent again (1)`), and a timeout's error carries
 how often it was (`resent`).
 

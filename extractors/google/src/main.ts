@@ -42,6 +42,7 @@ import { OP_MARGIN_MS, opMs, outsideOp, remainingMs, withDeadline } from './dead
 import { checkLearnScript, describeStep, type LearnStep } from './learn.ts';
 import { Readiness } from './ready.ts';
 import { ReloadPolicy } from './reload.ts';
+import { RESEND_KINDS, resendable } from './resend.ts';
 
 const WIDTH = 1280;
 const HEIGHT = 800;
@@ -68,6 +69,8 @@ const PAGE_ANSWER_MS = 25_000;
 const SILENCE_COUNTS_MS = PAGE_ANSWER_MS / 2;
 /** At start, an op waits up to this (within its own time) for the page to be up, signed in and synced before refusing. */
 const READY_WAIT_MS = 10_000;
+/** Page requests that may take longer than an op has left (a download, an upload): not silence once the page has them. */
+const LONG_KINDS = new Set(['gmail.raw', 'gmail.upload']);
 /** tab.state, asked before a reload, answers within this. */
 const TAB_STATE_MS = 5_000;
 /** This many unanswered requests in a row to one page, and its tab is reloaded. */
@@ -358,8 +361,6 @@ function readKept(): Partial<Winner> {
 const bridgeToken = Buffer.from(crypto.getRandomValues(new Uint8Array(24))).toString('base64url');
 /** Ops waiting for a page to be ready (gmailReady, ready): they look again on every frame. */
 const readiness = new Readiness();
-/** A send (a gmail.write whose head says it sends) is never sent twice, even to the same page. */
-const isSend = (c: PageCmd | TabCmd) => c.kind === 'gmail.write' && Array.isArray((c as { body?: unknown[] }).body) && Array.isArray((c as { body: unknown[] }).body[0]);
 const bridge = new BridgeServer<Up, PageCmd | TabCmd>({
   token: bridgeToken,
   onMessage: (m) => {
@@ -380,9 +381,9 @@ const bridge = new BridgeServer<Up, PageCmd | TabCmd>({
     status();
     readiness.changed();
   },
-  // A command its page has not said it has after 3 s is sent again (the page takes an id once): a command lost on the
-  // way costs seconds, not PAGE_ANSWER_MS. The worker's own tab.* are not, nor a send.
-  resend: { when: (c) => !isSend(c) },
+  // A read or label change its page has not said it has after 3 s is sent again (the page takes an id once): a command
+  // lost on the way costs seconds, not PAGE_ANSWER_MS. Never a send or anything else others see (RESEND_KINDS).
+  resend: { kinds: RESEND_KINDS, when: (c) => resendable(c as { kind: string; method?: unknown; body?: unknown }) },
   log,
 });
 
@@ -779,9 +780,12 @@ async function pageRequest<T>(role: Role, cmd: PageCmd, answerMs = PAGE_ANSWER_M
       throw new StatusError(msg, 503);
     }
     // One cut short (by its wait in the lane, or its op's time) is not the page's silence; one sent to a page since
-    // reloaded is the old page's.
+    // reloaded is the old page's; nor a download or upload the page said it has: it is working on it (the hook cuts
+    // Gmail off at 80 s, which may be past what the op had left, as mail.get's 60 s).
     const given = deadline - sentAt;
-    if (generation === p.generation && given >= SILENCE_COUNTS_MS) unanswered(p, cmd, (e as { reached?: Reached }).reached ?? 'none', given);
+    const reached = (e as { reached?: Reached }).reached ?? 'none';
+    const working = reached === 'page' && LONG_KINDS.has(cmd.kind);
+    if (generation === p.generation && given >= SILENCE_COUNTS_MS && !working) unanswered(p, cmd, reached, given);
     throw silence();
   } finally {
     lane.give();

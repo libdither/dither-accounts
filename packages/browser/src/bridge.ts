@@ -19,8 +19,11 @@
  * With `resend` set, a command the page has not said it has (its `got` at 'page') within RESEND_MS is sent again, the
  * same id, up to RESEND_MAX times: the content script passes an id on once, so a copy that already arrived is
  * dropped, and one lost on the way (a port being replaced, a worker put to sleep) costs seconds, not the whole
- * timeout. Only for kinds whose hooks say `got` (page/command-watch.js), and never for commands the service worker
- * runs itself (`tab.*`, and the kind's own `workerKinds`): a worker has no such check, and would run them twice.
+ * timeout. Only the kinds the extractor lists (`resend.kinds`): reads, and writes that are the same done twice (a
+ * mark read, a label). The id check holds within one page only: a copy that reached a page whose `got` was lost, and
+ * whose resend lands in a reloaded page or a new tab, runs twice. So nothing that sends or posts what other people
+ * see (a message, a post, a reply, a reaction, an edit, a delete) is ever listed, nor a command the service worker
+ * runs itself (it has no such check); `tab.*` never is, whatever the list says.
  */
 import type { Server, ServerWebSocket } from 'bun';
 import type { Log } from './sandbox.ts';
@@ -51,9 +54,9 @@ export interface BridgeServerOpts<Up, Cmd = { kind: string }> {
 
 /** Which commands are sent again while their page is silent about them, and how often. */
 export interface BridgeResend<Cmd = { kind: string }> {
-  /** Kinds the service worker answers itself, besides every `tab.*`: never sent again. */
-  workerKinds?: string[];
-  /** A command that must not be sent twice even to the same page (`false`); default every other one. */
+  /** The only kinds sent again: reads, and writes that are the same done twice (see the header). */
+  kinds: readonly string[];
+  /** Of those, the commands that may be sent again (a GET of a kind that also writes); default all. */
   when?: (cmd: Cmd) => boolean;
   /** Default RESEND_MS. */
   afterMs?: number;
@@ -225,7 +228,7 @@ export class BridgeServer<Up extends { t: string } = { t: string; [k: string]: u
   /** Whether `cmd` may be sent again (the `resend` option). */
   private resends(cmd: Cmd): boolean {
     const r = this.opts.resend;
-    if (!r || cmd.kind.startsWith('tab.') || r.workerKinds?.includes(cmd.kind)) return false;
+    if (!r || cmd.kind.startsWith('tab.') || !r.kinds.includes(cmd.kind)) return false;
     return r.when ? r.when(cmd) : true;
   }
 

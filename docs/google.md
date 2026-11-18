@@ -136,7 +136,9 @@ Gmail page is busy: 4 of its requests ahead of this one did not finish within 25
 page that outlives an extractor restart never takes a new command for an old one. A command the page has not said it
 has (`got` at `page`) within 3 s is sent again, the same id, up to three times; the page passes each id to its hook
 once, so a copy that did arrive is dropped. A command lost between the extractor and the page costs about 3 s, not
-25. The worker's own commands (`tab.*`) are not sent again, nor a send (packages/browser `BridgeServer`'s `resend`).
+25. Only reads and label changes are sent again (`src/resend.ts`): a page's id memory ends with the page, so a copy
+that arrived just before a reload could run twice. Never a Calendar write (any gfetch but a GET), a draft, a send, an
+upload, a learn run's steering, or the worker's own `tab.*` (packages/browser `BridgeServer`'s `resend`).
 
 **Gmail's own calls are cut off in the page.** The hook gives each sync, write and download call to Gmail 20 s (a
 download 80 s in all) and then aborts it: a Gmail request that hangs fails as itself (`{ status: 0, error: 'timeout'
@@ -153,7 +155,7 @@ answers 401 at once, as before.
 **Two unanswered requests in a row to one page reload that page's tab, and only it** (`src/reload.ts` says when): the
 service worker sends the tab back to its start page. Not a tab still loading (as Chromium sees it): reloading would
 only start it over; one still loading through three silences in a row is stuck, and is reloaded. And backing off: after
-a reload, the next waits 1 min, then twice as long after each further one that brought no answer, up to 30 min between
+a reload, the next waits 1 min, then twice as long after each further one that brought no answer, up to 10 min between
 them; an answer from the page starts it over. (Seen live: a Calendar tab reloaded about 17 times, every 30 s, each
 reload setting it loading again.) A reload held back is logged once (`the Calendar page did not answer 2 requests in a
 row; not reloading its tab yet: its tab is still loading`). If the page has still not answered since the last reload, the next one opens a new tab on the
@@ -161,7 +163,8 @@ start page and then closes the old one (new first: the last tab closing would en
 the browser are left alone. It is logged (`the Gmail page did not answer 2 requests in a row; reloading its tab, and
 only that one`, then `the Gmail tab was sent back to its start page` or `… was reopened`) and counted in the details
 (`calendarReloads`, `gmailReloads`). Requests sent to a page before its reload do not count against the new page,
-nor does one cut short by its wait in the lane or by its op's time (given less than 12.5 s). After a Calendar reload, one `calendarList` call shows it answers
+nor does one cut short by its wait in the lane or by its op's time (given less than 12.5 s), nor a download or
+upload the page said it has (it is working on it; the hook cuts Gmail off at 80 s, more than `mail.get`'s 60 s). After a Calendar reload, one `calendarList` call shows it answers
 again; Gmail makes no call of its own, so its hook coming back up is its answer. A dead Chromium still exits for a
 supervised restart, as before.
 

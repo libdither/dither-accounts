@@ -78,7 +78,7 @@ test("ids are the bridge's own: a random part per bridge, then a count", async (
 });
 
 test('a command its page never said it has is sent again after RESEND_MS, the same id, and answered then', async () => {
-  const r = await rig({});
+  const r = await rig({ kinds: ['work'] });
   const answer = r.bridge.request<number>({ kind: 'work' }, 25_000);
   const first = await r.nth('work', 1);
   // The worker handed it on, and then nothing: lost in the page's port.
@@ -98,7 +98,7 @@ test('a command its page never said it has is sent again after RESEND_MS, the sa
 });
 
 test('at most RESEND_MAX times; the timeout still comes when nothing answers', async () => {
-  const r = await rig({});
+  const r = await rig({ kinds: ['work'] });
   const answer = r.bridge.request({ kind: 'work' }, 25_000).then(
     () => null,
     (e: Error & { resent?: number }) => e,
@@ -114,7 +114,7 @@ test('at most RESEND_MAX times; the timeout still comes when nothing answers', a
 });
 
 test('one its page has is not sent again: the page is working on it', async () => {
-  const r = await rig({});
+  const r = await rig({ kinds: ['work'] });
   const answer = r.bridge.request({ kind: 'work' }, 25_000).catch(() => {});
   const f = await r.nth('work', 1);
   r.send({ t: 'got', id: f.id, at: 'page' });
@@ -126,13 +126,30 @@ test('one its page has is not sent again: the page is working on it', async () =
   await answer;
 });
 
-test("the worker's own commands, those the kind leaves out, and every one without the option are not sent again", async () => {
-  const r = await rig({ workerKinds: ['mediaFetch'], when: (c) => c.kind !== 'send' });
-  for (const kind of ['tab.state', 'tab.reload', 'mediaFetch', 'send']) void r.bridge.request({ kind }, 25_000).catch(() => {});
-  for (const kind of ['tab.state', 'tab.reload', 'mediaFetch', 'send']) await r.nth(kind, 1);
-  jest.advanceTimersByTime(RESEND_MS * 3);
+test('only the kinds listed, of those only what `when` lets through, never a tab.*, and nothing without the option', async () => {
+  const r = await rig({ kinds: ['read', 'api', 'tab.state'], when: (c) => c.kind !== 'api' || (c as { method?: string }).method === 'GET' });
+  const sent = [
+    { kind: 'read' },
+    { kind: 'api', method: 'GET' },
+    { kind: 'api', method: 'POST' },
+    { kind: 'send' },
+    { kind: 'tab.state' },
+    { kind: 'mediaFetch' },
+  ];
+  for (const c of sent) void r.bridge.request(c, 25_000).catch(() => {});
+  for (const c of sent) await r.nth(c.kind, c.kind === 'api' ? 2 : 1);
+  jest.advanceTimersByTime(RESEND_MS);
   await r.settled();
-  for (const kind of ['tab.state', 'tab.reload', 'mediaFetch', 'send']) expect(r.count(kind)).toBe(1);
+  // Sent again: the read and the GET; not the POST, the send, the tab command (listed or not) or the worker's own.
+  expect(['read', 'api', 'send', 'tab.state', 'mediaFetch'].map((k) => [k, r.count(k)])).toEqual([
+    ['read', 2],
+    ['api', 3],
+    ['send', 1],
+    ['tab.state', 1],
+    ['mediaFetch', 1],
+  ]);
+  const again = r.frames.filter((f) => f.cmd?.kind === 'api').slice(2);
+  expect(again.map((f) => f.cmd.method)).toEqual(['GET']);
 
   const off = await rig();
   void off.bridge.request({ kind: 'work' }, 25_000).catch(() => {});

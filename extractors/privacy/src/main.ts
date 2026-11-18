@@ -139,9 +139,9 @@ const bridge = new BridgeServer<Up, Down>({
   // A command that times out is told apart in the log: how far it got, the tab's state, and the hook's page.state
   // (its own, with what it knows of its commands under `watch`).
   silence: { name: 'Privacy', tab: true, page: true },
-  // A command the page has not said it has after 3 s is sent again (the page takes an id once); the worker's own
-  // webauthn.answer is not.
-  resend: { workerKinds: ['webauthn.answer'] },
+  // A read the page has not said it has after 3 s is sent again (the page takes an id once); never a card or approval
+  // change, nor the worker's own webauthn.answer (packages/browser bridge.ts).
+  resend: { kinds: ['page.state', 'txn.get'] },
 });
 
 // ------------------------------------------------------------------- status

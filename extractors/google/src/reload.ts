@@ -10,7 +10,7 @@
  *   that has been loading through that many silences is stuck there, and is reloaded.
  */
 export const RELOAD_FIRST_GAP_MS = 60_000;
-export const RELOAD_MAX_GAP_MS = 30 * 60_000;
+export const RELOAD_MAX_GAP_MS = 10 * 60_000;
 export const LOADING_DEFERS = 3;
 
 export type ReloadDecision = { go: true } | { go: false; why: string };

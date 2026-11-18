@@ -278,7 +278,7 @@ export const mail = iface({
     write: 'Send email as you, and mark, move and delete your messages',
   },
   ops: {
-    'mail.mailboxes': op('read', 'Your mailboxes (folders), with counts', s.object({}), s.typed<{ mailboxes: Mailbox[] }>()),
+    'mail.mailboxes': op('read', 'Your mailboxes (folders), with counts', s.object({}), s.typed<{ mailboxes: Mailbox[] }>(), 60_000),
     'mail.list': op(
       'read',
       "A mailbox's messages, newest first, a page at a time",
@@ -328,14 +328,16 @@ export const mail = iface({
       'Mark messages read or unread, flagged, answered',
       s.object({ ids, threadIds, seen: s.optional(s.boolean), flagged: s.optional(s.boolean), answered: s.optional(s.boolean) }),
       s.typed<MailWriteAnswer>(),
+      90_000,
     ),
     'mail.move': op(
       'write',
       'Move messages to another mailbox; answers their new ids in the same order (null where it did not move, listed in refused or unknown, or where the server would not say: find it with mail.changes)',
       s.object({ ids, threadIds, mailboxId: s.string }),
       s.typed<MailMoveAnswer>(),
+      90_000,
     ),
-    'mail.trash': op('write', 'Move messages to the trash (deleted outright where there is none)', s.object({ ids, threadIds }), s.typed<MailWriteAnswer>()),
+    'mail.trash': op('write', 'Move messages to the trash (deleted outright where there is none)', s.object({ ids, threadIds }), s.typed<MailWriteAnswer>(), 90_000),
     /**
      * Fails with status 422 and one of these codes (CallError.code) when it refuses the message as it stands; nothing
      * was made or sent, and the message is a sentence to show a person (recipients named by number, 1 being the first

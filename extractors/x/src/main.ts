@@ -97,6 +97,8 @@ const bridge = new BridgeServer<Up, Down>({
   log,
   // A command that times out is told apart in the log: how far it got, the tab's state and the hook's own.
   silence: { name: 'x.com', tab: true, page: true },
+  // A command the page has not said it has after 3 s is sent again (the page takes an id once).
+  resend: {},
 });
 
 /** Writes: a person's pace. Opening conversations to read (catching up, history, media): slower. */

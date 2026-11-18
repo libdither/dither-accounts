@@ -254,7 +254,7 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
   let marksRead = false;
   let trailer: number | null = null;
   const fails: { status: number; count: number }[] = [];
-  const delays: { ms: number; count: number }[] = [];
+  const delays: { ms: number; count: number; only?: 'bv' | 'fd' | 's' | 'raw' }[] = [];
   const calls = { bv: 0, fd: 0, s: 0, raw: 0 };
   const rawFetched: string[] = [];
   let writes = 0;
@@ -438,9 +438,9 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
     return null;
   }
   /** The next call fails or waits, if asked to (failNext, delayNext). */
-  async function trouble(): Promise<Response | null> {
+  async function trouble(what: 'bv' | 'fd' | 's' | 'raw'): Promise<Response | null> {
     const d = delays[0];
-    if (d) {
+    if (d && (!d.only || d.only === what)) {
       if (--d.count <= 0) delays.shift();
       await Bun.sleep(d.ms);
     }
@@ -470,7 +470,7 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
       if (ep === 'fd' && !Array.isArray(body?.[0]?.[0])) return null;
       if (!authorized(req, true)) return xssi([['er', 403]], 403);
       calls[ep]++;
-      const no = blocked() ?? (await trouble());
+      const no = blocked() ?? (await trouble(ep));
       if (no) return no;
       if (ep === 'bv') return xssi(bv(body, now));
       if (ep === 'fd') return xssi(fd(body));
@@ -483,7 +483,7 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
     if (req.method === 'GET' && url.pathname === '/mail/u/0/' && url.searchParams.get('view') === 'att') {
       if (!authorized(req, false) || url.searchParams.get('ik') !== ik) return new Response('<html><body>Sign in</body></html>', { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } });
       calls.raw++;
-      const no = blocked() ?? (await trouble());
+      const no = blocked() ?? (await trouble('raw'));
       if (no) return no;
       const th = url.searchParams.get('th') ?? '';
       const dec = /^[0-9a-f]{1,16}$/.test(th) ? BigInt(`0x${th}`).toString() : '';
@@ -622,9 +622,9 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
     failNext(status: number, count = 1) {
       fails.push({ status, count });
     },
-    /** The next `count` sync calls or downloads answer only after `ms`. */
-    delayNext(ms: number, count = 1) {
-      delays.push({ ms, count });
+    /** The next `count` sync calls or downloads (or only those to `only`) answer only after `ms`. */
+    delayNext(ms: number, count = 1, only?: 'bv' | 'fd' | 's' | 'raw') {
+      delays.push({ ms, count, only });
     },
     /** bv answers end with this number instead of the sync point (null: the sync point again). */
     bvTrailer(n: number | null) {

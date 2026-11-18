@@ -23,7 +23,8 @@
  * wait behind mail and mail never waits behind them. docs/google.md.
  *
  * Config: { authuser?, mail?, gmailPollSeconds?, apiBase?, gmailApiBase?, testOrigin?, testMailOrigin?, peopleApiBase?,
- * noSandbox? } (peopleApiBase: tests only, and only one of the test origins).
+ * testFetchMs?, noSandbox? } (peopleApiBase: tests only, and only one of the test origins; testFetchMs: tests only, how
+ * long the hook gives a Gmail call before it cuts it off, with a test Gmail origin only).
  *
  * Logs ids and statuses, never cookies, keys, tokens, event contents or mail. Nothing here changes mail.
  */
@@ -37,7 +38,10 @@ import { GmailMail, type PageKind, stateOf, type SyncAnswer, type Transport } fr
 import { DECIMAL_ID } from './gmail/protocol.ts';
 import { checkOutgoing, MAX_RECIPIENTS, SEND_CAP } from './gmail/send.ts';
 import { selfCheck } from './gmail/selfcheck.ts';
+import { OP_MARGIN_MS, opMs, outsideOp, remainingMs, withDeadline } from './deadline.ts';
 import { checkLearnScript, describeStep, type LearnStep } from './learn.ts';
+import { Readiness } from './ready.ts';
+import { ReloadPolicy } from './reload.ts';
 
 const WIDTH = 1280;
 const HEIGHT = 800;
@@ -47,15 +51,25 @@ const SIGN_IN_HOST = 'accounts.google.com';
 const RATE_REASONS = new Set(['rateLimitExceeded', 'userRateLimitExceeded', 'quotaExceeded']);
 const RETRIES = 4;
 const BACKOFF = Number(process.env.DITHER_GOOGLE_BACKOFF_MS) || 500;
+/** Tests only: the first gap between reloads of a silent page (reload.ts; 0 reloads again at once). */
+const RELOAD_GAP = process.env.DITHER_GOOGLE_RELOAD_GAP_MS !== undefined ? Number(process.env.DITHER_GOOGLE_RELOAD_GAP_MS) : undefined;
 /** After the page says it is signed in, wait this long for its own requests (and their keys) before probing. */
 const PROBE_SETTLE_MS = 1500;
 /** The extension should be talking to us this soon after the browser starts. */
 const ATTACH_MS = 30_000;
 /**
- * A page request's answer comes within this, or the call fails saying which page did not answer: under the manager's
- * 30 s for an op, so the caller hears this account's own sentence first.
+ * A page request's answer comes within this, or the call fails saying which page did not answer. It is cut to what is
+ * left of the op's own time (deadline.ts: the interface's timeoutMs for the op, or the manager's 30 s where it names
+ * none, less a margin), so the caller hears this account's own sentence before the manager's timeout, even when an op
+ * makes several page requests.
  */
 const PAGE_ANSWER_MS = 25_000;
+/** A request given less than this was cut short by its op's time: its silence is not counted against the page. */
+const SILENCE_COUNTS_MS = PAGE_ANSWER_MS / 2;
+/** At start, an op waits up to this (within its own time) for the page to be up, signed in and synced before refusing. */
+const READY_WAIT_MS = 10_000;
+/** tab.state, asked before a reload, answers within this. */
+const TAB_STATE_MS = 5_000;
 /** This many unanswered requests in a row to one page, and its tab is reloaded. */
 const SILENT_LIMIT = 2;
 /** The service worker's own commands (open or reload a tab) answer within this. */
@@ -164,7 +178,9 @@ type Up =
   | { t: 'tabs'; tabs: TabInfo[] }
   | { t: 'hook'; page: string; role?: Role | null }
   | { t: 'session'; signedIn: boolean; email: string | null; name?: string | null; role?: Role | null }
-  | { t: 'seen'; endpoints: Endpoint[]; keys: { key: string; source: KeySource }[]; role?: Role | null };
+  | { t: 'seen'; endpoints: Endpoint[]; keys: { key: string; source: KeySource }[]; role?: Role | null }
+  /** The page made its first sync call of its own (its headers known): mail calls can be made. */
+  | { t: 'synced'; role?: Role | null };
 type Attention = { kind: string; message: string; liveView: boolean };
 /** One link of the account's dependency chain (status.layers, as in chat-protocol's StatusLayer). */
 type Layer = { name: string; state: 'ok' | 'waiting' | 'failed' | 'off'; note?: string; interface?: string };
@@ -265,7 +281,12 @@ interface Page {
   reloading: boolean;
   reloads: number;
   lastReload: { at: number; how: string | null; error?: string } | null;
+  /** When its tab may be reloaded (reload.ts), and the last reason it was not, logged once. */
+  reload: ReloadPolicy;
+  reloadHeld: string | null;
   openError: string | null;
+  /** Its hook said the page made a sync call of its own (Gmail): mail calls can be made. */
+  synced: boolean;
 }
 const newPage = (role: Role, name: string, url: string | null, lane: Lane): Page => ({
   role,
@@ -285,7 +306,10 @@ const newPage = (role: Role, name: string, url: string | null, lane: Lane): Page
   reloading: false,
   reloads: 0,
   lastReload: null,
+  reload: new ReloadPolicy(RELOAD_GAP),
+  reloadHeld: null,
   openError: null,
+  synced: false,
 });
 const pages: Record<Role, Page> = {
   calendar: newPage('calendar', 'Calendar', startUrl, new Lane(8, 0)),
@@ -330,20 +354,33 @@ function readKept(): Partial<Winner> {
 }
 
 const bridgeToken = Buffer.from(crypto.getRandomValues(new Uint8Array(24))).toString('base64url');
+/** Ops waiting for a page to be ready (gmailReady, ready): they look again on every frame. */
+const readiness = new Readiness();
+/** A send (a gmail.write whose head says it sends) is never sent twice, even to the same page. */
+const isSend = (c: PageCmd | TabCmd) => c.kind === 'gmail.write' && Array.isArray((c as { body?: unknown[] }).body) && Array.isArray((c as { body: unknown[] }).body[0]);
 const bridge = new BridgeServer<Up, PageCmd | TabCmd>({
   token: bridgeToken,
-  onMessage: onBridge,
+  onMessage: (m) => {
+    onBridge(m);
+    readiness.changed();
+  },
   onConnect: () => {
     status();
+    readiness.changed();
     void openGmailTab();
   },
   onDisconnect: () => {
     for (const p of [cal, gm]) {
       p.hooked = 0;
       p.session = null;
+      p.synced = false;
     }
     status();
+    readiness.changed();
   },
+  // A command its page has not said it has after 3 s is sent again (the page takes an id once): a command lost on the
+  // way costs seconds, not PAGE_ANSWER_MS. The worker's own tab.* are not, nor a send.
+  resend: { when: (c) => !isSend(c) },
   log,
 });
 
@@ -597,6 +634,8 @@ function onBridge(msg: Up) {
       noteTabs(Array.isArray(msg.tabs) ? msg.tabs : []);
       break;
     case 'hook':
+      // A page coming up (or its pipe again): it says `synced` again right after, if it has.
+      pages[roleOf(msg)].synced = false;
       pages[roleOf(msg)].hookAt = Date.now();
       log('debug', `${roleOf(msg)} page hook up`, { page: msg.page });
       break;
@@ -613,6 +652,10 @@ function onBridge(msg: Up) {
       } else verified = null;
       break;
     }
+    case 'synced':
+      if (!pages[roleOf(msg)].synced) log('info', `${roleOf(msg)} page: made its first sync call`);
+      pages[roleOf(msg)].synced = true;
+      break;
     case 'seen': {
       const p = pages[roleOf(msg)];
       p.endpoints = Array.isArray(msg.endpoints) ? msg.endpoints.slice(0, 300) : [];
@@ -647,10 +690,27 @@ async function openGmailTab(attempt = 0) {
  * A page that stopped answering (2026-11-10: one account's Calendar page went quiet and every call timed out for an
  * hour, its status still all ok) has its tab reloaded, that tab alone: sent back to its start page by the service
  * worker, or, when the last reload did not bring it back, a new tab opened and the old one closed. The other page,
- * and the browser, are left as they are; a dead Chromium is another matter (boot: a supervised restart).
+ * and the browser, are left as they are; a dead Chromium is another matter (boot: a supervised restart). Not while
+ * the tab is still loading, and backing off while reloads bring no answer (reload.ts).
  */
+const deciding = new Set<Role>();
 async function reloadPage(p: Page) {
-  if (p.reloading || !p.startUrl || cleaning) return;
+  if (p.reloading || deciding.has(p.role) || !p.startUrl || cleaning) return;
+  deciding.add(p.role);
+  let d;
+  try {
+    d = p.reload.decide(Date.now(), await tabLoading(p));
+  } finally {
+    deciding.delete(p.role);
+  }
+  if (!d.go) {
+    if (d.why !== p.reloadHeld) log('info', `the ${p.name} page did not answer ${p.silent} requests in a row; not reloading its tab yet: ${d.why}`);
+    p.reloadHeld = d.why;
+    return;
+  }
+  if (p.reloading || cleaning) return;
+  p.reloadHeld = null;
+  p.reload.reloaded(Date.now());
   const fresh = !!p.lastReload && p.answeredAt < p.lastReload.at;
   const n = p.silent;
   p.reloading = true;
@@ -678,17 +738,32 @@ async function reloadPage(p: Page) {
   }
 }
 
+/** Whether the page's tab is loading as Chromium sees it (the worker's tab.state), or null when it did not say. */
+async function tabLoading(p: Page): Promise<boolean | null> {
+  if (!bridge.connected) return null;
+  try {
+    const r = await bridge.request<{ status?: unknown }>({ kind: 'tab.state', page: p.role, tabId: p.tabId }, TAB_STATE_MS, { diagnose: false });
+    return r?.status === 'loading' ? true : r?.status === 'complete' ? false : null;
+  } catch {
+    return null;
+  }
+}
+
 // -------------------------------------------------------------------- calls
 /**
- * A request to one page, through its own lane. It is answered within PAGE_ANSWER_MS (time in the lane included) or
- * fails saying which page did not answer. Two unanswered in a row reload that page's tab.
+ * A request to one page, through its own lane. It is answered within `answerMs` (PAGE_ANSWER_MS by default), and
+ * never later than its op's own time allows (deadline.ts), or fails saying which page did not answer. A wait for a
+ * free place in the page's lane that runs out says so instead (503 'unavailable': nothing was sent). Two unanswered in
+ * a row ask for that page's tab to be reloaded.
  */
 async function pageRequest<T>(role: Role, cmd: PageCmd, answerMs = PAGE_ANSWER_MS, lane = pages[role].lane): Promise<T> {
   const p = pages[role];
-  if (!bridge.connected) throw new StatusError('the sandbox browser is not attached', 503);
-  const silence = () => new StatusError(`the ${p.name} page did not answer in ${answerMs / 1000} s`, 503);
-  const deadline = Date.now() + answerMs;
-  if (!(await lane.take(deadline))) throw silence();
+  if (!bridge.connected) throw new StatusError('the sandbox browser is not attached', 503, 'unavailable');
+  const ms = Math.min(answerMs, remainingMs(answerMs));
+  const silence = () => new StatusError(`the ${p.name} page did not answer in ${Math.max(1, Math.round(ms / 1000))} s`, 503);
+  if (ms <= 0) throw new StatusError(`the ${p.name} page did not answer within this call's time (none of it was left for this request)`, 503);
+  const deadline = Date.now() + ms;
+  if (!(await lane.take(deadline))) throw new StatusError(`the ${p.name} page is busy: ${lane.max} of its requests ahead of this one did not finish within ${Math.max(1, Math.round(ms / 1000))} s, so this one was not sent`, 503, 'unavailable');
   const generation = p.generation;
   const sentAt = Date.now();
   try {
@@ -701,8 +776,10 @@ async function pageRequest<T>(role: Role, cmd: PageCmd, answerMs = PAGE_ANSWER_M
       answered(p, false);
       throw new StatusError(msg, 503);
     }
-    // One cut short by its wait in the lane is not the page's silence; one sent to a page since reloaded is the old page's.
-    if (generation === p.generation && deadline - sentAt >= answerMs / 2) unanswered(p, cmd, ((e as { reached?: Reached }).reached ?? 'none'));
+    // One cut short (by its wait in the lane, or its op's time) is not the page's silence; one sent to a page since
+    // reloaded is the old page's.
+    const given = deadline - sentAt;
+    if (generation === p.generation && given >= SILENCE_COUNTS_MS) unanswered(p, cmd, (e as { reached?: Reached }).reached ?? 'none', given);
     throw silence();
   } finally {
     lane.give();
@@ -713,13 +790,17 @@ async function pageRequest<T>(role: Role, cmd: PageCmd, answerMs = PAGE_ANSWER_M
 function answered(p: Page, fromPage = true) {
   const was = p.silent;
   p.silent = 0;
-  if (fromPage) p.answeredAt = Date.now();
+  if (fromPage) {
+    p.answeredAt = Date.now();
+    p.reload.answered();
+    p.reloadHeld = null;
+  }
   if (was) status();
 }
 
-function unanswered(p: Page, cmd: PageCmd, reached: Reached) {
+function unanswered(p: Page, cmd: PageCmd, reached: Reached, given: number) {
   p.silent++;
-  log('warn', `the ${p.name} page did not answer in ${PAGE_ANSWER_MS / 1000} s (${p.silent} in a row)`);
+  log('warn', `the ${p.name} page did not answer in ${Math.round(given / 1000)} s (${p.silent} in a row)`);
   status();
   // What the page and its tab were doing, logged before a reload changes it.
   void diagnose(p, cmd, reached).finally(() => {
@@ -768,7 +849,8 @@ function candidates(): { key: string; source: KeySource }[] {
 }
 
 function runProbe(): Promise<Winner | null> {
-  probing ??= doProbe().finally(() => {
+  // Shared by every call that comes meanwhile, and outliving the first: not under its time.
+  probing ??= outsideOp(() => doProbe()).finally(() => {
     probing = null;
     status();
   });
@@ -1061,7 +1143,8 @@ const pageKindOf = (v: unknown): PageKind | null => (v === 'signin' || v === 'ch
 function writeError(e: unknown): StatusError {
   const err = e as StatusError;
   const msg = String(err?.message ?? e);
-  if (/not attached/.test(msg)) return err instanceof StatusError ? err : new StatusError(msg, 503);
+  if (err instanceof StatusError && err.callCode === 'unavailable') return err;
+  if (/not attached/.test(msg)) return err instanceof StatusError ? err : new StatusError(msg, 503, 'unavailable');
   if (/did not answer/.test(msg)) return new StatusError(`${msg}; the change may have been made`, 504);
   return new StatusError(`the Gmail page would not make it (${msg.slice(0, 160)})`, 500);
 }
@@ -1096,12 +1179,15 @@ const gmailTransport: Transport = {
     }
   },
   async write(body) {
+    let r: SyncAnswer;
     try {
-      const r = await pageRequest<SyncAnswer>('gmail', { kind: 'gmail.write', body });
-      return { ...r, page: pageKindOf(r?.page) };
+      r = await pageRequest<SyncAnswer>('gmail', { kind: 'gmail.write', body });
     } catch (e) {
       throw writeError(e);
     }
+    // The hook cut Gmail off (it gives a call 20 s): the change may have been made all the same.
+    if (r?.status === 0 && r.error === 'timeout') throw new StatusError("Gmail did not answer the page's change in time; the change may have been made", 504);
+    return { ...r, page: pageKindOf(r?.page) };
   },
   async upload(file, meta) {
     let token: string | undefined;
@@ -1159,14 +1245,35 @@ async function contactsTransport(body: unknown[]): Promise<ContactsAnswer> {
 }
 const contacts = mailOn ? new GmailContacts(contactsTransport, { log, ready: contactsUnavailable, onChange: () => status() }) : null;
 
-/** The Gmail tab is up and signed in, or the reason it is not. */
-function gmailReady(): GmailMail {
-  if (!gmail) throw new StatusError(cfg.mail === false ? 'this account reads no mail (mail: false in its config)' : 'this account has no Gmail tab', 501);
-  if (!bridge.connected) throw new StatusError('the sandbox browser is not attached yet', 503);
+/** Why the Gmail tab cannot take a mail call now, or null: not attached, not open, signed out, not synced yet. */
+function gmailNotReady(): StatusError | null {
+  if (!gmail) return new StatusError(cfg.mail === false ? 'this account reads no mail (mail: false in its config)' : 'this account has no Gmail tab', 501);
+  if (!bridge.connected) return new StatusError('the sandbox browser is not attached yet', 503, 'unavailable');
   const s = gm.hooked ? gm.session : null;
-  if (!s) throw new StatusError('Gmail is not open in the sandbox yet', 503);
-  if (!s.signedIn) throw new StatusError('Google is not signed in; sign in in the live view', 401);
-  return gmail;
+  if (!s) return new StatusError('Gmail is not open in the sandbox yet', 503, 'unavailable');
+  if (!s.signedIn) return new StatusError('Google is not signed in; sign in in the live view', 401);
+  if (!gm.synced) return new StatusError('the Gmail page has not made a sync call of its own yet, so the headers it sends are not known; try again in a moment', 503, 'unavailable');
+  return null;
+}
+/** Only a 503 passes by waiting (a page still coming up); 401 and 501 do not. */
+const passes = (e: StatusError) => e.status === 503;
+
+/**
+ * The Gmail tab up, signed in and synced, waited for up to READY_WAIT_MS (within the op's own time): at start, an op
+ * that comes before the page made its first sync call waits for it rather than failing. Then the reason it is not,
+ * 503 'unavailable' while it is still coming up.
+ */
+async function gmailReady(): Promise<GmailMail> {
+  const no = await readiness.until(gmailNotReady, Math.min(READY_WAIT_MS, remainingMs(READY_WAIT_MS)), (e) => !passes(e));
+  if (no) throw no;
+  return gmail!;
+}
+
+/** The same, without waiting, and without the sync: the self-check (which reports what it finds). */
+function gmailReadyNow(): GmailMail {
+  const no = gmailNotReady();
+  if (no && !(no.callCode === 'unavailable' && gm.hooked && !gm.synced && bridge.connected)) throw no;
+  return gmail!;
 }
 
 /** The message an op names: its `id` (decimal, Gmail's), or `message` as the imap kind also takes it. */
@@ -1185,7 +1292,6 @@ function messageArg(cmd: Command): string {
  * lane included: past it, 503 'backoff' under the manager's timeout (the work may finish later; its answer is dropped).
  */
 const BACKGROUND_MARGIN_MS = 8_000;
-const OP_MS: Record<string, number> = { 'mail.list': 60_000, 'mail.get': 60_000, 'mail.attachment': 120_000, 'mail.raw': 120_000, 'mail.search': 120_000 };
 
 async function mailOp<T>(f: (g: GmailMail) => Promise<T>, background?: unknown, op?: string): Promise<T> {
   if (background === true && gmail) {
@@ -1193,13 +1299,15 @@ async function mailOp<T>(f: (g: GmailMail) => Promise<T>, background?: unknown, 
     if (s && !s.signedIn) gmail.notePage(false);
     gmail.admit(true);
   }
-  const g = gmailReady();
+  // A background call's time counts from when it came, its wait for the page included.
+  const end = Date.now() + (op ? opMs(op) : 0) - BACKGROUND_MARGIN_MS;
+  const g = await gmailReady();
   startWatch();
-  if (background !== true || !op || !OP_MS[op]) return f(g);
-  const within = OP_MS[op]! - BACKGROUND_MARGIN_MS;
+  if (background !== true || !op) return f(g);
+  const within = Math.max(0, end - Date.now());
   let timer: Timer | undefined;
   const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new StatusError(`Gmail background reading could not finish this call within ${Math.round(within / 1000)} s; try again later`, 503, 'backoff')), within);
+    timer = setTimeout(() => reject(new StatusError(`Gmail background reading could not finish this call within ${Math.round((opMs(op) - BACKGROUND_MARGIN_MS) / 1000)} s; try again later`, 503, 'backoff')), within);
   });
   try {
     return await Promise.race([f(g), late]);
@@ -1235,8 +1343,11 @@ function saveWatch(w: { history: string; at: number; guess?: boolean }) {
 function startWatch() {
   if (watchOn || !pollMs || !gmail || cleaning) return;
   watchOn = true;
-  timers.push(setInterval(() => void pollMail(), pollMs));
-  void pollMail();
+  // Started by the first mail op, it outlives it: not under that op's time.
+  outsideOp(() => {
+    timers.push(setInterval(() => void pollMail(), pollMs));
+    void pollMail();
+  });
   status();
 }
 
@@ -1289,7 +1400,7 @@ function checkSelfCheckRequest() {
   };
   let g: GmailMail;
   try {
-    g = gmailReady();
+    g = gmailReadyNow();
   } catch (e) {
     const why = String((e as Error).message ?? e).slice(0, 160);
     write({ at: new Date().toISOString(), ok: false, error: why });
@@ -1324,11 +1435,19 @@ function checkSelfCheckRequest() {
 }
 
 // ---------------------------------------------------------------- calendar
-async function ready(): Promise<Winner> {
-  if (!bridge.connected) throw new StatusError('the sandbox browser is not attached yet', 503);
+/** Why the Calendar page cannot take a call now, or null. */
+function calendarNotReady(): StatusError | null {
+  if (!bridge.connected) return new StatusError('the sandbox browser is not attached yet', 503, 'unavailable');
   const s = current();
-  if (!s) throw new StatusError('Google Calendar is not open in the sandbox', 503);
-  if (!s.signedIn) throw new StatusError('Google is not signed in; sign in in the live view', 401);
+  if (!s) return new StatusError('Google Calendar is not open in the sandbox', 503, 'unavailable');
+  if (!s.signedIn) return new StatusError('Google is not signed in; sign in in the live view', 401);
+  return null;
+}
+
+/** The Calendar page up and signed in (waited for at start, as gmailReady), and a key that works. */
+async function ready(): Promise<Winner> {
+  const no = await readiness.until(calendarNotReady, Math.min(READY_WAIT_MS, remainingMs(READY_WAIT_MS)), (e) => !passes(e));
+  if (no) throw no;
   if (verified) return verified;
   const w = await runProbe();
   if (!w) throw new StatusError(`Google refused the Calendar API with every key (${probe?.statuses.join(', ') ?? 'no answer'})`, probe?.status ?? 503);
@@ -1372,7 +1491,12 @@ const enc = encodeURIComponent;
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
 const page = (p: any) => ({ items: p.items ?? [], ...(p.nextPageToken ? { nextPageToken: p.nextPageToken } : {}), ...(p.nextSyncToken ? { nextSyncToken: p.nextSyncToken } : {}) });
 
-async function onCommand(cmd: Command): Promise<unknown> {
+/** Each op under its own time (deadline.ts): every page request it makes is cut to what is left of it. */
+function onCommand(cmd: Command): Promise<unknown> {
+  return withDeadline(opMs(cmd.t) - OP_MARGIN_MS, () => runOp(cmd));
+}
+
+async function runOp(cmd: Command): Promise<unknown> {
   switch (cmd.t) {
     case 'calendar.calendarList.list':
       return page(await api('GET', '/calendar/v3/users/me/calendarList', { query: { pageToken: str(cmd.pageToken), maxResults: cmd.maxResults as number | undefined, syncToken: str(cmd.syncToken) } }));
@@ -1467,7 +1591,7 @@ async function boot() {
       width: WIDTH,
       height: HEIGHT,
       extensionSrc: join(import.meta.dir, 'extension'),
-      config: { wsUrl: bridge.wsUrl, token: bridgeToken, authuser, testOrigin, testMailOrigin, peopleApiBase },
+      config: { wsUrl: bridge.wsUrl, token: bridgeToken, authuser, testOrigin, testMailOrigin, peopleApiBase, fetchMs: testMailOrigin ? Number(cfg.testFetchMs) || null : null },
       prepareExtension: testOrigin || testMailOrigin ? addTestOrigins : undefined,
       startUrl,
       noSandbox: !!cfg.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',

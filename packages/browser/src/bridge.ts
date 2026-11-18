@@ -11,6 +11,16 @@
  * With `silence` set, every request that times out is told apart in the log at once (silence.ts): the worker is asked
  * for the tab's state and the hook for its own, and one line says how far the request got. Without it, a kind calls
  * diagnoseSilence itself where it wants (Google's, before it reloads a tab).
+ *
+ * A command's id is `<boot>.c<n>`: `boot` is random per BridgeServer, so a page that outlives its extractor (Chromium
+ * left running across an extractor restart) never takes a new command for one it has already seen. The content
+ * script passes each id to its hook once (page/isolated-world.js), and a recycled `c1` would be dropped there.
+ *
+ * With `resend` set, a command the page has not said it has (its `got` at 'page') within RESEND_MS is sent again, the
+ * same id, up to RESEND_MAX times: the content script passes an id on once, so a copy that already arrived is
+ * dropped, and one lost on the way (a port being replaced, a worker put to sleep) costs seconds, not the whole
+ * timeout. Only for kinds whose hooks say `got` (page/command-watch.js), and never for commands the service worker
+ * runs itself (`tab.*`, and the kind's own `workerKinds`): a worker has no such check, and would run them twice.
  */
 import type { Server, ServerWebSocket } from 'bun';
 import type { Log } from './sandbox.ts';
@@ -21,7 +31,7 @@ type SocketData = { authed: boolean };
 /** `from: 'worker'`: the service worker answered (a tab command, or no page to run it in), not the page. */
 export type BridgeReply = ({ t: 'reply'; id: string; ok: true; result?: unknown } | { t: 'reply'; id: string; ok: false; error: string; retryAfter?: number }) & { from?: 'worker' };
 
-export interface BridgeServerOpts<Up> {
+export interface BridgeServerOpts<Up, Cmd = { kind: string }> {
   /** 0 (the default): any free loopback port; read `port` after start(). */
   port?: number;
   token: string;
@@ -35,7 +45,26 @@ export interface BridgeServerOpts<Up> {
   log: Log;
   /** Diagnose each timed-out request by itself (silence.ts). Off by default. */
   silence?: BridgeSilence;
+  /** Send a command again while its page has not said it has it (see the header). Off by default. */
+  resend?: BridgeResend<Cmd>;
 }
+
+/** Which commands are sent again while their page is silent about them, and how often. */
+export interface BridgeResend<Cmd = { kind: string }> {
+  /** Kinds the service worker answers itself, besides every `tab.*`: never sent again. */
+  workerKinds?: string[];
+  /** A command that must not be sent twice even to the same page (`false`); default every other one. */
+  when?: (cmd: Cmd) => boolean;
+  /** Default RESEND_MS. */
+  afterMs?: number;
+  /** Default RESEND_MAX. */
+  max?: number;
+}
+
+/** A command the page has not said it has within this is sent again. */
+export const RESEND_MS = 3_000;
+/** At most this many times. */
+export const RESEND_MAX = 3;
 
 /** How a bridge diagnoses its own timeouts: what the page is called, and what its extension can answer. */
 export interface BridgeSilence {
@@ -58,9 +87,15 @@ interface Pending {
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  /** The resend timer, while the page has not said it has the command. */
+  again?: ReturnType<typeof setTimeout>;
+  /** How many times it was sent again. */
+  resent: number;
 }
 
 export class BridgeServer<Up extends { t: string } = { t: string; [k: string]: unknown }, Cmd extends { kind: string } = { kind: string; [k: string]: unknown }> {
+  /** This server's own part of every command id (see the header). */
+  readonly boot = Buffer.from(crypto.getRandomValues(new Uint8Array(6))).toString('base64url');
   private server?: Server<SocketData>;
   private sock: ServerWebSocket<SocketData> | null = null;
   private pending = new Map<string, Pending>();
@@ -68,7 +103,7 @@ export class BridgeServer<Up extends { t: string } = { t: string; [k: string]: u
   private diagnosing = false;
   private answeredAt: number | null = null;
 
-  constructor(private opts: BridgeServerOpts<Up>) {}
+  constructor(private opts: BridgeServerOpts<Up, Cmd>) {}
 
   get connected(): boolean {
     return !!this.sock;
@@ -117,6 +152,10 @@ export class BridgeServer<Up extends { t: string } = { t: string; [k: string]: u
             const g = msg as unknown as { id?: unknown; at?: unknown };
             const p = typeof g.id === 'string' ? self.pending.get(g.id) : undefined;
             if (p && (g.at === 'worker' || g.at === 'page') && REACHED_RANK[g.at] > REACHED_RANK[p.reached]) p.reached = g.at;
+            if (p?.reached === 'page' && p.again) {
+              clearTimeout(p.again);
+              p.again = undefined;
+            }
             return;
           }
           self.opts.onFrame?.(msg);
@@ -127,6 +166,7 @@ export class BridgeServer<Up extends { t: string } = { t: string; [k: string]: u
             if (p) {
               self.pending.delete(r.id);
               clearTimeout(p.timer);
+              clearTimeout(p.again);
               if (r.ok) p.resolve(r.result);
               else p.reject(Object.assign(new Error(r.error), { retry_after: r.retryAfter }));
             }
@@ -157,25 +197,54 @@ export class BridgeServer<Up extends { t: string } = { t: string; [k: string]: u
    * the `silence` option, a timeout is also diagnosed in the log, unless `diagnose` is false (the probes themselves).
    */
   request<T = unknown>(cmd: Cmd, timeoutMs = 30_000, opts: { diagnose?: boolean } = {}): Promise<T> {
-    const id = `c${++this.seq}`;
+    const id = `${this.boot}.c${++this.seq}`;
     return new Promise<T>((resolve, reject) => {
       if (!this.sock) return reject(new Error('extension not connected'));
       const timer = setTimeout(() => {
-        const reached = this.pending.get(id)?.reached ?? 'none';
+        const p = this.pending.get(id);
+        const reached = p?.reached ?? 'none';
+        clearTimeout(p?.again);
         this.pending.delete(id);
-        reject(Object.assign(new Error(`hook timed out on ${cmd.kind}`), { reached }));
+        reject(Object.assign(new Error(`hook timed out on ${cmd.kind}`), { reached, resent: p?.resent ?? 0 }));
         this.opts.onTimeout?.(cmd.kind);
         if (opts.diagnose !== false) this.diagnose(cmd, reached);
       }, timeoutMs);
-      this.pending.set(id, { reached: 'none', resolve: resolve as (v: unknown) => void, reject, timer });
+      const pending: Pending = { reached: 'none', resolve: resolve as (v: unknown) => void, reject, timer, resent: 0 };
+      this.pending.set(id, pending);
       try {
         this.sendDown({ t: 'cmd', id, cmd });
       } catch (e) {
         this.pending.delete(id);
         clearTimeout(timer);
-        reject(e as Error);
+        return reject(e as Error);
       }
+      if (this.resends(cmd)) this.resendLater(id, cmd, pending);
     });
+  }
+
+  /** Whether `cmd` may be sent again (the `resend` option). */
+  private resends(cmd: Cmd): boolean {
+    const r = this.opts.resend;
+    if (!r || cmd.kind.startsWith('tab.') || r.workerKinds?.includes(cmd.kind)) return false;
+    return r.when ? r.when(cmd) : true;
+  }
+
+  /** Send it again, the same id, if the page has not said it has it by then; again after that, up to the cap. */
+  private resendLater(id: string, cmd: Cmd, p: Pending) {
+    const r = this.opts.resend!;
+    if (p.resent >= (r.max ?? RESEND_MAX)) return;
+    p.again = setTimeout(() => {
+      p.again = undefined;
+      if (this.pending.get(id) !== p || p.reached === 'page' || !this.sock) return;
+      p.resent++;
+      this.opts.log('debug', `${cmd.kind}: no word from the page in ${(r.afterMs ?? RESEND_MS) / 1000} s (${p.reached === 'worker' ? 'the worker handed it on' : 'the worker never said it had it'}); sent again (${p.resent})`);
+      try {
+        this.sendDown({ t: 'cmd', id, cmd });
+      } catch {
+        return;
+      }
+      this.resendLater(id, cmd, p);
+    }, r.afterMs ?? RESEND_MS);
   }
 
   /** One diagnosis at a time: requests that time out together are one silence. */
@@ -205,6 +274,7 @@ export class BridgeServer<Up extends { t: string } = { t: string; [k: string]: u
   stop() {
     for (const p of this.pending.values()) {
       clearTimeout(p.timer);
+      clearTimeout(p.again);
       p.reject(new Error('extractor shutting down'));
     }
     this.pending.clear();

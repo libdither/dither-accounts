@@ -144,6 +144,8 @@ const bridge = new BridgeServer<Up, Down>({
   },
   // A command that times out is told apart in the log: how far it got, the tab's state and the hook's own.
   silence: { name: 'Mail', tab: true, page: true },
+  // A command the page has not said it has after 3 s is sent again (the page takes an id once).
+  resend: {},
   log,
 });
 

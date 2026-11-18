@@ -35,6 +35,26 @@ The worker and the hook get 5 s each to answer. Requests that time out together 
 Only names of commands, path templates (segments with digits, or long ones, as `*`) and counts go in the line: never a
 request's body, headers, cookies, tokens, a query, or an error's text from the page.
 
+## Lost commands sent again
+
+A command's id is `<boot>.c<n>`: `boot` is random per `BridgeServer`, so a page that outlives its extractor (Chromium
+left running across an extractor restart) never mistakes a new command for one it already took; the content script
+passes each id to its hook only once, and would drop a recycled `c1`. A bridge made with `resend` sends a command
+again, the same id, when its page has not said `got` within 3 s (`RESEND_MS`), up to three times (`RESEND_MAX`); the
+copy that did arrive is dropped by the content script, so a command lost on the way costs about 3 s, not the whole
+timeout. Never sent again: the worker's own commands (every `tab.*`, and a kind's `workerKinds`: meta's `mediaFetch`,
+privacy's `webauthn.answer`; the worker has no such check), and what the kind's `when` leaves out (Google: a send). On
+for google, discord, messenger and instagram, proton, x and privacy; the statements kinds have no hook to say `got`.
+A resend is logged at debug (`<kind>: no word from the page in 3 s (…); sent again (1)`), and a timeout's error carries
+how often it was (`resent`).
+
+## Chromium's own noise
+
+Chromium's stderr goes to the account's log at debug, except lines that say nothing about the account
+(packages/browser/src/noise.ts): its push registration refused (`DEPRECATED_ENDPOINT`, `QUOTA_EXCEEDED`), GTK modules
+the sandbox has none of, and `X connection error received` as the display goes at a stop. Those are counted, and one
+line every 10 minutes (and at the stop) says how many of each were left out.
+
 ## The parts
 
 - `packages/browser/src/silence.ts`: `diagnoseSilence(bridge, …)` asks and logs. A `BridgeServer` made with

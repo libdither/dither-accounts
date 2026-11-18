@@ -3,8 +3,8 @@
  * and an app on its wire: every mail op, IDLE events, UIDVALIDITY → 410, a bad password, the server going away and
  * coming back, a restart that keeps its state, and a certificate change refused under pinning.
  *
- * Ports 18550 (IMAP, STARTTLS), 18551 (IMAPS), 18552 (SMTP), 18560 (an SMTP server that starts late). Dovecot comes
- * from nix (or DOVECOT_BIN).
+ * Ports 18550 (IMAP, STARTTLS), 18551 (IMAPS), 18552 (SMTP), 18560 (a test's own SMTP server: one that starts late,
+ * one on the renewed certificate). Dovecot comes from nix (or DOVECOT_BIN).
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -339,8 +339,8 @@ describe('keeping up', () => {
     const st = (await h.call(acc, 'mail.changes', { mailboxId: work.id })).state;
     const page = await h.call(acc, 'mail.list', { mailboxId: work.id, limit: 2 });
     await other(async (c) => {
+      // Dovecot gives the new mailbox a UIDVALIDITY above the last one it handed out, even within the same second.
       await c.mailboxDelete('Work');
-      await Bun.sleep(1100);
       await c.mailboxCreate('Work');
       await c.append('Work', rfc822({ subject: 'Work again', text: 'w' }));
     });
@@ -567,10 +567,20 @@ describe('when things go wrong', () => {
     await until(async () => (await h.layer(id, 'TLS'))?.state === 'failed', 20_000, 'TLS failed');
     expect((await h.detail(id)).status.attention.message).toContain('pinned');
     await fetch(`${h.m.url}/api/accounts/${id}`, { method: 'DELETE' });
-    const ok = await h.add(config({ certificate: dv.cert.fingerprint.replace(/:/g, '').toLowerCase(), imapPort: String(IMAPS), imapSecurity: 'tls' }), alice.password, 'Right pin, IMAPS');
-    await h.waitOnline(ok);
-    expect((await h.layer(ok, 'TLS'))?.note).toContain('pinned');
-    await fetch(`${h.m.url}/api/accounts/${ok}`, { method: 'DELETE' });
+    // The pin holds for SMTP too, so its SMTP server offers the same certificate. The shared sink still offers the one
+    // the last test replaced: the account went to attention whenever its SMTP check came before it was seen online.
+    const smtp = new SmtpSink(LATE_SMTP, [alice, bob], dv, dv.cert);
+    await smtp.start();
+    try {
+      const ok = await h.add(config({ certificate: dv.cert.fingerprint.replace(/:/g, '').toLowerCase(), imapPort: String(IMAPS), imapSecurity: 'tls', smtpPort: String(LATE_SMTP) }), alice.password, 'Right pin, IMAPS');
+      await h.waitOnline(ok);
+      expect((await h.layer(ok, 'TLS'))?.note).toContain('pinned');
+      await until(async () => (await h.layer(ok, 'SMTP'))?.state === 'ok', 20_000, 'SMTP on the pinned certificate');
+      expect((await h.detail(ok)).status.status).toBe('online');
+      await fetch(`${h.m.url}/api/accounts/${ok}`, { method: 'DELETE' });
+    } finally {
+      await smtp.stop();
+    }
   }, 60_000);
 
   it('verify (the default): a self-signed server is not trusted, and the fingerprint to pin is shown', async () => {

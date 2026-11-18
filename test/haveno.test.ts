@@ -8,7 +8,7 @@
  * node is back and opened again.
  */
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from 'bun:test';
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { AccountsClient, CallFailed, register } from '@dither-accounts/client';
@@ -25,11 +25,14 @@ const it = test.skipIf(!ok);
 setDefaultTimeout(60_000);
 const ROOT = resolve(import.meta.dir, '..');
 const sleepBin = realpathSync(Bun.which('sleep') ?? '/run/current-system/sw/bin/sleep');
+const shBin = realpathSync(Bun.which('sh') ?? '/run/current-system/sw/bin/sh');
+/** The stand-in desktop app runs until the test puts this file in the node's data directory (its home's Haveno-reto inside the sandbox). */
+const QUIT = 'quit-app';
 const ENV = {
   DITHER_HAVENO_CHECK_MS: '300',
   DITHER_HAVENO_POLL_MS: '500',
   DITHER_HAVENO_HANDOVER_MS: '5000',
-  DITHER_HAVENO_APP_COMMAND: JSON.stringify([sleepBin, '3']),
+  DITHER_HAVENO_APP_COMMAND: JSON.stringify([shBin, '-c', `until [ -e "$HOME/.local/share/Haveno-reto/${QUIT}" ]; do ${sleepBin} 0.05; done`]),
   DITHER_HAVENO_APP_NETWORK: 'none',
 };
 let fake: FakeHaveno;
@@ -114,6 +117,8 @@ test('unlock: a wrong password is refused, the right one opens the account, and 
   const good = await page('unlock', { password: fake.accountPassword });
   expect(good.ok).toBe(true);
   await until(async () => (await phase()) === 'online', 10_000, 'online');
+  // The balance comes with the first poll, just after it goes online.
+  await until(async () => (await status()).details.balance != null, 10_000, 'the balance');
   const s = await status();
   expect(s.status).toBe('online');
   expect(s.details.passwordKept).toBe('memory');
@@ -175,7 +180,10 @@ test('the write grant does not reach payment accounts or account actions', async
 test("the node's notifications become events: a trade update, a chat message, an error", async () => {
   await until(() => fake.calls.includes('RegisterNotificationListener'), 5000, 'the stream');
   await Bun.sleep(200);
-  fake.notify({ type: 'TRADE_UPDATE', trade: tradeInfo('trade-aaaaaaaa', { isPaymentReceived: true, phase: 'PAYMENT_RECEIVED' }) });
+  // The daemon's own state moves with what it announces, as a real one's does; otherwise the next poll would put the
+  // trade back and announce that too, landing in the next test.
+  Object.assign(fake.trades[0], { isPaymentReceived: true, phase: 'PAYMENT_RECEIVED' });
+  fake.notify({ type: 'TRADE_UPDATE', trade: { ...fake.trades[0] } });
   fake.notify({ type: 'CHAT_MESSAGE', trade: tradeInfo('trade-aaaaaaaa'), chatMessage: { uid: 'c9', tradeId: 'trade-aaaaaaaa', date: '1800000009000', message: 'got it', senderNodeAddress: { hostName: 'peerpeerpeer.onion', port: 9999 } } });
   fake.notify({ type: 'ERROR', title: 'Error', message: 'something broke' });
   await until(() => events.some((e) => e.t === 'exchange.notice'), 5000, 'the events');
@@ -189,8 +197,14 @@ test('a polled trade that moved on is announced once', async () => {
   fake.trades[0].payoutState = 'PAYOUT_PUBLISHED';
   fake.trades[0].isPayoutPublished = true;
   await until(() => events.some((e) => e.t === 'exchange.trade' && e.trade.payoutPublished), 5000, 'the polled change');
-  await Bun.sleep(1200);
-  expect(events.filter((e) => e.t === 'exchange.trade' && e.trade.id === 'trade-aaaaaaaa').length).toBe(before + 1);
+  // A second change, announced by a later poll: once it is here, every poll before it has been heard from.
+  fake.trades[0].isPayoutUnlocked = true;
+  await until(() => events.some((e) => e.t === 'exchange.trade' && e.trade.payoutUnlocked), 5000, 'the next polled change');
+  const after = events.filter((e) => e.t === 'exchange.trade' && e.trade.id === 'trade-aaaaaaaa').slice(before);
+  expect(after.map((e) => [e.trade.payoutPublished, e.trade.payoutUnlocked])).toEqual([
+    [true, false],
+    [true, true],
+  ]);
 });
 
 test('a daemon restart: the account opens again from the password in memory', async () => {
@@ -228,7 +242,8 @@ it('openApp: the node stops, the app runs in the sandbox with a live view, and w
   expect((await detail()).liveView ?? s.liveView).toBeTruthy();
   const e = await call('exchange.balances').catch((x) => x);
   expect(String(e.message)).toMatch(/desktop app/);
-  // The stand-in app quits after 3 s; systemd would bring the node back, here the test does.
+  // The stand-in app quits when told to; systemd would bring the node back, here the test does.
+  writeFileSync(join(dataDir, QUIT), '');
   await until(async () => (await phase()) !== 'app', 10_000, 'the app quit');
   await fake.up();
   await until(async () => (await phase()) === 'online', 10_000, 'online after the app');

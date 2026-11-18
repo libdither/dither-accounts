@@ -14,6 +14,13 @@
  * - Threading and bulk headers on a summary (`inReplyTo`, `references`, `bulk`) are optional: an extractor that
  *   cannot see a message's headers without fetching its body gives `null`, `[]` and no `bulk` there (Proton's lists;
  *   its `threadId` is the thread), and `mail.get` has them all.
+ * - Messages left out: `mail.list`, `mail.search` and `mail.changes` may answer `skipped?: string[]`, the messages the
+ *   extractor could not read in this answer (the google kind: a record whose own anchors failed) while it read the
+ *   rest. An entry of digits only is a message id: `mail.get` it later to try it again. An entry `thread:<id>` is a
+ *   thread whose message could not be told apart (its message id was unreadable too); it names no message, so there
+ *   is nothing to get. A skipped message may not even be in the mailbox asked for. `mail.changes` still hands out a
+ *   new state past them: they are not reported again from it, so keep them if you want them. Absent or empty: nothing
+ *   was left out.
  *
  * The `status` event, besides what every extractor's has (`layers`, `details`, `self`, see the README), says (all
  * optional, so an extractor that predates them stays valid):
@@ -216,6 +223,8 @@ export interface MailChanges {
   removed: string[];
   /** More changes wait: call again with the new state. */
   more: boolean;
+  /** Messages left out of this answer (see the header: message ids, or `thread:<id>`). */
+  skipped?: string[];
 }
 
 export interface OutgoingFile {
@@ -290,7 +299,7 @@ export const mail = iface({
       'read',
       "A mailbox's messages, newest first, a page at a time",
       s.object({ mailboxId: s.string, limit: s.optional(s.integer), before: s.optional(s.string), since: s.optional(s.number) }),
-      s.typed<{ messages: MailSummary[]; next: string | null }>(),
+      s.typed<{ messages: MailSummary[]; next: string | null; skipped?: string[] }>(),
       60_000,
     ),
     'mail.get': op('read', 'One message, with its text, HTML and the list of its attachments', s.object({ id: s.string }), s.typed<MailMessage>(), 60_000),
@@ -318,7 +327,7 @@ export const mail = iface({
       'read',
       'Messages with these words in the sender, recipients, subject or text, newest first',
       s.object({ query: s.string, mailboxId: s.optional(s.string), limit: s.optional(s.integer), idsOnly: s.optional(s.boolean), cursor: s.optional(s.string) }),
-      s.typed<{ messages: MailSummary[]; next?: string | null } | { ids: string[]; next: string | null; estimate: number | null }>(),
+      s.typed<{ messages: MailSummary[]; next?: string | null; skipped?: string[] } | { ids: string[]; next: string | null; estimate: number | null; skipped?: string[] }>(),
       120_000,
     ),
     'mail.changes': op('read', 'What changed in a mailbox since a state', s.object({ mailboxId: s.string, state: s.optional(s.string), limit: s.optional(s.integer) }), s.typed<MailChanges>(), 120_000),

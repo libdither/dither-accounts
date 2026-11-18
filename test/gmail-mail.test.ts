@@ -5,13 +5,14 @@
  * its account key). The browser side, through the manager and a real Chromium, is in google-browser.test.ts.
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { MailSummary } from '@dither-accounts/interfaces';
-import { type BackgroundRules, GmailMail, parseState, SEND_LIMITS, type Transport } from '../extractors/google/src/gmail/mail.ts';
+import { type BackgroundRules, type Clock, GmailMail, parseState, REPEAT, SEND_LIMITS, type Transport } from '../extractors/google/src/gmail/mail.ts';
 import { parseMessage } from '../extractors/google/src/gmail/mime.ts';
 import { bvRequest, categoryOf, fdThreadsRequest, flagsOf, isUserLabel, LayoutError, labelsOf, notAMessage, operatorsOnly, parseBv, parseFd, parseS, readOnlySync, sRequest } from '../extractors/google/src/gmail/protocol.ts';
+import { runCanary } from '../extractors/google/src/gmail/canary.ts';
 import { checkOutgoing } from '../extractors/google/src/gmail/send.ts';
 import { selfCheck } from '../extractors/google/src/gmail/selfcheck.ts';
 import { EDITS, htmlOfText, intoLabel, labelChange, messageRecord, uploadMeta, writeRequest } from '../extractors/google/src/gmail/write.ts';
@@ -37,23 +38,38 @@ afterAll(() => {
  * The Gmail tab's hook, as far as GmailMail sees it: straight to the fake, with the page's cookie, XSRF header and key.
  * As the hook, an answer that is not mail goes up only as what it reads as (pageKind), never its text.
  */
-function transport(o: { calls?: { ep: string; at: number; hex?: string }[]; page?: Partial<{ sync: boolean; history: string | null }> } = {}): Transport {
+type TransportOpts = {
+  calls?: { ep: string; at: number; hex?: string }[];
+  page?: Partial<{ sync: boolean; history: string | null }>;
+  /** The time calls are noted at (a test's clock). */
+  now?: () => number;
+  /** Run as each call reaches Gmail, before it is made: a signal, or a test's clock moved (a slow answer). */
+  onCall?: (ep: string) => void | Promise<void>;
+  /** Changes a read answer (bv, fd, s) before GmailMail sees it. */
+  mutate?: (ep: string, json: any) => void;
+};
+function transport(o: TransportOpts = {}): Transport {
   let c = 100;
   const cookie = `SAPISID=${SAPISID}`;
+  const now = o.now ?? Date.now;
   return {
     info: async () => ({ sync: o.page?.sync ?? true, headers: 3, ik: true, history: o.page?.history === undefined ? String(fake.gmail.history()) : o.page.history }),
     async sync(ep, body) {
-      o.calls?.push({ ep, at: Date.now() });
+      o.calls?.push({ ep, at: now() });
+      await o.onCall?.(ep);
       const r = await fetch(`${fake.mailUrl}/sync/u/0/i/${ep}?hl=en&c=${++c}&rt=j&pt=ji`, { method: 'POST', headers: { cookie, 'x-framework-xsrf-token': fake.gmail.xsrf, 'content-type': 'application/json' }, body: JSON.stringify(body) });
       const text = await r.text();
       try {
-        return { status: r.status, json: JSON.parse(text.replace(/^\)\]\}'[^\n]*\n?/, '')) };
+        const json = JSON.parse(text.replace(/^\)\]\}'[^\n]*\n?/, ''));
+        if (r.status === 200 && (body as any)?.[1] == null) o.mutate?.(ep, json);
+        return { status: r.status, json };
       } catch {
         return { status: r.status, error: 'not-json', page: pageKind(r.status, r.headers.get('content-type'), text, r.url) };
       }
     },
     async raw(hex, max) {
-      o.calls?.push({ ep: 'raw', at: Date.now(), hex });
+      o.calls?.push({ ep: 'raw', at: now(), hex });
+      await o.onCall?.('raw');
       const r = await fetch(`${fake.mailUrl}/mail/u/0/?ik=${fake.gmail.ik}&view=att&th=${hex}&attid=0&disp=comp&safe=1&zw`, { headers: { cookie } });
       const type = r.headers.get('content-type');
       if (/text\/html/i.test(type ?? '') || r.status === 429) return { status: r.status, type: (type ?? '').split(';')[0] || null, page: pageKind(r.status, type, await r.text(), r.url) };
@@ -62,11 +78,11 @@ function transport(o: { calls?: { ep: string; at: number; hex?: string }[]; page
       return { status: r.status, bytes, type: r.headers.get('content-type') };
     },
     async write(body) {
-      o.calls?.push({ ep: 'write', at: Date.now() });
+      o.calls?.push({ ep: 'write', at: now() });
       return this.sync('s', body);
     },
     async upload(file, meta) {
-      o.calls?.push({ ep: 'upload', at: Date.now() });
+      o.calls?.push({ ep: 'upload', at: now() });
       const start = await fetch(`${fake.mailUrl}/_/upload?authuser=0&dcp=asu-n`, { method: 'POST', headers: { cookie, 'x-goog-upload-command': 'start', 'x-goog-upload-protocol': 'resumable', 'x-goog-upload-file-name': file.name, 'x-goog-upload-header-content-type': file.mime }, body: meta });
       const next = start.headers.get('x-goog-upload-url');
       if (start.status !== 200 || !next) return { status: start.status };
@@ -90,8 +106,67 @@ function findRow(v: unknown, thread: string): any[] {
 }
 const mailOf = (t = transport()) => new GmailMail(t, { log: quiet, gapMs: 0 });
 /** A GmailMail with a background lane of small numbers (and a file of its own for what it keeps). */
-const laneMail = (o: { t?: Transport; rules?: Partial<BackgroundRules>; now?: () => number; file?: string; onChange?: () => void } = {}) =>
-  new GmailMail(o.t ?? transport(), { log: quiet, gapMs: 0, now: o.now, background: { listMs: 0, messageMs: 0, ...o.rules }, stateFile: o.file ?? join(tmp, `reads-${Math.random().toString(36).slice(2)}.json`), onChange: o.onChange });
+const laneMail = (o: { t?: Transport; rules?: Partial<BackgroundRules>; now?: () => number; clock?: Clock; file?: string; onChange?: () => void } = {}) =>
+  new GmailMail(o.t ?? transport(), { log: quiet, gapMs: 0, now: o.now, clock: o.clock, background: { listMs: 0, messageMs: 0, ...o.rules }, stateFile: o.file ?? join(tmp, `reads-${Math.random().toString(36).slice(2)}.json`), onChange: o.onChange });
+
+/**
+ * A clock whose time moves only when a test moves it: GmailMail's pacing and back-off wait on its timers, which run
+ * when the test fires them (drive), never by the wall clock.
+ */
+class FakeClock implements Clock {
+  t = Date.now();
+  private timers: { at: number; seq: number; f: () => void }[] = [];
+  private seq = 0;
+  private waiters: (() => void)[] = [];
+  now = () => this.t;
+  setTimeout = (f: () => void, ms: number) => {
+    const h = { at: this.t + Math.max(0, ms), seq: ++this.seq, f };
+    this.timers.push(h);
+    for (const w of this.waiters.splice(0)) w();
+    return h;
+  };
+  clearTimeout = (h: unknown) => {
+    this.timers = this.timers.filter((x) => x !== h);
+  };
+  /** Resolves once a timer is waiting. */
+  timer(): Promise<void> {
+    return this.timers.length ? Promise.resolve() : new Promise((r) => this.waiters.push(r));
+  }
+  /** Moves time to the next timer and runs it. */
+  fire() {
+    this.timers.sort((a, b) => a.at - b.at || a.seq - b.seq);
+    const h = this.timers.shift()!;
+    this.t = Math.max(this.t, h.at);
+    h.f();
+  }
+  /** Moves time on by `ms`, running the timers due on the way. */
+  advance(ms: number) {
+    const to = this.t + ms;
+    for (;;) {
+      this.timers.sort((a, b) => a.at - b.at || a.seq - b.seq);
+      if (!this.timers.length || this.timers[0]!.at > to) break;
+      this.fire();
+    }
+    this.t = to;
+  }
+}
+/**
+ * `p` run to its end on a fake clock: whenever it waits on a timer (the lane waits only when no call is in flight), the
+ * next timer fires. Before firing, one turn of the event loop lets an answer that just came settle first.
+ */
+async function drive<T>(clock: FakeClock, p: Promise<T>): Promise<T> {
+  let done = false;
+  const settled = p.then(
+    () => void (done = true),
+    () => void (done = true),
+  );
+  for (;;) {
+    await Promise.race([settled, clock.timer()]);
+    await new Promise((r) => setImmediate(r));
+    if (done) return p;
+    clock.fire();
+  }
+}
 const codeOf = (e: unknown) => [(e as { status?: number }).status, (e as { callCode?: string }).callCode];
 
 /** What a mailbox should list, newest first: the fake's messages with Gmail ids that pass `f`. */
@@ -203,14 +278,15 @@ test("answers are read by their anchors; one laid out otherwise is refused, sayi
   } finally {
     fake.gmail.bvLayout('own');
   }
-  // Rows in both places at once: refused too.
+  // Rows in both places at once: the own layout's read, the others counted (stray) and left out.
   const both = structuredClone(ok.json) as any[];
   both[19] = [[2, both[2], 1]];
-  expect(() => parseBv(both)).toThrow('at json[19][0][1][0][0]: expected thread rows in one place only (json[2][n][0] or json[19][0][1][n][0]), got a thread row in the other place too');
-  // json[2] holding something else than rows; an empty answer of each layout.
+  const b = parseBv(both);
+  expect([b.layout, b.rows.length, b.stray, b.skipped]).toEqual(['own', 50, 50, []]);
+  // json[2] holding an entry that is not a row: that entry left out, saying where and why; an empty answer of each layout.
   const odd = structuredClone(ok.json) as any[];
   odd[2] = [[['x'], 1]];
-  expect(() => parseBv(odd)).toThrow('at json[2][0][0][2]: expected the row\'s date in ms (13 digits), got nothing');
+  expect(parseBv(odd)).toMatchObject({ rows: [], skipped: [{ id: null, thread: null, where: 'json[2][0][0][2]', reason: "at json[2][0][0][2]: expected the row's date in ms (13 digits), got nothing" }] });
   const empty = structuredClone(ok.json) as any[];
   empty[2] = [];
   expect(parseBv(empty)).toMatchObject({ layout: 'own', rows: [] });
@@ -230,7 +306,8 @@ test("answers are read by their anchors; one laid out otherwise is refused, sayi
     }
     expect(err).toBeInstanceOf(LayoutError);
     // Found by its anchors elsewhere? No: the swapped row has neither anchor in place, so the expected place reports it.
-    expect((err as Error).message).toBe("at json[2][0][0][2]: expected the row's date in ms (13 digits), got an id");
+    // Every row failing alike is a changed layout, not 50 bad rows: the whole answer refused.
+    expect((err as Error).message).toBe("at json[2][0][0][2]: expected the row's date in ms (13 digits), got an id, and 50 of 50 records failed");
     expect((err as Error).message).not.toContain(MARK);
   } finally {
     fake.gmail.layout('normal');
@@ -243,14 +320,20 @@ test("answers are read by their anchors; one laid out otherwise is refused, sayi
   // An answer without the anchors every bv answer had is not taken for an empty list.
   expect(() => parseBv([['er', 1]])).toThrow('at json[0]: expected 0');
   expect(() => parseBv([0, null])).toThrow('at json[18]: expected a list holding a number');
-  // A message without its label list.
+  // A message without its label list: that message left out (its id, its thread, where, why), the rest read.
   const nolabels = structuredClone(ok.json) as any[];
-  nolabels[2][1][0][4][0][10] = 'x';
-  expect(() => parseBv(nolabels)).toThrow("at json[2][1][0][4][0][10]: expected the message's labels (^…), got a string");
+  const victim = nolabels[2][1][0][4][0];
+  victim[10] = 'x';
+  const nl = parseBv(nolabels);
+  expect(nl.skipped).toEqual([{ id: victim[0].slice(6), thread: nolabels[2][1][0][3].slice(9), where: 'json[2][1][0][4][0][10]', reason: "at json[2][1][0][4][0][10]: expected the message's labels (^…), got a string" }]);
+  expect(nl.rows.length).toBe(50);
+  expect(nl.rows[1]!.messages.map((m) => m.id)).not.toContain(victim[0].slice(6));
+  expect(nl.rows[1]!.messages.length).toBe(page.rows[1]!.messages.length - 1);
   // fd and s likewise.
   const fd = await t.sync('fd', fdThreadsRequest([fake.gmail.messages[0]!.thread]));
   expect(parseFd(fd.json).threads[0]!.messages.length).toBe(3);
-  expect(() => parseFd([0, [['x']]])).toThrow('at json[1][0][0]: expected a thread id (thread-f:…), got a string');
+  expect(parseFd([0, [['x']]])).toMatchObject({ threads: [], skipped: [{ id: null, thread: null, reason: 'at json[1][0][0]: expected a thread id (thread-f:…), got a string' }] });
+  expect(() => parseFd([0, [['x'], ['y'], ['z']]])).toThrow('at json[1][0][0]: expected a thread id (thread-f:…), got a string, and 3 of 3 records failed');
   const s = await t.sync('s', sRequest(String(fake.gmail.history() - 1), Date.now()));
   expect(parseS(s.json).history).toBe(String(fake.gmail.history()));
   expect(() => parseS([null, [0, null, null, null, [], null, 0, 'x'], [[]], [1]])).toThrow('at json[1][7]: expected the new sync point (a number), got a string');
@@ -492,11 +575,11 @@ test("a message its thread lists with null labels: left out (not claimed removed
     expect(fd.threads[0]!.messages.length).toBe(fake.gmail.messages.filter((m) => m.thread === thread).length - 1);
     expect(fd.threads[0]!.messages.map((m) => m.id)).not.toContain(gone.id);
     expect(fd.threads[0]!.nullLabels).toEqual([gone.id]);
-    // Null is the one new thing taken there: a string is still a changed layout.
+    // Null is the one thing taken there as no message: a string is a bad record, left out and named.
     const s = (await t.sync('s', sRequest(watch.history, Date.now()))).json as any[];
     const row = findRow(s, thread);
     row[4][0][10] = 'x';
-    expect(() => parseS(s)).toThrow("expected the message's labels (^…), got a string");
+    expect(parseS(s).skipped).toEqual([expect.objectContaining({ id: first.id, thread, reason: expect.stringContaining("expected the message's labels (^…), got a string") })]);
   } finally {
     fake.gmail.purge(gone.id, true);
     fake.gmail.relabel(first.id, [], ['^t']);
@@ -516,9 +599,10 @@ test('a changed layout: the call is refused with 502 and a plain sentence, nothi
     const err = await mail.list({ mailboxId: '^i', limit: 3 }).then((r) => ((got = r), null), (e) => e);
     expect(got).toBe('nothing');
     expect(err).toMatchObject({ status: 502 });
-    expect(err.message).toBe("Gmail's list and search (bv) answer is not laid out as this extractor knows it (at json[2][0][0][2]: expected the row's date in ms (13 digits), got an id); nothing was returned rather than possibly wrong mail");
-    expect(mail.layer()).toEqual({ name: 'Gmail protocol', state: 'failed', note: "bv: at json[2][0][0][2]: expected the row's date in ms (13 digits), got an id" });
-    expect(mail.fp.bv).toMatchObject({ failed: 1, last: false, first: "at json[2][0][0][2]: expected the row's date in ms (13 digits), got an id" });
+    const why = "at json[2][0][0][2]: expected the row's date in ms (13 digits), got an id, and 50 of 50 records failed";
+    expect(err.message).toBe(`Gmail's list and search (bv) answer is not laid out as this extractor knows it (${why}); nothing was returned rather than possibly wrong mail`);
+    expect(mail.layer()).toEqual({ name: 'Gmail protocol', state: 'failed', note: `bv: ${why}` });
+    expect(mail.fp.bv).toMatchObject({ failed: 1, last: false, first: why });
     expect(changed).toBeGreaterThan(0);
   } finally {
     fake.gmail.layout('normal');
@@ -528,12 +612,18 @@ test('a changed layout: the call is refused with 502 and a plain sentence, nothi
 });
 
 test('paced: one Gmail call at a time, at least 300 ms apart', async () => {
+  const clock = new FakeClock();
   const calls: { ep: string; at: number }[] = [];
-  const mail = new GmailMail(transport({ calls }), { log: quiet });
-  await Promise.all([mail.list({ mailboxId: '^i', limit: 3 }), mail.list({ mailboxId: 'all', limit: 3 }), mail.raw({ id: fake.gmail.messages[0]!.id })]);
+  let inFlight = 0;
+  let most = 0;
+  const t = transport({ calls, now: clock.now, onCall: () => void (most = Math.max(most, ++inFlight)) });
+  const counted: Transport = { ...t, sync: (ep, body) => t.sync(ep, body).finally(() => inFlight--), raw: (hex, max) => t.raw(hex, max).finally(() => inFlight--) };
+  const mail = new GmailMail(counted, { log: quiet, clock });
+  await drive(clock, Promise.all([mail.list({ mailboxId: '^i', limit: 3 }), mail.list({ mailboxId: 'all', limit: 3 }), mail.raw({ id: fake.gmail.messages[0]!.id })]));
   // Two lists (their answers carry the label list, so no sync call for names) and a download.
   expect(calls.length).toBeGreaterThanOrEqual(3);
-  for (let i = 1; i < calls.length; i++) expect(calls[i]!.at - calls[i - 1]!.at).toBeGreaterThanOrEqual(295);
+  expect(most).toBe(1);
+  for (let i = 1; i < calls.length; i++) expect(calls[i]!.at - calls[i - 1]!.at).toBeGreaterThanOrEqual(300);
 });
 
 test('what a non-mail answer reads as (pageKind, as the hook says it), and which labels are mailboxes', () => {
@@ -645,32 +735,37 @@ const readOnes = () => fake.gmail.messages.filter((m) => !m.pending && !m.labels
 const hex = (id: string) => BigInt(id).toString(16);
 
 test('the background lane: its own pace for lists and for downloads, and never ahead of the foreground', async () => {
+  const clock = new FakeClock();
   const calls: { ep: string; at: number; hex?: string }[] = [];
-  const mail = laneMail({ t: transport({ calls }), rules: { listMs: 400, messageMs: 300 } });
+  let reached: (() => void) | null = null;
+  const mail = laneMail({ t: transport({ calls, now: clock.now, onCall: () => reached?.() }), clock, rules: { listMs: 400, messageMs: 300 } });
   expect(mail.backgroundLayer()).toEqual({ name: 'Gmail background', state: 'ok', note: 'idle' });
   const read = readOnes().slice(0, 5);
-  await Promise.all(read.slice(0, 3).map((m) => mail.raw({ id: m.id, background: true })));
+  await drive(clock, Promise.all(read.slice(0, 3).map((m) => mail.raw({ id: m.id, background: true }))));
   const raws = calls.filter((c) => c.ep === 'raw');
   expect(raws.length).toBe(3);
-  for (let i = 1; i < raws.length; i++) expect(raws[i]!.at - raws[i - 1]!.at).toBeGreaterThanOrEqual(295);
+  for (let i = 1; i < raws.length; i++) expect(raws[i]!.at - raws[i - 1]!.at).toBeGreaterThanOrEqual(300);
   expect(mail.backgroundLayer()).toEqual({ name: 'Gmail background', state: 'ok', note: 'running' });
   calls.length = 0;
-  await Promise.all([mail.list({ mailboxId: '^i', limit: 3, background: true }), mail.list({ mailboxId: 'all', limit: 3, background: true })]);
+  await drive(clock, Promise.all([mail.list({ mailboxId: '^i', limit: 3, background: true }), mail.list({ mailboxId: 'all', limit: 3, background: true })]));
   const bvs = calls.filter((c) => c.ep === 'bv');
   expect(bvs.length).toBeGreaterThanOrEqual(2);
-  for (let i = 1; i < bvs.length; i++) expect(bvs[i]!.at - bvs[i - 1]!.at).toBeGreaterThanOrEqual(395);
-  // A backlog of background downloads does not hold up the foreground: at most the one in flight goes before it.
+  for (let i = 1; i < bvs.length; i++) expect(bvs[i]!.at - bvs[i - 1]!.at).toBeGreaterThanOrEqual(400);
+  // A backlog of background downloads does not hold up the foreground: at most the one in flight goes before it, and
+  // it waits for no pace at all (the clock does not move while it is answered).
   calls.length = 0;
-  const t0 = Date.now();
+  const t0 = clock.now();
+  const first = new Promise<void>((r) => (reached = r));
   const backlog = read.slice(0, 4).map((m) => mail.raw({ id: m.id, background: true }));
-  await Bun.sleep(20);
-  const fgAt = Date.now();
-  await mail.raw({ id: read[4]!.id });
-  expect(Date.now() - fgAt).toBeLessThan(250);
-  expect(calls.filter((c) => c.ep === 'raw').findIndex((c) => c.hex === hex(read[4]!.id))).toBeLessThanOrEqual(1);
-  await Promise.all(backlog);
+  await first;
+  reached = null;
+  const fgAt = clock.now();
+  await drive(clock, mail.raw({ id: read[4]!.id }));
+  expect(clock.now()).toBe(fgAt);
+  expect(calls.filter((c) => c.ep === 'raw').findIndex((c) => c.hex === hex(read[4]!.id))).toBe(1);
+  await drive(clock, Promise.all(backlog));
   expect(calls.filter((c) => c.ep === 'raw').length).toBe(5);
-  expect(Date.now() - t0).toBeGreaterThanOrEqual(3 * 295);
+  expect(clock.now() - t0).toBeGreaterThanOrEqual(3 * 300);
 });
 
 test("the background lane's download budget: past it, background calls answer 503 paused (quota) and the foreground goes on; kept across a restart; back when the window frees", async () => {
@@ -704,13 +799,14 @@ test("the background lane's download budget: past it, background calls answer 50
 });
 
 test('a challenge stops the background lane: 503 paused (challenge), no more background calls to Gmail, the foreground answered as Gmail answers; back once Gmail answers again', async () => {
-  const mail = laneMail({ rules: { backoffMinMs: 20 } });
+  const clock = new FakeClock();
+  const mail = laneMail({ t: transport({ now: clock.now }), clock, rules: { backoffMinMs: 20 } });
   const read = readOnes()[0]!;
-  await mail.list({ mailboxId: '^i', limit: 1, background: true });
+  await drive(clock, mail.list({ mailboxId: '^i', limit: 1, background: true }));
   for (const kind of ['verify', 'captcha429', 'signin'] as const) {
     fake.gmail.challenge(kind);
     try {
-      const e = await mail.list({ mailboxId: '^i', limit: 1, background: true }).catch((x) => x);
+      const e = await drive(clock, mail.list({ mailboxId: '^i', limit: 1, background: true })).catch((x) => x);
       expect({ kind, code: codeOf(e) }).toEqual({ kind, code: [503, 'paused'] });
       expect(mail.background().stopped).toBe('challenge');
       expect(mail.backgroundLayer().state).toBe('failed');
@@ -727,22 +823,22 @@ test('a challenge stops the background lane: 503 paused (challenge), no more bac
     } finally {
       fake.gmail.challenge(null);
     }
-    await Bun.sleep(30);
+    clock.advance(30); // past the back-off the challenge's answer started
     await mail.list({ mailboxId: '^i', limit: 1 });
     expect(mail.background().stopped).toBeNull();
-    expect((await mail.list({ mailboxId: '^i', limit: 1, background: true })).messages.length).toBe(1);
+    expect((await drive(clock, mail.list({ mailboxId: '^i', limit: 1, background: true }))).messages.length).toBe(1);
   }
   // On a download too; and a page that says none of it, in place of JSON or a message, is taken for one as well.
   for (const kind of ['captcha429', 'blank'] as const)
     for (const op of [() => mail.raw({ id: read.id, background: true }), () => mail.list({ mailboxId: '^i', limit: 1, background: true })]) {
       fake.gmail.challenge(kind);
       try {
-        expect({ kind, code: codeOf(await op().catch((x) => x)) }).toEqual({ kind, code: [503, 'paused'] });
+        expect({ kind, code: codeOf(await drive<unknown>(clock, op()).catch((x) => x)) }).toEqual({ kind, code: [503, 'paused'] });
         expect(mail.background().stopped).toBe('challenge');
       } finally {
         fake.gmail.challenge(null);
       }
-      await Bun.sleep(30);
+      clock.advance(30);
       await mail.raw({ id: read.id });
       expect(mail.background().stopped).toBeNull();
     }
@@ -767,43 +863,53 @@ test('a signed-out Gmail page stops the background lane (signedOut) until the pa
 });
 
 test('the background lane backs off after a 5xx, a 429 or a slow answer, doubling up to its most, and back to none after good answers', async () => {
+  const clock = new FakeClock();
   const calls: { ep: string; at: number; hex?: string }[] = [];
-  const mail = laneMail({ t: transport({ calls }), rules: { backoffMinMs: 300, backoffMaxMs: 1000, slowMs: 250, goodToReset: 2 } });
+  // A slow answer: the clock moves on while Gmail answers.
+  let slowMs = 0;
+  const onCall = () => {
+    if (slowMs) clock.advance(slowMs);
+    slowMs = 0;
+  };
+  const mail = laneMail({ t: transport({ calls, now: clock.now, onCall }), clock, rules: { backoffMinMs: 300, backoffMaxMs: 1000, slowMs: 250, goodToReset: 2 } });
   const read = readOnes().slice(0, 9);
   fake.gmail.failNext(503);
   await expect(mail.raw({ id: read[0]!.id, background: true })).rejects.toMatchObject({ status: 502 });
   const b1 = mail.background();
-  expect(b1).toMatchObject({ stopped: null, backoffMs: 300 });
+  expect(b1).toMatchObject({ stopped: null, backoffMs: 300, backedOffUntil: clock.now() + 300 });
   expect(mail.backgroundLayer()).toMatchObject({ state: 'waiting' });
   expect(mail.backgroundLayer().note).toStartWith('backed off until ');
-  // The foreground is not held back by it.
-  const f0 = Date.now();
-  await mail.raw({ id: read[1]!.id });
-  expect(Date.now() - f0).toBeLessThan(200);
-  // The next background call waits it out.
-  await mail.raw({ id: read[2]!.id, background: true });
-  expect(calls.find((c) => c.hex === hex(read[2]!.id))!.at).toBeGreaterThanOrEqual(b1.backedOffUntil! - 2);
+  // The foreground is not held back by it: answered with the clock where it was.
+  const f0 = clock.now();
+  await drive(clock, mail.raw({ id: read[1]!.id }));
+  expect(clock.now()).toBe(f0);
+  // The next background call waits it out, to the ms.
+  await drive(clock, mail.raw({ id: read[2]!.id, background: true }));
+  expect(calls.find((c) => c.hex === hex(read[2]!.id))!.at).toBe(b1.backedOffUntil!);
   // A 429 doubles it; a slow answer doubles it again, up to the most.
   fake.gmail.failNext(429);
-  await expect(mail.raw({ id: read[3]!.id, background: true })).rejects.toMatchObject({ status: 502 });
+  await expect(drive(clock, mail.raw({ id: read[3]!.id, background: true }))).rejects.toMatchObject({ status: 502 });
   expect(mail.background().backoffMs).toBe(600);
-  fake.gmail.delayNext(300);
-  await mail.raw({ id: read[4]!.id, background: true });
+  slowMs = 300;
+  await drive(clock, mail.raw({ id: read[4]!.id, background: true }));
   expect(mail.background().backoffMs).toBe(1000);
   // Good answers (two here) end it: the next trouble starts from the least again.
-  await mail.raw({ id: read[5]!.id, background: true });
-  await mail.raw({ id: read[6]!.id, background: true });
+  await drive(clock, mail.raw({ id: read[5]!.id, background: true }));
+  await drive(clock, mail.raw({ id: read[6]!.id, background: true }));
   expect(mail.background().backoffMs).toBe(0);
   fake.gmail.failNext(500);
-  await expect(mail.raw({ id: read[7]!.id, background: true })).rejects.toMatchObject({ status: 502 });
+  await expect(drive(clock, mail.raw({ id: read[7]!.id, background: true }))).rejects.toMatchObject({ status: 502 });
   expect(mail.background().backoffMs).toBe(300);
-  // A background call that could not start in time is told so at once (503 'backoff'), not left to time out.
-  const quick = laneMail({ rules: { backoffMinMs: 1000, waitMs: 200 } });
+  // A background call that could not start in time is told so at once (503 'backoff'), without asking Gmail.
+  const quickClock = new FakeClock();
+  const quickCalls: { ep: string; at: number }[] = [];
+  const quick = laneMail({ t: transport({ calls: quickCalls, now: quickClock.now }), clock: quickClock, rules: { backoffMinMs: 1000, waitMs: 200 } });
   fake.gmail.failNext(503);
   await expect(quick.raw({ id: read[8]!.id, background: true })).rejects.toMatchObject({ status: 502 });
-  const t0 = Date.now();
+  const t0 = quickClock.now();
+  const n = quickCalls.length;
   expect(codeOf(await quick.raw({ id: read[8]!.id, background: true }).catch((x) => x))).toEqual([503, 'backoff']);
-  expect(Date.now() - t0).toBeLessThan(100);
+  expect([quickClock.now(), quickCalls.length]).toEqual([t0, n]);
   expect((await quick.raw({ id: read[8]!.id })).size).toBeGreaterThan(0);
 });
 
@@ -910,6 +1016,201 @@ test('a message Gmail keeps with no headers: its blank-line-first original is re
   expect((await mail.raw({ id: bare.id })).size).toBe(Buffer.byteLength(fakeEml(bare)));
   // Listed with a sender, the same shape is not a message with no headers: refused.
   await expect(mail.get({ id: posing.id })).rejects.toMatchObject({ status: 502, message: expect.stringContaining('(a blank line first)') });
+});
+
+// ------------------------------------------------------------------ one bad record costs that record
+/** Breaks one message's labels wherever an answer carries it (bv's and s's rows at [10], fd's summaries at [3]). */
+function breakMessage(id: () => string | null, as: unknown = 'x') {
+  return (ep: string, json: any) => {
+    const target = id();
+    if (!target) return;
+    const walk = (v: unknown) => {
+      if (!Array.isArray(v)) return;
+      if (v[0] === `msg-f:${target}` && (Array.isArray(v[10]) || Array.isArray(v[3]))) {
+        if (ep === 'fd') v[3] = as;
+        else v[10] = as;
+        return;
+      }
+      for (const x of v) walk(x);
+    };
+    walk(json);
+  };
+}
+
+test('one bad message costs that message: list, search and changes read the rest and name it in skipped; the sync point moves past it; mail.get asks again', async () => {
+  // A read inbox message in a thread of several, with Gmail's own id.
+  const victim = fake.gmail.messages.find((m) => !m.pending && !m.localId && m.labels.includes('^i') && !m.labels.includes('^u') && threadMsgs(m.thread).length > 1)!;
+  const sibling = threadMsgs(victim.thread).find((m) => m.id !== victim.id && !m.pending)!;
+  let broken: string | null = victim.id;
+  const logs: string[] = [];
+  const mail = new GmailMail(transport({ mutate: breakMessage(() => broken) }), { log: (_l, m) => logs.push(m), gapMs: 0 });
+  const listed = await mail.list({ mailboxId: 'all', limit: 500 });
+  expect(listed.messages.map((m) => m.id)).not.toContain(victim.id);
+  expect(listed.messages.map((m) => m.id)).toContain(sibling.id);
+  expect(listed.skipped).toEqual([victim.id]);
+  const ids = (await mail.search({ query: 'in:inbox is:read', idsOnly: true, limit: 500 })) as { ids: string[]; skipped?: string[] };
+  expect(ids.ids).not.toContain(victim.id);
+  expect(ids.skipped).toEqual([victim.id]);
+  // Logged once, with where and why, never a value.
+  const said = logs.filter((l) => l.includes('left out'));
+  expect(said).toEqual([expect.stringMatching(/^gmail bv: a message left out, at json\[2\]\[\d+\]\[0\]\[4\]\[\d+\]\[10\]: expected the message's labels \(\^…\), got a string$/)]);
+  expect(mail.layer()).toMatchObject({ state: 'ok', note: expect.stringContaining('records left out (bv 2), last bv: at json[2]') });
+  // Changes: the thread changed (its other message starred); the rest of it read, the bad one named, the state past it.
+  const start = await mail.changes({ mailboxId: 'all' });
+  fake.gmail.relabel(sibling.id, ['^t'], []);
+  try {
+    const c = await mail.changes({ mailboxId: 'all', state: start.state });
+    expect(c.changed.map((x) => x.id)).toContain(sibling.id);
+    expect([...c.added, ...c.changed].map((x) => x.id)).not.toContain(victim.id);
+    expect(c.removed).not.toContain(victim.id);
+    expect(c.skipped).toEqual([victim.id]);
+    expect(parseState(c.state).history).toBe(String(fake.gmail.history()));
+    // From the new state: nothing, so nothing skipped either.
+    const again = await mail.changes({ mailboxId: 'all', state: c.state });
+    expect([again.changed, again.skipped]).toEqual([[], undefined]);
+    // The watch moves on too, and points apps at Inbox and All Mail (the skipped message's mailboxes are not known).
+    const w = await mail.poll({ history: parseState(start.state).history, at: parseState(start.state).at });
+    expect(w.history).toBe(String(fake.gmail.history()));
+    expect(w.skipped).toEqual([victim.id]);
+    expect(w.mailboxes).toEqual(expect.arrayContaining(['^i', 'all']));
+    // mail.get asks Gmail again (its labels were forgotten: a search for its Message-ID); once Gmail answers it well,
+    // it is read whole, labels and all.
+    broken = null;
+    const bv = fake.gmail.calls.bv;
+    const g = await mail.get({ id: victim.id });
+    expect(fake.gmail.calls.bv).toBe(bv + 1);
+    expect(g).toMatchObject({ id: victim.id, threadId: victim.thread, flags: { seen: true } });
+    expect(g.labels).toContain('Inbox');
+  } finally {
+    fake.gmail.relabel(sibling.id, [], ['^t']);
+  }
+  expect(fake.gmail.writes).toBe(0);
+});
+
+test("whole-answer anchors still refuse; the same failure twice is held 1 minute, then 2, up to 15, without asking Gmail; a clean answer ends it", async () => {
+  const clock = new FakeClock();
+  let bad = true;
+  const mutate = (ep: string, json: any) => {
+    if (bad && ep === 's') json[1][7] = 'x';
+  };
+  const mail = new GmailMail(transport({ mutate, now: clock.now }), { log: quiet, gapMs: 0, clock });
+  const st = `g1.${fake.gmail.history()}.${clock.now()}`;
+  const asks = () => fake.gmail.calls.s;
+  const n0 = asks();
+  const why = "Gmail's sync (s) answer is not laid out as this extractor knows it (at json[1][7]: expected the new sync point (a number), got a string); nothing was returned rather than possibly wrong mail";
+  await expect(mail.changes({ mailboxId: '^i', state: st })).rejects.toMatchObject({ status: 502, message: why });
+  await expect(mail.changes({ mailboxId: '^i', state: st })).rejects.toMatchObject({ status: 502, message: why });
+  expect(asks()).toBe(n0 + 2);
+  // Held: answered from here, Gmail not asked, until a minute has gone.
+  await expect(mail.changes({ mailboxId: '^i', state: st })).rejects.toMatchObject({ status: 502, message: why });
+  expect(asks()).toBe(n0 + 2);
+  clock.advance(REPEAT.minMs - 1);
+  await expect(mail.changes({ mailboxId: '^i', state: st })).rejects.toMatchObject({ status: 502 });
+  expect(asks()).toBe(n0 + 2);
+  clock.advance(1);
+  await expect(mail.changes({ mailboxId: '^i', state: st })).rejects.toMatchObject({ status: 502 });
+  expect(asks()).toBe(n0 + 3);
+  // Failed alike again: held twice as long.
+  clock.advance(2 * REPEAT.minMs - 1);
+  await expect(mail.changes({ mailboxId: '^i', state: st })).rejects.toMatchObject({ status: 502 });
+  expect(asks()).toBe(n0 + 3);
+  // Doubling stops at the most.
+  for (let i = 0; i < 6; i++) {
+    clock.advance(REPEAT.maxMs);
+    await expect(mail.changes({ mailboxId: '^i', state: st })).rejects.toMatchObject({ status: 502 });
+  }
+  expect(asks()).toBe(n0 + 9);
+  // Another request (another sync point) is not held by it.
+  await expect(mail.changes({ mailboxId: '^i', state: `g1.${fake.gmail.history() - 1}.${clock.now()}` })).rejects.toMatchObject({ status: 502 });
+  expect(asks()).toBe(n0 + 10);
+  // Gmail answering well again: read once the hold is over, and not held after.
+  bad = false;
+  clock.advance(REPEAT.maxMs);
+  expect(parseState((await mail.changes({ mailboxId: '^i', state: st })).state).history).toBe(String(fake.gmail.history()));
+  await mail.changes({ mailboxId: '^i', state: st });
+  expect(asks()).toBe(n0 + 12);
+});
+
+test("a list answer's sync point is blamed only when Gmail's sync turns it down (a 4xx), not for a layout it does not know", async () => {
+  let bad = true;
+  const mutate = (ep: string, json: any) => {
+    if (bad && ep === 's') json[1][0] = 7;
+  };
+  const mail = mailOf(transport({ page: { history: null }, mutate }));
+  const start = await mail.changes({ mailboxId: '^i' });
+  expect(parseState(start.state).guess).toBe(true);
+  await expect(mail.changes({ mailboxId: '^i', state: start.state })).rejects.toMatchObject({ status: 502 });
+  expect([mail.bvPointRefused, mail.evidence.sFromBvPoint]).toEqual([false, null]);
+  bad = false;
+  const c = await mail.changes({ mailboxId: '^i', state: start.state });
+  expect(mail.evidence.sFromBvPoint).toBe('ok');
+  expect(parseState(c.state).guess).toBe(false);
+  // A 5xx says nothing of the point either; a 400 does.
+  const m2 = mailOf(transport({ page: { history: null } }));
+  const s2 = await m2.changes({ mailboxId: '^i' });
+  fake.gmail.failNext(500);
+  await expect(m2.changes({ mailboxId: '^i', state: s2.state })).rejects.toMatchObject({ status: 502 });
+  expect(m2.bvPointRefused).toBe(false);
+  fake.gmail.failNext(400);
+  const e = await m2.changes({ mailboxId: '^i', state: s2.state }).catch((x) => x);
+  expect([e.status, m2.bvPointRefused, m2.evidence.sFromBvPoint]).toEqual([503, true, 'refused']);
+});
+
+test('the unread guard, tripped, fails closed: a message whose labels are not known (never listed, or its record left out) is not downloaded', async () => {
+  const file = join(tmp, 'reads-guard-closed.json');
+  writeFileSync(file, JSON.stringify({ fetched: [], unreadGuard: 'tripped', unreadGuardAt: Date.now() }));
+  const readOne = fake.gmail.messages.find((m) => !m.pending && !m.localId && m.labels.includes('^i') && !m.labels.includes('^u'))!;
+  let broken: string | null = null;
+  const mail = laneMail({ file, t: transport({ mutate: breakMessage(() => broken) }) });
+  const fetched = fake.gmail.rawFetched.length;
+  for (const op of [() => mail.get({ id: readOne.id }), () => mail.raw({ id: readOne.id }), () => mail.attachment({ id: readOne.id, attachmentId: '2' })]) {
+    const e = await op().catch((x) => x);
+    expect(codeOf(e)).toEqual([409, 'unread']);
+    expect(e.message).toContain('whether this one is unread is not known');
+  }
+  expect(fake.gmail.rawFetched.length).toBe(fetched);
+  // Listed, it is known to be read: it reads.
+  await mail.list({ mailboxId: '^i', limit: 500 });
+  expect((await mail.raw({ id: readOne.id })).size).toBeGreaterThan(0);
+  // Its record left out of the next answer that carries it: not known again, refused again.
+  broken = readOne.id;
+  await mail.list({ mailboxId: '^i', limit: 500 });
+  await expect(mail.raw({ id: readOne.id })).rejects.toMatchObject({ status: 409, callCode: 'unread' });
+  expect(fake.gmail.rawFetched.length).toBe(fetched + 1);
+});
+
+test('the canary: the self-check reading no message, its answers\' shapes kept and compared with the last run; a changed layout or a record left out is said', async () => {
+  const file = join(tmp, 'canary.json');
+  rmSync(file, { force: true });
+  const fetched = fake.gmail.rawFetched.length;
+  const r1 = await runCanary(mailOf(), () => transport().info(), file);
+  expect(r1).toMatchObject({ ok: true, compared: false, changes: [], problems: [] });
+  expect(r1.summary).toStartWith('ok, first run; ');
+  const r2 = await runCanary(mailOf(), () => transport().info(), file);
+  expect(r2).toMatchObject({ ok: true, compared: true, changes: [], problems: [] });
+  expect(r2.summary).toStartWith('ok, shapes as last time; bv ');
+  // No message read, nothing written.
+  expect(fake.gmail.rawFetched.length).toBe(fetched);
+  expect(fake.gmail.writes).toBe(0);
+  // Kept 0600, positions and kinds only: nothing of the mailbox.
+  expect(statSync(file).mode & 0o777).toBe(0o600);
+  const text = readFileSync(file, 'utf8');
+  for (const v of [MARK, 'example.', 'Plans', fake.gmail.xsrf, String(fake.gmail.history()), ...fake.gmail.messages.slice(0, 50).flatMap((m) => [m.id, m.thread])]) expect({ v, found: text.includes(v) }).toEqual({ v, found: false });
+  // Gmail's list answers in another layout: the places the last run saw are gone.
+  fake.gmail.bvLayout('page');
+  try {
+    const r3 = await runCanary(mailOf(), () => transport().info(), file);
+    expect(r3.changes.map((c) => c.endpoint)).toContain('bv');
+    expect(r3.changes.find((c) => c.endpoint === 'bv')!.gone).toEqual(expect.arrayContaining(['json[1]', 'json[2]']));
+    expect(r3.summary).toContain('shapes changed (bv: ');
+  } finally {
+    fake.gmail.bvLayout('own');
+  }
+  // A record left out on the way is a problem, though the answers read.
+  const victim = fake.gmail.messages.find((m) => !m.pending && !m.localId && m.labels.includes('^i'))!;
+  const r4 = await runCanary(mailOf(transport({ mutate: breakMessage(() => victim.id) })), () => transport().info(), file);
+  expect(r4.ok).toBe(false);
+  expect(r4.problems).toEqual(expect.arrayContaining([expect.stringMatching(/^bv: \d+ records left out$/)]));
 });
 
 // ------------------------------------------------------------------ writing (write.ts, GmailMail's writes and send)

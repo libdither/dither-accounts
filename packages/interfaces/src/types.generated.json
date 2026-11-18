@@ -1058,7 +1058,7 @@
    },
    "mail.list": {
     "input": "{ mailboxId: string; limit?: number; before?: string; since?: number }",
-    "output": "{ messages: MailSummary[]; next: null | string }",
+    "output": "{ messages: MailSummary[]; next: null | string; skipped?: string[] }",
     "example": {
      "mailboxId": ""
     }
@@ -1087,14 +1087,14 @@
    },
    "mail.search": {
     "input": "{ query: string; limit?: number; cursor?: string; mailboxId?: string; idsOnly?: boolean }",
-    "output": "{ messages: MailSummary[]; next?: null | string }\n| { ids: string[]; next: null | string; estimate: null | number }",
+    "output": "{ messages: MailSummary[]; next?: null | string; skipped?: string[] }\n| { ids: string[]; next: null | string; estimate: null | number; skipped?: string[] }",
     "example": {
      "query": ""
     }
    },
    "mail.changes": {
     "input": "{ mailboxId: string; limit?: number; state?: string }",
-    "output": "{\n  /** Pass it to the next mail.changes. */\n  state: string;\n  added: MailSummary[];\n  changed: { id: string; flags: MailFlags; labels: string[] }[];\n  removed: string[];\n  /** More changes wait: call again with the new state. */\n  more: boolean;\n}",
+    "output": "{\n  /** Pass it to the next mail.changes. */\n  state: string;\n  added: MailSummary[];\n  changed: { id: string; flags: MailFlags; labels: string[] }[];\n  removed: string[];\n  /** More changes wait: call again with the new state. */\n  more: boolean;\n  /** Messages left out of this answer (see the header: message ids, or `thread:<id>`). */\n  skipped?: string[];\n}",
     "example": {
      "mailboxId": ""
     }

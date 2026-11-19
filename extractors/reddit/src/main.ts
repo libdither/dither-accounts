@@ -55,6 +55,9 @@ import { Pace } from './pace.ts';
 import { capabilitiesOf, compute, type Facts, type FeedFacts, PAGE_STATES, type PageState } from './status.ts';
 
 const WIDTH = 1280;
+/** Reddit's limits on what it takes: a comment, a text post's body. */
+const COMMENT_MAX = 10_000;
+const SELF_POST_MAX = 40_000;
 const HEIGHT = 800;
 const NETWORK: P.Network = 'reddit';
 
@@ -370,23 +373,27 @@ async function postAct(id: string, act: P.PostAct): Promise<P.PostViewer> {
  */
 async function publish(cmd: Extract<P.AdapterCommand, { t: 'publish' }>): Promise<P.PostFact> {
   const { text, replyTo, quote, replies, media } = cmd;
-  if (typeof text !== 'string' || !text.trim()) {
-    if (replyTo !== undefined || !cmd.title) throw new Error('nothing to post');
-  }
+  const body = typeof text === 'string' ? text : '';
+  // A title-only post is fine; a comment needs words.
+  if (!body.trim() && (replyTo !== undefined || !cmd.title)) throw new Error('nothing to post');
   if (quote !== undefined) throw new Error('Reddit has no quoting from here (crossposts are not made here)');
   if (replies !== undefined) throw new Error('Reddit has no choice of who can reply');
+  if (cmd.warning !== undefined) throw new Error('Reddit has no content warning: mark a post NSFW or spoiler on Reddit');
   if (Array.isArray(media) && media.length) throw new Error('pictures and video are not posted to Reddit from here');
+  if (replyTo !== undefined && (cmd.title !== undefined || cmd.place !== undefined)) throw new Error('a Reddit comment has no title or subreddit');
+  // Reddit's own limits: 10,000 characters in a comment, 40,000 in a text post's body.
+  const limit = replyTo !== undefined ? COMMENT_MAX : SELF_POST_MAX;
   const rules = POST_RULES.reddit;
-  if (rules && typeof text === 'string' && text.trim()) {
-    const c = composeState(text, rules);
-    if (!c.sendable) throw new Error(`too long for Reddit: ${c.length} of ${rules.maxLength}`);
+  if (rules && body.trim()) {
+    const c = composeState(body, { ...rules, maxLength: limit });
+    if (!c.sendable) throw new Error(`too long for Reddit: ${c.length} of ${limit}`);
   }
   const ctx = ctxOf(drops, testOrigin);
   if (replyTo !== undefined) {
     const parent = fullname(replyTo);
     if (!parent || !(parent.startsWith('t3_') || parent.startsWith('t1_'))) throw new Error('not a Reddit post or comment id to reply to');
     need('comment', true);
-    const r = await run('publish', () => post('/api/comment', { api_type: 'json', thing_id: parent, text }));
+    const r = await run('publish', () => post('/api/comment', { api_type: 'json', thing_id: parent, text: body }));
     const made = parseCommented(r, ctx);
     // Reddit answered without the comment: it may have been made. Never "failed": that would invite a second.
     if (!made) throw new Error('Reddit did not say which comment it made: look on Reddit before commenting again');
@@ -400,7 +407,7 @@ async function publish(cmd: Extract<P.AdapterCommand, { t: 'publish' }>): Promis
   const sr = subredditOf(cmd.place);
   if (!sr) throw new Error('a new Reddit post needs a subreddit to go in');
   need('post', true);
-  const r = await run('publish', () => post('/api/submit', { api_type: 'json', kind: 'self', sr, title, text: text ?? '', sendreplies: 'true' }));
+  const r = await run('publish', () => post('/api/submit', { api_type: 'json', kind: 'self', sr, title, text: body, sendreplies: 'true' }));
   const made = parseSubmitted(r);
   if (!made) throw new Error('Reddit did not say which post it made: look on Reddit before posting again');
   // Read back as its page would show it; if that fails, what was sent stands for it.
@@ -414,7 +421,7 @@ async function publish(cmd: Extract<P.AdapterCommand, { t: 'publish' }>): Promis
     }
   } catch {}
   const self = page?.user ?? undefined;
-  return { id: made.id, url: made.url, ts: Date.now(), ...(self ? { author: self } : {}), text: text ?? '', title, place: { id: `r/${sr.toLowerCase()}`, name: `r/${sr}`, url: `https://www.reddit.com/r/${sr}/` }, root: made.id };
+  return { id: made.id, url: made.url, ts: Date.now(), ...(self ? { author: self } : {}), text: body, title, place: { id: `r/${sr.toLowerCase()}`, name: `r/${sr}`, url: `https://www.reddit.com/r/${sr}/` }, root: made.id };
 }
 
 /** Delete a post or comment of yours, as its delete link does (/api/del). Reddit answers the same for one already gone. */

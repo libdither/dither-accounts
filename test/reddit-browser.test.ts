@@ -198,14 +198,21 @@ it(
 
     await expect(call('publish', { text: 'no title' })).rejects.toThrow('a new Reddit post needs a title');
     await expect(call('publish', { text: 'no place', title: 'A title' })).rejects.toThrow('needs a subreddit');
-    const p = await call('publish', { text: 'Tall ones.', title: 'My beans', place: 'r/gardening' });
+    await expect(call('publish', { text: 'careful', replyTo: 't1_c1', warning: 'spoilers' })).rejects.toThrow('Reddit has no content warning');
+    await expect(call('publish', { text: 'x'.repeat(10_001), replyTo: 't1_c1' })).rejects.toThrow('too long for Reddit: 10001 of 10000');
+    // The hub sends the subreddit's bare name; a title-only post has no body.
+    const p = await call('publish', { text: 'Tall ones.', title: 'My beans', place: 'gardening' });
     expect(p).toMatchObject({ author: ME, title: 'My beans', text: 'Tall ones.', place: { name: 'r/gardening' } });
-    expect(callsTo('/api/submit', from).map((c) => c.form)).toEqual([{ api_type: 'json', kind: 'self', sr: 'gardening', title: 'My beans', text: 'Tall ones.', sendreplies: 'true', uh: MODHASH }]);
+    await call('publish', { text: '', title: 'Title only', place: 'gardening' });
+    expect(callsTo('/api/submit', from).map((c) => c.form)).toEqual([
+      { api_type: 'json', kind: 'self', sr: 'gardening', title: 'My beans', text: 'Tall ones.', sendreplies: 'true', uh: MODHASH },
+      { api_type: 'json', kind: 'self', sr: 'gardening', title: 'Title only', text: '', sendreplies: 'true', uh: MODHASH },
+    ]);
 
     expect(await call('unpublish', { post: reply.id })).toEqual({ deleted: true });
     expect(callsTo('/api/del', from).map((c) => c.form)).toEqual([{ id: reply.id, uh: MODHASH }]);
     // Nothing else was written.
-    expect(fake.calls.slice(from).filter((c) => c.method === 'POST').map((c) => c.path)).toEqual(['/api/vote', '/api/vote', '/api/comment', '/api/submit', '/api/del']);
+    expect(fake.calls.slice(from).filter((c) => c.method === 'POST').map((c) => c.path)).toEqual(['/api/vote', '/api/vote', '/api/comment', '/api/submit', '/api/submit', '/api/del']);
   },
   60_000,
 );

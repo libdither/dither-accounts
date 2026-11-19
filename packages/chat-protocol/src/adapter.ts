@@ -32,7 +32,7 @@ import type { CallEffect, CallFact, CallInput, CallMode, CallState, StageAction,
 import type { GateAnswer, ScheduledEventFact, SpaceGate } from './servers.ts';
 import type { MessageModeration, ModAction, ReactionClear } from './moderation.ts';
 import type { LinkPreviewOut } from './extra.ts';
-import type { HomeFeed, PostAct } from './feed.ts';
+import type { HomeFeed, PostAct, ReplyGate } from './feed.ts';
 import type { AccountStatus, AttachmentKind, Attention, MessageKind, Network, ReactionStyle, Shape, SpaceKind, Variant } from './ontology.ts';
 import type { SelfCapability, SelfCommand, SelfEvent } from './self.ts';
 import type { VoiceFact } from './rich.ts';
@@ -819,7 +819,26 @@ export type AdapterCommand =
    * X takes up to 4 pictures (PNG, JPEG, WebP), or one GIF, or one video. `text` may be empty with media.
    * Sent only when you press Post. Identity facts first, then reply.result: PostFact, the post as the network made it.
    */
-  | { t: 'publish'; id: string; text: string; replyTo?: string; quote?: string; replies?: 'everyone' | 'following' | 'mentioned' | 'verified'; media?: OutgoingAttachment[] }
+  | {
+      t: 'publish';
+      id: string;
+      text: string;
+      replyTo?: string;
+      quote?: string;
+      /** Who may reply to a new post (never with `replyTo`): X's "who can reply". Absent: everyone. */
+      replies?: ReplyGate;
+      /** Pictures or a video with it (capability 'postMedia'): up to 4 images, or one GIF or video. */
+      media?: OutgoingAttachment[];
+      /** A new post's title, where the network has them (Reddit, Lemmy: POST_RULES `title`). Never with `replyTo`. */
+      title?: string;
+      /**
+       * Where a new post goes (POST_RULES `place`): a subreddit's name without "r/", a community's as `name` or
+       * `name@instance` without "!". Never with `replyTo`.
+       */
+      place?: string;
+      /** A content warning over it (Mastodon's spoiler text: POST_RULES `warning`), on a new post or a reply. */
+      warning?: string;
+    }
   /**
    * Delete a post of the account's own (capability 'unpublish'): `post` is the network's id for it. A post the network
    * says is gone already counts as deleted. Sent only when you press Delete. reply.result: { deleted: true }

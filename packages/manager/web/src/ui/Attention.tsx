@@ -4,7 +4,8 @@
  * their `action` operation through the same checks as an app's call (counted under "This page"): a new link code
  * (Signal, WhatsApp, Telegram, Google Messages), a pairing code for a phone number (WhatsApp), a phone number and the
  * code sent to it (Telegram), the emoji to tap on the phone (Google Messages), and a password or cookies to sign in
- * again (Matrix, Telegram's two-step password; Google Messages' cookies).
+ * again (Matrix, Bluesky's app password, Telegram's two-step password; Google Messages' cookies), and the code Bluesky
+ * emails for a sign-in.
  */
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import { renderSVG } from 'uqr';
@@ -118,7 +119,9 @@ function CodeEntry({ a, code }: { a: AccountInfo; code: { type?: string; length?
       setBusy('');
     }
   };
-  const digits = value.replace(/\D/g, '');
+  // A code of letters too (Bluesky's emailed ABCDE-12345: code.type 'text') is sent as typed.
+  const text = code.type === 'text';
+  const digits = text ? value.trim() : value.replace(/\D/g, '');
   return (
     <div class="link-side" data-code-entry>
       <form
@@ -128,19 +131,21 @@ function CodeEntry({ a, code }: { a: AccountInfo; code: { type?: string; length?
           void run('sign', 'signIn', { code: digits });
         }}
       >
-        <input inputMode="numeric" autocomplete="one-time-code" placeholder={code.length ? '•'.repeat(code.length) : 'Code'} maxLength={12} value={value} onInput={(e) => setValue((e.target as HTMLInputElement).value)} aria-label="The code" data-code />
-        <button class="btn sm primary" disabled={!!busy || digits.length < (code.length ?? 4)}>
+        <input inputMode={text ? 'text' : 'numeric'} autocomplete="one-time-code" placeholder={code.length ? '•'.repeat(code.length) : 'Code'} maxLength={12} value={value} onInput={(e) => setValue((e.target as HTMLInputElement).value)} aria-label="The code" data-code />
+        <button class="btn sm primary" disabled={!!busy || digits.replace(/-/g, '').length < (text ? 10 : (code.length ?? 4))}>
           {busy === 'sign' ? 'Signing in…' : 'Sign in'}
         </button>
       </form>
-      <div class="row">
-        <button class="btn sm ghost" disabled={!!busy} onClick={() => run('again', 'resendCode')} data-resend>
-          {busy === 'again' ? 'Asking…' : code.next ? `Send it again (${code.next.toLowerCase()})` : 'Send it again'}
-        </button>
-        <button class="btn sm ghost" disabled={!!busy} onClick={() => run('qr', 'refreshLink')}>
-          Use a QR code instead
-        </button>
-      </div>
+      {a.kind === 'telegram' && (
+        <div class="row">
+          <button class="btn sm ghost" disabled={!!busy} onClick={() => run('again', 'resendCode')} data-resend>
+            {busy === 'again' ? 'Asking…' : code.next ? `Send it again (${code.next.toLowerCase()})` : 'Send it again'}
+          </button>
+          <button class="btn sm ghost" disabled={!!busy} onClick={() => run('qr', 'refreshLink')}>
+            Use a QR code instead
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -13,6 +13,7 @@ same wire as before: dither-chat's adapter protocol, copied as `packages/chat-pr
 | `matrix` | `extractors/matrix` | the Client-Server API with plain fetch; the Rust crypto (wasm) when encryption is on |
 | `whatsapp` | `extractors/whatsapp` | a whatsmeow sidecar (`bridge/`, Go, built with nix) as a linked device; adding and join requests: [whatsapp.md](whatsapp.md) |
 | `t3` | `extractors/t3` | T3 Code's coding threads on this machine, through its shell stream, MCP endpoint and command line ([t3.md](t3.md)): no adapter in dither-chat |
+| `bluesky` | `extractors/bluesky` | the AT Protocol's HTTP API (XRPC) on the account's own server with plain fetch: posts only, notifications as a feed ([bluesky.md](bluesky.md)): no adapter in dither-chat |
 | `chat-fake` | `extractors/chat-fake` | a fake for tests: you and Alice in one DM |
 
 ## The `chat` interface

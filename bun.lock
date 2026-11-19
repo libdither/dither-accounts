@@ -33,6 +33,13 @@
         "@dither-accounts/statements-common": "workspace:*",
       },
     },
+    "extractors/bluesky": {
+      "name": "@dither-accounts/extractor-bluesky",
+      "dependencies": {
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+    },
     "extractors/bugwatch": {
       "name": "@dither-accounts/extractor-bugwatch",
       "dependencies": {
@@ -421,6 +428,8 @@
     "@dither-accounts/client": ["@dither-accounts/client@workspace:packages/client"],
 
     "@dither-accounts/extractor-amazon": ["@dither-accounts/extractor-amazon@workspace:extractors/amazon"],
+
+    "@dither-accounts/extractor-bluesky": ["@dither-accounts/extractor-bluesky@workspace:extractors/bluesky"],
 
     "@dither-accounts/extractor-bugwatch": ["@dither-accounts/extractor-bugwatch@workspace:extractors/bugwatch"],
 

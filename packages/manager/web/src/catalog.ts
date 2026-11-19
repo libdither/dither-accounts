@@ -56,6 +56,7 @@ const KIND_MARK: Record<string, Mark> = {
   schwab: { glyph: 'bank' },
   haveno: { glyph: 'exchange' },
   github: { brand: 'github' },
+  bluesky: { brand: 'bluesky' },
   bugwatch: { glyph: 'bell' },
   t3: { glyph: 'terminal' },
   njalla: { glyph: 'server' },
@@ -171,6 +172,14 @@ const SERVICES: Service[] = [
     category: 'chat',
     line: 'Your homeserver, with your password',
     ways: [{ id: 'password', label: 'Password', glyph: 'key', kind: 'matrix', tip: 'Signs in to your homeserver once and keeps only the session: no browser, no bridge.' }],
+  },
+  {
+    id: 'bluesky',
+    name: 'Bluesky',
+    mark: { brand: 'bluesky' },
+    category: 'chat',
+    line: 'Your notifications, timelines and threads',
+    ways: [{ id: 'app-password', label: 'App password', glyph: 'key', kind: 'bluesky', tip: 'Signs in with an app password you make in Bluesky\'s settings and keeps the session: no browser.' }],
   },
   {
     id: 'gmessages',

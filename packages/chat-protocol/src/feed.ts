@@ -48,7 +48,21 @@ export interface PostFact {
   viewer?: PostViewer;
   /** The language it is written in, as the network says (X: legacy.lang; 'und' when it cannot tell). */
   lang?: string;
+  // What other networks' posts have and X's do not (docs/feed.md "One card for every network"). Each is optional; a card
+  // draws whichever are there, so a network that brings them needs no card of its own.
+  /** A title apart from the words (Reddit, Lemmy, Hacker News, Discourse, YouTube, a forum post). */
+  title?: string;
+  /** A content warning or spoiler line shown before the words, which stay folded until opened (Mastodon, Misskey). */
+  warning?: string;
+  /** Where it was posted when that is not its author's own profile: a subreddit, a community, a channel, a forum. */
+  place?: { id: string; name: string; url?: string };
+  /** Who may reply, when the author limited it (X's "who can reply", Bluesky's thread gates). */
+  replies?: ReplyGate;
 }
+
+/** Who may reply to a new post: everyone, people the author follows, people mentioned in it, verified accounts. */
+export type ReplyGate = 'everyone' | 'following' | 'mentioned' | 'verified';
+export const REPLY_GATES: readonly ReplyGate[] = ['everyone', 'following', 'mentioned', 'verified'];
 
 /** What you have done to a post. */
 export interface PostViewer {
@@ -134,6 +148,13 @@ export interface HomePage {
   /** Ask with this cursor for what came since (the Top cursor), or null. */
   top: string | null;
 }
+
+/**
+ * What a post id may look like: the network's own id, opaque to the hub (X's and Mastodon's numbers, Reddit's `t3_…`
+ * and `t1_…`, Lemmy's `post:…` and `comment:…`, Substack's). URL-safe, so it goes in a path as it is.
+ */
+export const POST_ID_PATTERN = '[A-Za-z0-9_.~:-]{1,120}';
+export const isPostId = (v: unknown): v is string => typeof v === 'string' && new RegExp(`^${POST_ID_PATTERN}$`).test(v);
 
 /** A post's message id in its network: posts and the DMs of one network never share an id. */
 export const postNativeId = (postId: string) => `post:${postId}`;

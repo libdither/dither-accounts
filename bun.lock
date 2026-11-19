@@ -254,6 +254,14 @@
         "@types/mailparser": "^3.9.0",
       },
     },
+    "extractors/reddit": {
+      "name": "@dither-accounts/extractor-reddit",
+      "dependencies": {
+        "@dither-accounts/browser": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+    },
     "extractors/schwab": {
       "name": "@dither-accounts/extractor-schwab",
       "dependencies": {
@@ -288,6 +296,17 @@
         "@dither-accounts/browser": "workspace:*",
         "@dither-accounts/interfaces": "workspace:*",
         "@dither-accounts/link": "workspace:*",
+      },
+    },
+    "extractors/substack": {
+      "name": "@dither-accounts/extractor-substack",
+      "dependencies": {
+        "@dither-accounts/browser": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+      "devDependencies": {
+        "@dither-accounts/client": "workspace:*",
       },
     },
     "extractors/t3": {
@@ -483,11 +502,15 @@
 
     "@dither-accounts/extractor-proton": ["@dither-accounts/extractor-proton@workspace:extractors/proton"],
 
+    "@dither-accounts/extractor-reddit": ["@dither-accounts/extractor-reddit@workspace:extractors/reddit"],
+
     "@dither-accounts/extractor-schwab": ["@dither-accounts/extractor-schwab@workspace:extractors/schwab"],
 
     "@dither-accounts/extractor-signal": ["@dither-accounts/extractor-signal@workspace:extractors/signal"],
 
     "@dither-accounts/extractor-simplefin": ["@dither-accounts/extractor-simplefin@workspace:extractors/simplefin"],
+
+    "@dither-accounts/extractor-substack": ["@dither-accounts/extractor-substack@workspace:extractors/substack"],
 
     "@dither-accounts/extractor-t3": ["@dither-accounts/extractor-t3@workspace:extractors/t3"],
 

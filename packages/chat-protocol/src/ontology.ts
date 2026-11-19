@@ -15,7 +15,7 @@
  * (persons, folders, notification rules, triage) are never written back.
  */
 
-export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' | 'gmessages' | 'messenger' | 'instagram' | 'x' | 'reddit' | 'email' | 'calendar' | 't3';
+export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' | 'gmessages' | 'messenger' | 'instagram' | 'x' | 'reddit' | 'email' | 'calendar' | 't3' | 'substack';
 /**
  * The chat networks this hub offers. telegram, gmessages (Google Messages: SMS and RCS), messenger, instagram and x
  * (X's direct messages) run only in dither-accounts, and so does reddit (a Reddit account's front page, inbox and
@@ -24,8 +24,10 @@ export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' 
  * `calendar` is a calendar service beside the hub (dither-calendar, docs/calendar.md): its account brings the calendar's
  * own chats, and while one is on, the calendar's pane, plans and reminders are too. `t3` is T3 Code's coding threads
  * (dither-accounts' docs/t3.md): each thread a chat with its agent, its project a space; it too runs only there.
+ * substack is a network of posts, not chats (docs/feed.md): its account brings a home timeline, threads of comments and
+ * notifications to the Feed page, and runs only in dither-accounts.
  */
-export const NETWORKS: readonly Network[] = ['discord', 'signal', 'matrix', 'whatsapp', 'telegram', 'gmessages', 'messenger', 'instagram', 'x', 'reddit', 'calendar', 't3'];
+export const NETWORKS: readonly Network[] = ['discord', 'signal', 'matrix', 'whatsapp', 'telegram', 'gmessages', 'messenger', 'instagram', 'x', 'reddit', 'calendar', 't3', 'substack'];
 
 /** Where a conversation sits in the social structure, independent of network. */
 export type Shape =
@@ -165,6 +167,8 @@ export const REACTION_RULES: Record<Network, ReactionRules> = {
   calendar: { exclusive: true, freeText: false, maxDistinct: 0 },
   // Nor a coding agent's threads.
   t3: { exclusive: true, freeText: false, maxDistinct: 0 },
+  // A network of posts: a post is liked on the Feed page, never reacted to as a message.
+  substack: { exclusive: true, freeText: false, maxDistinct: 0 },
 };
 
 export function discordEmojiUrl(id: string, animated?: boolean): string {
@@ -233,6 +237,8 @@ export const ATTACHMENT_LIMITS: Record<Network, { bytes: number; files: number }
   calendar: { bytes: 0, files: 0 },
   // A turn sent to a T3 thread is words (dither-accounts' docs/t3.md).
   t3: { bytes: 0, files: 0 },
+  // A network of posts sends no messages.
+  substack: { bytes: 0, files: 0 },
 };
 
 /**
@@ -265,4 +271,5 @@ export const NETWORK_META: Record<Network, { name: string; color: string; spaceN
   email: { name: 'Email', color: '#5B7083', spaceNoun: 'mailbox', sectionNoun: 'folder' },
   calendar: { name: 'Calendar', color: '#7E57C2', spaceNoun: 'calendar', sectionNoun: 'section' },
   t3: { name: 'T3 Code', color: '#E5484D', spaceNoun: 'project', sectionNoun: 'section' },
+  substack: { name: 'Substack', color: '#FF6719', spaceNoun: 'publication', sectionNoun: 'section' },
 };

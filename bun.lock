@@ -283,6 +283,17 @@
         "@dither-accounts/link": "workspace:*",
       },
     },
+    "extractors/substack": {
+      "name": "@dither-accounts/extractor-substack",
+      "dependencies": {
+        "@dither-accounts/browser": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+      "devDependencies": {
+        "@dither-accounts/client": "workspace:*",
+      },
+    },
     "extractors/t3": {
       "name": "@dither-accounts/extractor-t3",
       "dependencies": {
@@ -479,6 +490,8 @@
     "@dither-accounts/extractor-signal": ["@dither-accounts/extractor-signal@workspace:extractors/signal"],
 
     "@dither-accounts/extractor-simplefin": ["@dither-accounts/extractor-simplefin@workspace:extractors/simplefin"],
+
+    "@dither-accounts/extractor-substack": ["@dither-accounts/extractor-substack@workspace:extractors/substack"],
 
     "@dither-accounts/extractor-t3": ["@dither-accounts/extractor-t3@workspace:extractors/t3"],
 

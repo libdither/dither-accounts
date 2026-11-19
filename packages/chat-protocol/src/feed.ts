@@ -50,11 +50,11 @@ export interface PostFact {
   lang?: string;
   // What other networks' posts have and X's do not (dither-chat docs/feed.md "One card for every network"). Each is
   // optional; a card draws whichever are there, so a network that brings them needs no card of its own.
-  /** A title apart from the words (Reddit, Lemmy, Hacker News, Discourse, YouTube, a forum post). */
+  /** A title apart from the words (Reddit, Lemmy, Hacker News, Discourse, YouTube, a forum post, a Substack post). */
   title?: string;
-  /** A content warning or spoiler line shown before the words, which stay folded until opened (Mastodon, Misskey; Reddit's NSFW and spoiler). */
+  /** A content warning or spoiler line shown before the words, which stay folded until opened (Mastodon, Misskey; Reddit's NSFW and spoiler; Substack's paywall). */
   warning?: string;
-  /** Where it was posted when that is not its author's own profile: a subreddit, a community, a channel, a forum. */
+  /** Where it was posted when that is not its author's own profile: a subreddit, a community, a channel, a forum, a publication. */
   place?: { id: string; name: string; url?: string };
 }
 

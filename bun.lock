@@ -239,6 +239,14 @@
         "@types/mailparser": "^3.9.0",
       },
     },
+    "extractors/reddit": {
+      "name": "@dither-accounts/extractor-reddit",
+      "dependencies": {
+        "@dither-accounts/browser": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+    },
     "extractors/schwab": {
       "name": "@dither-accounts/extractor-schwab",
       "dependencies": {
@@ -474,6 +482,8 @@
     "@dither-accounts/extractor-privacy": ["@dither-accounts/extractor-privacy@workspace:extractors/privacy"],
 
     "@dither-accounts/extractor-proton": ["@dither-accounts/extractor-proton@workspace:extractors/proton"],
+
+    "@dither-accounts/extractor-reddit": ["@dither-accounts/extractor-reddit@workspace:extractors/reddit"],
 
     "@dither-accounts/extractor-schwab": ["@dither-accounts/extractor-schwab@workspace:extractors/schwab"],
 

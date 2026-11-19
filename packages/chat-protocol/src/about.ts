@@ -381,6 +381,11 @@ export const ABOUT_RULES: Record<Network, AboutRules> = {
     nameMax: 32,
     topicMax: 500,
   },
+  // Reddit's feed and posts have nothing to set from here.
+  reddit: {
+    conversation: [],
+    space: [],
+  },
   // Mail has no conversations or spaces to set anything on.
   email: {
     conversation: [],

@@ -465,10 +465,10 @@ async function postAct(post: string, act: P.PostAct): Promise<P.PostViewer> {
   return { liked: view ? view.my_vote === 1 : score === 1 };
 }
 
-/** `!name@host` (or `name@host`, `name`) as the community's id on this instance. */
+/** `name` or `name@instance` (as the hub sends it; a leading ! is taken too) as the community's id on this instance. */
 async function communityOf(place: string): Promise<number> {
   const m = place.trim().match(/^!?([^@\s]+)(?:@([^\s]+))?$/);
-  if (!m) throw new RefusalError(`${place} is not a community's address (!name@instance)`, 400);
+  if (!m) throw new RefusalError(`${place} is not a community's name (name or name@instance)`, 400);
   const name = !m[2] || m[2] === ctx.host ? m[1] : `${m[1]}@${m[2]}`;
   const r = await api.req('GET', '/api/v3/community', { query: { name } });
   const id = r.body?.community_view?.community?.id;
@@ -501,7 +501,7 @@ async function publish(cmd: Extract<P.AdapterCommand, { t: 'publish' }>): Promis
   }
   const title = cmd.title?.trim();
   if (!title) throw new RefusalError('A Lemmy post needs a title', 400);
-  if (!cmd.place) throw new RefusalError('A Lemmy post needs a community to go to (!name@instance)', 400);
+  if (!cmd.place) throw new RefusalError('A Lemmy post needs a community to go to (name or name@instance)', 400);
   if ([...title].length > 200) throw new RefusalError('A Lemmy title is at most 200 characters', 400);
   const community = await communityOf(cmd.place);
   const r = await api.req('POST', '/api/v3/post', { json: { name: title, community_id: community, ...(cmd.text.trim() ? { body: cmd.text } : {}) } });

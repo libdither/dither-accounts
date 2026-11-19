@@ -41,7 +41,7 @@ Actions: `relogin { password }`, `signIn { code }`, `poll` (read replies and men
 | `post` (a post) | `GET /api/v3/post` and `GET /api/v3/comment/list?post_id=…&max_depth=8&sort=Hot`: one chain per top-level comment, its branch depth first. 50 top-level comments a page (`more` the next page). |
 | `post` (a comment) | The comment, the post and the comments above it (at most ten) as ancestors, and `comment/list?parent_id=…` under it. |
 | `postAct` | like: `POST /api/v3/post/like` or `/comment/like` with score 1; unlike: score 0. Repost is refused: Lemmy has none. |
-| `publish` | A reply to a post: `POST /api/v3/comment { content, post_id }`; to a comment: with its `parent_id`. A new post needs `title` (at most 200 characters) and `place`, the community's address `!name@instance` (`GET /api/v3/community?name=` finds its id here), then `POST /api/v3/post { name, community_id, body }`. Quotes, pictures, content warnings and reply limits are refused. |
+| `publish` | A reply to a post: `POST /api/v3/comment { content, post_id }`; to a comment: with its `parent_id`. A new post needs `title` (at most 200 characters) and `place`, the community's bare name: `name` for one on your instance, `name@instance` for another's (a leading `!` is taken too; `GET /api/v3/community?name=` finds its id here), then `POST /api/v3/post { name, community_id, body }`. Quotes, pictures, content warnings and reply limits are refused. |
 | `unpublish` | `POST /api/v3/post/delete` or `/comment/delete` with `deleted: true`; already gone counts as deleted. |
 | `profile` | `GET /api/v3/user?username=…`: their posts and comments together, newest first (20), counts, and the communities they moderate. |
 
@@ -51,9 +51,12 @@ names who voted only to moderators and admins, so the feed has no likes either.
 ## Facts and ids
 
 - **People** are `name@host`, the host of their own instance (from `actor_id`), the same from every instance.
-- **Communities** (a post's `place`) are `!name@host`, named so, with the community's own URL.
-- **Posts** are `p<id>@<api host>` and **comments** `c<id>@<api host>`: Lemmy's numbers mean something only on the
-  instance that gave them, and a post and a comment may share one. A command for another host's is refused (404).
+- **Communities** (a post's `place`) have the id `name@host`, which `publish` takes back as it is, the name
+  `!name@host`, and the community's own URL.
+- **Posts** are `<api host>:p<id>` and **comments** `<api host>:c<id>`: Lemmy's numbers mean something only on the
+  instance that gave them, a post and a comment may share one, and a post id takes no `@` (the hub's
+  `POST_ID_PATTERN`). A command for another host's is refused (404). The hub never asks a Lemmy account to repost or
+  for who voted.
 - **The feed** is one conversation, `feed:<your address>`, shape `channel`, variant `feed`. Messages are FeedItems:
   `reply:<their comment>` (an answer to your post, which comes with it as `post`, or to your comment) and
   `mention:<their comment>`.

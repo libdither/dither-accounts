@@ -2,8 +2,8 @@
  * Mastodon's JSON as chat facts (docs/mastodon.md "Facts and ids").
  *
  * Ids: a person is `user@domain` (their full address, the same from every server, so two accounts' views of one
- * person meet on the hub); a post is `<status id>@<api host>`, since a status id means something only on the server
- * that gave it. The feed's messages are FeedItems with ids `like:<post>:<user>`, `repost:<post>:<user>`,
+ * person meet on the hub); a post is `<api host>:<status id>`, since a status id means something only on the server
+ * that gave it (and the hub's post ids take no @: feed.ts POST_ID_PATTERN). The feed's messages are FeedItems with ids `like:<post>:<user>`, `repost:<post>:<user>`,
  * `follow:<user>`, `reply:<their post>`, `mention:<their post>`, `quote:<their post>` and
  * `other:<notification id>:<user>`.
  */
@@ -106,12 +106,12 @@ const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : u
 
 // ---------------------------------------------------------------- posts
 
-export const postId = (localId: string, ctx: Ctx) => `${localId}@${ctx.host}`;
+export const postId = (localId: string, ctx: Ctx) => `${ctx.host}:${localId}`;
 /** The status id on this server in a post id, or null when the post id is another server's. */
 export function localIdOf(post: string, ctx: Ctx): string | null {
-  const at = post.lastIndexOf('@');
-  if (at < 0) return /^\w+$/.test(post) ? post : null;
-  return post.slice(at + 1) === ctx.host && /^\w+$/.test(post.slice(0, at)) ? post.slice(0, at) : null;
+  const i = post.lastIndexOf(':');
+  if (i < 0) return /^\w+$/.test(post) ? post : null;
+  return post.slice(0, i) === ctx.host && /^\w+$/.test(post.slice(i + 1)) ? post.slice(i + 1) : null;
 }
 
 function mediaOf(list: any): P.PostMedia[] {

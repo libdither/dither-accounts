@@ -22,27 +22,28 @@ test("a status's length as Mastodon counts it: links 23, a remote mention by its
   expect(statusLength('@ann@far.example hi', 23)).toBe(7);
 });
 
-test('post ids carry the host that gave them; another server\'s are not ours', () => {
-  expect(localIdOf('110@social.example', ctx)).toBe('110');
-  expect(localIdOf('110@elsewhere.example', ctx)).toBeNull();
+test('post ids carry the host that gave them, as the hub\'s pattern takes them; another server\'s are not ours', () => {
+  expect(localIdOf('127.0.0.1:3000:110', { ...ctx, host: '127.0.0.1:3000' })).toBe('110');
+  expect(localIdOf('social.example:110', ctx)).toBe('110');
+  expect(localIdOf('elsewhere.example:110', ctx)).toBeNull();
   expect(localIdOf('110', ctx)).toBe('110');
-  expect(localIdOf('../etc@social.example', ctx)).toBeNull();
+  expect(localIdOf('social.example:../etc', ctx)).toBeNull();
 });
 
 test('a boost, a reply, a quote (both shapes) and a poll as PostFacts', () => {
   const people = new Map();
   const orig = { id: '1', account: account('a', 'ann'), created_at: '2026-01-01T00:00:00Z', content: '<p>orig</p>', replies_count: 0, reblogs_count: 1, favourites_count: 2 };
   const boost = postOf({ id: '2', account: account('b', 'bob@far.example'), created_at: '2026-01-01T01:00:00Z', content: '', reblog: orig }, ctx, people);
-  expect(boost).toMatchObject({ id: '2@social.example', author: 'bob@far.example', text: '', repostOf: { id: '1@social.example', author: 'ann@example.social', text: 'orig' } });
+  expect(boost).toMatchObject({ id: 'social.example:2', author: 'bob@far.example', text: '', repostOf: { id: 'social.example:1', author: 'ann@example.social', text: 'orig' } });
   expect([...people.keys()].sort()).toEqual(['ann@example.social', 'bob@far.example']);
   const reply = postOf({ id: '3', account: account('b', 'bob@far.example'), created_at: '2026-01-01T02:00:00Z', content: '<p>yes</p>', in_reply_to_id: '1', in_reply_to_account_id: 'a', mentions: [{ id: 'a', acct: 'ann' }] }, ctx, people);
-  expect(reply.replyTo).toEqual({ id: '1@social.example', author: 'ann@example.social' });
+  expect(reply.replyTo).toEqual({ id: 'social.example:1', author: 'ann@example.social' });
   const wrapped = postOf({ id: '4', account: account('a', 'ann'), created_at: '2026-01-01T03:00:00Z', content: '<p>q</p>', quote: { state: 'accepted', quoted_status: orig } }, ctx, people);
-  expect(wrapped.quoteOf?.id).toBe('1@social.example');
+  expect(wrapped.quoteOf?.id).toBe('social.example:1');
   const pending = postOf({ id: '5', account: account('a', 'ann'), created_at: '2026-01-01T03:00:00Z', content: '<p>q</p>', quote: { state: 'pending', quoted_status: null } }, ctx, people);
   expect(pending.quoteOf).toBeUndefined();
   const bare = postOf({ id: '6', account: account('a', 'ann'), created_at: '2026-01-01T03:00:00Z', content: '<p>q</p>', quote: orig }, ctx, people);
-  expect(bare.quoteOf?.id).toBe('1@social.example');
+  expect(bare.quoteOf?.id).toBe('social.example:1');
   const poll = postOf({ id: '7', account: account('a', 'ann'), created_at: '2026-01-01T03:00:00Z', content: '<p>Tea?</p>', poll: { options: [{ title: 'Yes', votes_count: 3 }, { title: 'No', votes_count: null }] } }, ctx, people);
   expect(poll.text).toBe('Tea?\n\n◯ Yes (3)\n◯ No');
 });
@@ -50,7 +51,7 @@ test('a boost, a reply, a quote (both shapes) and a poll as PostFacts', () => {
 test('notifications: a mention that answers you is a reply; unknown kinds are other, in words', () => {
   const status = { id: '9', account: account('a', 'ann'), created_at: '2026-01-01T00:00:00Z', content: '<p>hi</p>', in_reply_to_id: '1', in_reply_to_account_id: 'q', mentions: [{ id: 'q', acct: 'quinn' }] };
   const r = feedEntryOf({ id: 'n1', type: 'mention', account: status.account, status, created_at: '2026-01-01T00:00:00Z' }, ctx)!;
-  expect(r.message).toMatchObject({ nativeId: 'reply:9@social.example', conversation: 'feed:quinn@example.social', kind: 'text', mentionsSelf: true });
+  expect(r.message).toMatchObject({ nativeId: 'reply:social.example:9', conversation: 'feed:quinn@example.social', kind: 'text', mentionsSelf: true });
   const other = feedEntryOf({ id: 'n2', type: 'some_new_kind', account: status.account, created_at: '2026-01-01T00:00:00Z' }, ctx)!;
   expect(other.message).toMatchObject({ nativeId: 'other:n2:ann@example.social', body: 'notified you (some_new_kind)', kind: 'system' });
   const warn = feedEntryOf({ id: 'n3', type: 'moderation_warning', created_at: '2026-01-01T00:00:00Z' }, ctx)!;

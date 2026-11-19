@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { AccountsClient, register } from '@dither-accounts/client';
 import { chat } from '@dither-accounts/interfaces';
+import { isPostId } from '@dither-chat/protocol';
 import { createManager, type Manager } from '@dither-accounts/manager';
 import { kindOf } from '@dither-accounts/manager/kinds';
 import manifest from '../extractors/mastodon/manifest.ts';
@@ -47,7 +48,7 @@ const add = async (config: Record<string, unknown>, secret: Record<string, unkno
 };
 const H = () => fake.host;
 const who = (name: string) => `${name}@${H()}`;
-const pid = (n: string) => `${n}@${H()}`;
+const pid = (n: string) => `${H()}:${n}`;
 
 beforeAll(async () => {
   for (const [k, v] of Object.entries(ENV)) {
@@ -167,6 +168,7 @@ test('history pages back through the notifications by id', async () => {
 test('home: Following pages by id, For you is the server\'s trends', async () => {
   const p1 = await call('home', { feed: 'following', count: 3 });
   expect(p1.items.map((i: any) => i.post.id)).toEqual([pid('16'), pid('15'), pid('14')]);
+  expect(p1.items.every((i: any) => isPostId(i.post.id) && (!i.post.repostOf || isPostId(i.post.repostOf.id)))).toBe(true);
   expect(p1.more).toBe('max:14');
   expect(p1.top).toBe('min:16');
   const boost = p1.items[2].post;
@@ -190,7 +192,7 @@ test('a thread: what it answers, and its replies as chains the tree is drawn fro
   const top = await call('post', { post: pid('10') });
   expect(top.replies.map((c: any[]) => c.map((p) => p.id))).toEqual([[pid('11'), pid('12')]]);
   expect(top.focal.counts).toMatchObject({ replies: 1, likes: 1, reposts: 1 });
-  await expect(call('post', { post: '10@other.example' })).rejects.toThrow('not one');
+  await expect(call('post', { post: 'other.example:10' })).rejects.toThrow('not one');
   await expect(call('post', { post: pid('999') })).rejects.toThrow('no such post');
 });
 
@@ -241,7 +243,8 @@ test('posting: a reply names whom it answers, a warning, a quote, a link for a s
 test('deleting your own post, and one already gone counts as deleted', async () => {
   const made = await call('publish', { text: 'oops' });
   expect(await call('unpublish', { post: made.id })).toEqual({ deleted: true });
-  expect(fake.statuses.has(made.id.split('@')[0])).toBe(false);
+  expect(isPostId(made.id)).toBe(true);
+  expect(fake.statuses.has(made.id.split(':').at(-1))).toBe(false);
   expect(await call('unpublish', { post: made.id })).toEqual({ deleted: true });
 });
 

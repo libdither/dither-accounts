@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { AccountsClient, register } from '@dither-accounts/client';
 import { chat } from '@dither-accounts/interfaces';
+import { isPostId } from '@dither-chat/protocol';
 import { createManager, type Manager } from '@dither-accounts/manager';
 import { kindOf } from '@dither-accounts/manager/kinds';
 import manifest from '../extractors/lemmy/manifest.ts';
@@ -48,7 +49,7 @@ const add = async (config: Record<string, unknown>, secret: Record<string, unkno
   return ((await r.json()) as { id: string }).id;
 };
 const H = () => fake.host;
-const k = (key: string) => `${key}@${H()}`;
+const k = (key: string) => `${H()}:${key}`;
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
 
 beforeAll(async () => {
@@ -162,7 +163,7 @@ test('home: Subscribed by New, All by Hot, paged by cursor; posts carry their ti
     author: 'bob@far.example',
     text: 'https://example.com/article\n\nworth a read',
     title: 'An article',
-    place: { id: `!rust@${H()}`, name: `!rust@${H()}`, url: `${fake.url}/c/rust` },
+    place: { id: `rust@${H()}`, name: `!rust@${H()}`, url: `${fake.url}/c/rust` },
     counts: { replies: 0, likes: 0 },
     root: k('p3'),
     viewer: { liked: false },
@@ -170,7 +171,7 @@ test('home: Subscribed by New, All by Hot, paged by cursor; posts carry their ti
   const all = await call('home', { feed: 'foryou', count: 5 });
   expect(all.items.map((i: any) => i.post.id)).toEqual([k('p1'), k('p2'), k('p3')]);
   expect(fake.calls.filter((c) => c.path === '/api/v3/post/list').at(-1)!.query).toContain('sort=Hot');
-  expect(all.items[1].post).toMatchObject({ text: '', media: [{ kind: 'image', url: 'https://files.example/teapot.jpg' }], place: { id: '!tea@far.example', url: 'https://far.example/c/tea' } });
+  expect(all.items[1].post).toMatchObject({ text: '', media: [{ kind: 'image', url: 'https://files.example/teapot.jpg' }], place: { id: 'tea@far.example', name: '!tea@far.example', url: 'https://far.example/c/tea' } });
   expect(evs(id, 'identity').some((e) => e.identity.nativeId === 'bob@far.example')).toBe(true);
 });
 
@@ -179,14 +180,15 @@ test('a post\'s comments as a tree of chains; a comment\'s thread with the post 
   expect(t.focal).toMatchObject({ id: k('p1'), title: 'Hello Rust', text: 'first post' });
   expect(t.ancestors).toEqual([]);
   expect(t.replies.map((c: any[]) => c.map((p) => p.id))).toEqual([[k('c10'), k('c11'), k('c12')], [k('c13')], [k('c14')]]);
-  expect(t.replies[0][2]).toMatchObject({ replyTo: { id: k('c11') }, root: k('p1'), place: { id: `!rust@${H()}` } });
+  expect(t.replies[0][2]).toMatchObject({ replyTo: { id: k('c11') }, root: k('p1'), place: { id: `rust@${H()}` } });
+  expect(t.replies.flat().every((p: any) => isPostId(p.id) && isPostId(p.replyTo.id))).toBe(true);
   expect(t.more).toBeNull();
   expect(fake.calls.filter((c) => c.path === '/api/v3/comment/list').at(-1)!.query).toContain('max_depth=8');
   const c = await call('post', { post: k('c11') });
   expect(c.focal.id).toBe(k('c11'));
   expect(c.ancestors.map((p: any) => p.id)).toEqual([k('p1'), k('c10')]);
   expect(c.replies.map((ch: any[]) => ch.map((p) => p.id))).toEqual([[k('c12')]]);
-  await expect(call('post', { post: 'p1@other.example' })).rejects.toThrow('not a post or comment');
+  await expect(call('post', { post: 'other.example:p1' })).rejects.toThrow('not a post or comment');
   await expect(call('post', { post: k('p99') })).rejects.toThrow('no such post');
 });
 
@@ -206,22 +208,26 @@ test('commenting on a post and a comment, posting to a community by its address,
   const nested = await call('publish', { text: 'agreed', replyTo: k('c10') });
   expect(fake.calls.filter((c) => c.path === '/api/v3/comment').at(-1)!.body).toEqual({ content: 'agreed', post_id: 1, parent_id: 10 });
   expect(nested.replyTo).toEqual({ id: k('c10') });
-  const post = await call('publish', { text: 'body text', title: 'A question', place: `!rust@${H()}` });
+  // The hub sends a community's bare name: `name` here, `name@instance` from elsewhere.
+  const post = await call('publish', { text: 'body text', title: 'A question', place: 'rust' });
   expect(fake.calls.filter((c) => c.path === '/api/v3/post' && c.method === 'POST').at(-1)!.body).toEqual({ name: 'A question', community_id: 1, body: 'body text' });
-  expect(post).toMatchObject({ title: 'A question', place: { id: `!rust@${H()}` } });
-  await call('publish', { text: '', title: 'Tea?', place: '!tea@far.example' });
+  expect(post).toMatchObject({ title: 'A question', place: { id: `rust@${H()}` } });
+  // The place it gives back is taken back.
+  await call('publish', { text: '', title: 'Again', place: post.place.id });
+  expect(fake.calls.filter((c) => c.path === '/api/v3/post' && c.method === 'POST').at(-1)!.body.community_id).toBe(1);
+  await call('publish', { text: '', title: 'Tea?', place: 'tea@far.example' });
   expect(fake.calls.filter((c) => c.path === '/api/v3/community').at(-1)!.query).toBe('?name=tea%40far.example');
-  await expect(call('publish', { text: 'no title', place: `!rust@${H()}` })).rejects.toThrow('needs a title');
+  await expect(call('publish', { text: 'no title', place: 'rust' })).rejects.toThrow('needs a title');
   await expect(call('publish', { text: 'x', title: 'No place' })).rejects.toThrow('needs a community');
-  await expect(call('publish', { text: 'x', title: 'Where', place: '!nowhere@far.example' })).rejects.toThrow('no such');
+  await expect(call('publish', { text: 'x', title: 'Where', place: 'nowhere@far.example' })).rejects.toThrow('no such');
   await expect(call('publish', { text: 'x', quote: k('p1') })).rejects.toThrow('no quote');
   await expect(call('publish', { text: 'x', replyTo: k('p1'), warning: 'cw' })).rejects.toThrow('no content warnings');
 });
 
 test('deleting your own post and comment', async () => {
-  const post = await call('publish', { text: 'oops', title: 'Oops', place: `!rust@${H()}` });
+  const post = await call('publish', { text: 'oops', title: 'Oops', place: 'rust' });
   expect(await call('unpublish', { post: post.id })).toEqual({ deleted: true });
-  expect(fake.posts.get(Number(post.id.slice(1).split('@')[0]))!.deleted).toBe(true);
+  expect(fake.posts.get(Number(post.id.split(':').at(-1).slice(1)))!.deleted).toBe(true);
   const c = await call('publish', { text: 'oops', replyTo: k('p1') });
   expect(await call('unpublish', { post: c.id })).toEqual({ deleted: true });
   expect(await call('unpublish', { post: k('p999') })).toEqual({ deleted: true });

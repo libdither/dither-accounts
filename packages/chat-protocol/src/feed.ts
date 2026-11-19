@@ -149,6 +149,13 @@ export interface HomePage {
   top: string | null;
 }
 
+/**
+ * What a post id may look like: the network's own id, opaque to the hub (X's and Mastodon's numbers, Reddit's `t3_…`
+ * and `t1_…`, Lemmy's `post:…` and `comment:…`, Substack's). URL-safe, so it goes in a path as it is.
+ */
+export const POST_ID_PATTERN = '[A-Za-z0-9_.~:-]{1,120}';
+export const isPostId = (v: unknown): v is string => typeof v === 'string' && new RegExp(`^${POST_ID_PATTERN}$`).test(v);
+
 /** A post's message id in its network: posts and the DMs of one network never share an id. */
 export const postNativeId = (postId: string) => `post:${postId}`;
 /** The post id in a post's message native id, or null when it is not one. */

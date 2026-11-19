@@ -2,8 +2,9 @@
  * Lemmy's JSON (API v3, Lemmy 0.19) as chat facts (docs/lemmy.md "Facts and ids").
  *
  * Ids: a person is `name@host` and a community `!name@host`, the host of their own instance (from `actor_id`), the
- * same from every instance; a post is `p<id>@<api host>` and a comment `c<id>@<api host>`, since Lemmy's numbers
- * mean something only on the instance that gave them, and a post and a comment may share one. The feed's messages
+ * same from every instance; a post is `<api host>:p<id>` and a comment `<api host>:c<id>`, since Lemmy's numbers
+ * mean something only on the instance that gave them, and a post and a comment may share one (and the hub's post ids
+ * take no @: feed.ts POST_ID_PATTERN). A community as a post's place is `name@host`, as `publish` takes it back. The feed's messages
  * are FeedItems with ids `reply:<their comment>` and `mention:<their comment>`.
  */
 import { createHmac } from 'node:crypto';
@@ -51,10 +52,10 @@ export function identityOf(p: any, ctx: Ctx): P.IdentityFact {
   };
 }
 
-export const communityId = (c: any, ctx: Ctx) => `!${c?.name}@${hostOf(c?.actor_id, ctx.host)}`;
+/** A community's place: its id `name@host`, as `publish` takes it; its name `!name@host`, as Lemmy writes it. */
 export function placeOf(c: any, ctx: Ctx): NonNullable<P.PostFact['place']> {
-  const id = communityId(c, ctx);
-  return { id, name: id, ...(https(c?.actor_id) ? { url: c.actor_id } : {}) };
+  const id = `${c?.name}@${hostOf(c?.actor_id, ctx.host)}`;
+  return { id, name: `!${id}`, ...(https(c?.actor_id) ? { url: c.actor_id } : {}) };
 }
 
 export function personAbout(view: any, ctx: Ctx): P.PersonAbout {
@@ -79,14 +80,14 @@ export function personAbout(view: any, ctx: Ctx): P.PersonAbout {
 
 // ---------------------------------------------------------------- posts and comments
 
-export const postKey = (id: number | string, ctx: Ctx) => `p${id}@${ctx.host}`;
-export const commentKey = (id: number | string, ctx: Ctx) => `c${id}@${ctx.host}`;
+export const postKey = (id: number | string, ctx: Ctx) => `${ctx.host}:p${id}`;
+export const commentKey = (id: number | string, ctx: Ctx) => `${ctx.host}:c${id}`;
 
 /** A post or comment id of this instance as its kind and number, or null when it is another instance's (or not one). */
 export function parseKey(key: string, ctx: Ctx): { kind: 'post' | 'comment'; id: number } | null {
-  const m = key.match(/^([pc])(\d+)(?:@(.+))?$/);
-  if (!m || (m[3] && m[3] !== ctx.host)) return null;
-  return { kind: m[1] === 'p' ? 'post' : 'comment', id: Number(m[2]) };
+  const m = key.match(/^(?:(.+):)?([pc])(\d+)$/);
+  if (!m || (m[1] && m[1] !== ctx.host)) return null;
+  return { kind: m[2] === 'p' ? 'post' : 'comment', id: Number(m[3]) };
 }
 
 const IMAGE = /\.(jpe?g|png|gif|webp|avif)(\?|$)/i;

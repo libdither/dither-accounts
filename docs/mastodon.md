@@ -53,8 +53,9 @@ Capabilities: `history`, `profile`, `posts`, `postActions`, `publish`, `postReac
 - **People** are `user@domain`, their full address (a local account's `acct` gets the server's `domain` from
   `/api/v2/instance`), so the same person from two accounts on different servers is one identity on the hub. Handle
   `@user@domain`.
-- **Posts** are `<status id>@<api host>`: a status id means something only on the server that gave it. A command for a
-  post of another host is refused (404).
+- **Posts** are `<api host>:<status id>`: a status id means something only on the server that gave it, and a post id
+  takes no `@` (the hub's `POST_ID_PATTERN`, `[A-Za-z0-9_.~:-]{1,120}`). A command for a post of another host is
+  refused (404).
 - **The feed** is one conversation, `feed:<your address>`, shape `channel`, variant `feed`, named Notifications.
   Messages are FeedItems (chat-protocol `feed.ts`): `like:<post>:<user>` (favourite), `repost:<post>:<user>`
   (boost), `follow:<user>`, `reply:<their post>` (a mention whose post answers yours), `mention:<their post>`,

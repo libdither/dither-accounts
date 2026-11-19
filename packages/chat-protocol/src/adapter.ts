@@ -819,7 +819,19 @@ export type AdapterCommand =
    * X takes up to 4 pictures (PNG, JPEG, WebP), or one GIF, or one video. `text` may be empty with media.
    * Sent only when you press Post. Identity facts first, then reply.result: PostFact, the post as the network made it.
    */
-  | { t: 'publish'; id: string; text: string; replyTo?: string; quote?: string; replies?: 'everyone' | 'following' | 'mentioned' | 'verified'; media?: OutgoingAttachment[] }
+  | {
+      t: 'publish';
+      id: string;
+      text: string;
+      replyTo?: string;
+      quote?: string;
+      replies?: 'everyone' | 'following' | 'mentioned' | 'verified';
+      media?: OutgoingAttachment[];
+      /** A new post's title, where the network's posts have one (Reddit: required on a new post, at most 300). */
+      title?: string;
+      /** Where a new post goes, where the network posts into places (Reddit: the subreddit, `rust` or `r/rust`). */
+      place?: string;
+    }
   /**
    * Delete a post of the account's own (capability 'unpublish'): `post` is the network's id for it. A post the network
    * says is gone already counts as deleted. Sent only when you press Delete. reply.result: { deleted: true }

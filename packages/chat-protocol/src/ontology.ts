@@ -15,16 +15,17 @@
  * (persons, folders, notification rules, triage) are never written back.
  */
 
-export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' | 'gmessages' | 'messenger' | 'instagram' | 'x' | 'email' | 'calendar' | 't3';
+export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' | 'gmessages' | 'messenger' | 'instagram' | 'x' | 'reddit' | 'email' | 'calendar' | 't3';
 /**
  * The chat networks this hub offers. telegram, gmessages (Google Messages: SMS and RCS), messenger, instagram and x
- * (X's direct messages) run only in dither-accounts. `email` is a Network for people's addresses (identities) and the
+ * (X's direct messages) run only in dither-accounts, and so does reddit (a Reddit account's front page, inbox and
+ * comment threads, as posts and a feed). `email` is a Network for people's addresses (identities) and the
  * tables below, but not a chat account kind: mail comes through dither-accounts' mail interface (docs/mail.md).
  * `calendar` is a calendar service beside the hub (dither-calendar, docs/calendar.md): its account brings the calendar's
  * own chats, and while one is on, the calendar's pane, plans and reminders are too. `t3` is T3 Code's coding threads
  * (dither-accounts' docs/t3.md): each thread a chat with its agent, its project a space; it too runs only there.
  */
-export const NETWORKS: readonly Network[] = ['discord', 'signal', 'matrix', 'whatsapp', 'telegram', 'gmessages', 'messenger', 'instagram', 'x', 'calendar', 't3'];
+export const NETWORKS: readonly Network[] = ['discord', 'signal', 'matrix', 'whatsapp', 'telegram', 'gmessages', 'messenger', 'instagram', 'x', 'reddit', 'calendar', 't3'];
 
 /** Where a conversation sits in the social structure, independent of network. */
 export type Shape =
@@ -156,6 +157,8 @@ export const REACTION_RULES: Record<Network, ReactionRules> = {
   instagram: { exclusive: true, freeText: false },
   // XChat keeps a set per person (its reaction table's key includes the emoji); any emoji.
   x: { exclusive: false, freeText: false },
+  // Reddit has votes on posts (postAct), no emoji reactions.
+  reddit: { exclusive: true, freeText: false, maxDistinct: 0 },
   // Mail has no reactions.
   email: { exclusive: true, freeText: false, maxDistinct: 0 },
   // The calendar's chats have none either.
@@ -222,6 +225,8 @@ export const ATTACHMENT_LIMITS: Record<Network, { bytes: number; files: number }
   instagram: { bytes: MAX_UPLOAD, files: 10 },
   // A direct message carries one photo, GIF or video.
   x: { bytes: MAX_UPLOAD, files: 1 },
+  // No direct messages here: posts and comments are words.
+  reddit: { bytes: 0, files: 0 },
   // dither-accounts' mail.attachment and OutgoingFile: 25 MB a file.
   email: { bytes: MAX_UPLOAD, files: 20 },
   // Words only.
@@ -256,6 +261,7 @@ export const NETWORK_META: Record<Network, { name: string; color: string; spaceN
   messenger: { name: 'Messenger', color: '#0866FF', spaceNoun: 'group', sectionNoun: 'section' },
   instagram: { name: 'Instagram', color: '#FF0069', spaceNoun: 'group', sectionNoun: 'section' },
   x: { name: 'X', color: '#000000', spaceNoun: 'group', sectionNoun: 'section' },
+  reddit: { name: 'Reddit', color: '#FF4500', spaceNoun: 'subreddit', sectionNoun: 'section' },
   email: { name: 'Email', color: '#5B7083', spaceNoun: 'mailbox', sectionNoun: 'folder' },
   calendar: { name: 'Calendar', color: '#7E57C2', spaceNoun: 'calendar', sectionNoun: 'section' },
   t3: { name: 'T3 Code', color: '#E5484D', spaceNoun: 'project', sectionNoun: 'section' },

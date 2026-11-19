@@ -265,7 +265,7 @@ How to move a dither-chat account here and back is in dither-chat's `docs/accoun
   [passkeys.md](docs/passkeys.md) and [approver.md](docs/approver.md) (passkeys held by an account, or on your phone).
 - **Chat:** [chat.md](docs/chat.md) (the chat extractors, and importing from dither-chat), [signal.md](docs/signal.md),
   [whatsapp.md](docs/whatsapp.md), [telegram.md](docs/telegram.md), [gmessages.md](docs/gmessages.md),
-  [x.md](docs/x.md), [messenger.md](docs/messenger.md) (and Instagram), [t3.md](docs/t3.md).
+  [x.md](docs/x.md), [substack.md](docs/substack.md), [messenger.md](docs/messenger.md) (and Instagram), [t3.md](docs/t3.md).
 - **Mail, calendars, contacts:** [google.md](docs/google.md), [proton.md](docs/proton.md), [mail.md](docs/mail.md),
   [dav.md](docs/dav.md), [ics.md](docs/ics.md).
 - **Money:** [statements.md](docs/statements.md) (how the finance kinds hand over files), [simplefin.md](docs/simplefin.md),

@@ -395,6 +395,11 @@ export const ABOUT_RULES: Record<Network, AboutRules> = {
     conversation: [],
     space: [],
   },
+  // A network of posts: its feed conversation is read-only (docs/feed.md).
+  substack: {
+    conversation: [],
+    space: [],
+  },
 };
 
 export const ABOUT_LABEL: Record<AboutKey, string> = {

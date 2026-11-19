@@ -15,7 +15,7 @@
  * (persons, folders, notification rules, triage) are never written back.
  */
 
-export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' | 'gmessages' | 'messenger' | 'instagram' | 'x' | 'reddit' | 'email' | 'calendar' | 't3' | 'substack' | 'mastodon' | 'lemmy';
+export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' | 'gmessages' | 'messenger' | 'instagram' | 'x' | 'reddit' | 'email' | 'calendar' | 't3' | 'substack' | 'mastodon' | 'lemmy' | 'bluesky';
 /**
  * The chat networks this hub offers. telegram, gmessages (Google Messages: SMS and RCS), messenger, instagram and x
  * (X's direct messages) run only in dither-accounts, and so does reddit (a Reddit account's front page, inbox and
@@ -28,8 +28,10 @@ export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' 
  * notifications to the Feed page, and runs only in dither-accounts.
  * `mastodon` and `lemmy` bring posts only (a feed of notifications, home timelines, threads; dither-accounts'
  * docs/mastodon.md and docs/lemmy.md): no direct messages.
+ * `bluesky` brings posts only (a feed of notifications, home timelines, threads; dither-accounts' docs/bluesky.md): no
+ * direct messages.
  */
-export const NETWORKS: readonly Network[] = ['discord', 'signal', 'matrix', 'whatsapp', 'telegram', 'gmessages', 'messenger', 'instagram', 'x', 'reddit', 'calendar', 't3', 'substack', 'mastodon', 'lemmy'];
+export const NETWORKS: readonly Network[] = ['discord', 'signal', 'matrix', 'whatsapp', 'telegram', 'gmessages', 'messenger', 'instagram', 'x', 'reddit', 'calendar', 't3', 'substack', 'mastodon', 'lemmy', 'bluesky'];
 
 /** Where a conversation sits in the social structure, independent of network. */
 export type Shape =
@@ -185,6 +187,8 @@ export const REACTION_RULES: Record<Network, ReactionRules> = {
   lemmy: { exclusive: true, freeText: false, maxDistinct: 0 },
   // A network of posts: a post is liked on the Feed page, never reacted to as a message.
   substack: { exclusive: true, freeText: false, maxDistinct: 0 },
+  // Posts only: a like is a postAct, not a reaction.
+  bluesky: { exclusive: true, freeText: false, maxDistinct: 0 },
 };
 
 export function discordEmojiUrl(id: string, animated?: boolean): string {
@@ -258,6 +262,8 @@ export const ATTACHMENT_LIMITS: Record<Network, { bytes: number; files: number }
   lemmy: { bytes: 0, files: 0 },
   // A network of posts sends no messages.
   substack: { bytes: 0, files: 0 },
+  // No messages to send files with; a post's pictures go through `publish`.
+  bluesky: { bytes: 0, files: 0 },
 };
 
 /**
@@ -293,4 +299,5 @@ export const NETWORK_META: Record<Network, { name: string; color: string; spaceN
   mastodon: { name: 'Mastodon', color: '#6364FF', spaceNoun: 'server', sectionNoun: 'section' },
   lemmy: { name: 'Lemmy', color: '#00BC8C', spaceNoun: 'community', sectionNoun: 'section' },
   substack: { name: 'Substack', color: '#FF6719', spaceNoun: 'publication', sectionNoun: 'section' },
+  bluesky: { name: 'Bluesky', color: '#0085FF', spaceNoun: 'feed', sectionNoun: 'section' },
 };

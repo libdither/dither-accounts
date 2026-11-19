@@ -60,6 +60,7 @@ const KIND_MARK: Record<string, Mark> = {
   github: { brand: 'github' },
   mastodon: { brand: 'mastodon' },
   lemmy: { brand: 'lemmy' },
+  bluesky: { brand: 'bluesky' },
   bugwatch: { glyph: 'bell' },
   t3: { glyph: 'terminal' },
   njalla: { glyph: 'server' },
@@ -191,6 +192,14 @@ const SERVICES: Service[] = [
     category: 'chat',
     line: 'Your instance\'s communities and replies',
     ways: [{ id: 'password', label: 'Password', glyph: 'key', kind: 'lemmy', tip: 'Signs in to your instance with your password and keeps the session it gives.' }],
+  },
+  {
+    id: 'bluesky',
+    name: 'Bluesky',
+    mark: { brand: 'bluesky' },
+    category: 'chat',
+    line: 'Your notifications, timelines and threads',
+    ways: [{ id: 'app-password', label: 'App password', glyph: 'key', kind: 'bluesky', tip: 'Signs in with an app password you make in Bluesky\'s settings and keeps the session: no browser.' }],
   },
   {
     id: 'gmessages',

@@ -5,9 +5,10 @@
  * `r.config` (`logged`, `modhash`), and the JSON endpoints answer: the front page (New, Best), the inbox, threads,
  * /api/info, profiles; and the writes (/api/vote, /api/comment, /api/del, /api/submit, /api/morechildren), which check
  * the modhash. Every request is recorded, so a test can tell what the page asked for, and that nothing marked the inbox
- * read.
+ * read. With `newForbidden`, the front page sorted New answers 403 as Reddit does for some accounts, and Following is
+ * read from the subscriptions (`/subreddits/mine/subscriber.json`, two pages) and `/r/a+b/new.json`.
  */
-import { commentPage, gardenThread, inbox, listing, ME, moreChildren, overview, post, t1, t3, user } from '../extractors/reddit/test/fixtures.ts';
+import { commentPage, gardenThread, inbox, listing, ME, moreChildren, overview, post, SUB, SUB2, t1, t3, user } from '../extractors/reddit/test/fixtures.ts';
 
 export const MODHASH = 'mh0123456789abcdef';
 export { ME };
@@ -22,6 +23,8 @@ export interface FakeReddit {
   url: string;
   calls: FakeRedditCall[];
   signedIn: boolean;
+  /** /new.json answers 403. */
+  newForbidden: boolean;
   signIn(): void;
   stop(): void;
 }
@@ -31,7 +34,16 @@ const json = (v: unknown, status = 200) => Response.json(v, { status });
 
 export function startFakeReddit(): FakeReddit {
   const calls: FakeRedditCall[] = [];
-  const state = { signedIn: false };
+  const state = { signedIn: false, newForbidden: false };
+  // The subscriptions: two subreddits and a followed person; their posts, an hour apart, newest first by number.
+  const SUBS = [SUB.name, SUB2.name, 'u_ann_lee'];
+  const subPosts = [
+    t3({ id: 's1', sub: SUB, agoS: 3600 }),
+    t3({ id: 's2', sub: SUB2, agoS: 2 * 3600 }),
+    t3({ id: 's3', sub: { name: 'u_ann_lee', id: 't5_2qh1c' }, agoS: 3 * 3600 }),
+    t3({ id: 's4', sub: SUB, agoS: 4 * 3600 }),
+    t3({ id: 's5', sub: SUB2, agoS: 5 * 3600 }),
+  ];
   let made = 0;
   const server = Bun.serve({
     port: 0,
@@ -58,6 +70,20 @@ export function startFakeReddit(): FakeReddit {
       }
       // ------------------------------------------------------------ reads
       if (req.method === 'GET') {
+        if (path === '/new.json' && state.newForbidden) return json({}, 403);
+        if (path === '/subreddits/mine/subscriber.json') {
+          const t5 = (name: string, i: number) => ({ kind: 't5', data: { display_name: name, name: `t5_s${i}`, subreddit_type: name.startsWith('u_') ? 'user' : 'public' } });
+          return json(query.after ? listing([t5(SUBS[2]!, 2)], null) : listing([t5(SUBS[0]!, 0), t5(SUBS[1]!, 1)], 't5_s1'));
+        }
+        const multi = /^\/r\/([\w+-]+)\/new\.json$/.exec(path);
+        if (multi) {
+          const names = new Set(multi[1]!.split('+'));
+          const all = subPosts.filter((p) => names.has(String(p.data.subreddit)));
+          const from = query.after ? all.findIndex((p) => p.data.name === query.after) + 1 : 0;
+          const limit = Number(query.limit ?? 25);
+          const page = all.slice(from, from + limit);
+          return json(listing(page, from + limit < all.length ? String(page.at(-1)!.data.name) : null));
+        }
         if (path === '/new.json') return json(listing([t3({ id: query.after ? 'n3' : 'n1', title: 'Newest' }), t3({ id: 'n2', link: 'https://example.com/b' })], query.after ? null : 't3_n2'));
         if (path === '/best.json') return json(listing([t3({ id: 'b1', title: 'Best one', score: 900, image: `${url.origin}/pic.jpg` })], null));
         if (path === '/message/inbox.json') return json(inbox());
@@ -98,6 +124,12 @@ export function startFakeReddit(): FakeReddit {
     },
     set signedIn(v: boolean) {
       state.signedIn = v;
+    },
+    get newForbidden() {
+      return state.newForbidden;
+    },
+    set newForbidden(v: boolean) {
+      state.newForbidden = v;
     },
     signIn() {
       state.signedIn = true;

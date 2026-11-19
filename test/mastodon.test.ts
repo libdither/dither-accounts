@@ -108,7 +108,8 @@ test('signing in: the app registered, a link to sign in on the server, a wrong c
   const code = fake.approve('1');
   expect(await call('action', { action: 'signIn', args: { code } })).toEqual({ signedIn: true });
   const online = await until(() => lastStatus(id)?.status === 'online' && lastStatus(id), 10_000, 'online');
-  expect(online.self).toMatchObject({ nativeId: who('quinn'), handle: `@${who('quinn')}`, displayName: 'Quinn' });
+  // Your own picture comes with you (verify_credentials' avatar).
+  expect(online.self).toMatchObject({ nativeId: who('quinn'), handle: `@${who('quinn')}`, displayName: 'Quinn', avatarUrl: expect.stringMatching(/^https:\/\/files\.example\/avatars\/\w+\.png$/), isSelf: true });
   expect(online.attention).toBeNull();
   expect(evs(id, 'hello')[0]).toMatchObject({ network: 'mastodon', capabilities: ['history', 'profile', 'posts', 'postActions', 'publish', 'postReactors', 'home', 'unpublish', 'postMedia'] });
   const accDir = m.store.account(id)!.dir;

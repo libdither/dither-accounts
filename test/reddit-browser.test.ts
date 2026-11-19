@@ -90,7 +90,7 @@ afterAll(async () => {
 it(
   'signed out: it asks you to sign in in the live view, offers only the live view, and reads nothing',
   async () => {
-    const id = ((await app.admin({ do: 'create', kind: 'reddit', label: 'Reddit (test)', config: { testOrigin: fake.url, feedFirstMs: 500, feedEveryMs: 60_000, paceMs: 50 } } as any)) as { id: string }).id;
+    const id = ((await app.admin({ do: 'create', kind: 'reddit', label: 'Reddit (test)', config: { testOrigin: fake.url, feedFirstMs: 500, feedEveryMs: 60_000, paceMs: 50, subsChunk: 2 } } as any)) as { id: string }).id;
     made.push(id);
     acc = id;
     const st = await until(() => (statusOf(acc)?.attention?.kind === 'login' ? statusOf(acc) : null), 60_000, 'the sign-in attention');
@@ -110,6 +110,12 @@ it(
     await until(() => statusOf(acc)?.status === 'online', 60_000, 'online');
     const st = statusOf(acc);
     expect(st.self).toMatchObject({ nativeId: ME, handle: ME, isSelf: true });
+    // Your own picture, from your profile (`&amp;` unescaped), on the status and on your identity.
+    const pic = 'https://styles.redditmedia.com/t5_x/styles/profileIcon_a.png?width=256&s=1';
+    await until(() => statusOf(acc)?.self?.avatarUrl, 30_000, 'your picture');
+    expect(statusOf(acc).self).toMatchObject({ nativeId: ME, avatarUrl: pic, isSelf: true });
+    await until(() => evs(acc).find((e) => e.t === 'identity' && e.identity.nativeId === ME && e.identity.avatarUrl === pic), 5000, 'your identity with its picture');
+    expect(callsTo(`/user/${ME}/about.json`)).toHaveLength(1);
     expect(st.layers.find((l: any) => l.name === 'signed in').note).toBe(`as u/${ME}`);
     expect(st.layers.find((l: any) => l.name === 'page')).toMatchObject({ state: 'ok', note: 'old.reddit.com, reads and writes' });
     expect(helloOf(acc).capabilities).toEqual(['liveView', 'home', 'posts', 'profile', 'postActions', 'publish', 'unpublish']);
@@ -151,6 +157,42 @@ it(
     ]);
     expect(callsTo('/best.json', from)).toHaveLength(1);
     await expect(call('home', { feed: 'following', cursor: 'not a cursor' })).rejects.toThrow('not a Reddit cursor');
+  },
+  60_000,
+);
+
+it(
+  'home: when Reddit refuses New (403), Following is the subscriptions sorted New, merged, and its cursor pages',
+  async () => {
+    fake.newForbidden = true;
+    const from = fake.calls.length;
+    const ids = (p: any) => p.items.map((i: any) => i.post.id);
+    const first = await call('home', { feed: 'following', count: 2 });
+    expect(ids(first)).toEqual(['t3_s1', 't3_s2']);
+    expect(first.more).toBe('subs~t3_s2.0');
+    const second = await call('home', { feed: 'following', cursor: first.more, count: 2 });
+    expect(ids(second)).toEqual(['t3_s3', 't3_s4']);
+    const third = await call('home', { feed: 'following', cursor: second.more, count: 2 });
+    expect(ids(third)).toEqual(['t3_s5']);
+    expect(third.more).toBeNull();
+    // Asked again from the top: New is not asked again, and the subscriptions are remembered.
+    expect(ids(await call('home', { feed: 'following', count: 2 }))).toEqual(['t3_s1', 't3_s2']);
+    expect(callsTo('/new.json', from)).toHaveLength(1);
+    expect(callsTo('/subreddits/mine/subscriber.json', from).map((c): string | null => c.query.after ?? null)).toEqual([null, 't5_s1']);
+    // Groups of two (the test's size), in name order: gardening+rustlang, then u_ann_lee.
+    const groups = fake.calls.slice(from).filter((c) => c.path.startsWith('/r/'));
+    expect(groups.map((c): [string, string | null] => [c.path, c.query.after ?? null])).toEqual([
+      ['/r/gardening+rustlang/new.json', null],
+      ['/r/u_ann_lee/new.json', null],
+      ['/r/gardening+rustlang/new.json', 't3_s2'],
+      ['/r/u_ann_lee/new.json', null],
+      ['/r/gardening+rustlang/new.json', 't3_s4'],
+      ['/r/gardening+rustlang/new.json', null],
+      ['/r/u_ann_lee/new.json', null],
+    ]);
+    // For you is still Best.
+    expect(ids(await call('home', { feed: 'foryou' }))).toEqual(['t3_b1']);
+    fake.newForbidden = false;
   },
   60_000,
 );

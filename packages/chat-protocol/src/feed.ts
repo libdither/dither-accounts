@@ -56,7 +56,13 @@ export interface PostFact {
   warning?: string;
   /** Where it was posted when that is not its author's own profile: a subreddit, a community, a channel, a forum, a publication. */
   place?: { id: string; name: string; url?: string };
+  /** Who may reply, when the author limited it (X's "who can reply", Bluesky's thread gates). */
+  replies?: ReplyGate;
 }
+
+/** Who may reply to a new post: everyone, people the author follows, people mentioned in it, verified accounts. */
+export type ReplyGate = 'everyone' | 'following' | 'mentioned' | 'verified';
+export const REPLY_GATES: readonly ReplyGate[] = ['everyone', 'following', 'mentioned', 'verified'];
 
 /** What you have done to a post. */
 export interface PostViewer {
@@ -142,6 +148,13 @@ export interface HomePage {
   /** Ask with this cursor for what came since (the Top cursor), or null. */
   top: string | null;
 }
+
+/**
+ * What a post id may look like: the network's own id, opaque to the hub (X's and Mastodon's numbers, Reddit's `t3_…`
+ * and `t1_…`, Lemmy's `post:…` and `comment:…`, Substack's). URL-safe, so it goes in a path as it is.
+ */
+export const POST_ID_PATTERN = '[A-Za-z0-9_.~:-]{1,120}';
+export const isPostId = (v: unknown): v is string => typeof v === 'string' && new RegExp(`^${POST_ID_PATTERN}$`).test(v);
 
 /** A post's message id in its network: posts and the DMs of one network never share an id. */
 export const postNativeId = (postId: string) => `post:${postId}`;

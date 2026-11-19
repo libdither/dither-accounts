@@ -400,6 +400,15 @@ export const ABOUT_RULES: Record<Network, AboutRules> = {
     conversation: [],
     space: [],
   },
+  // Posts only: nothing to configure.
+  mastodon: {
+    conversation: [],
+    space: [],
+  },
+  lemmy: {
+    conversation: [],
+    space: [],
+  },
   // A network of posts: its feed conversation is read-only (docs/feed.md).
   substack: {
     conversation: [],

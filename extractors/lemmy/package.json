@@ -1,0 +1,11 @@
+{
+  "name": "@dither-accounts/extractor-lemmy",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@dither-chat/protocol": "workspace:*",
+    "@dither-accounts/extractor-mastodon": "workspace:*",
+    "@dither-accounts/manager": "workspace:*"
+  }
+}

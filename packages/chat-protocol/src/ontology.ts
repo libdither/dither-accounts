@@ -15,7 +15,7 @@
  * (persons, folders, notification rules, triage) are never written back.
  */
 
-export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' | 'gmessages' | 'messenger' | 'instagram' | 'x' | 'reddit' | 'email' | 'calendar' | 't3' | 'substack';
+export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' | 'gmessages' | 'messenger' | 'instagram' | 'x' | 'reddit' | 'email' | 'calendar' | 't3' | 'substack' | 'mastodon' | 'lemmy';
 /**
  * The chat networks this hub offers. telegram, gmessages (Google Messages: SMS and RCS), messenger, instagram and x
  * (X's direct messages) run only in dither-accounts, and so does reddit (a Reddit account's front page, inbox and
@@ -26,8 +26,10 @@ export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' 
  * (dither-accounts' docs/t3.md): each thread a chat with its agent, its project a space; it too runs only there.
  * substack is a network of posts, not chats (docs/feed.md): its account brings a home timeline, threads of comments and
  * notifications to the Feed page, and runs only in dither-accounts.
+ * `mastodon` and `lemmy` bring posts only (a feed of notifications, home timelines, threads; dither-accounts'
+ * docs/mastodon.md and docs/lemmy.md): no direct messages.
  */
-export const NETWORKS: readonly Network[] = ['discord', 'signal', 'matrix', 'whatsapp', 'telegram', 'gmessages', 'messenger', 'instagram', 'x', 'reddit', 'calendar', 't3', 'substack'];
+export const NETWORKS: readonly Network[] = ['discord', 'signal', 'matrix', 'whatsapp', 'telegram', 'gmessages', 'messenger', 'instagram', 'x', 'reddit', 'calendar', 't3', 'substack', 'mastodon', 'lemmy'];
 
 /** Where a conversation sits in the social structure, independent of network. */
 export type Shape =
@@ -72,6 +74,17 @@ export type AttentionKind =
  */
 export interface CaptchaCheck {
   url: string;
+  action: string;
+}
+
+/**
+ * A sign-in on the network's own site that ends in a code to paste back (Mastodon's out-of-band OAuth), in
+ * Attention.detail.signIn: open `url` (on `host`), approve, copy the code the site shows and paste it; it goes to the
+ * adapter as the account action `action` with { code }. Nothing signs in for the owner.
+ */
+export interface SignInCheck {
+  url: string;
+  host: string;
   action: string;
 }
 
@@ -167,6 +180,9 @@ export const REACTION_RULES: Record<Network, ReactionRules> = {
   calendar: { exclusive: true, freeText: false, maxDistinct: 0 },
   // Nor a coding agent's threads.
   t3: { exclusive: true, freeText: false, maxDistinct: 0 },
+  // Posts only: a favourite or a vote is a postAct, not a reaction.
+  mastodon: { exclusive: true, freeText: false, maxDistinct: 0 },
+  lemmy: { exclusive: true, freeText: false, maxDistinct: 0 },
   // A network of posts: a post is liked on the Feed page, never reacted to as a message.
   substack: { exclusive: true, freeText: false, maxDistinct: 0 },
 };
@@ -237,6 +253,9 @@ export const ATTACHMENT_LIMITS: Record<Network, { bytes: number; files: number }
   calendar: { bytes: 0, files: 0 },
   // A turn sent to a T3 thread is words (dither-accounts' docs/t3.md).
   t3: { bytes: 0, files: 0 },
+  // No messages to send files with; a Mastodon post's pictures go through `publish`.
+  mastodon: { bytes: 0, files: 0 },
+  lemmy: { bytes: 0, files: 0 },
   // A network of posts sends no messages.
   substack: { bytes: 0, files: 0 },
 };
@@ -271,5 +290,7 @@ export const NETWORK_META: Record<Network, { name: string; color: string; spaceN
   email: { name: 'Email', color: '#5B7083', spaceNoun: 'mailbox', sectionNoun: 'folder' },
   calendar: { name: 'Calendar', color: '#7E57C2', spaceNoun: 'calendar', sectionNoun: 'section' },
   t3: { name: 'T3 Code', color: '#E5484D', spaceNoun: 'project', sectionNoun: 'section' },
+  mastodon: { name: 'Mastodon', color: '#6364FF', spaceNoun: 'server', sectionNoun: 'section' },
+  lemmy: { name: 'Lemmy', color: '#00BC8C', spaceNoun: 'community', sectionNoun: 'section' },
   substack: { name: 'Substack', color: '#FF6719', spaceNoun: 'publication', sectionNoun: 'section' },
 };

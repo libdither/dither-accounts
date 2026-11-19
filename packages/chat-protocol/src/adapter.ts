@@ -32,7 +32,7 @@ import type { CallEffect, CallFact, CallInput, CallMode, CallState, StageAction,
 import type { GateAnswer, ScheduledEventFact, SpaceGate } from './servers.ts';
 import type { MessageModeration, ModAction, ReactionClear } from './moderation.ts';
 import type { LinkPreviewOut } from './extra.ts';
-import type { HomeFeed, PostAct } from './feed.ts';
+import type { HomeFeed, PostAct, ReplyGate } from './feed.ts';
 import type { AccountStatus, AttachmentKind, Attention, MessageKind, Network, ReactionStyle, Shape, SpaceKind, Variant } from './ontology.ts';
 import type { SelfCapability, SelfCommand, SelfEvent } from './self.ts';
 import type { VoiceFact } from './rich.ts';
@@ -825,7 +825,9 @@ export type AdapterCommand =
       text: string;
       replyTo?: string;
       quote?: string;
-      replies?: 'everyone' | 'following' | 'mentioned' | 'verified';
+      /** Who may reply to a new post (never with `replyTo`): X's "who can reply". Absent: everyone. */
+      replies?: ReplyGate;
+      /** Pictures or a video with it (capability 'postMedia'): up to 4 images, or one GIF or video. */
       media?: OutgoingAttachment[];
       /** A new post's title, where the network has them (Reddit, Lemmy: POST_RULES `title`). Never with `replyTo`. */
       title?: string;

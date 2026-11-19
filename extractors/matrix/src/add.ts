@@ -144,8 +144,16 @@ export function admits(room: Room, user: string): { invite: boolean; kick: boole
   return { invite: mine >= level(pl?.invite, 0), kick: mine >= level(pl?.kick, 50) };
 }
 
-/** Rooms whose knocks this account answers: knocking is on and it may invite. */
-export const answersKnocks = (room: Room, self: string) => KNOCK_RULES.has(room.joinRule ?? '') && admits(room, self).invite;
+/**
+ * Rooms whose knocks this account answers: knocking is on and it moderates there, able to let people in and to turn
+ * them away. Being able to invite is not enough: many rooms let every member invite (the default level is 0), and
+ * a member of a big room would be asked about every knock while unable to decline any.
+ */
+export const answersKnocks = (room: Room, self: string) => {
+  if (!KNOCK_RULES.has(room.joinRule ?? '')) return false;
+  const can = admits(room, self);
+  return can.invite && can.kick;
+};
 
 // ------------------------------------------------------------------ resolve
 
@@ -492,12 +500,11 @@ export function inviteFact(inv: Invite): P.RequestFact {
 
 const knockId = (room: string, user: string) => `knock|${room}|${user}`;
 
-/** Knocks on joined rooms that take them and where this account may invite: from the stored room state. */
+/** Knocks on joined rooms that take them and where this account moderates: from the stored room state. */
 export function knocksOf(dir: Directory): { fact: P.RequestFact; knock: Knock; person: P.IdentityFact }[] {
   const out: { fact: P.RequestFact; knock: Knock; person: P.IdentityFact }[] = [];
   for (const room of dir.joined()) {
     if (!answersKnocks(room, dir.selfId)) continue;
-    const can = admits(room, dir.selfId);
     for (const ev of room.ofType('m.room.member')) {
       const user = ev.state_key!;
       if (ev.content?.membership !== 'knock' || user === dir.selfId || ev.event_id.startsWith('~')) continue;
@@ -510,7 +517,7 @@ export function knocksOf(dir: Directory): { fact: P.RequestFact; knock: Knock; p
           from: user,
           target: { kind: room.isSpace ? 'space' : 'conversation', nativeId: room.id, ...(name ? { name } : {}), members: room.joinedCount },
           ts: ev.origin_server_ts || Date.now(),
-          answers: can.kick ? ['accept', 'decline'] : ['accept'],
+          answers: ['accept', 'decline'],
         },
         knock: { id, room: room.id, user },
         person: dir.identity(room, user),

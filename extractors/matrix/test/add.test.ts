@@ -640,12 +640,13 @@ describe('requests', () => {
       expect(told().at(-1)).toEqual({ t: 'requestGone', nativeId: `knock|${KNOCKY}|${SPAM}` });
     });
 
-    test('without the power to kick, only accept is offered', async () => {
-      const { step, of } = await startAdapter();
+    test('a room where any member may invite but not kick: its knocks are left to the moderators', async () => {
+      const { hs, step, of } = await startAdapter();
       const s = knockSync();
-      s.rooms.join[KNOCKY] = room({ name: 'Knocky', rule: 'knock', members: [ME], extra: [levels(60, { kick: 75 }), member(BOB, 'knock', {}, 6000)] });
+      s.rooms.join[KNOCKY] = room({ name: 'Knocky', rule: 'knock', members: [ME, ALICE], extra: [levels(0, { invite: 0 }), member(BOB, 'knock', {}, 6000)] });
       await step(s);
-      expect(of('requests')[0].requests.map((r: P.RequestFact) => r.answers)).toEqual([['accept']]);
+      expect(of('requests').flatMap((r) => r.requests)).toEqual([]);
+      expect(hs.calls.filter((c) => c.query.get('membership') === 'knock')).toEqual([]);
     });
   });
 });

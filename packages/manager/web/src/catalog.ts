@@ -42,6 +42,7 @@ const KIND_MARK: Record<string, Mark> = {
   telegram: { brand: 'telegram' },
   gmessages: { brand: 'gmessages' },
   x: { brand: 'x' },
+  substack: { brand: 'substack' },
   messenger: { brand: 'messenger' },
   instagram: { brand: 'instagram' },
   proton: { brand: 'proton' },
@@ -184,6 +185,7 @@ const SERVICES: Service[] = [
     ],
   },
   { id: 'x', name: 'X', mark: { brand: 'x' }, category: 'chat', line: 'Direct messages, signed in in a sandboxed browser', ways: [BROWSER('x', "X's web app")] },
+  { id: 'substack', name: 'Substack', mark: { brand: 'substack' }, category: 'chat', line: 'Your inbox, Notes and activity, signed in in a sandboxed browser', ways: [BROWSER('substack', "Substack's reader")] },
   { id: 't3', name: 'T3 Code', mark: { glyph: 'terminal' }, category: 'chat', line: 'Coding threads on this machine, each a chat with its agent', ways: [{ id: 'local', label: 'This machine', glyph: 'terminal', kind: 't3', tip: "Reads the threads of T3 Code running here through its own command line; a message is the thread's next turn (docs/t3.md)." }] },
   {
     id: 'messenger',

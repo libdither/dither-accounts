@@ -8,7 +8,8 @@
  *   add join        POST /join/{roomIdOrAlias}?server_name=…, then the room's facts once sync has it
  *   add ask         POST /knock/{roomIdOrAlias}?server_name=…
  *   answer invite   accept: POST /join; decline: POST /rooms/{id}/leave; block: leave, then m.ignored_user_list
- *   answer knock    accept: POST /rooms/{id}/invite; decline: POST /rooms/{id}/kick with a reason
+ *   answer knock    accept: POST /rooms/{id}/invite; decline: POST /rooms/{id}/kick with a reason. Knocks on rooms this
+ *                   account doesn't moderate go as forOthers, with no answers: there to see who is asking.
  *
  * Every write here comes from the owner's click and is tried once: a join that times out may have gone through, and
  * a second try would be a second action. A homeserver's terms (M_CONSENT_NOT_GIVEN) come back as the 'rules' check
@@ -150,10 +151,13 @@ export function admits(room: Room, user: string): { invite: boolean; kick: boole
  * a member of a big room would be asked about every knock while unable to decline any.
  */
 export const answersKnocks = (room: Room, self: string) => {
-  if (!KNOCK_RULES.has(room.joinRule ?? '')) return false;
+  if (!takesKnocks(room)) return false;
   const can = admits(room, self);
   return can.invite && can.kick;
 };
+
+/** Rooms that take knocks at all: their knocks are listed, as this account's to answer or as its moderators'. */
+export const takesKnocks = (room: Room) => KNOCK_RULES.has(room.joinRule ?? '');
 
 // ------------------------------------------------------------------ resolve
 
@@ -386,6 +390,7 @@ async function knock(h: AddHost, target: string, servers: string[]): Promise<P.A
 export async function answer(h: AddHost, request: string, ans: P.RequestAnswer): Promise<P.AddResult> {
   const r = h.requests.get(request);
   if (!r) throw new Error('That request is not waiting any more');
+  if (r.fact.forOthers) throw new Error("The room's moderators answer this request, not this account");
   if (!r.fact.answers.includes(ans)) throw new Error(`This request can be answered with ${r.fact.answers.join(', ')}`);
   if (r.invite) return answerInvite(h, r.invite, ans);
   return answerKnock(h, r.knock!, ans);
@@ -500,11 +505,15 @@ export function inviteFact(inv: Invite): P.RequestFact {
 
 const knockId = (room: string, user: string) => `knock|${room}|${user}`;
 
-/** Knocks on joined rooms that take them and where this account moderates: from the stored room state. */
+/**
+ * Knocks on joined rooms that take them, from the stored room state: this account's to answer where it moderates,
+ * else its moderators' (forOthers, no answers).
+ */
 export function knocksOf(dir: Directory): { fact: P.RequestFact; knock: Knock; person: P.IdentityFact }[] {
   const out: { fact: P.RequestFact; knock: Knock; person: P.IdentityFact }[] = [];
   for (const room of dir.joined()) {
-    if (!answersKnocks(room, dir.selfId)) continue;
+    if (!takesKnocks(room)) continue;
+    const mine = answersKnocks(room, dir.selfId);
     for (const ev of room.ofType('m.room.member')) {
       const user = ev.state_key!;
       if (ev.content?.membership !== 'knock' || user === dir.selfId || ev.event_id.startsWith('~')) continue;
@@ -517,7 +526,8 @@ export function knocksOf(dir: Directory): { fact: P.RequestFact; knock: Knock; p
           from: user,
           target: { kind: room.isSpace ? 'space' : 'conversation', nativeId: room.id, ...(name ? { name } : {}), members: room.joinedCount },
           ts: ev.origin_server_ts || Date.now(),
-          answers: ['accept', 'decline'],
+          answers: mine ? ['accept', 'decline'] : [],
+          ...(mine ? {} : { forOthers: true }),
         },
         knock: { id, room: room.id, user },
         person: dir.identity(room, user),

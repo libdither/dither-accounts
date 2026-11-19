@@ -21,7 +21,7 @@ import type * as P from '@dither-chat/protocol';
 import { canonicalReactionKey } from '@dither-chat/protocol';
 import type { HubLink } from '@dither-chat/protocol/client';
 import { addMembers, configureAbout, createGroup, readAbout, type AboutHost, type GroupHost } from './about.ts';
-import { add, answer, answersKnocks, Requests, resolve, type AddHost } from './add.ts';
+import { add, answer, Requests, resolve, takesKnocks, type AddHost } from './add.ts';
 import { AdapterDb, type ThreadRow, type UtdRow } from './db.ts';
 import type { E2ee, VerificationState } from './e2ee.ts';
 import { markdownToMatrix, snippet } from './format.ts';
@@ -763,7 +763,7 @@ export class MatrixAdapter {
    * loading sends only the members who speak) or one that came while the adapter was down.
    */
   private async loadKnocks() {
-    for (const room of this.dir.joined().filter((r) => answersKnocks(r, this.selfId))) {
+    for (const room of this.dir.joined().filter(takesKnocks)) {
       try {
         const res: any = await this.api().request('GET', `/_matrix/client/v3/rooms/${enc(room.id)}/members`, { query: { membership: 'knock' }, retries: 1 });
         this.db.tx(() => {

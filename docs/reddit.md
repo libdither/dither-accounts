@@ -42,15 +42,83 @@ always with the page's cookies (`credentials: 'same-origin'`):
 | more comments | `POST /api/morechildren` (`link_id`, `children` up to 100, `sort`, `limit_children=false`, `api_type=json`) | `post` with a cursor ("load more comments") |
 | a profile | `GET /user/<name>/about.json`, then `/user/<name>/overview.json?limit=25` | `profile`, when asked |
 | upvote, clear vote | `POST /api/vote` (`id`, `dir` 1 or 0) | `postAct` like, unlike |
-| comment | `POST /api/comment` (`thing_id`, `text`, `api_type=json`) | `publish` with `replyTo` (a `t3_` or `t1_`) is a comment. Without it, it is a new **text post**, and it needs `title`
+| comment | `POST /api/comment` (`thing_id`, `text`, `api_type=json`) | `publish` with `replyTo` |
+| new text post | `POST /api/submit` (`kind=self`, `sr`, `title`, `text`, `sendreplies=true`, `api_type=json`), then `GET /api/info.json?id=t3_…` to read it back | `publish` with `title` and `place` |
+| delete | `POST /api/del` (`id`) | `unpublish` |
+
+**Never marked read.** The inbox is read with `mark=false`, and the hook refuses an inbox read without it. A
+`.json` listing does not mark anything read anyway (Reddit marks the inbox read only when its HTML page is opened
+without `mark=false`).
+
+**A person's pace.** Reads wait 2.5-6 s after the last one, and writes 1.2-2.1 s. Nothing runs in the background but
+the inbox look, and that waits while a command runs. Each write is made once and never retried. Reddit's refusal comes
+back in its own words (`json.errors`, as in "Reddit said: you are doing that too much").
+
+**Still to confirm on a signed-in page** (built from Reddit's public API documentation and old reddit's open source,
+not yet seen live):
+
+- that old.reddit.com still serves signed-in accounts (signed out, it now sends you to sign in: `reason=lor2`);
+- that `r.config.logged` and `r.config.modhash` are still there;
+- that `/api/vote` takes `id`, `dir` and `uh` alone (old reddit's arrows may also send `vh`, a vote hash, and `rank`);
+- that `/api/comment`, `/api/submit` and `/api/morechildren` answer `api_type=json` as documented. The page's own
+  forms ask for `renderstyle=html` instead, which is the same endpoint with the answer drawn as HTML.
+
+## How it maps
+
+Ids are Reddit's fullnames, so a post and a comment never share one: `t3_…` for posts, `t1_…` for comments, `t4_…`
+for messages. People are their usernames (Reddit never renames an account), shown as `u/name`. `[deleted]` is nobody.
+A message from a subreddit is authored by `r/name`, and one from Reddit itself by `reddit:system`.
+
+**Posts** (PostFact):
+
+- `title`, and `place` (the subreddit: its `t5_` id, `r/name` and link);
+- the text: selftext, or the link of a link post;
+- `media`: a gallery's pictures in order with their captions, else the preview picture (a video's poster frame);
+- `counts`: the score as `likes`, the comment count as `replies`;
+- `warning`: "NSFW", "Spoiler" or both;
+- `viewer.liked`: true when you upvoted it;
+- `quoteOf`: a crosspost's original.
+
+**Comments** are posts with `replyTo` (the parent's fullname) and `root` (the post).
+
+**Threads** (PostThread) give each top-level comment as a chain: the comment, then every answer under it depth first.
+The hub puts each one under what it answers, so the tree comes back whole. Each comment's `counts.replies` counts its
+answers, the ones sent and the ones Reddit left behind a `more`. "Continue this thread" counts one, so the hub offers
+"N more replies" and opens that comment's own thread. `more` is a cursor `<post>.<more id>.<offset>` for the
+top-level "load more comments". `/api/morechildren` takes 100 at a time; past that, the cursor's offset moves on.
+
+**The inbox** is the conversation `feed` (variant `feed`, "Notifications"). Each message's `extra.feed` is a FeedItem:
+
+| Reddit | type | message |
+|---|---|---|
+| comment reply, post reply | `reply` | their comment as `theirs`; for a post reply, your post's id and title as `post` |
+| username mention | `mention` | their comment as `theirs` |
+| a message to you, a subreddit's message, anything else | `other` | the subject as the words, the message as `theirs` |
+
+Reddit names nobody who voted, so there are no `like` items and no `postReactors`. A fresh account takes the first
+page of 25 from the last seven days, as backfill. After that, a message is live (it may notify) only when it is newer
+than anything announced and under 15 minutes old. `reddit-state.json` keeps the newest time and the ids lately
+announced.
+
+**Profiles** (PersonAbout):
+
+- the profile's title as the name;
+- the picture and the profile's description;
+- the cake day as `createdAt` and as a fact, with total, post and comment karma as facts;
+- a link to u/name;
+- `friend` when they are your Reddit friend;
+- `posts`: their last 25 posts and comments, at most 20 kept.
+
+## Writing
+
+`publish` with `replyTo` (a `t3_` or `t1_`) is a comment. Without it, it is a new **text post**, and it needs `title`
 (at most 300 characters) and `place`, the subreddit's bare name (`rust`; `r/rust` is taken too). A post may be its
 title alone. `title`, `place` and `warning` are the protocol's `publish` fields for posts with titles and places, as
 dither-chat's hub sends them. Reddit has no content warning, so a `warning` is refused. Text is checked against
 Reddit's own limits before anything is sent: 10,000 characters in a comment, 40,000 in a post's body (graphemes, as
 `POST_RULES` counts). Not offered: quoting, reposts and crossposts (the hub never asks), "who can reply", pictures and
-video (`postMedia`), and link posts. Nobody is named for an upvote, so the hub never asks who voted.
-A comment Reddit made but did not describe is never answered as failed: you are told to look on Reddit before
-commenting again.
+video (`postMedia`), and link posts. Nobody is named for an upvote, so the hub never asks who voted. A comment Reddit
+made but did not describe is never answered as failed: you are told to look on Reddit before commenting again.
 
 ## Capabilities
 

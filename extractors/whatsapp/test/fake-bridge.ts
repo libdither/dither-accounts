@@ -6,7 +6,7 @@
  * {error: {op, message}} or {exit: code}.
  *
  * Built-in behaviour: prints ready; `connect` prints connected when $FAKE_WA_LOGGED_IN=1, else a QR
- * code; `send` answers with a fresh id; `download` writes a file.
+ * code; `send` answers with a fresh id; `download` writes a file; stdin closing ends it, as it ends the real bridge.
  */
 
 import { writeFileSync } from 'node:fs';
@@ -14,7 +14,7 @@ import { writeFileSync } from 'node:fs';
 const loggedIn = process.env.FAKE_WA_LOGGED_IN === '1';
 const results: Record<string, unknown> = {};
 const errors: Record<string, string> = {};
-let ctl: { write(s: string): void } | null = null;
+let ctl = null as { write(s: string): void; end(): void } | null;
 const backlog: string[] = [];
 let sent = 0;
 
@@ -85,3 +85,7 @@ for await (const chunk of Bun.stdin.stream()) {
     }
   }
 }
+
+// The adapter closed our input: go, as bridge/main.go does, without waiting for a signal. Ending the control socket
+// lets the test see that nothing more can reach it.
+ctl?.end();

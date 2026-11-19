@@ -110,6 +110,8 @@ async function harness(o: { loggedIn?: boolean; opts?: Partial<AdapterOptions> }
       return events.slice(n);
     },
     cmd: (op: string, nth = 0) => cmds.filter((c) => c.op === op)[nth],
+    /** No bridge connected to the test: the last one has gone, and nothing more can reach one. */
+    bridgeGone: () => conns.length === 0,
     status: () => [...events].reverse().find((e): e is Extract<P.AdapterEvent, { t: 'status' }> => e.t === 'status')!,
     close: async () => {
       await adapter.shutdown();
@@ -887,6 +889,8 @@ test('profiles ask WhatsApp nothing once the session is replaced, and answer fro
   const h = await harness();
   await h.emit({ t: 'contact', jid: ALICE, alt: ALICE_LID, fullName: 'Alice Chen' });
   await h.emit({ t: 'stream_replaced' });
+  // The adapter stops the bridge: wait until it has gone, so the hook has nothing left to stop.
+  await h.waitFor(h.bridgeGone);
   const before = h.cmds.length;
   expect(await profile(h, ALICE)).toEqual({
     displayName: 'Alice Chen',
@@ -895,7 +899,6 @@ test('profiles ask WhatsApp nothing once the session is replaced, and answer fro
     links: [{ label: 'Phone', value: '+15550000002', url: 'https://wa.me/15550000002' }],
     relationship: 'contact',
   });
-  await Bun.sleep(50);
   expect(h.cmds.slice(before)).toEqual([]);
 });
 

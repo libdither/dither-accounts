@@ -395,6 +395,15 @@ export const ABOUT_RULES: Record<Network, AboutRules> = {
     conversation: [],
     space: [],
   },
+  // Posts only: nothing to configure.
+  mastodon: {
+    conversation: [],
+    space: [],
+  },
+  lemmy: {
+    conversation: [],
+    space: [],
+  },
 };
 
 export const ABOUT_LABEL: Record<AboutKey, string> = {

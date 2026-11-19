@@ -166,6 +166,21 @@
         "@dither-accounts/manager": "workspace:*",
       },
     },
+    "extractors/lemmy": {
+      "name": "@dither-accounts/extractor-lemmy",
+      "dependencies": {
+        "@dither-accounts/extractor-mastodon": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+    },
+    "extractors/mastodon": {
+      "name": "@dither-accounts/extractor-mastodon",
+      "dependencies": {
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+    },
     "extractors/matrix": {
       "name": "@dither-accounts/extractor-matrix",
       "dependencies": {
@@ -449,6 +464,10 @@
     "@dither-accounts/extractor-imap": ["@dither-accounts/extractor-imap@workspace:extractors/imap"],
 
     "@dither-accounts/extractor-instagram": ["@dither-accounts/extractor-instagram@workspace:extractors/instagram"],
+
+    "@dither-accounts/extractor-lemmy": ["@dither-accounts/extractor-lemmy@workspace:extractors/lemmy"],
+
+    "@dither-accounts/extractor-mastodon": ["@dither-accounts/extractor-mastodon@workspace:extractors/mastodon"],
 
     "@dither-accounts/extractor-matrix": ["@dither-accounts/extractor-matrix@workspace:extractors/matrix"],
 

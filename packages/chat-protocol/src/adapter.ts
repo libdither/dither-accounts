@@ -817,9 +817,23 @@ export type AdapterCommand =
    * `replies`: who may reply to a new post (not on a reply): everyone (the default), people it follows, people it
    * mentions, verified accounts. `media` (capability 'postMedia'): files in the hub's spool, as `send` takes them;
    * X takes up to 4 pictures (PNG, JPEG, WebP), or one GIF, or one video. `text` may be empty with media.
+   * `title` and `place`: a new post on a network whose posts have a title and go to a place (Lemmy: the title and the
+   * community, `!name@instance`, both needed). `warning`: a content warning shown before the words (Mastodon).
    * Sent only when you press Post. Identity facts first, then reply.result: PostFact, the post as the network made it.
    */
-  | { t: 'publish'; id: string; text: string; replyTo?: string; quote?: string; replies?: 'everyone' | 'following' | 'mentioned' | 'verified'; media?: OutgoingAttachment[] }
+  | {
+      t: 'publish';
+      id: string;
+      text: string;
+      replyTo?: string;
+      quote?: string;
+      replies?: 'everyone' | 'following' | 'mentioned' | 'verified';
+      media?: OutgoingAttachment[];
+      title?: string;
+      /** A place's id as PostFact.place gives it (Lemmy: `!name@instance`). */
+      place?: string;
+      warning?: string;
+    }
   /**
    * Delete a post of the account's own (capability 'unpublish'): `post` is the network's id for it. A post the network
    * says is gone already counts as deleted. Sent only when you press Delete. reply.result: { deleted: true }

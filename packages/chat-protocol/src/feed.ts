@@ -48,7 +48,21 @@ export interface PostFact {
   viewer?: PostViewer;
   /** The language it is written in, as the network says (X: legacy.lang; 'und' when it cannot tell). */
   lang?: string;
+  // What other networks' posts have and X's do not (docs/feed.md "One card for every network"). Each is optional; a card
+  // draws whichever are there, so a network that brings them needs no card of its own.
+  /** A title apart from the words (Reddit, Lemmy, Hacker News, Discourse, YouTube, a forum post). */
+  title?: string;
+  /** A content warning or spoiler line shown before the words, which stay folded until opened (Mastodon, Misskey). */
+  warning?: string;
+  /** Where it was posted when that is not its author's own profile: a subreddit, a community, a channel, a forum. */
+  place?: { id: string; name: string; url?: string };
+  /** Who may reply, when the author limited it (X's "who can reply", Bluesky's thread gates). */
+  replies?: ReplyGate;
 }
+
+/** Who may reply to a new post: everyone, people the author follows, people mentioned in it, verified accounts. */
+export type ReplyGate = 'everyone' | 'following' | 'mentioned' | 'verified';
+export const REPLY_GATES: readonly ReplyGate[] = ['everyone', 'following', 'mentioned', 'verified'];
 
 /** What you have done to a post. */
 export interface PostViewer {

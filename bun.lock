@@ -173,6 +173,21 @@
         "@dither-accounts/manager": "workspace:*",
       },
     },
+    "extractors/lemmy": {
+      "name": "@dither-accounts/extractor-lemmy",
+      "dependencies": {
+        "@dither-accounts/extractor-mastodon": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+    },
+    "extractors/mastodon": {
+      "name": "@dither-accounts/extractor-mastodon",
+      "dependencies": {
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+    },
     "extractors/matrix": {
       "name": "@dither-accounts/extractor-matrix",
       "dependencies": {
@@ -246,6 +261,14 @@
         "@types/mailparser": "^3.9.0",
       },
     },
+    "extractors/reddit": {
+      "name": "@dither-accounts/extractor-reddit",
+      "dependencies": {
+        "@dither-accounts/browser": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+    },
     "extractors/schwab": {
       "name": "@dither-accounts/extractor-schwab",
       "dependencies": {
@@ -280,6 +303,17 @@
         "@dither-accounts/browser": "workspace:*",
         "@dither-accounts/interfaces": "workspace:*",
         "@dither-accounts/link": "workspace:*",
+      },
+    },
+    "extractors/substack": {
+      "name": "@dither-accounts/extractor-substack",
+      "dependencies": {
+        "@dither-accounts/browser": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+      "devDependencies": {
+        "@dither-accounts/client": "workspace:*",
       },
     },
     "extractors/t3": {
@@ -459,6 +493,10 @@
 
     "@dither-accounts/extractor-instagram": ["@dither-accounts/extractor-instagram@workspace:extractors/instagram"],
 
+    "@dither-accounts/extractor-lemmy": ["@dither-accounts/extractor-lemmy@workspace:extractors/lemmy"],
+
+    "@dither-accounts/extractor-mastodon": ["@dither-accounts/extractor-mastodon@workspace:extractors/mastodon"],
+
     "@dither-accounts/extractor-matrix": ["@dither-accounts/extractor-matrix@workspace:extractors/matrix"],
 
     "@dither-accounts/extractor-messenger": ["@dither-accounts/extractor-messenger@workspace:extractors/messenger"],
@@ -473,11 +511,15 @@
 
     "@dither-accounts/extractor-proton": ["@dither-accounts/extractor-proton@workspace:extractors/proton"],
 
+    "@dither-accounts/extractor-reddit": ["@dither-accounts/extractor-reddit@workspace:extractors/reddit"],
+
     "@dither-accounts/extractor-schwab": ["@dither-accounts/extractor-schwab@workspace:extractors/schwab"],
 
     "@dither-accounts/extractor-signal": ["@dither-accounts/extractor-signal@workspace:extractors/signal"],
 
     "@dither-accounts/extractor-simplefin": ["@dither-accounts/extractor-simplefin@workspace:extractors/simplefin"],
+
+    "@dither-accounts/extractor-substack": ["@dither-accounts/extractor-substack@workspace:extractors/substack"],
 
     "@dither-accounts/extractor-t3": ["@dither-accounts/extractor-t3@workspace:extractors/t3"],
 

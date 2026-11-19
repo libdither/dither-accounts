@@ -15,18 +15,23 @@
  * (persons, folders, notification rules, triage) are never written back.
  */
 
-export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' | 'gmessages' | 'messenger' | 'instagram' | 'x' | 'email' | 'calendar' | 't3' | 'bluesky';
+export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' | 'gmessages' | 'messenger' | 'instagram' | 'x' | 'reddit' | 'email' | 'calendar' | 't3' | 'substack' | 'mastodon' | 'lemmy' | 'bluesky';
 /**
  * The chat networks this hub offers. telegram, gmessages (Google Messages: SMS and RCS), messenger, instagram and x
- * (X's direct messages) run only in dither-accounts. `email` is a Network for people's addresses (identities) and the
+ * (X's direct messages) run only in dither-accounts, and so does reddit (a Reddit account's front page, inbox and
+ * comment threads, as posts and a feed). `email` is a Network for people's addresses (identities) and the
  * tables below, but not a chat account kind: mail comes through dither-accounts' mail interface (docs/mail.md).
  * `calendar` is a calendar service beside the hub (dither-calendar, docs/calendar.md): its account brings the calendar's
  * own chats, and while one is on, the calendar's pane, plans and reminders are too. `t3` is T3 Code's coding threads
  * (dither-accounts' docs/t3.md): each thread a chat with its agent, its project a space; it too runs only there.
+ * substack is a network of posts, not chats (docs/feed.md): its account brings a home timeline, threads of comments and
+ * notifications to the Feed page, and runs only in dither-accounts.
+ * `mastodon` and `lemmy` bring posts only (a feed of notifications, home timelines, threads; dither-accounts'
+ * docs/mastodon.md and docs/lemmy.md): no direct messages.
  * `bluesky` brings posts only (a feed of notifications, home timelines, threads; dither-accounts' docs/bluesky.md): no
  * direct messages.
  */
-export const NETWORKS: readonly Network[] = ['discord', 'signal', 'matrix', 'whatsapp', 'telegram', 'gmessages', 'messenger', 'instagram', 'x', 'calendar', 't3', 'bluesky'];
+export const NETWORKS: readonly Network[] = ['discord', 'signal', 'matrix', 'whatsapp', 'telegram', 'gmessages', 'messenger', 'instagram', 'x', 'reddit', 'calendar', 't3', 'substack', 'mastodon', 'lemmy', 'bluesky'];
 
 /** Where a conversation sits in the social structure, independent of network. */
 export type Shape =
@@ -71,6 +76,17 @@ export type AttentionKind =
  */
 export interface CaptchaCheck {
   url: string;
+  action: string;
+}
+
+/**
+ * A sign-in on the network's own site that ends in a code to paste back (Mastodon's out-of-band OAuth), in
+ * Attention.detail.signIn: open `url` (on `host`), approve, copy the code the site shows and paste it; it goes to the
+ * adapter as the account action `action` with { code }. Nothing signs in for the owner.
+ */
+export interface SignInCheck {
+  url: string;
+  host: string;
   action: string;
 }
 
@@ -158,12 +174,19 @@ export const REACTION_RULES: Record<Network, ReactionRules> = {
   instagram: { exclusive: true, freeText: false },
   // XChat keeps a set per person (its reaction table's key includes the emoji); any emoji.
   x: { exclusive: false, freeText: false },
+  // Reddit has votes on posts (postAct), no emoji reactions.
+  reddit: { exclusive: true, freeText: false, maxDistinct: 0 },
   // Mail has no reactions.
   email: { exclusive: true, freeText: false, maxDistinct: 0 },
   // The calendar's chats have none either.
   calendar: { exclusive: true, freeText: false, maxDistinct: 0 },
   // Nor a coding agent's threads.
   t3: { exclusive: true, freeText: false, maxDistinct: 0 },
+  // Posts only: a favourite or a vote is a postAct, not a reaction.
+  mastodon: { exclusive: true, freeText: false, maxDistinct: 0 },
+  lemmy: { exclusive: true, freeText: false, maxDistinct: 0 },
+  // A network of posts: a post is liked on the Feed page, never reacted to as a message.
+  substack: { exclusive: true, freeText: false, maxDistinct: 0 },
   // Posts only: a like is a postAct, not a reaction.
   bluesky: { exclusive: true, freeText: false, maxDistinct: 0 },
 };
@@ -226,12 +249,19 @@ export const ATTACHMENT_LIMITS: Record<Network, { bytes: number; files: number }
   instagram: { bytes: MAX_UPLOAD, files: 10 },
   // A direct message carries one photo, GIF or video.
   x: { bytes: MAX_UPLOAD, files: 1 },
+  // No direct messages here: posts and comments are words.
+  reddit: { bytes: 0, files: 0 },
   // dither-accounts' mail.attachment and OutgoingFile: 25 MB a file.
   email: { bytes: MAX_UPLOAD, files: 20 },
   // Words only.
   calendar: { bytes: 0, files: 0 },
   // A turn sent to a T3 thread is words (dither-accounts' docs/t3.md).
   t3: { bytes: 0, files: 0 },
+  // No messages to send files with; a Mastodon post's pictures go through `publish`.
+  mastodon: { bytes: 0, files: 0 },
+  lemmy: { bytes: 0, files: 0 },
+  // A network of posts sends no messages.
+  substack: { bytes: 0, files: 0 },
   // No messages to send files with; a post's pictures go through `publish`.
   bluesky: { bytes: 0, files: 0 },
 };
@@ -262,8 +292,12 @@ export const NETWORK_META: Record<Network, { name: string; color: string; spaceN
   messenger: { name: 'Messenger', color: '#0866FF', spaceNoun: 'group', sectionNoun: 'section' },
   instagram: { name: 'Instagram', color: '#FF0069', spaceNoun: 'group', sectionNoun: 'section' },
   x: { name: 'X', color: '#000000', spaceNoun: 'group', sectionNoun: 'section' },
+  reddit: { name: 'Reddit', color: '#FF4500', spaceNoun: 'subreddit', sectionNoun: 'section' },
   email: { name: 'Email', color: '#5B7083', spaceNoun: 'mailbox', sectionNoun: 'folder' },
   calendar: { name: 'Calendar', color: '#7E57C2', spaceNoun: 'calendar', sectionNoun: 'section' },
   t3: { name: 'T3 Code', color: '#E5484D', spaceNoun: 'project', sectionNoun: 'section' },
+  mastodon: { name: 'Mastodon', color: '#6364FF', spaceNoun: 'server', sectionNoun: 'section' },
+  lemmy: { name: 'Lemmy', color: '#00BC8C', spaceNoun: 'community', sectionNoun: 'section' },
+  substack: { name: 'Substack', color: '#FF6719', spaceNoun: 'publication', sectionNoun: 'section' },
   bluesky: { name: 'Bluesky', color: '#0085FF', spaceNoun: 'feed', sectionNoun: 'section' },
 };

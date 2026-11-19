@@ -3,9 +3,10 @@
  * scan when it carries one (any kind may). Chat accounts also get the actions that answer their attention, run as
  * their `action` operation through the same checks as an app's call (counted under "This page"): a new link code
  * (Signal, WhatsApp, Telegram, Google Messages), a pairing code for a phone number (WhatsApp), a phone number and the
- * code sent to it (Telegram), the emoji to tap on the phone (Google Messages), and a password or cookies to sign in
- * again (Matrix, Bluesky's app password, Telegram's two-step password; Google Messages' cookies), and the code Bluesky
- * emails for a sign-in.
+ * code sent to it (Telegram), the emoji to tap on the phone (Google Messages), a password or cookies to sign in
+ * again (Matrix, Lemmy, Bluesky's app password, Telegram's two-step password; Google Messages' cookies), a two-factor
+ * code (Lemmy, and the code Bluesky emails for a sign-in), and a sign-in on the network's own site whose code is
+ * pasted back (Mastodon).
  */
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import { renderSVG } from 'uqr';
@@ -297,6 +298,45 @@ function CaptchaEntry({ a, check }: { a: AccountInfo; check: { url: string; acti
   );
 }
 
+/**
+ * A sign-in on the network's own site (Mastodon's): the link to open there, and where to paste the code it shows once
+ * you approve. A pasted access token is taken too.
+ */
+function SignInEntry({ a, check }: { a: AccountInfo; check: { url: string; host: string; action: string } }) {
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: Event) => {
+    e.preventDefault();
+    if (!code.trim()) return;
+    setBusy(true);
+    try {
+      await chatAction(a, check.action, { code: code.trim() });
+      setCode('');
+      toast('Signed in');
+    } catch (err) {
+      toast((err as Error).message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form class="stack" onSubmit={submit} data-sign-in>
+      <p class="small">
+        <a class="btn sm primary" href={check.url} target="_blank" rel="noopener noreferrer">
+          Sign in on {check.host}
+        </a>{' '}
+        then approve, copy the code it shows and paste it here.
+      </p>
+      <div class="row">
+        <input autocomplete="off" spellcheck={false} placeholder="The code" value={code} onInput={(e) => setCode((e.target as HTMLInputElement).value)} aria-label="The code" />
+        <button class="btn sm primary" disabled={busy || !code.trim()}>
+          {busy ? 'Signing in…' : 'Sign in'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 /** Google Messages paired through a Google account: the cookies of messages.google.com, signed in. */
 function GoogleCookies({ a }: { a: AccountInfo }) {
   const [cookies, setCookies] = useState('');
@@ -340,7 +380,8 @@ export function AttentionBlock({ a, onLive }: { a: AccountInfo; onLive: () => vo
   const at = attentionOf(a);
   if (!at) return null;
   const chat = a.interfaces.includes('chat');
-  const { verification, code, emoji, captcha } = (at.detail ?? {}) as { verification?: unknown; code?: unknown; emoji?: unknown; captcha?: { url?: unknown; action?: unknown } };
+  const { verification, code, emoji, captcha, signIn } = (at.detail ?? {}) as { verification?: unknown; code?: unknown; emoji?: unknown; captcha?: { url?: unknown; action?: unknown }; signIn?: { url?: unknown; host?: unknown; action?: unknown } };
+  const signInCheck = typeof signIn?.url === 'string' && typeof signIn.action === 'string' ? { url: signIn.url, host: typeof signIn.host === 'string' ? signIn.host : 'the server', action: signIn.action } : null;
   return (
     <div class="attention-block pane-banner" data-attention={at.kind ?? ''}>
       <div class="banner attention">
@@ -361,7 +402,8 @@ export function AttentionBlock({ a, onLive }: { a: AccountInfo; onLive: () => vo
         </p>
       )}
       {chat && at.kind === 'captcha' && typeof captcha?.url === 'string' && typeof captcha.action === 'string' && <CaptchaEntry a={a} check={{ url: captcha.url, action: captcha.action }} />}
-      {chat && at.kind === 'login' && !at.liveView && (a.kind === 'gmessages' ? <GoogleCookies a={a} /> : <Relogin a={a} />)}
+      {chat && signInCheck && <SignInEntry a={a} check={signInCheck} />}
+      {chat && at.kind === 'login' && !at.liveView && !signInCheck && (a.kind === 'gmessages' ? <GoogleCookies a={a} /> : <Relogin a={a} />)}
       {a.kind === 'haveno' && at.kind === 'login' && <HavenoUnlock a={a} />}
       {chat && !!verification && <p class="small muted">A device verification is waiting. Finish it in dither-chat, or with the action verifyDevice under Try it.</p>}
     </div>

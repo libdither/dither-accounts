@@ -21,6 +21,7 @@
 import { type AccountView, type AdminAction, type AdminResult, type CallError, type ConsumerIn, type ConsumerOut, type Iface, type InputOf, liveViewPath, type OpName, type OutputOf } from '@dither-accounts/spec';
 import type { AccessRequest } from '@dither-accounts/manager/api-types';
 import { IFACES } from '@dither-accounts/interfaces';
+import { ManagerSocket, OPEN } from './socket.ts';
 
 /** Each op's level, by name (op names are unique across interfaces): which calls may be sent again. */
 const OP_LEVEL = new Map<string, string>();
@@ -63,7 +64,7 @@ type Waiting = { msg: string; read: boolean; sent: boolean; resolve: (v: unknown
 export class AccountsClient {
   accounts: AccountView[] = [];
   connected = false;
-  private ws: WebSocket | null = null;
+  private ws: ManagerSocket | null = null;
   private closed = false;
   private attempt = 0;
   private waiting = new Map<string, Waiting>();
@@ -78,7 +79,7 @@ export class AccountsClient {
     const u = new URL('/consumer', this.opts.url.replace(/^http/, 'ws'));
     u.searchParams.set('app', this.opts.app);
     u.searchParams.set('token', this.opts.token);
-    const ws = new WebSocket(u.toString());
+    const ws = new ManagerSocket(u.toString());
     this.ws = ws;
     ws.onopen = () => {
       this.connected = true;
@@ -89,7 +90,7 @@ export class AccountsClient {
         ws.send(w.msg);
         w.sent = true;
       }
-      this.ping = setInterval(() => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ t: 'ping' } satisfies ConsumerIn)), 25_000);
+      this.ping = setInterval(() => ws.readyState === OPEN && ws.send(JSON.stringify({ t: 'ping' } satisfies ConsumerIn)), 25_000);
     };
     ws.onmessage = (e) => {
       let m: ConsumerOut;

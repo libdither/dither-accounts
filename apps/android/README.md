@@ -2,7 +2,9 @@
 
 The phone half of [docs/approver.md](../../docs/approver.md): it holds the site passkeys (Schwab, Privacy.com) in the
 phone's Keystore and signs the WebAuthn requests the manager forwards, after a fingerprint or the phone's PIN each
-time. Package `org.libdither.approver`, Android 11 (API 30) and up. Hand-written Kotlin, no Play Services, no WebView.
+time. It also answers **approvals** (dither-chat's docs/approvals.md): a program asks a question with a few actions
+(merge this, rebuild that, resume a deploy), and the phone's answer comes back signed by a key that never leaves it.
+Package `org.libdither.approver`, Android 11 (API 30) and up. Hand-written Kotlin, no Play Services, no WebView.
 Its dependencies: OkHttp (the link, and the public suffix list for the origin checks), the UnifiedPush connector
 (wake-ups), and ZXing's core (reading the pairing QR from camera frames).
 
@@ -39,13 +41,20 @@ the page shows beside the new device.
 
 ## The screens
 
-- **Requests**: the request that waits, if any: Create a passkey or Sign in, the account (label and kind), the site
+- **Requests**: first every approval that waits (several at once, soonest to expire first; below), then the passkey
+  request that waits, if any: Create a passkey or Sign in, the account (label and kind), the site
   (rpId), the origin it was asked from, the reason, the time it came, how many times this phone approved for that
   rpId today, the passkey (for a sign-in: its id's start and use count), the manager, and a countdown to expiry.
   **Approve** opens the system prompt (strong biometric or the device's PIN, pattern or password) with the key's
   Signature as its CryptoObject, so the Keystore itself refuses to sign without it; **Deny** answers `denied`. A
   cancelled prompt leaves the request waiting. Below: each paired manager (URL, this phone's name and device id
-  there, the identity key's fingerprint, the link's state, Unpair) and **Wake-ups** (UnifiedPush on or off).
+  there, the identity key's fingerprint, the **approval key**'s fingerprint, the link's state, Unpair) and
+  **Wake-ups** (UnifiedPush on or off).
+- **An approval** (on Requests): its title, kind (and urgency when not normal), who asks, the manager, a countdown to
+  expiry, the body (monospace, scrolling inside its box past a third of the screen), the payload's lines, a box for a
+  message (at most 1000 characters), and one button per action. An action marked 🔒 is `signed`: it opens the system
+  prompt and signs with the approval key; `deny` and actions marked `any` answer at once, unsigned. A cancelled
+  prompt leaves the approval waiting.
 - **Pair**: above.
 - **Passkeys**: every credential: account, rpId, id's start, created, last used, counter, where its key lives
   (StrongBox, TEE, or software on an emulator) and through which manager. **Delete** destroys the key and forgets
@@ -53,7 +62,9 @@ the page shows beside the new device.
 - **Log**: the last 100 refusals and errors, newest first (never a key or a clientDataJSON).
 
 A request that comes while the app isn't on screen posts a notification ("Sign in: <account>", the site and reason;
-on the lock screen only "A sign-in waits for your approval") that opens the app.
+on the lock screen only "A sign-in waits for your approval") that opens the app. An approval posts its own
+("Approval: <title>", "Asked by <asker> (<kind>)", and how many more wait; on the lock screen only "An approval
+waits").
 
 ## What the app does with a request
 
@@ -86,6 +97,32 @@ file, fsync, rename) before the signature exists; then ECDSA P-256 / SHA-256 ove
 
 The bytes match packages/passkey's software authenticator: the unit tests compare authenticatorData, the COSE key
 and the attestation object byte for byte with output made by `cbor.ts` and the authenticator's own layout.
+
+## Approvals
+
+**The approval key**: one per paired manager, made after the first `ready` when missing (P-256 in the Keystore,
+StrongBox when the phone has one, signing only, `setUserAuthenticationParameters(0, BIOMETRIC_STRONG |
+DEVICE_CREDENTIAL)`, `setUnlockedDeviceRequired(true)`, `setInvalidatedByBiometricEnrollment(false)`: the same
+settings as a passkey's). Making it needs a screen lock; without one the log says so and it is tried again at the
+next link. After every `ready` the app sends `{t:"keys", kind:"phone", approval:<SPKI, base64>, sig}`, `sig` by the
+identity key (DER, base64url, like the hello's) over `"dither-approver-key-v1\n" + deviceId + "\n" + "phone" + "\n"
++ approval`. Unpair deletes it. If the screen lock is removed the Keystore voids it; the next try to sign says so,
+and a new key (a new fingerprint) is made and sent.
+
+**A request** `{t:"request", op:"approve", id, ask, display, expiresAt}` is checked before it is shown: `ask` is
+exactly the statement's eight asker lines, canonical; its `id` is the request's; its `payload-sha256` is SHA-256 of
+`display.payload` and its `display-sha256` of `title + "\n\n" + body`; `kind` and `asker` equal `display`'s; it hasn't
+expired; the title is one line of at most 200 characters (so the title/body boundary can't move); the payload is the
+line format (printable ASCII, at most 4 KiB, its format first; a merge's six fields with full ids); and the actions are
+well formed (`[a-z0-9-]{1,32}`, `needs` `signed` or `any`, none twice) and include `deny`. A failed check answers
+`{ok:false, reason:"refused"}` (or `expired`) and leaves a line in the Log. A request already shown or answered is not
+shown twice; `{t:"cancel", id}` drops it without an answer; at its expiry it goes away and the app answers `expired`.
+
+**A signed action**: the system prompt with the approval key's Signature as its CryptoObject; then the statement
+(the ask, `action`, `message-sha256` of the message or of "" when none, `device <this phone's id at that manager>`,
+`signed <now, ms>`), ECDSA P-256 / SHA-256 over its UTF-8, checked against the key's own public key, and
+`{t:"response", id, ok:true, op:"approve", action, message, signed, signature}` (DER, base64url). `message` is null
+when the box is empty. **deny** and **any** actions answer the same without a prompt and without `signature`.
 
 ## The link and wake-ups
 
@@ -155,9 +192,33 @@ a wake-up opened may drop before you answer (it did on the emulator). The notifi
 which reconnects, and the manager sends the waiting request again. A foreground service could hold the link through
 the wait, but Android doesn't let an app start one from the background on a UnifiedPush message.
 
+### Approvals on the emulator: `--approvals`
+
+```
+bun apps/android/tools/fake-manager.ts --port 9120 --approvals
+```
+
+After the pairing it checks the keys frame on every link (the identity key's signature, an SPKI that imports), then
+sends seven approve requests at once: `bad-hash` and `no-deny` (expects `refused`), `merge` (tap Approve 🔒, then the
+PIN; the signature is checked with WebCrypto against the approval key over the statement it rebuilds, with the
+device id it gave and the `signed` time sent), `deploy` (tap Hold: `any`, no prompt, no signature), `rebuild` (type
+"not now", tap Deny: the message comes back, no signature), `cancelled` (cancelled after 20 s: the app drops it and
+never answers) and `short` (expires after 40 s: the app answers `expired`).
+
+Verified 2026-11-20 on the Android 15 emulator, headless, with the device PIN: 13 of 13 (pair, hello and keys on two
+links, the seven requests, ping/pong); the approval key's fingerprint on the manager's row equal to the one the
+stand-in computed; the notification while backgrounded. Not verified: a real fingerprint (the emulator's prompt took
+the PIN) and StrongBox.
+
 ## Unit tests
 
-`./gradlew testDebugUnitTest` (JVM, JDK keys, 30 tests): authenticatorData for create and get, the COSE key and the
+`./gradlew testDebugUnitTest` (JVM, JDK keys, 49 tests). Approvals (StatementTest): the statement byte for byte, the
+payload, display and message hashes and the key's fingerprint against a vector made with dither-chat's
+packages/approvals (statement.ts); the reference's DER signature verified here and read as r ‖ s, the JDK's DER read
+the same way, malformed DER refused; the keys frame's input; and each check failing on its own (an ask with too many
+or too few lines, out of order, not canonical, a bad id, kind, asker or hash; the id, payload, title or body
+differing; a title that moves the boundary; kind or asker unlike display's; expired; actions without deny, with a bad
+id, a bad `needs`, twice, or not objects; a malformed payload). Passkeys: authenticatorData for create and get, the COSE key and the
 attestation object byte for byte against packages/passkey's output; CBOR heads for longer items; coordinates always
 32 bytes; DER signatures verified over `authData ‖ SHA-256(clientDataJSON)` with the key read back from its SPKI; the
 COSE key is the SPKI's point; the hello's input and signature; the fingerprint; base64url; the origin and rpId checks

@@ -35,7 +35,7 @@ always with the page's cookies (`credentials: 'same-origin'`):
 | what | request | when |
 |---|---|---|
 | the inbox | `GET /message/inbox.json?mark=false&raw_json=1&limit=25` | 30-60 s after online, then every 4-8 minutes |
-| the front page | `GET /new.json` (Following) or `/best.json` (For you), `raw_json=1&limit=<n>[&after=<t3_…>]` | `home`, when asked |
+| the front page | `GET /new.json` (Following; `/hot.json` when New is refused outright) or `/best.json` (For you), `raw_json=1&limit=<n>[&after=<t3_…>]` | `home`, when asked |
 | your subscriptions | `GET /subreddits/mine/subscriber.json?raw_json=1&limit=100[&after=<t5_…>]`, up to 1,000 | Following, when `/new.json` is refused; kept 30 minutes |
 | a group of them, newest first | `GET /r/<a>+<b>+…/new.json?raw_json=1&limit=<n>[&after=<t3_…>]`, 100 names a group | the same |
 | your picture | `GET /user/<you>/about.json?raw_json=1` | once after online; 10 minutes after a failed read |
@@ -62,8 +62,9 @@ are not approved for, say). So a refused group is halved, each half asked for it
 refused halves halved again until the refused subreddits are found; they are logged by name, left out for six hours,
 and Following starts again from the top without them. After 32 such reads it stops and says Reddit refuses New in
 every subscription tried. Before halving, the group's first and last subreddit are asked on their own: when Reddit
-refuses both, it refuses New itself (seen live on accounts whose every subscription was refused one by one), nothing is
-left out, and the error says so. A refusal with no message in its body is described by its content type, its page
+refuses both, it refuses New itself (seen live: an HTML 403 for any `new.json`, while Best and the inbox answer),
+nothing is left out, and for six hours Following is the front page's Hot (`/hot.json`, which signed in holds only your
+subscriptions), each page sorted newest first and paged by Reddit's `after`. A refusal with no message in its body is described by its content type, its page
 title and where it was redirected, so the log tells a block page from a sign-in redirect.
 
 **Never marked read.** The inbox is read with `mark=false`, and the hook refuses an inbox read without it. A

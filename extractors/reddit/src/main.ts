@@ -336,7 +336,9 @@ async function home(which: P.HomeFeed, cursor?: string, count?: number): Promise
   need('read the front page');
   const ctx = ctxOf(drops, testOrigin);
   let got: P.HomePage;
-  if (which === 'following' && (cursor ? SUBS_CURSOR.test(cursor) : Date.now() - newRefusedAt < NEW_REFUSED_MS)) {
+  if (which === 'following' && Date.now() - hotSince < NEW_REFUSED_MS) {
+    got = await run('home', () => followingFromHot(cursor, n, ctx));
+  } else if (which === 'following' && (cursor ? SUBS_CURSOR.test(cursor) : Date.now() - newRefusedAt < NEW_REFUSED_MS)) {
     got = await run('home', () => followingFromSubs(cursor, n, ctx));
   } else {
     const path = `/${which === 'following' ? 'new' : 'best'}.json?raw_json=1&limit=${n}${cursor ? `&after=${cursor}` : ''}`;
@@ -355,6 +357,19 @@ async function home(which: P.HomeFeed, cursor?: string, count?: number): Promise
   for (const it of got.items) if (it.post.root) linkOf.set(it.post.id, it.post.id.slice(3));
   announce(ctx.people);
   return got;
+}
+
+/**
+ * When Reddit was found to refuse New also in single subreddits (an HTML 403 for any `new.json`, live), so Following
+ * is the front page's Hot (`/hot.json`: signed in, your subscriptions only), each page newest first.
+ */
+let hotSince = 0;
+
+async function followingFromHot(cursor: string | undefined, n: number, ctx: ReturnType<typeof ctxOf>): Promise<P.HomePage> {
+  const after = cursor && FULLNAME.test(cursor) ? cursor : undefined;
+  const page = parseHome(await get(`/hot.json?raw_json=1&limit=${n}${after ? `&after=${after}` : ''}`), ctx);
+  page.items.sort((a, b) => b.post.ts - a.post.ts);
+  return page;
 }
 
 /** When /new.json was last refused, and for how long the subscriptions are read instead. */
@@ -404,8 +419,9 @@ async function followingFromSubs(cursor: string | undefined, n: number, ctx: Ret
       if (!refused(e)) throw e;
       const bad = await findRefused(groups[i]!);
       if (bad === null) {
-        log('warn', `home: Reddit refuses New on its own subreddits too: ${String((e as Error).message).slice(0, 300)}`);
-        throw new Error(`Reddit refuses New for this account, also in single subreddits (${String((e as Error).message).slice(0, 200)})`);
+        log('warn', `home: Reddit refuses New on its own subreddits too (${String((e as Error).message).slice(0, 200)}); Following is the front page's Hot, newest first, for six hours`);
+        hotSince = Date.now();
+        return followingFromHot(undefined, n, ctx);
       }
       if (!bad.length) throw e;
       const at = Date.now();

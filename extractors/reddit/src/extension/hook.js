@@ -95,9 +95,19 @@
           const u = new URL(res.url);
           if (res.redirected || u.origin !== location.origin) where = `${u.host}${u.pathname}`.slice(0, 60);
         } catch (e) {}
-        words = [type && `a ${type} answer`, title && `titled "${title[1].trim()}"`, where && `from ${where}`, !text.length && 'empty'].filter(Boolean).join(', ');
+        // Its first visible words too: a page with no title still says why (an age check, a block, a sign-in).
+        const said = text
+          .replace(/<(script|style|noscript)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+          .replace(/<[^>]*>/g, ' ')
+          .replace(/&[a-z#0-9]+;/gi, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 100);
+        words = [type && `a ${type} answer`, title && `titled "${title[1].trim()}"`, where && `from ${where}`, !text.length && 'empty', said && `saying "${said}"`, text.length && `${text.length} bytes`]
+          .filter(Boolean)
+          .join(', ');
       }
-      const err = new Error(`Reddit answered ${res.status}${words ? `: ${String(words).slice(0, 160)}` : ''}`);
+      const err = new Error(`Reddit answered ${res.status}${words ? `: ${String(words).slice(0, 240)}` : ''}`);
       throw err;
     }
     try {

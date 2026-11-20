@@ -249,12 +249,19 @@ test('profiles: posts and comments newest first, what they moderate; someone fro
 test('a session the instance stops taking: signed in again with the password, by itself', async () => {
   const accDir = m.store.account(id)!.dir;
   const before = JSON.parse(readFileSync(join(accDir, 'secret.json'), 'utf8')).jwt;
+  const seen = evs(id, 'status').length;
   fake.endSessions();
   await until(() => {
     const now = JSON.parse(readFileSync(join(accDir, 'secret.json'), 'utf8')).jwt;
     return now && now !== before;
   }, 10_000, 'a new session');
-  await until(() => lastStatus(id)?.status === 'online', 10_000, 'online again');
+  // The new session is saved before it is checked, and the status heard last may still be the one from before it
+  // ended: wait for the extractor to say it left (connecting) and came back (online), in that order.
+  await until(() => {
+    const since = evs(id, 'status').slice(seen);
+    const left = since.findIndex((e) => e.status !== 'online');
+    return left >= 0 && since.slice(left + 1).some((e) => e.status === 'online');
+  }, 10_000, 'online again');
   expect((await call('home', { feed: 'foryou' })).items.length).toBeGreaterThan(0);
 });
 

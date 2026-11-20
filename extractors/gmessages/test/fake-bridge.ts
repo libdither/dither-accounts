@@ -1,8 +1,9 @@
 /**
  * Stands in for bridge/main.go in tests: the same JSON lines on stdin/stdout, no Google and no phone.
  *
- * The test drives it over a Unix socket ($FAKE_GM_SOCK): every command the adapter sends is copied there as {cmd},
- * and the test can send {emit: event}, {result: {op, value}} (the answer to an op from then on), {error: {op,
+ * The test drives it over a Unix socket ($FAKE_GM_SOCK): every command the adapter sends is copied there as {cmd,
+ * seq}, and handled only once the test has answered {ack: seq}, so the test has it before the adapter has the reply.
+ * The test can send {emit: event}, {result: {op, value}} (the answer to an op from then on), {error: {op,
  * message}}, {clear: op} or {exit: code}.
  *
  * Built in: prints ready; `connect` with a paired session says connected (with settings, and the phone making this
@@ -30,6 +31,18 @@ const toCtl = (o: unknown) => {
   else backlog.push(s);
 };
 
+/** Commands copied to the test and not yet acknowledged, by seq. */
+const acks = new Map<number, () => void>();
+let seq = 0;
+/** Copy a command to the test, and wait until the test has it (at once without a test socket). */
+const copied = (cmd: unknown) => {
+  if (!ctl) return toCtl({ cmd });
+  const n = ++seq;
+  const had = new Promise<void>((resolve) => acks.set(n, resolve));
+  toCtl({ cmd, seq: n });
+  return had;
+};
+
 let ctlBuf = '';
 if (process.env.FAKE_GM_SOCK) {
   await Bun.connect({
@@ -45,6 +58,10 @@ if (process.env.FAKE_GM_SOCK) {
         while ((nl = ctlBuf.indexOf('\n')) >= 0) {
           const msg = JSON.parse(ctlBuf.slice(0, nl));
           ctlBuf = ctlBuf.slice(nl + 1);
+          if (msg.ack !== undefined) {
+            acks.get(msg.ack)?.();
+            acks.delete(msg.ack);
+          }
           if (msg.emit) out(msg.emit);
           if (msg.result) results[msg.result.op] = msg.result.value;
           if (msg.error) errors[msg.error.op] = msg.error.message;
@@ -82,7 +99,7 @@ for await (const chunk of Bun.stdin.stream()) {
   while ((nl = buf.indexOf('\n')) >= 0) {
     const cmd = JSON.parse(buf.slice(0, nl));
     buf = buf.slice(nl + 1);
-    toCtl({ cmd });
+    await copied(cmd);
     switch (cmd.op) {
       case 'connect': {
         if (connectFails > 0) {

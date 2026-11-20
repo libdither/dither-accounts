@@ -62,6 +62,8 @@ async function harness(o: { secret?: Secret; config?: Record<string, unknown>; d
           const m = JSON.parse((s as any).buf.slice(0, nl));
           (s as any).buf = (s as any).buf.slice(nl + 1);
           if (m.cmd) cmds.push(m.cmd);
+          // The bridge handles the command only after this: the copy is here before the adapter has its reply.
+          if (m.seq !== undefined) s.write(JSON.stringify({ ack: m.seq }) + '\n');
         }
       },
       close(s) {

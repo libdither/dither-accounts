@@ -28,6 +28,9 @@ The attention is `kind: 'login'` with `detail.signIn = { url, host, action: 'sig
 `SignInCheck`): the page's `SignInEntry` draws it, and anything else can run the `signIn` action with `{ code }`.
 Actions: `signIn { code }`, `startSignIn` (forget the token and show a new link), `poll` (read notifications now).
 
+Once signed in, `GET /api/v1/accounts/verify_credentials` is you: the account's own identity, with your picture
+(`avatar`) unless it is the server's `missing.png` (no picture set).
+
 When the server stops taking the token (revoked under Preferences → Account → Authorized apps, or expired), the
 account forgets it and asks for a sign-in again.
 

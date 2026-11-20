@@ -14,8 +14,9 @@
  *   - `postAct` (upvote, clear the vote), `publish` (a comment, or a text post with a title in a subreddit) and
  *     `unpublish` (delete your own), once each, when asked.
  *
- * Config: { testOrigin?, noSandbox?, feedFirstMs?, feedEveryMs?, paceMs? (tests: the gap between requests) }. Keeps reddit-state.json (the inbox's newest
- * time and recent ids) in the account directory. Logs paths' shapes, counts and statuses: never post or message text,
+ * Config: { testOrigin?, noSandbox?, feedFirstMs?, feedEveryMs?, paceMs? (tests: the gap between requests), subsChunk?
+ * (tests: subscriptions in one `/r/a+b/new.json`) }. Keeps reddit-state.json (the inbox's newest time and recent ids)
+ * in the account directory. Logs paths' shapes, counts and statuses: never post or message text,
  * people's names, cookies or the modhash.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -33,6 +34,8 @@ import {
   HOME_COUNT,
   HOME_COUNT_MAX,
   infoThing,
+  mergeNewest,
+  ownPicture,
   type More,
   MORECHILDREN_MAX,
   moresOfChildren,
@@ -44,9 +47,15 @@ import {
   parseOverview,
   parsePost,
   parseSubmitted,
+  parseSubscriptions,
+  parseSubsCursor,
   parseThread,
   parseUser,
   personAbout,
+  SUBS_CHUNK,
+  SUBS_CURSOR,
+  SUBS_MAX,
+  subsChunks,
   subredditOf,
   USERNAME,
   writeErrors,
@@ -145,14 +154,15 @@ function status(force = false) {
     sentCaps = caps;
     hub.emit({ t: 'hello', network: NETWORK, version: '1', capabilities: c.capabilities });
   }
-  const self = page?.user ? feed.identities([page.user], page.user)[0] : undefined;
+  const self = page?.user ? feed.identities([page.user], page.user, selfAvatars())[0] : undefined;
   if (self) hub.emit(self);
+  if (c.status === 'online') selfSoon();
   const ev: P.AdapterEvent = {
     t: 'status',
     status: c.status,
     attention: c.attention,
     liveView: vncSocket !== null ? { vncSocket, width: WIDTH, height: HEIGHT } : null,
-    ...(page?.user ? { self: { nativeId: page.user, handle: page.user, displayName: `u/${page.user}`, isSelf: true } } : {}),
+    ...(page?.user ? { self: { nativeId: page.user, handle: page.user, displayName: `u/${page.user}`, ...(selfPic?.user === page.user && selfPic.url ? { avatarUrl: selfPic.url } : {}), isSelf: true } } : {}),
     details: c.details,
     layers: c.layers,
   };
@@ -236,9 +246,44 @@ async function run<T>(kind: string, f: () => Promise<T>): Promise<T> {
   }
 }
 
-/** Identity facts for everyone a read named, before its answer. */
+/** Identity facts for everyone a read named, before its answer (your own with your picture). */
 function announce(people: Iterable<string>, avatars?: Map<string, string>) {
-  for (const ev of feed.identities(people, page?.user ?? null, avatars)) hub.emit(ev);
+  const all = selfAvatars(avatars);
+  for (const ev of feed.identities(people, page?.user ?? null, all)) hub.emit(ev);
+}
+
+// ------------------------------------------------------------ your picture
+// Your own picture, as your profile shows it (`/user/<you>/about.json`, the read a profile makes): once after the
+// account is online, again when the signed-in user changes, and 10 minutes after a failed read. Reddit's default snoo
+// is no picture of yours (map.ts ownPicture).
+let selfPic: { user: string; url: string | null } | null = null;
+let selfTimer: Timer | undefined;
+let selfFailedAt = 0;
+function selfAvatars(avatars?: Map<string, string>): Map<string, string> | undefined {
+  if (!selfPic?.url || selfPic.user !== page?.user) return avatars;
+  const all = new Map(avatars);
+  all.set(selfPic.user, selfPic.url);
+  return all;
+}
+function selfSoon() {
+  const user = page?.user;
+  if (!user || selfPic?.user === user || selfTimer || Date.now() - selfFailedAt < 10 * 60_000) return;
+  selfTimer = setTimeout(() => void readSelf(user), fast ? 0 : 5000 + Math.floor(Math.random() * 10_000));
+}
+async function readSelf(user: string) {
+  try {
+    if (page?.user !== user || page.state !== 'ready') return;
+    const u = parseUser(await get(`/user/${user}/about.json?raw_json=1`), ctxOf(drops, testOrigin));
+    if (!u || u.name.toLowerCase() !== user.toLowerCase()) throw new Error('Reddit did not give your profile');
+    selfPic = { user, url: ownPicture(u) };
+    log('info', selfPic.url ? 'your picture read' : 'you have no picture of your own');
+  } catch (e) {
+    selfFailedAt = Date.now();
+    log('info', 'your picture could not be read', { error: String((e as Error).message ?? e).slice(0, 120) });
+  } finally {
+    selfTimer = undefined;
+    status();
+  }
 }
 
 // --------------------------------------------------------------- commands
@@ -278,20 +323,81 @@ async function onCommand(cmd: P.AdapterCommand): Promise<unknown> {
   }
 }
 
-/** One page of the front page: Following is your subscriptions sorted New, For you is Reddit's Best. */
+/**
+ * One page of the front page: Following is your subscriptions sorted New, For you is Reddit's Best. Following asks the
+ * front page's New (`/new.json`) first; when Reddit refuses that (403), it is built from the subscriptions instead
+ * (followingFromSubs), and `/new.json` is not asked again for six hours.
+ */
 async function home(which: P.HomeFeed, cursor?: string, count?: number): Promise<P.HomePage> {
   if (which !== 'following' && which !== 'foryou') throw new Error('not a home timeline: following or foryou');
-  if (cursor !== undefined && (typeof cursor !== 'string' || !FULLNAME.test(cursor))) throw new Error('not a Reddit cursor');
+  if (cursor !== undefined && (typeof cursor !== 'string' || !(FULLNAME.test(cursor) || (which === 'following' && SUBS_CURSOR.test(cursor))))) throw new Error('not a Reddit cursor');
   const asked = Number(count ?? HOME_COUNT);
   const n = Number.isFinite(asked) ? Math.min(Math.max(Math.floor(asked), 1), HOME_COUNT_MAX) : HOME_COUNT;
   need('read the front page');
-  const path = `/${which === 'following' ? 'new' : 'best'}.json?raw_json=1&limit=${n}${cursor ? `&after=${cursor}` : ''}`;
-  const r = await run('home', () => get(path));
   const ctx = ctxOf(drops, testOrigin);
-  const got = parseHome(r, ctx);
+  let got: P.HomePage;
+  if (which === 'following' && (cursor ? SUBS_CURSOR.test(cursor) : Date.now() - newRefusedAt < NEW_REFUSED_MS)) {
+    got = await run('home', () => followingFromSubs(cursor, n, ctx));
+  } else {
+    const path = `/${which === 'following' ? 'new' : 'best'}.json?raw_json=1&limit=${n}${cursor ? `&after=${cursor}` : ''}`;
+    got = await run('home', async () => {
+      try {
+        return parseHome(await get(path), ctx);
+      } catch (e) {
+        // Only the first page falls back: a `t3_` cursor came from /new.json, which answered then.
+        if (which !== 'following' || cursor || !/^Reddit answered 403\b/.test(String((e as Error).message))) throw e;
+        newRefusedAt = Date.now();
+        log('info', 'home: Reddit refused the front page sorted New; reading it from the subscriptions');
+        return followingFromSubs(undefined, n, ctx);
+      }
+    });
+  }
   for (const it of got.items) if (it.post.root) linkOf.set(it.post.id, it.post.id.slice(3));
   announce(ctx.people);
   return got;
+}
+
+/** When /new.json was last refused, and for how long the subscriptions are read instead. */
+let newRefusedAt = 0;
+const NEW_REFUSED_MS = 6 * 3600_000;
+/** Your subscriptions, read at most every 30 minutes. */
+let subs: { user: string; at: number; names: string[] } | null = null;
+const SUBS_TTL_MS = 30 * 60_000;
+const subsChunk = Number(cfg.subsChunk) > 0 ? Math.floor(Number(cfg.subsChunk)) : SUBS_CHUNK;
+
+async function subscriptions(): Promise<string[]> {
+  const user = page?.user ?? '';
+  if (subs && subs.user === user && Date.now() - subs.at < SUBS_TTL_MS) return subs.names;
+  const names: string[] = [];
+  let after: string | null = null;
+  do {
+    const r = parseSubscriptions(await get(`/subreddits/mine/subscriber.json?raw_json=1&limit=100${after ? `&after=${after}` : ''}`), ctxOf(drops, testOrigin));
+    names.push(...r.names);
+    after = r.after;
+  } while (after && names.length < SUBS_MAX);
+  subs = { user, at: Date.now(), names: names.slice(0, SUBS_MAX) };
+  log('info', `home: ${subs.names.length} subscriptions`);
+  return subs.names;
+}
+
+/**
+ * Following from the subscriptions: each group's `/r/a+b+c/new.json` from where the cursor left it, merged newest first
+ * (map.ts mergeNewest). A cursor from before the subscriptions changed in number of groups starts again from the top.
+ */
+async function followingFromSubs(cursor: string | undefined, n: number, ctx: ReturnType<typeof ctxOf>): Promise<P.HomePage> {
+  const groups = subsChunks(await subscriptions(), subsChunk);
+  if (!groups.length) return { items: [], more: null, top: null };
+  const places = (cursor && parseSubsCursor(cursor, groups.length)) || groups.map(() => '0');
+  const pages: ({ items: P.HomeItem[]; more: string | null } | null)[] = [];
+  for (let i = 0; i < groups.length; i++) {
+    const at = places[i]!;
+    if (at === 'x') {
+      pages.push(null);
+      continue;
+    }
+    pages.push(parseHome(await get(`/r/${groups[i]!.join('+')}/new.json?raw_json=1&limit=${n}${at !== '0' ? `&after=${at}` : ''}`), ctx));
+  }
+  return mergeNewest(pages, places, n);
 }
 
 /** Which post each comment seen is under (so a comment's thread needs no lookup), and the `more`s seen, by link. */
@@ -612,6 +718,7 @@ function cleanup(): Promise<void> {
     clearTimeout(keepTimer);
     clearTimeout(feedTimer);
     clearTimeout(goTimer);
+    clearTimeout(selfTimer);
     keep();
     try {
       bridge.stop();

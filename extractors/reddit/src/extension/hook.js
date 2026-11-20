@@ -4,8 +4,8 @@
  * It (a) says which page the browser is on: Reddit's sign-in pages, a check, the signed-in old.reddit.com (its
  * `r.config`: `logged` is the username, `modhash` the page's token for writes; the modhash itself never leaves the
  * page), or another page; and (b) runs the extractor's reads and writes as old.reddit.com's own code makes them, from
- * this page, with its cookies: GETs of the `.json` listings, and POSTs to /api/vote, /api/comment, /api/del,
- * /api/submit and /api/morechildren with the page's modhash as `uh`, the way old reddit's `$.request` adds it. Only
+ * this page, with its cookies: GETs of the `.json` listings (your subscriptions and a group of them sorted New among
+ * them), and POSTs to /api/vote, /api/comment, /api/del, /api/submit and /api/morechildren with the page's modhash as `uh`, the way old reddit's `$.request` adds it. Only
  * the paths below are let through, and only on old.reddit.com (or the test origin); nothing marks the inbox read
  * (`mark=false` is required).
  *
@@ -29,6 +29,9 @@
   // ------------------------------------------------------------ what may be asked
   const GETS = [
     /^\/(new|best)\.json\?/,
+    // Following from the subscriptions, when /new.json is refused: the names, then a group's New (at most 100 names).
+    /^\/subreddits\/mine\/subscriber\.json\?/,
+    /^\/r\/[A-Za-z0-9_-]{2,40}(\+[A-Za-z0-9_-]{2,40}){0,99}\/new\.json\?/,
     /^\/message\/inbox\.json\?(.*&)?mark=false(&|$)/,
     /^\/comments\/[a-z0-9]{1,13}(\/_\/[a-z0-9]{1,13})?\.json\?/,
     /^\/api\/info\.json\?id=t[134]_[a-z0-9]{1,13}(&|$)/,

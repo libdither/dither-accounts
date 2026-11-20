@@ -19,7 +19,8 @@ On the manager's page, **Add → Lemmy**:
 
 It signs in at once (`POST /api/v3/user/login`) and keeps the session the instance gives (`jwt`) in `secret.json`
 beside the password. When the instance stops taking the session (it ended, or the password changed elsewhere) it signs
-in again with the password, by itself.
+in again with the password, by itself. The session is checked with `GET /api/v3/site`: its `my_user` person is you,
+announced as the account's own identity with your picture (`avatar`) when you set one.
 
 What it asks of you, on the account's pane:
 

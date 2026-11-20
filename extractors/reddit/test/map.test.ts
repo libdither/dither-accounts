@@ -7,6 +7,8 @@ import {
   feedMessage,
   identityOf,
   mediaUrl,
+  mergeNewest,
+  ownPicture,
   moreCursor,
   parseCommented,
   parseHome,
@@ -16,6 +18,8 @@ import {
   parseOverview,
   parsePost,
   parseSubmitted,
+  parseSubscriptions,
+  parseSubsCursor,
   parseThread,
   parseUser,
   personAbout,
@@ -23,6 +27,7 @@ import {
   redditTime,
   siteUrl,
   subredditOf,
+  subsChunks,
 } from '../src/map.ts';
 import { ANN, BEN, CARA, commentPage, gardenThread, inbox, listing, ME, moreChildren, overview, post, SUB, SUB2, t1, t3, user } from './fixtures.ts';
 
@@ -227,5 +232,56 @@ describe('writes', () => {
   test("a post submitted: its id and link from Reddit's answer", () => {
     expect(parseSubmitted({ json: { errors: [], data: { url: 'https://www.reddit.com/r/gardening/comments/n2/my_beans/', id: 'n2', name: 't3_n2' } } })).toEqual({ id: 't3_n2', url: 'https://www.reddit.com/r/gardening/comments/n2/my_beans/' });
     expect(() => parseSubmitted({ json: { errors: [['SUBREDDIT_NOEXIST', "that subreddit doesn't exist", 'sr']] } })).toThrow("that subreddit doesn't exist");
+  });
+});
+
+describe('Following from the subscriptions', () => {
+  test('the subscriptions: subreddits and followed people by name, odd ones counted; groups in name order', () => {
+    const c = ctx();
+    const got = parseSubscriptions(
+      listing([
+        { kind: 't5', data: { display_name: 'rustlang' } },
+        { kind: 't5', data: { display_name: 'u_ann-lee' } },
+        { kind: 't5', data: { display_name: 'Gardening' } },
+        { kind: 't5', data: { display_name: 'bad name!' } },
+      ], 't5_abc'),
+      c,
+    );
+    expect(got).toEqual({ names: ['rustlang', 'u_ann-lee', 'Gardening'], after: 't5_abc' });
+    expect(c.drops.summary()).toBe('subs.bad-name 1');
+    expect(subsChunks([...got.names, 'rustlang'], 2)).toEqual([['Gardening', 'rustlang'], ['u_ann-lee']]);
+  });
+
+  test('pages merged newest first; each group keeps its place, and is done when it has given all', () => {
+    const page = (ids: [string, number][], more: string | null) => ({ items: ids.map(([id, agoS]) => parseHome(listing([t3({ id, agoS })]), ctx()).items[0]!), more });
+    const first = mergeNewest([page([['a1', 10], ['a2', 40]], 't3_a2'), page([['b1', 20]], null), page([], null)], ['0', '0', '0'], 2);
+    expect(first.items.map((i) => i.post.id)).toEqual(['t3_a1', 't3_b1']);
+    expect(first.more).toBe('subs~t3_a1.x.x');
+    // A group none of whose posts were taken is asked from the same place; an empty page with `after` moves on.
+    const second = mergeNewest([page([['a2', 40]], null), null, page([], 't3_c9')], ['t3_a1', 'x', '0'], 0);
+    expect(second.more).toBe('subs~t3_a1.x.t3_c9');
+    const last = mergeNewest([page([['a2', 40]], null), null, null], ['t3_a1', 'x', 'x'], 5);
+    expect(last.items.map((i) => i.post.id)).toEqual(['t3_a2']);
+    expect(last.more).toBeNull();
+    // A post in two groups is given once.
+    expect(mergeNewest([page([['a1', 10]], null), page([['a1', 10]], null)], ['0', '0'], 5).items).toHaveLength(1);
+  });
+
+  test("a cursor's places: only for the same number of groups", () => {
+    expect(parseSubsCursor('subs~t3_a1.x.0', 3)).toEqual(['t3_a1', 'x', '0']);
+    expect(parseSubsCursor('subs~t3_a1.x.0', 2)).toBeNull();
+    expect(parseSubsCursor('subs~t1_a1', 1)).toBeNull();
+    expect(parseSubsCursor('t3_a1', 1)).toBeNull();
+  });
+});
+
+describe('your picture', () => {
+  test("the picture you set, unescaped; Reddit's default snoo is none", () => {
+    const u = parseUser(user(ME), ctx())!;
+    expect(ownPicture(u)).toBe('https://styles.redditmedia.com/t5_x/styles/profileIcon_a.png?width=256&s=1');
+    const plain = user(ME);
+    plain.data.icon_img = 'https://www.redditstatic.com/avatars/defaults/v2/avatar_default_3.png';
+    expect(ownPicture(parseUser(plain, ctx())!)).toBeNull();
+    expect(ownPicture({ ...u, avatar: null })).toBeNull();
   });
 });

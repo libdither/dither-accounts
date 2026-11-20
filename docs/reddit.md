@@ -36,6 +36,9 @@ always with the page's cookies (`credentials: 'same-origin'`):
 |---|---|---|
 | the inbox | `GET /message/inbox.json?mark=false&raw_json=1&limit=25` | 30-60 s after online, then every 4-8 minutes |
 | the front page | `GET /new.json` (Following) or `/best.json` (For you), `raw_json=1&limit=<n>[&after=<t3_…>]` | `home`, when asked |
+| your subscriptions | `GET /subreddits/mine/subscriber.json?raw_json=1&limit=100[&after=<t5_…>]`, up to 1,000 | Following, when `/new.json` is refused; kept 30 minutes |
+| a group of them, newest first | `GET /r/<a>+<b>+…/new.json?raw_json=1&limit=<n>[&after=<t3_…>]`, 100 names a group | the same |
+| your picture | `GET /user/<you>/about.json?raw_json=1` | once after online; 10 minutes after a failed read |
 | a post's thread | `GET /comments/<id>.json?raw_json=1&sort=confidence` | `post`, when asked |
 | a comment's thread | `GET /comments/<post>/_/<comment>.json?raw_json=1&sort=confidence&context=8` | `post` with a `t1_` id |
 | which post a comment is under | `GET /api/info.json?id=t1_…` | only for a comment not seen since the start |
@@ -45,6 +48,14 @@ always with the page's cookies (`credentials: 'same-origin'`):
 | comment | `POST /api/comment` (`thing_id`, `text`, `api_type=json`) | `publish` with `replyTo` |
 | new text post | `POST /api/submit` (`kind=self`, `sr`, `title`, `text`, `sendreplies=true`, `api_type=json`), then `GET /api/info.json?id=t3_…` to read it back | `publish` with `title` and `place` |
 | delete | `POST /api/del` (`id`) | `unpublish` |
+
+**Following when New is refused.** Some signed-in accounts get a bare 403 for the front page sorted New
+(`/new.json`), while Best (`/best.json`) and the inbox answer. Then Following is built the way it is defined, from
+your subscriptions: their names, then each group of up to 100 as a multireddit (`/r/a+b+c/new.json`, Reddit's
+documented `[/r/subreddit]/new` listing, which takes `+`-joined names), merged newest first. The cursor
+(`subs~<place>.<place>…`) says where each group is up to (`0` from the top, a `t3_` after that post, `x` done), so it
+pages with nothing kept. `/new.json` is not asked again for six hours. A followed person counts as their `u_name`
+subscription.
 
 **Never marked read.** The inbox is read with `mark=false`, and the hook refuses an inbox read without it. A
 `.json` listing does not mark anything read anyway (Reddit marks the inbox read only when its HTML page is opened
@@ -132,6 +143,10 @@ The status layers are display, browser, extension, signed in (`as u/name`), page
 - **page:** old.reddit.com with its modhash. Without one it reads but does not write, and this layer fails.
 - **inbox:** the items announced and when it last read, or the last error.
 
+Your own identity (the status's `self` and its identity fact) carries your picture once your profile is read: the one
+you set (`snoovatar_img`, else `icon_img`, `&amp;` unescaped as for everyone). Reddit's default snoo
+(`redditstatic.com/avatars/defaults/…`) is no picture of yours, so you stay without one.
+
 ## Tests
 
 - `extractors/reddit/test/map.test.ts`: the mapping, against invented data in Reddit's shapes (`test/fixtures.ts`).
@@ -141,6 +156,8 @@ The status layers are display, browser, extension, signed in (`as u/name`), page
   - signed out: sign-in attention, nothing read;
   - after signing in: online, and the inbox as the feed, read with `mark=false`;
   - the front pages and their cursor;
+  - Following from the subscriptions when `/new.json` answers 403, merged and paged;
+  - your picture on your identity;
   - a thread, more comments, a comment's context;
   - votes, a comment, a post and a delete, each once with the modhash;
   - a profile.

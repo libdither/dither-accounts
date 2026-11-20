@@ -102,7 +102,8 @@ test('signing in: a wrong password asks for the right one; then online, the sess
   await expect(call('action', { action: 'relogin', args: { password: 'still-wrong' } })).rejects.toThrow('refused the username or password');
   expect(await call('action', { action: 'relogin', args: { password: 'pw-quinn' } })).toEqual({ signedIn: true, needsCode: false });
   const online = await until(() => lastStatus(id)?.status === 'online' && lastStatus(id), 10_000, 'online');
-  expect(online.self).toMatchObject({ nativeId: `quinn@${H()}`, handle: `@quinn@${H()}`, displayName: 'Quinn' });
+  // Your own picture comes with you (the site's my_user person's avatar).
+  expect(online.self).toMatchObject({ nativeId: `quinn@${H()}`, handle: `@quinn@${H()}`, displayName: 'Quinn', avatarUrl: expect.stringMatching(/^https:\/\/files\.example\/u\/\d+\.png$/), isSelf: true });
   expect(evs(id, 'hello')[0]).toMatchObject({ network: 'lemmy', capabilities: ['history', 'profile', 'posts', 'postActions', 'publish', 'home', 'unpublish'] });
   const accDir = m.store.account(id)!.dir;
   const secret = JSON.parse(readFileSync(join(accDir, 'secret.json'), 'utf8'));

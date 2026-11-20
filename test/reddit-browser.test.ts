@@ -198,6 +198,31 @@ it(
 );
 
 it(
+  'home: a subscription whose New Reddit refuses is found by halving its group and left out; the rest still reads',
+  async () => {
+    fake.newForbidden = true;
+    fake.refused.add('rustlang');
+    const from = fake.calls.length;
+    const got = await call('home', { feed: 'following', count: 10 });
+    expect(got.items.length).toBeGreaterThan(0);
+    expect(got.items.every((i: any) => String(i.post.place?.id ?? '').toLowerCase() !== 'rustlang')).toBe(true);
+    const asked = fake.calls.slice(from).filter((c) => c.path.startsWith('/r/'));
+    expect(asked.map((c): [string, string | null] => [c.path, c.query.limit ?? null])).toEqual([
+      ['/r/gardening+rustlang/new.json', '10'],
+      ['/r/gardening/new.json', '1'],
+      ['/r/rustlang/new.json', '1'],
+      ['/r/gardening+u_ann_lee/new.json', '10'],
+    ]);
+    // Left out from then on: no group with it is asked again.
+    await call('home', { feed: 'following', count: 10 });
+    expect(fake.calls.slice(from).filter((c) => c.path.includes('rustlang'))).toHaveLength(2);
+    fake.refused.clear();
+    fake.newForbidden = false;
+  },
+  60_000,
+);
+
+it(
   'threads: a post with its comment tree, more comments through the cursor, a comment with what is above it',
   async () => {
     const from = fake.calls.length;

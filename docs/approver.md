@@ -10,6 +10,10 @@ What it buys: the machine never holds the key, so a stolen disk or backup, a mal
 agent session cannot sign in; and no sign-in happens without a tap on your phone, which says which account, which
 site and why.
 
+The same paired devices also answer **approvals** (below): a service asks a question with a few actions, and a device
+answers it, signing the answer with an approval key that never leaves it. A laptop joins as a second kind of device,
+the **desk signer** (`apps/desk-signer`), which signs after the laptop's fingerprint reader reports your finger.
+
 What it doesn't: someone who controls this machine **while** a job runs can use the session you approved (the
 session lives here), and can show your phone a real challenge from a browser of their own (a passkey cannot tell whose
 session a challenge belongs to; an unexpected prompt is the sign). Pair it with the site's own limits on moving money.
@@ -24,7 +28,9 @@ session a challenge belongs to; an unexpected prompt is the sign). Pair it with 
 | remote credentials | `packages/passkey` (`approver.ts`, `authenticator.ts`) | a stored credential with `device` and no private key; create and get go to the device |
 | the extractor's way in | `packages/link` (`ask`), `packages/manager` (`supervisor.ts`) | `approver.request` from the account's extractor, answered for that account only |
 | the app | `apps/android` (`org.libdither.approver`) | Keystore keys, the approval screen, the link, UnifiedPush |
-| tests | `packages/passkey/test/fake-device.ts`, `test/approver.test.ts`, `test/passkey-extractor.ts` | a fake phone, a real manager, a test extractor and the fake relying party |
+| approvals | `packages/manager` (`approvals.ts`), `packages/approval`, `packages/interfaces` (`approvals.ts`) | the built-in account `approver` and its `approvals` interface; the statement a device signs |
+| the desk signer | `apps/desk-signer` | the laptop as an approver device of kind `desk` (fprintd) |
+| tests | `packages/passkey/test/fake-device.ts`, `test/approver.test.ts`, `test/passkey-extractor.ts`, `test/approvals.test.ts`, `test/desk-signer.test.ts`, `test/approval-statement.test.ts` | a fake phone, a real manager, a test extractor and the fake relying party; approvals end to end; the desk signer with a fake fingerprint check |
 
 Everything goes over the page's own origin (https, through the reverse proxy in front of the manager). Nothing new
 listens elsewhere. The phone must be able to reach that origin (a private network such as a tailnet, for example).
@@ -68,8 +74,10 @@ device  {t:"hello", deviceId, sig, app}           sig: ECDSA P-256 / SHA-256 (DE
                                                   UTF-8 "dither-approver-v1\n" + deviceId + "\n" + nonce
 server  {t:"ready", name}                         or closes with 4401 (unknown device or bad signature)
 device  {t:"push", endpoint}                      optional: its UnifiedPush endpoint (https URL), or null to drop it
-server  {t:"request", ...}                        below; any number, one at a time per device
+device  {t:"keys", kind, approval, sig}           approvals: what it is and its approval key (below)
+server  {t:"request", ...}                        below; passkey ones one at a time per device, approve ones all at once
 device  {t:"response", id, ...}                   below
+server  {t:"cancel", id} / {t:"intent", ...}      approvals (below)
 either  {t:"ping"} / {t:"pong"}                   every 30 s from the server; 90 s silent closes it
 ```
 
@@ -80,6 +88,8 @@ What the manager settles:
   heard for 90 s; **1001** the manager is stopping; **1009** a frame over 64 KiB.
 - `push`: an endpoint that is not an https URL (at most 2048 characters) is ignored; `null` drops it. Nothing answers it.
 - Any frame counts as heard. The device may send `ping` too; the server answers `pong`.
+- Frames after `ready` are handled one after another, in the order they came: a `pong` means everything the device
+  sent before it was handled.
 - One request at a time per device: the next is sent once the device answered the current one, or it expired. A request
   sent on a link that closes before it was answered is sent again, with the same `id`, on the next link (the app should
   show it once, and may answer it again if its first answer was lost).
@@ -203,7 +213,8 @@ Passkeys kept on this machine meet none of this: their sign-ins try three times 
 
 ## The manager side
 
-- `approvers.json`: `{ devices: [{ id, name, publicKey, push, pairedAt, lastSeenAt }] }`, written whole, 0600 (tmp,
+- `approvers.json`: `{ devices: [{ id, name, publicKey, push, pairedAt, lastSeenAt, kind?, approvalKey? }] }` (`kind` and
+  `approvalKey` from the device's last keys frame; a device from before approvals has neither), written whole, 0600 (tmp,
   fsync, rename, the last good copy as `.bak`, as secret.json is). Pairing codes live only in memory, as their SHA-256.
 - A stored passkey (secret.json `passkeys`) may be **remote**: `{ id, rpId, alg: -7, publicKey, userHandle, device,
   createdAt, lastUsedAt, verifiedAt }`, no `privateKey`, no `signCount` (the device counts). `get` for a remote
@@ -253,3 +264,115 @@ Passkeys kept on this machine meet none of this: their sign-ins try three times 
 and add a passkey in the site's settings: the request goes to the phone. 4. Remove the old passkey in the site's
 settings, then here (the pane lists both, with where each lives). Keep two devices (a second phone, or an old one in a
 drawer) so losing one doesn't lock you out of a site; each site's own recovery is the last resort.
+
+## Approvals
+
+A service (dither-chat's hub, for a deploy, a rebuild or a merge) asks a question with a few actions; a paired device
+shows it and answers, and an action that needs it comes back **signed by the device's approval key** over bytes that
+name the request, its payload, what was shown and the action. The formats (the statement, the payloads, the keys file,
+the CLI that asks and verifies) are dither-chat's contract, its docs/approvals.md; this is the manager's side.
+
+### The approval key and the keys frame
+
+Each device has a second P-256 key, its **approval key**, used only to sign statements: on the phone in the Keystore
+with user authentication on every use, on the laptop in the desk signer's state directory. After `ready`, on every
+link, the device sends
+
+```
+{t:"keys", kind, approval, sig}    kind "phone" | "desk"; approval: the approval key's SPKI, base64;
+                                   sig: the identity key's signature (DER, base64url) over UTF-8
+                                   "dither-approver-key-v1\n" + deviceId + "\n" + kind + "\n" + approval
+```
+
+The manager checks the signature and that `approval` is a P-256 SPKI, and keeps `kind` and `approvalKey` in
+approvers.json; a new one replaces the old (logged). One that doesn't check out is ignored, and that link gets no
+approve requests (a device that sends no keys frame, an app from before approvals, gets none either). The page's
+Approvers section shows each device's kind and its approval key's fingerprint (SHA-256 of the SPKI, first 8 bytes as
+hex pairs) beside the identity key's.
+
+### The frames
+
+```
+server  {t:"request", id, op:"approve", ask, display, expiresAt}
+            ask: the statement's eight asker lines, exactly as the asker made them
+            display: { kind, asker, title, body, payload, urgency, actions: [{ id, label, needs: "signed"|"any" }] }
+device  {t:"response", id, ok:true, op:"approve", action, message, signed, signature?}
+            signed: the statement's `signed` line (ms); signature: base64url DER by the approval key over
+            ask + "action <a>\nmessage-sha256 <sha256 of message, of "" when none>\ndevice <its id>\nsigned <ms>\n"
+device  {t:"response", id, ok:false, reason, message?}    reason: refused (a check failed), expired, error
+server  {t:"cancel", id}                                   answered elsewhere, cancelled or expired: drop it
+server  {t:"intent", id, action, message}                  desk devices only: the page asked to sign this action
+```
+
+- `approve` requests are **not** one at a time: each goes to every device with an approval key whose link has sent
+  its keys, as soon as it is asked, and to each other device when its next link's keys frame comes, until it is
+  answered, cancelled or expires. A device with an approval key and no link is woken (`{"t":"wake"}`, as for
+  passkeys). Passkey requests keep their queue.
+- A device checks before it shows anything (packages/approval `checkRequest`): `ask` parses as the eight lines in
+  canonical form, its `id` is the request's, `payload-sha256` is SHA-256 of `display.payload`, `display-sha256` of
+  `title + "\n\n" + body`, `kind` and `asker` are `display`'s, `expires` is in the future, the actions are well formed
+  and include `deny`, which needs no signature. A failed check answers `refused`.
+- The manager checks each answer before it passes it on: the request still waits; the device has an approval key and
+  has not refused it; the action is one offered; the message is at most 1000 characters; an action marked `signed`
+  carries a signature; and a signature (also on an action marked `any`) verifies with the device's approval key over
+  the whole statement the manager rebuilds from the ask it holds. An answer that fails is dropped and logged, and the
+  request waits on. A good answer ends the request: `{t:"cancel"}` to every other device holding it.
+- A refusal (`ok:false`) goes on to the app as an answer with `ok:false` and does not end the request: other devices
+  can still answer. After `refused` or `expired` that device is not sent it again; after `error` (the desk signer's
+  finger that didn't match) it keeps it, and the page can ask again.
+- The manager keeps requests in memory only, each until its expiry; a restart loses them (the app asks again with the
+  same ask). The audit keeps no title, body, payload or message: the `approval` table gets op `approve`, the asker as
+  the account, the kind as the reason, the answering device, and as outcome `ok` (with the action as the message
+  column), `denied`, `cancelled` or `expired`. The daily counts get app `approver`, account `approver`, op `approve`.
+
+### The interface: `approvals`, on the built-in account `approver`
+
+Like the manager's notices, `approver` (kind `approver`, label "Approvers") is an account the manager answers itself:
+never a process, always online, nothing to restart or remove. An app asks for it as any interface; dither-chat's hub
+asks `{ interface: "approvals", level: "write", accounts: ["approver"] }`.
+
+```
+approvals.devices   read   {}                               → { devices: [{ id, name, kind, approvalKey, fingerprint, online }] }
+                                                              (kind, approvalKey and fingerprint null until a keys frame came)
+approvals.ask       write  { ask, display, expiresAt? }     → { devices: n }   how many devices it went to now
+approvals.cancel    write  { id, reason? }                  → {}               (an id it doesn't hold is fine)
+approvals.intent    write  { id, action, message? }         → { sent: n }      desk devices online that hold it
+approvals.answers   read   { ids: [...] }                   → { answers: [answer…] }   good answers of the last day
+event approvals.answer     { id, ok:true, action, message, signed, signature?, statement?, device, deviceName, deviceKind }
+                         | { id, ok:false, reason, message?, device, deviceName }
+```
+
+- `approvals.ask` refuses (`invalid`) an ask that fails the device's checks above, or whose `expiresAt` is not its
+  `expires`; at most 200 wait at once (`limited`). The same id asked again while it waits is sent to whoever lacks it
+  (other words for the same id are refused); asked again after it was answered, it answers `{ devices: 0, answered:
+  true }` and sends nothing (catch up with `approvals.answers`).
+- `signed` in an answer is the statement's `signed` line, whether or not there is a signature (for an unsigned answer
+  it is the device's time, or the manager's when the device gave none). `statement` is the whole signed text,
+  present with `signature`; an app should still check the signature with keys it trusts.
+- Answers are kept in the table `approval_answer` for a day, for `approvals.answers`.
+
+### The desk signer
+
+`apps/desk-signer` (its README says how it runs): a small Bun daemon that is an approver device of kind `desk`.
+`desk-signer pair <link>` makes its identity and approval keys (WebCrypto P-256, kept as PKCS8 in
+`$DESK_SIGNER_STATE`, files 0600 in a 0700 directory) and pairs; `desk-signer run` keeps the link (backoff from 1 s to
+60 s; it stops with exit 2 on 4401, not paired), sends its keys on every link, and keeps each approve request it is
+sent, checked as the phone checks it. It answers **only on an intent**: an action that needs no signature at once; one
+that needs a signature after the presence check, by default `fprintd-verify $DESK_SIGNER_USER`, which must exit 0 and
+print `verify-match` within 30 s (`DESK_SIGNER_VERIFY`, a JSON array with `{user}` in it, replaces the command). A
+finger that doesn't match answers `{ok:false, reason:"error"}` and keeps the request. `desk-signer status` prints the
+device and both fingerprints.
+
+### Tests
+
+`test/approvals.test.ts` (CI): the built-in account in an app's list; the keys frame (kept, shown on the page and in
+approvals.devices; one signed by another key, with a bad kind or a bad key ignored); ask → the fake phone signs →
+the event, whose statement verifies with the approval key and not the identity key, the other phone cancelled, the
+audit without the words; deny unsigned; dropped answers (a signed action unsigned, an action not offered, a signature
+over another message or time, a message too long, an unknown id) while the request waits; a refusal passed on and not
+resent; bad asks refused; cancel and expiry reaching every device; a wake-up and resending once the keys come; intents
+going to no phone; a read-only app cannot ask; answers kept a day. `test/desk-signer.test.ts` (CI): `pair` and
+`status` as commands (file modes), the link as a `desk`, an intent with a matching finger signed and verified, a
+mismatch answered as an error with the request kept and then signed, an unsigned action without the check, a
+cancelled request dropped, and the presence check's timeout. `test/approval-statement.test.ts`: the statement against
+a vector made with dither-chat's own code.

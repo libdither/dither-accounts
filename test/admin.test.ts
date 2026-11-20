@@ -147,9 +147,9 @@ test('removing it: the directory stays unless purged, and only an app that runs 
 test('the kinds, for any app: what each offers, its add form, and whether this app may add one', async () => {
   const mine = (await acc.admin({ do: 'kinds' })).kinds;
   const theirs = (await read.admin({ do: 'kinds' })).kinds;
-  // Every kind an extractor runs, never the manager's own notices.
+  // Every kind an extractor runs, never the manager's own (notices, approver).
   expect(mine.map((k) => k.kind)).toEqual(theirs.map((k) => k.kind));
-  expect(mine.some((k) => k.kind === 'notices')).toBe(false);
+  expect(mine.some((k) => k.kind === 'notices' || k.kind === 'approver')).toBe(false);
   expect(mine.find((k) => k.kind === 'fake')).toEqual({ kind: 'fake', name: 'Fake (tests)', interfaces: ['test.echo'], add: { blurb: 'for tests' }, manages: true });
   expect(theirs.find((k) => k.kind === 'fake')?.manages).toBe(false);
   const proton = mine.find((k) => k.kind === 'proton')!;

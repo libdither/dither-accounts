@@ -1651,6 +1651,63 @@
    "BrowserTab": "type BrowserTab = {\n  tabId: number;\n  /** The whole URL. */\n  url: string;\n  title: string;\n  /** In front on the display (the live view shows it). */\n  active: boolean;\n};"
   }
  },
+ "approvals": {
+  "ops": {
+   "approvals.devices": {
+    "input": "{}",
+    "output": "{ devices: ApprovalDevice[] }",
+    "example": {}
+   },
+   "approvals.ask": {
+    "input": "{ ask: string; display: ApprovalDisplay; expiresAt?: number }",
+    "output": "{ devices: number }",
+    "example": {
+     "ask": "",
+     "display": {
+      "kind": "",
+      "asker": "",
+      "title": "",
+      "body": "",
+      "payload": "",
+      "actions": []
+     }
+    }
+   },
+   "approvals.cancel": {
+    "input": "{ id: string; reason?: string }",
+    "output": "{}",
+    "example": {
+     "id": ""
+    }
+   },
+   "approvals.intent": {
+    "input": "{ action: string; id: string; message?: null | string }",
+    "output": "{ sent: number }",
+    "example": {
+     "action": "",
+     "id": ""
+    }
+   },
+   "approvals.answers": {
+    "input": "{ ids: string[] }",
+    "output": "{ answers: ApprovalAnswer[] }",
+    "example": {
+     "ids": []
+    }
+   }
+  },
+  "events": {
+   "hello": "Record<string, unknown>",
+   "status": "Record<string, unknown>",
+   "approvals.answer": "{\n  id: string;\n  ok: true;\n  action: string;\n  message: null | string;\n  signed: number;\n  signature?: string;\n  statement?: string;\n  device: string;\n  deviceName: string;\n  deviceKind: \"phone\" | \"desk\";\n}\n| { id: string; ok: false; reason: string; message?: string; device: string; deviceName: string }"
+  },
+  "defs": {
+   "ApprovalAction": "type ApprovalAction = { id: string; label?: string; needs: \"signed\" | \"any\" };",
+   "ApprovalAnswer": "/** A device's answer. `signed` is the statement's `signed` line (ms since the epoch) whether or not there is a */\ntype ApprovalAnswer = {\n  id: string;\n  ok: true;\n  action: string;\n  message: null | string;\n  signed: number;\n  signature?: string;\n  statement?: string;\n  device: string;\n  deviceName: string;\n  deviceKind: \"phone\" | \"desk\";\n}\n| { id: string; ok: false; reason: string; message?: string; device: string; deviceName: string };",
+   "ApprovalDevice": "type ApprovalDevice = {\n  id: string;\n  name: string;\n  /** `phone` or `desk`; null until its keys frame came. */\n  kind: null | \"phone\" | \"desk\";\n  /** Its approval key's SPKI, base64; null until its keys frame came. */\n  approvalKey: null | string;\n  fingerprint: null | string;\n  online: boolean;\n};",
+   "ApprovalDisplay": "/** What a device shows; its hashes are in the ask (payload-sha256, display-sha256). */\ntype ApprovalDisplay = {\n  kind: string;\n  asker: string;\n  /** One line, at most 200 characters, as it was hashed. */\n  title: string;\n  body: string;\n  payload: string;\n  urgency?: \"normal\" | \"high\" | \"low\";\n  /** deny always among them, needing no signature. */\n  actions: ApprovalAction[];\n};"
+  }
+ },
  "test.echo": {
   "ops": {
    "echo": {

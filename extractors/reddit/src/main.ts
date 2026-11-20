@@ -385,7 +385,8 @@ async function subscriptions(): Promise<string[]> {
  * (map.ts mergeNewest). A cursor from before the subscriptions changed in number of groups starts again from the top.
  */
 async function followingFromSubs(cursor: string | undefined, n: number, ctx: ReturnType<typeof ctxOf>): Promise<P.HomePage> {
-  const groups = subsChunks(await subscriptions(), subsChunk);
+  const now = Date.now();
+  const groups = subsChunks((await subscriptions()).filter((name) => !(now - (refusedSubs.get(name) ?? -Infinity) < NEW_REFUSED_MS)), subsChunk);
   if (!groups.length) return { items: [], more: null, top: null };
   const places = (cursor && parseSubsCursor(cursor, groups.length)) || groups.map(() => '0');
   const pages: ({ items: P.HomeItem[]; more: string | null } | null)[] = [];
@@ -395,9 +396,55 @@ async function followingFromSubs(cursor: string | undefined, n: number, ctx: Ret
       pages.push(null);
       continue;
     }
-    pages.push(parseHome(await get(`/r/${groups[i]!.join('+')}/new.json?raw_json=1&limit=${n}${at !== '0' ? `&after=${at}` : ''}`), ctx));
+    let listing: unknown;
+    try {
+      listing = await get(`/r/${groups[i]!.join('+')}/new.json?raw_json=1&limit=${n}${at !== '0' ? `&after=${at}` : ''}`);
+    } catch (e) {
+      // Reddit refuses a whole group when it refuses one subreddit in it: find those, leave them out, start again.
+      if (!refused(e)) throw e;
+      const bad = await findRefused(groups[i]!);
+      if (bad === null) throw new Error(`Reddit answered 403 to New for every subscription tried (${groups[i]!.length} in the group)`);
+      if (!bad.length) throw e;
+      const at = Date.now();
+      for (const name of bad) refusedSubs.set(name, at);
+      log('info', `home: Reddit refuses New in ${bad.length} subscription(s), left out for six hours: ${bad.join(', ')}`);
+      return followingFromSubs(undefined, n, ctx);
+    }
+    pages.push(parseHome(listing, ctx));
   }
   return mergeNewest(pages, places, n);
+}
+
+/** Subscriptions whose New Reddit refuses (private, quarantined, banned...), and when: left out for six hours. */
+const refusedSubs = new Map<string, number>();
+const refused = (e: unknown) => /^Reddit answered 403\b/.test(String((e as Error)?.message ?? e));
+/** At most this many reads to find the refused ones in a group; more means Reddit refuses New itself. */
+const PROBES_MAX = 32;
+
+/**
+ * The names in a refused group that Reddit refuses, found by asking for each half's newest post and halving the
+ * refused ones; null when that takes more than PROBES_MAX reads. Empty when no part is refused on its own.
+ */
+async function findRefused(names: string[]): Promise<string[] | null> {
+  const bad: string[] = [];
+  let probes = 0;
+  const visit = async (part: string[]): Promise<boolean> => {
+    if (part.length === 1) {
+      bad.push(part[0]!);
+      return true;
+    }
+    for (const half of [part.slice(0, part.length >> 1), part.slice(part.length >> 1)]) {
+      if (++probes > PROBES_MAX) return false;
+      try {
+        await get(`/r/${half.join('+')}/new.json?raw_json=1&limit=1`);
+      } catch (e) {
+        if (!refused(e)) throw e;
+        if (!(await visit(half))) return false;
+      }
+    }
+    return true;
+  };
+  return (await visit(names)) ? bad : null;
 }
 
 /** Which post each comment seen is under (so a comment's thread needs no lookup), and the `more`s seen, by link. */

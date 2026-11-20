@@ -57,6 +57,12 @@ documented `[/r/subreddit]/new` listing, which takes `+`-joined names), merged n
 pages with nothing kept. `/new.json` is not asked again for six hours. A followed person counts as their `u_name`
 subscription.
 
+Reddit refuses a whole multireddit with the same bare 403 when it refuses any one subreddit in it (a private one you
+are not approved for, say). So a refused group is halved, each half asked for its newest post (`limit=1`), and the
+refused halves halved again until the refused subreddits are found; they are logged by name, left out for six hours,
+and Following starts again from the top without them. After 32 such reads it stops and says Reddit refuses New in
+every subscription tried.
+
 **Never marked read.** The inbox is read with `mark=false`, and the hook refuses an inbox read without it. A
 `.json` listing does not mark anything read anyway (Reddit marks the inbox read only when its HTML page is opened
 without `mark=false`).

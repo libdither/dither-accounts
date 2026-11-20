@@ -25,6 +25,8 @@ export interface FakeReddit {
   signedIn: boolean;
   /** /new.json answers 403. */
   newForbidden: boolean;
+  /** Subreddits whose New answers 403, also in a group with others (as Reddit does for a private one). */
+  refused: Set<string>;
   signIn(): void;
   stop(): void;
 }
@@ -34,7 +36,7 @@ const json = (v: unknown, status = 200) => Response.json(v, { status });
 
 export function startFakeReddit(): FakeReddit {
   const calls: FakeRedditCall[] = [];
-  const state = { signedIn: false, newForbidden: false };
+  const state = { signedIn: false, newForbidden: false, refused: new Set<string>() };
   // The subscriptions: two subreddits and a followed person; their posts, an hour apart, newest first by number.
   const SUBS = [SUB.name, SUB2.name, 'u_ann_lee'];
   const subPosts = [
@@ -78,6 +80,7 @@ export function startFakeReddit(): FakeReddit {
         const multi = /^\/r\/([\w+-]+)\/new\.json$/.exec(path);
         if (multi) {
           const names = new Set(multi[1]!.split('+'));
+          if ([...names].some((n) => state.refused.has(n))) return json({}, 403);
           const all = subPosts.filter((p) => names.has(String(p.data.subreddit)));
           const from = query.after ? all.findIndex((p) => p.data.name === query.after) + 1 : 0;
           const limit = Number(query.limit ?? 25);
@@ -131,6 +134,7 @@ export function startFakeReddit(): FakeReddit {
     set newForbidden(v: boolean) {
       state.newForbidden = v;
     },
+    refused: state.refused,
     signIn() {
       state.signedIn = true;
     },

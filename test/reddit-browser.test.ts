@@ -225,23 +225,26 @@ it(
 );
 
 it(
-  'home: when Reddit refuses New in single subreddits too, nothing is left out and the error says why',
+  'home: when Reddit refuses New in single subreddits too, nothing is left out and Following is the front page Hot, newest first',
   async () => {
     fake.newForbidden = true;
     for (const n of ['gardening', 'rustlang', 'u_ann_lee']) fake.refused.add(n);
     const from = fake.calls.length;
     // rustlang was left out by the test before: the one group is gardening+u_ann_lee.
-    await expect(call('home', { feed: 'following', count: 10 })).rejects.toThrow(/refuses New for this account.*application\/json/);
+    // Following is then the front page's Hot, newest first, and it pages by Reddit's after.
+    const hot = await call('home', { feed: 'following', count: 10 });
+    expect(hot.items.map((i: any) => i.post.id)).toEqual(['t3_h2', 't3_h1']);
+    expect(hot.more).toBe('t3_h1');
     expect(fake.calls.slice(from).filter((c) => c.path.startsWith('/r/')).map((c) => c.path)).toEqual([
       '/r/gardening+u_ann_lee/new.json',
       '/r/gardening/new.json',
       '/r/u_ann_lee/new.json',
     ]);
-    // Nothing was left out: once Reddit answers again, the same group reads.
+    // Nothing was left out, and New is not asked again while Hot stands in.
     fake.refused.clear();
-    const got = await call('home', { feed: 'following', count: 10 });
-    expect(got.items.length).toBeGreaterThan(0);
-    expect(fake.calls.slice(from).filter((c) => c.path.startsWith('/r/')).at(-1)!.path).toBe('/r/gardening+u_ann_lee/new.json');
+    await call('home', { feed: 'following', count: 10, cursor: hot.more });
+    expect(fake.calls.slice(from).filter((c) => c.path === '/hot.json').map((c): string | null => c.query.after ?? null)).toEqual([null, 't3_h1']);
+    expect(fake.calls.slice(from).filter((c) => c.path.startsWith('/r/'))).toHaveLength(3);
     fake.newForbidden = false;
   },
   60_000,

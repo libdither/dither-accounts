@@ -88,6 +88,7 @@ export function startFakeReddit(): FakeReddit {
           return json(listing(page, from + limit < all.length ? String(page.at(-1)!.data.name) : null));
         }
         if (path === '/new.json') return json(listing([t3({ id: query.after ? 'n3' : 'n1', title: 'Newest' }), t3({ id: 'n2', link: 'https://example.com/b' })], query.after ? null : 't3_n2'));
+        if (path === '/hot.json') return json(listing([t3({ id: 'h1', title: 'Older hot', agoS: 7200 }), t3({ id: 'h2', title: 'Newer hot', agoS: 60 })], query.after ? null : 't3_h1'));
         if (path === '/best.json') return json(listing([t3({ id: 'b1', title: 'Best one', score: 900, image: `${url.origin}/pic.jpg` })], null));
         if (path === '/message/inbox.json') return json(inbox());
         if (path === '/comments/g1.json') return json(gardenThread());

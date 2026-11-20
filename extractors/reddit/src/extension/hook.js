@@ -28,7 +28,7 @@
 
   // ------------------------------------------------------------ what may be asked
   const GETS = [
-    /^\/(new|best)\.json\?/,
+    /^\/(new|best|hot)\.json\?/,
     // Following from the subscriptions, when /new.json is refused: the names, then a group's New (at most 100 names).
     /^\/subreddits\/mine\/subscriber\.json\?/,
     /^\/r\/[A-Za-z0-9_-]{2,40}(\+[A-Za-z0-9_-]{2,40}){0,99}\/new\.json\?/,

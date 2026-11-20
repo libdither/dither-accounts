@@ -403,7 +403,10 @@ async function followingFromSubs(cursor: string | undefined, n: number, ctx: Ret
       // Reddit refuses a whole group when it refuses one subreddit in it: find those, leave them out, start again.
       if (!refused(e)) throw e;
       const bad = await findRefused(groups[i]!);
-      if (bad === null) throw new Error(`Reddit answered 403 to New for every subscription tried (${groups[i]!.length} in the group)`);
+      if (bad === null) {
+        log('warn', `home: Reddit refuses New on its own subreddits too: ${String((e as Error).message).slice(0, 300)}`);
+        throw new Error(`Reddit refuses New for this account, also in single subreddits (${String((e as Error).message).slice(0, 200)})`);
+      }
       if (!bad.length) throw e;
       const at = Date.now();
       for (const name of bad) refusedSubs.set(name, at);
@@ -426,6 +429,18 @@ const PROBES_MAX = 32;
  * refused ones; null when that takes more than PROBES_MAX reads. Empty when no part is refused on its own.
  */
 async function findRefused(names: string[]): Promise<string[] | null> {
+  // First the group's first and last subreddit on their own: when Reddit refuses both, it refuses New itself (seen
+  // live: every subscription refused one by one), and nothing is left out.
+  const alone = async (name: string) => {
+    try {
+      await get(`/r/${name}/new.json?raw_json=1&limit=1`);
+      return false;
+    } catch (e) {
+      if (!refused(e)) throw e;
+      return true;
+    }
+  };
+  if (names.length > 1 && (await alone(names[0]!)) && (await alone(names.at(-1)!))) return null;
   const bad: string[] = [];
   let probes = 0;
   const visit = async (part: string[]): Promise<boolean> => {

@@ -85,7 +85,19 @@
         const j = JSON.parse(text);
         words = (j && (j.message || j.reason || j.error)) || '';
       } catch (e) {}
-      const err = new Error(`Reddit answered ${res.status}${words ? `: ${String(words).slice(0, 120)}` : ''}`);
+      // A bare refusal says nothing in its body's JSON: then what kind of answer it was, and from where, to tell a
+      // block page from a sign-in redirect (no page text beyond its title).
+      if (!words) {
+        const type = String(res.headers.get('content-type') || '').split(';')[0];
+        const title = /<title[^>]*>([^<]{0,80})/i.exec(text);
+        let where = '';
+        try {
+          const u = new URL(res.url);
+          if (res.redirected || u.origin !== location.origin) where = `${u.host}${u.pathname}`.slice(0, 60);
+        } catch (e) {}
+        words = [type && `a ${type} answer`, title && `titled "${title[1].trim()}"`, where && `from ${where}`, !text.length && 'empty'].filter(Boolean).join(', ');
+      }
+      const err = new Error(`Reddit answered ${res.status}${words ? `: ${String(words).slice(0, 160)}` : ''}`);
       throw err;
     }
     try {

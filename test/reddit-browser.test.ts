@@ -209,6 +209,8 @@ it(
     const asked = fake.calls.slice(from).filter((c) => c.path.startsWith('/r/'));
     expect(asked.map((c): [string, string | null] => [c.path, c.query.limit ?? null])).toEqual([
       ['/r/gardening+rustlang/new.json', '10'],
+      // The first on its own answers, so Reddit does not refuse New itself: halved from there.
+      ['/r/gardening/new.json', '1'],
       ['/r/gardening/new.json', '1'],
       ['/r/rustlang/new.json', '1'],
       ['/r/gardening+u_ann_lee/new.json', '10'],
@@ -217,6 +219,29 @@ it(
     await call('home', { feed: 'following', count: 10 });
     expect(fake.calls.slice(from).filter((c) => c.path.includes('rustlang'))).toHaveLength(2);
     fake.refused.clear();
+    fake.newForbidden = false;
+  },
+  60_000,
+);
+
+it(
+  'home: when Reddit refuses New in single subreddits too, nothing is left out and the error says why',
+  async () => {
+    fake.newForbidden = true;
+    for (const n of ['gardening', 'rustlang', 'u_ann_lee']) fake.refused.add(n);
+    const from = fake.calls.length;
+    // rustlang was left out by the test before: the one group is gardening+u_ann_lee.
+    await expect(call('home', { feed: 'following', count: 10 })).rejects.toThrow(/refuses New for this account.*application\/json/);
+    expect(fake.calls.slice(from).filter((c) => c.path.startsWith('/r/')).map((c) => c.path)).toEqual([
+      '/r/gardening+u_ann_lee/new.json',
+      '/r/gardening/new.json',
+      '/r/u_ann_lee/new.json',
+    ]);
+    // Nothing was left out: once Reddit answers again, the same group reads.
+    fake.refused.clear();
+    const got = await call('home', { feed: 'following', count: 10 });
+    expect(got.items.length).toBeGreaterThan(0);
+    expect(fake.calls.slice(from).filter((c) => c.path.startsWith('/r/')).at(-1)!.path).toBe('/r/gardening+u_ann_lee/new.json');
     fake.newForbidden = false;
   },
   60_000,

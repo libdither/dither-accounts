@@ -61,7 +61,10 @@ Reddit refuses a whole multireddit with the same bare 403 when it refuses any on
 are not approved for, say). So a refused group is halved, each half asked for its newest post (`limit=1`), and the
 refused halves halved again until the refused subreddits are found; they are logged by name, left out for six hours,
 and Following starts again from the top without them. After 32 such reads it stops and says Reddit refuses New in
-every subscription tried.
+every subscription tried. Before halving, the group's first and last subreddit are asked on their own: when Reddit
+refuses both, it refuses New itself (seen live on accounts whose every subscription was refused one by one), nothing is
+left out, and the error says so. A refusal with no message in its body is described by its content type, its page
+title and where it was redirected, so the log tells a block page from a sign-in redirect.
 
 **Never marked read.** The inbox is read with `mark=false`, and the hook refuses an inbox read without it. A
 `.json` listing does not mark anything read anyway (Reddit marks the inbox read only when its HTML page is opened

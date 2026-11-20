@@ -65,7 +65,8 @@ every subscription tried. Before halving, the group's first and last subreddit a
 refuses both, it refuses New itself (seen live: an HTML 403 for any `new.json`, while Best and the inbox answer),
 nothing is left out, and for six hours Following is the front page's Hot (`/hot.json`, which signed in holds only your
 subscriptions), each page sorted newest first and paged by Reddit's `after`. A refusal with no message in its body is described by its content type, its page
-title and where it was redirected, so the log tells a block page from a sign-in redirect.
+title, where it was redirected, its first visible words and its size, so the log tells a block page from a sign-in
+redirect, and says what a page with no title gives as its reason.
 
 **Never marked read.** The inbox is read with `mark=false`, and the hook refuses an inbox read without it. A
 `.json` listing does not mark anything read anyway (Reddit marks the inbox read only when its HTML page is opened

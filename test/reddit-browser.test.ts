@@ -251,6 +251,18 @@ it(
 );
 
 it(
+  'home: a refusal with no title and no message says its first visible words and its size',
+  async () => {
+    // Hot still stands in for New (the test before), and now Reddit refuses it with a bare block page.
+    fake.hotForbidden = true;
+    const words = /^Reddit answered 403: a text\/html answer, saying "You have been blocked\.", \d+ bytes$/;
+    await expect(call('home', { feed: 'following', count: 10 })).rejects.toThrow(words);
+    fake.hotForbidden = false;
+  },
+  60_000,
+);
+
+it(
   'threads: a post with its comment tree, more comments through the cursor, a comment with what is above it',
   async () => {
     const from = fake.calls.length;

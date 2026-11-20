@@ -27,6 +27,8 @@ export interface FakeReddit {
   newForbidden: boolean;
   /** Subreddits whose New answers 403, also in a group with others (as Reddit does for a private one). */
   refused: Set<string>;
+  /** /hot.json answers 403 with a block page that has no title, as Reddit's refusals of New do live. */
+  hotForbidden: boolean;
   signIn(): void;
   stop(): void;
 }
@@ -36,7 +38,7 @@ const json = (v: unknown, status = 200) => Response.json(v, { status });
 
 export function startFakeReddit(): FakeReddit {
   const calls: FakeRedditCall[] = [];
-  const state = { signedIn: false, newForbidden: false, refused: new Set<string>() };
+  const state = { signedIn: false, newForbidden: false, hotForbidden: false, refused: new Set<string>() };
   // The subscriptions: two subreddits and a followed person; their posts, an hour apart, newest first by number.
   const SUBS = [SUB.name, SUB2.name, 'u_ann_lee'];
   const subPosts = [
@@ -88,6 +90,10 @@ export function startFakeReddit(): FakeReddit {
           return json(listing(page, from + limit < all.length ? String(page.at(-1)!.data.name) : null));
         }
         if (path === '/new.json') return json(listing([t3({ id: query.after ? 'n3' : 'n1', title: 'Newest' }), t3({ id: 'n2', link: 'https://example.com/b' })], query.after ? null : 't3_n2'));
+        if (path === '/hot.json' && state.hotForbidden) {
+          const block = '<!doctype html><html><head><style>p{margin:0}</style></head><body><p>You have been &amp; blocked.</p><script>void 0</script></body></html>';
+          return new Response(block, { status: 403, headers: { 'content-type': 'text/html; charset=utf-8' } });
+        }
         if (path === '/hot.json') return json(listing([t3({ id: 'h1', title: 'Older hot', agoS: 7200 }), t3({ id: 'h2', title: 'Newer hot', agoS: 60 })], query.after ? null : 't3_h1'));
         if (path === '/best.json') return json(listing([t3({ id: 'b1', title: 'Best one', score: 900, image: `${url.origin}/pic.jpg` })], null));
         if (path === '/message/inbox.json') return json(inbox());
@@ -136,6 +142,12 @@ export function startFakeReddit(): FakeReddit {
       state.newForbidden = v;
     },
     refused: state.refused,
+    get hotForbidden() {
+      return state.hotForbidden;
+    },
+    set hotForbidden(v: boolean) {
+      state.hotForbidden = v;
+    },
     signIn() {
       state.signedIn = true;
     },

@@ -591,13 +591,13 @@ describe('requests', () => {
     await expect(cmd({ t: 'answer', request: INVITED, answer: 'follow' as P.RequestAnswer })).rejects.toThrow(/can be answered with accept, decline, block/);
   });
 
-  describe('knocks on rooms this account admits', () => {
+  describe('knocks: on rooms this account moderates, and the rest for their moderators', () => {
     const levels = (me: number, extra: Record<string, unknown> = {}) => state('m.room.power_levels', { users: { [ME]: me }, invite: 50, kick: 50, ...extra });
     const knockSync = () => ({
       rooms: {
         join: {
           [KNOCKY]: room({ name: 'Knocky', rule: 'knock', members: [ME, ALICE], extra: [levels(100), member(BOB, 'knock', { displayname: 'Bob', reason: 'hi' }, 6000)] }),
-          // Knocks here, but this account may not invite: not its to answer.
+          // Knocks here, but this account may not invite: its moderators', listed to see.
           [QUIET]: room({ name: 'Quiet', rule: 'knock', members: [ME, ALICE], extra: [levels(0), member(CAROL, 'knock', {}, 6100)] }),
         },
       },
@@ -607,10 +607,13 @@ describe('requests', () => {
       const { hs, step, cmd, events, of } = await startAdapter();
       hs.route('GET', `/_matrix/client/v3/rooms/${KNOCKY}/members`, (c) => ({ chunk: c.query.get('membership') === 'knock' ? [member(CAROL, 'knock', { displayname: 'Carol' }, 5500)] : [] }));
       await step(knockSync());
-      // Only the room it may admit people to is asked about.
-      expect(hs.calls.filter((c) => c.path.endsWith('/members')).map((c) => c.path)).toEqual([`/_matrix/client/v3/rooms/${KNOCKY}/members`]);
+      // Every room that takes knocks is asked about.
+      expect(hs.calls.filter((c) => c.path.endsWith('/members')).map((c) => c.path).sort()).toEqual([`/_matrix/client/v3/rooms/${KNOCKY}/members`, `/_matrix/client/v3/rooms/${QUIET}/members`].sort());
       const list: P.RequestFact[] = of('requests')[0].requests;
-      expect(list).toEqual([
+      expect(list.filter((r) => r.forOthers)).toEqual([
+        { nativeId: `knock|${QUIET}|${CAROL}`, kind: 'join', from: CAROL, target: { kind: 'conversation', nativeId: QUIET, name: 'Quiet', members: 2 }, ts: 6100, answers: [], forOthers: true },
+      ]);
+      expect(list.filter((r) => !r.forOthers)).toEqual([
         { nativeId: `knock|${KNOCKY}|${BOB}`, kind: 'join', from: BOB, target: { kind: 'conversation', nativeId: KNOCKY, name: 'Knocky', members: 2 }, ts: 6000, answers: ['accept', 'decline'] },
         { nativeId: `knock|${KNOCKY}|${CAROL}`, kind: 'join', from: CAROL, target: { kind: 'conversation', nativeId: KNOCKY, name: 'Knocky', members: 2 }, ts: 5500, answers: ['accept', 'decline'] },
       ]);
@@ -640,13 +643,19 @@ describe('requests', () => {
       expect(told().at(-1)).toEqual({ t: 'requestGone', nativeId: `knock|${KNOCKY}|${SPAM}` });
     });
 
-    test('a room where any member may invite but not kick: its knocks are left to the moderators', async () => {
-      const { hs, step, of } = await startAdapter();
+    test('a room where any member may invite but not kick: its knocks are the moderators\u2019, with no answers, until this account moderates', async () => {
+      const { hs, step, cmd, events, of } = await startAdapter();
       const s = knockSync();
+      delete (s.rooms.join as any)[QUIET];
       s.rooms.join[KNOCKY] = room({ name: 'Knocky', rule: 'knock', members: [ME, ALICE], extra: [levels(0, { invite: 0 }), member(BOB, 'knock', {}, 6000)] });
       await step(s);
-      expect(of('requests').flatMap((r) => r.requests)).toEqual([]);
-      expect(hs.calls.filter((c) => c.query.get('membership') === 'knock')).toEqual([]);
+      expect(of('requests')[0].requests.map((r: P.RequestFact) => [r.nativeId, r.answers, r.forOthers])).toEqual([[`knock|${KNOCKY}|${BOB}`, [], true]]);
+      await expect(cmd({ t: 'answer', request: `knock|${KNOCKY}|${BOB}`, answer: 'accept' })).rejects.toThrow("The room's moderators answer this request");
+      expect(hs.writes()).toEqual([]);
+      // Made a moderator: the same knock is this account's to answer now.
+      await step({ rooms: { join: { [KNOCKY]: { timeline: { events: [levels(50, { invite: 0 })] } } } } });
+      expect(events.filter((e) => e.t === 'request').at(-1)).toMatchObject({ request: { nativeId: `knock|${KNOCKY}|${BOB}`, answers: ['accept', 'decline'] } });
+      expect(events.filter((e) => e.t === 'request').at(-1).request.forOthers).toBeUndefined();
     });
   });
 });

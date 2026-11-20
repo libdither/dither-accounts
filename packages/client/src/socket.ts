@@ -30,6 +30,11 @@ export class ManagerSocket {
   private sock: Socket;
   private key = randomBytes(16).toString('base64');
   private buf: Buffer = Buffer.alloc(0);
+  /** Chunks of a frame still coming in, joined once it is all there (joining on every chunk is quadratic). */
+  private pending: Buffer[] = [];
+  private pendingBytes = 0;
+  /** How many bytes the buffer needs for the frame at its start; 0 when not known. */
+  private need = 0;
   private upgraded = false;
   /** A fragmented message's parts so far, and whether it is text. */
   private parts: Buffer[] = [];
@@ -100,7 +105,15 @@ export class ManagerSocket {
   }
 
   private take(d: Buffer) {
-    this.buf = this.buf.length ? Buffer.concat([this.buf, d]) : d;
+    if (this.need) {
+      this.pending.push(d);
+      this.pendingBytes += d.length;
+      if (this.buf.length + this.pendingBytes < this.need) return;
+      this.buf = Buffer.concat([this.buf, ...this.pending]);
+      this.pending = [];
+      this.pendingBytes = 0;
+      this.need = 0;
+    } else this.buf = this.buf.length ? Buffer.concat([this.buf, d]) : d;
     if (!this.upgraded) {
       const end = this.buf.indexOf('\r\n\r\n');
       if (end < 0) {
@@ -140,7 +153,10 @@ export class ManagerSocket {
       n = Number(big);
       at = 10;
     }
-    if (b.length < at + n) return false;
+    if (b.length < at + n) {
+      this.need = at + n;
+      return false;
+    }
     const payload = b.subarray(at, at + n);
     this.buf = b.subarray(at + n);
     if (op >= 0x8) {

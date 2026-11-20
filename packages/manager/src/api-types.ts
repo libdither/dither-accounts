@@ -180,6 +180,10 @@ export interface ApproverDeviceInfo {
   name: string;
   /** SHA-256 of its identity key's SPKI, first 8 bytes as hex pairs: the app shows the same. */
   fingerprint: string;
+  /** From its keys frame (approvals): `phone` or `desk`, null until one came. */
+  kind: 'phone' | 'desk' | null;
+  /** Its approval key's fingerprint (the key it signs approvals with), null until a keys frame came. */
+  approvalFingerprint: string | null;
   pairedAt: number;
   lastSeenAt: number | null;
   /** It has a link open now. */
@@ -194,10 +198,14 @@ export interface ApprovalInfo {
   id: string;
   account: string;
   rpId: string;
-  op: 'create' | 'get';
+  /** A passkey's create or get; or `approve`, an approval request (account: the asker; rpId empty; reason: its kind). */
+  op: 'create' | 'get' | 'approve';
   device: string;
   reason: string | null;
-  /** waiting, ok, or the refusal: denied, refused, expired, unknown-credential, error, no-device. */
+  /**
+   * waiting, ok, or the refusal: denied, refused, expired, unknown-credential, error, no-device; for `approve`:
+   * waiting, ok (answered with an action other than deny; message: the action), denied, expired, cancelled.
+   */
   outcome: string;
   message: string | null;
   createdAt: number;

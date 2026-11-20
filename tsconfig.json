@@ -27,6 +27,7 @@
     "extractors/*/manifest.ts",
     "test",
     "scripts",
-    "apps/*/tools"
+    "apps/*/tools",
+    "apps/desk-signer/src"
   ]
 }

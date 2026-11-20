@@ -5,6 +5,7 @@
     "": {
       "name": "dither-accounts",
       "dependencies": {
+        "@dither-accounts/approval": "workspace:*",
         "@dither-accounts/client": "workspace:*",
         "@dither-accounts/interfaces": "workspace:*",
         "@dither-accounts/link": "workspace:*",
@@ -21,6 +22,15 @@
         "@types/bun": "latest",
         "typescript": "^6.0.3",
         "vite": "^8.3.5",
+      },
+    },
+    "apps/desk-signer": {
+      "name": "@dither-accounts/desk-signer",
+      "bin": {
+        "desk-signer": "./src/main.ts",
+      },
+      "dependencies": {
+        "@dither-accounts/approval": "workspace:*",
       },
     },
     "extractors/amazon": {
@@ -362,6 +372,9 @@
         "react-dom": "^19.2.0",
       },
     },
+    "packages/approval": {
+      "name": "@dither-accounts/approval",
+    },
     "packages/browser": {
       "name": "@dither-accounts/browser",
     },
@@ -392,6 +405,7 @@
     "packages/manager": {
       "name": "@dither-accounts/manager",
       "dependencies": {
+        "@dither-accounts/approval": "workspace:*",
         "@dither-accounts/interfaces": "workspace:*",
         "@dither-accounts/passkey": "workspace:*",
         "@dither-accounts/spec": "workspace:*",
@@ -401,6 +415,7 @@
     "packages/passkey": {
       "name": "@dither-accounts/passkey",
       "devDependencies": {
+        "@dither-accounts/approval": "workspace:*",
         "@dither-chat/protocol": "workspace:*",
       },
     },
@@ -457,9 +472,13 @@
 
     "@babel/types": ["@babel/types@7.29.11", "", { "dependencies": { "@babel/helper-string-parser": "^7.29.11", "@babel/helper-validator-identifier": "^7.29.7" } }, "sha512-WCsemW40Cpc6gouC1SrY6PBaZ+oLRlEVY9XBvZBI7il/HyUrb2nJ505wE1MHEFyDZNnrWDEuy4jL50WVHfTTSQ=="],
 
+    "@dither-accounts/approval": ["@dither-accounts/approval@workspace:packages/approval"],
+
     "@dither-accounts/browser": ["@dither-accounts/browser@workspace:packages/browser"],
 
     "@dither-accounts/client": ["@dither-accounts/client@workspace:packages/client"],
+
+    "@dither-accounts/desk-signer": ["@dither-accounts/desk-signer@workspace:apps/desk-signer"],
 
     "@dither-accounts/extractor-amazon": ["@dither-accounts/extractor-amazon@workspace:extractors/amazon"],
 

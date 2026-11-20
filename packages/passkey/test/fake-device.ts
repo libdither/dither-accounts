@@ -3,12 +3,19 @@
  * tests against a real manager: pairing, the link (challenge, signed hello, push, ping), and requests checked the way
  * the app checks them before it shows them, then answered by `decide` (approve, deny, refuse, or hold on to it). Keys
  * stay in memory; nothing is saved. Tests only.
+ *
+ * Approvals (docs/approver.md "Approvals"): it holds an approval key too, sends the `keys` frame after `ready`, checks
+ * each approve request as the app does, and answers it as `decideApproval` says (an action, signed when it needs it or
+ * when told to; a refusal; or holding on to it until `answerApproval`).
  */
 import { b64u, derSignature } from '../src/authenticator.ts';
 import { type Cbor, encode } from '../src/cbor.ts';
+import { answerText, checkRequest, keyStatement, messageHash, signText } from '@dither-accounts/approval';
 
 type Json = Record<string, any>;
 export type Decision = 'approve' | 'deny' | 'ignore' | { reason: string; message?: string };
+/** How "you" answer an approve request: an action (signed when it needs it, or `sign`), a refusal, or hold on to it. */
+export type ApprovalDecision = 'ignore' | { action: string; message?: string | null; sign?: boolean } | { reason: string; message?: string };
 
 export interface HeldCredential {
   id: string;
@@ -51,16 +58,30 @@ export class FakeDevice {
   ws: WebSocket | null = null;
   closed: { code: number; reason: string } | null = null;
   ready = false;
+  /** Send the keys frame after ready (an app from before approvals sends none). */
+  sendKeys = true;
+  /** What it says it is in its keys frame. */
+  kind: 'phone' | 'desk' = 'phone';
+  /** Approve requests that passed its checks, by id (kept until answered or cancelled), and the cancels it got. */
+  approvals = new Map<string, Json>();
+  cancels: string[] = [];
+  intents: Json[] = [];
+  /** What "you" answer an approve request that passed the checks. Default: hold on to it. */
+  decideApproval: (r: Json) => ApprovalDecision = () => 'ignore';
 
   private constructor(
     readonly name: string,
     readonly identity: CryptoKeyPair,
     readonly spki: string,
+    readonly approval: CryptoKeyPair,
+    readonly approvalSpki: string,
   ) {}
 
   static async make(name = 'Fake phone'): Promise<FakeDevice> {
     const identity = await p256();
-    return new FakeDevice(name, identity, Buffer.from(await crypto.subtle.exportKey('spki', identity.publicKey)).toString('base64'));
+    const approval = await p256();
+    const spki = async (k: CryptoKey) => Buffer.from(await crypto.subtle.exportKey('spki', k)).toString('base64');
+    return new FakeDevice(name, identity, await spki(identity.publicKey), approval, await spki(approval.publicKey));
   }
 
   /** What the app reads from the QR: dither-approver://pair?url=…&code=… */
@@ -100,9 +121,15 @@ export class FakeDevice {
         } else if (m.t === 'ready') {
           this.ready = true;
           if (o.push !== undefined) ws.send(JSON.stringify({ t: 'push', endpoint: o.push }));
+          if (this.sendKeys) ws.send(JSON.stringify(await this.keysFrame()));
           resolve(m.name);
         } else if (m.t === 'ping') ws.send(JSON.stringify({ t: 'pong' }));
+        else if (m.t === 'request' && m.op === 'approve') void this.onApproval(m);
         else if (m.t === 'request') void this.onRequest(m);
+        else if (m.t === 'cancel') {
+          this.cancels.push(m.id);
+          this.approvals.delete(m.id);
+        } else if (m.t === 'intent') this.intents.push(m);
       };
       ws.onclose = (e) => {
         this.ready = false;
@@ -115,6 +142,45 @@ export class FakeDevice {
 
   send(m: Json) {
     this.ws!.send(JSON.stringify(m));
+  }
+
+  /** {t:"keys"}: its kind and approval key, signed by the identity key. `signWith` signs it with another key. */
+  async keysFrame(o: { signWith?: CryptoKey; approval?: string; kind?: string } = {}): Promise<Json> {
+    const kind = o.kind ?? this.kind;
+    const approval = o.approval ?? this.approvalSpki;
+    return { t: 'keys', kind, approval, sig: await signText(o.signWith ?? this.identity.privateKey, keyStatement(this.deviceId!, kind, approval)) };
+  }
+
+  /** The app's checks on an approve request, then you. */
+  private async onApproval(r: Json) {
+    this.requests.push(r);
+    const c = checkRequest(r);
+    if (typeof c === 'string') {
+      this.refusals.push(c);
+      return this.send({ t: 'response', id: r.id, ok: false, reason: c === 'it has expired' ? 'expired' : 'refused' });
+    }
+    this.approvals.set(r.id, r);
+    const d = this.decideApproval(r);
+    if (d === 'ignore') return;
+    if ('reason' in d) return this.send({ t: 'response', id: r.id, ok: false, reason: d.reason, ...(d.message ? { message: d.message } : {}) });
+    await this.answerApproval(r.id, d.action, d.message ?? null, d.sign);
+  }
+
+  /**
+   * Answers an approve request it holds: signed by the approval key over the whole statement when the action needs it
+   * (or `sign`), else unsigned. `tamper` changes the frame after signing (a test of the manager's checks).
+   */
+  async answerApproval(id: string, action: string, message: string | null = null, sign?: boolean, tamper?: (f: Json) => void): Promise<Json> {
+    const r = this.approvals.get(id);
+    if (!r) throw new Error(`the fake device holds no ${id}`);
+    const needs = (r.display.actions as Json[]).find((a) => a.id === action)?.needs;
+    const signed = Date.now();
+    const f: Json = { t: 'response', id, ok: true, op: 'approve', action, message, signed };
+    if (sign ?? needs === 'signed') f.signature = await signText(this.approval.privateKey, r.ask + answerText({ action, messageSha256: messageHash(message), device: this.deviceId!, signed }));
+    tamper?.(f);
+    this.approvals.delete(id);
+    this.send(f);
+    return f;
   }
 
   close() {

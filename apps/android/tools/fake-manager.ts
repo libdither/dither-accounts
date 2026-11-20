@@ -5,7 +5,18 @@
  * with packages/passkey's independent relying party, fake-rp.ts), printing pass or fail. Nothing here is the manager:
  * no registry file, no accounts, no pages; everything lives in memory and ends with the process.
  *
- *   bun apps/android/tools/fake-manager.ts [--port 9120] [--url http://10.0.2.2:9120] [--no-wake]
+ *   bun apps/android/tools/fake-manager.ts [--port 9120] [--url http://10.0.2.2:9120] [--no-wake] [--approvals]
+ *
+ * With --approvals it checks approvals instead (dither-chat's docs/approvals.md): the keys frame after every ready
+ * (its signature by the identity key), then several approve requests at once, each answer checked (a signed one with
+ * WebCrypto against the approval key, over the statement rebuilt here):
+ *   bad-hash    payload-sha256 doesn't match the payload: refused without showing
+ *   no-deny     actions without deny: refused
+ *   merge       a merge, approve (signed): tap Approve, then the fingerprint or PIN
+ *   deploy      a failed deploy with resume (signed), hold (any), deny: tap Hold (no prompt, no signature)
+ *   rebuild     a rebuild: type a message and tap Deny (no prompt, no signature; the message comes back)
+ *   cancelled   cancelled 20 s after it is sent: the app drops it and never answers
+ *   short       expires 40 s after it is sent: the app answers expired
  *
  * The scenario, in order (each request waits up to 3 minutes for its answer):
  *   1. refused      a get whose clientDataJSON names another origin: refused without a prompt
@@ -31,6 +42,7 @@ const port = Number(opt('--port') ?? 9120);
 if (!(port >= 9120 && port <= 9129)) throw new Error('--port must be 9120 to 9129');
 const publicUrl = (opt('--url') ?? `http://10.0.2.2:${port}`).replace(/\/$/, '');
 const wake = !args.includes('--no-wake');
+const approvalsMode = args.includes('--approvals');
 
 const b64u = (b: Uint8Array) => Buffer.from(b).toString('base64url');
 const unb64u = (s: string) => new Uint8Array(Buffer.from(s, 'base64url'));
@@ -327,6 +339,7 @@ const server = Bun.serve<Link>({
         current?.close(1000, 'replaced');
         current = ws;
         ws.send(JSON.stringify({ t: 'ready', name: 'fake-manager' }));
+        if (approvalsMode) return;
         // A request that was out on a link that closed goes again, the same, on this one (the app drops repeats).
         // With under a minute left it is made anew instead (a new id and challenge), so there is time to answer.
         if (outstanding && outstanding.sentOn !== ws.data.serial) {
@@ -352,7 +365,10 @@ const server = Bun.serve<Link>({
           ws.data.device!.push = (m.endpoint as string | null) ?? null;
           check('push endpoint', m.endpoint === null || /^https?:\/\//.test(String(m.endpoint)), String(m.endpoint));
           return;
+        case 'keys':
+          return onKeys(ws, m);
         case 'response': {
+          if (approvalsMode) return onApprovalAnswer(m);
           const o = outstanding;
           if (!o || m.id !== o.id) return log(`<- a response for ${m.id}, not outstanding: dropped`);
           outstanding = null;
@@ -388,6 +404,168 @@ setInterval(() => {
   }
   if (current && Date.now() - current.data.lastFrame > 90_000) current.close(1001, 'silent for 90 s');
 }, 30_000);
+
+// ---------------------------------------------------------------- approvals (--approvals)
+
+/** The statement's lines (docs/approvals.md "The statement"), as dither-chat's packages/approvals builds them. */
+const lines = (...l: string[]) => l.map((x) => `${x}\n`).join('');
+const sha256hexText = async (s: string) => hex(await sha256(new TextEncoder().encode(s)));
+interface Asked {
+  name: string;
+  id: string;
+  ask: string;
+  expect: (m: Record<string, unknown>) => Promise<string | null>;
+  done: boolean;
+}
+const asked = new Map<string, Asked>();
+let approvalKey: Uint8Array | null = null;
+let approvalsStarted = false;
+
+async function onKeys(ws: ServerWebSocket<Link>, m: Record<string, unknown>) {
+  const dev = ws.data.device!;
+  const approval = String(m.approval ?? '');
+  const input = new TextEncoder().encode(`dither-approver-key-v1\n${dev.id}\n${m.kind}\n${approval}`);
+  let ok = m.kind === 'phone';
+  try {
+    ok = ok && (await verifyDer(dev.spki, input, unb64u(String(m.sig))));
+    await crypto.subtle.importKey('spki', unb64(approval) as BufferSource, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+  } catch {
+    ok = false;
+  }
+  const fp = ok ? [...(await sha256(unb64(approval))).slice(0, 8)].map((b) => b.toString(16).padStart(2, '0')).join(':') : '';
+  check(`keys (link ${ws.data.serial})`, ok, ok ? `kind ${m.kind}, approval key fingerprint ${fp} (compare with the app)` : JSON.stringify(m).slice(0, 200));
+  if (!ok) return;
+  if (approvalKey && Buffer.compare(Buffer.from(approvalKey), Buffer.from(unb64(approval))) !== 0) log('keys: the approval key changed');
+  approvalKey = unb64(approval);
+  if (!approvalsStarted) {
+    approvalsStarted = true;
+    await sendApprovals(ws);
+  } else {
+    // A new link: what is still waiting goes again (the app drops repeats it already shows).
+    for (const a of asked.values()) if (!a.done && a.name !== 'cancelled') ws.send(JSON.stringify(a.ask));
+  }
+}
+
+async function approveRequest(o: { kind: string; asker: string; title: string; body: string; payload: string; actions: { id: string; label: string; needs: string }[]; expiresIn: number; payloadSha?: string }) {
+  const id = 'apv_' + b64u(randomBytes(16));
+  const created = Date.now();
+  const expires = created + o.expiresIn * 1000;
+  const ask = lines('dither-approval-v1', `id ${id}`, `kind ${o.kind}`, `asker ${o.asker}`, `created ${created}`, `expires ${expires}`, `payload-sha256 ${o.payloadSha ?? (await sha256hexText(o.payload))}`, `display-sha256 ${await sha256hexText(`${o.title}\n\n${o.body}`)}`);
+  const display = { kind: o.kind, asker: o.asker, title: o.title, body: o.body, payload: o.payload, urgency: 'normal', actions: o.actions };
+  return { id, askText: ask, frame: { t: 'request', id, op: 'approve', ask, display, expiresAt: expires } };
+}
+
+const yesNo = [
+  { id: 'approve', label: 'Approve', needs: 'signed' },
+  { id: 'deny', label: 'Deny', needs: 'any' },
+];
+const mergePayload = lines('dither-merge-v1', 'repo system-config', 'target main', 'branch review/fix-proxy', `base ${'1'.repeat(40)}`, `head ${'2'.repeat(40)}`, `tree ${'3'.repeat(40)}`);
+const mergeBody = [
+  'Commits:',
+  '  4f2a91c proxy: serve the status page on its own path',
+  '  9be03d7 proxy: drop the old redirect',
+  '',
+  ' hosts/proxy.nix   | 14 ++++++++------',
+  ' modules/web.nix   |  3 ++-',
+  ' 2 files changed, 10 insertions(+), 7 deletions(-)',
+  '',
+  'CI:',
+  '  laptop  ok',
+  '  server  ok',
+].join('\n');
+
+async function sendApprovals(ws: ServerWebSocket<Link>) {
+  const unsignedOk = (action: string, message: string | null) => async (m: Record<string, unknown>) =>
+    m.ok === true && m.op === 'approve' && m.action === action && (message === null || m.message === message) && m.signature === undefined
+      ? null
+      : `expected ok ${action}${message ? ` with message "${message}"` : ''} and no signature, got ${JSON.stringify(m).slice(0, 300)}`;
+  const refusedAs = (reason: string) => async (m: Record<string, unknown>) => (m.ok === false && m.reason === reason ? null : `expected ok:false ${reason}, got ${JSON.stringify(m).slice(0, 300)}`);
+  const plan: { name: string; req: Awaited<ReturnType<typeof approveRequest>>; expect: (askText: string) => Asked['expect'] }[] = [
+    {
+      name: 'bad-hash',
+      req: await approveRequest({ kind: 'merge', asker: 'review', title: 'A merge whose payload was swapped', body: '', payload: mergePayload, actions: yesNo, expiresIn: 600, payloadSha: '0'.repeat(64) }),
+      expect: () => refusedAs('refused'),
+    },
+    {
+      name: 'no-deny',
+      req: await approveRequest({ kind: 'merge', asker: 'review', title: 'A merge without deny', body: '', payload: mergePayload, actions: [yesNo[0]!], expiresIn: 600 }),
+      expect: () => refusedAs('refused'),
+    },
+    {
+      name: 'merge',
+      req: await approveRequest({ kind: 'merge', asker: 'review', title: 'Merge review/fix-proxy into main (system-config)', body: mergeBody, payload: mergePayload, actions: yesNo, expiresIn: 900 }),
+      expect: (askText) => async (m) => {
+        if (m.ok !== true || m.op !== 'approve' || m.action !== 'approve') return `expected ok approve, got ${JSON.stringify(m).slice(0, 300)}`;
+        if (typeof m.signed !== 'number' || typeof m.signature !== 'string') return 'no signed time or signature';
+        const msg = m.message === null || m.message === undefined ? '' : String(m.message);
+        const text = askText + lines('action approve', `message-sha256 ${await sha256hexText(msg)}`, `device ${ws.data.device!.id}`, `signed ${m.signed}`);
+        if (!approvalKey || !(await verifyDer(approvalKey, new TextEncoder().encode(text), unb64u(m.signature)))) return 'the signature does not verify (WebCrypto, approval key)';
+        if (Math.abs(Number(m.signed) - Date.now()) > 120_000) return `signed ${m.signed} is far from now`;
+        return null;
+      },
+    },
+    {
+      name: 'deploy',
+      req: await approveRequest({
+        kind: 'deploy', asker: 'deployer', title: 'Deploy to laptop failed: switch-to-configuration exited 4', body: 'The new system did not start two units.\nResume to try again, Hold to keep the old one.',
+        payload: lines('dither-deploy-v1', 'host laptop', `commit ${'4'.repeat(40)}`, 'state failed', 'reason two units failed'),
+        actions: [{ id: 'resume', label: 'Resume', needs: 'signed' }, { id: 'hold', label: 'Hold', needs: 'any' }, yesNo[1]!], expiresIn: 900,
+      }),
+      expect: () => unsignedOk('hold', null),
+    },
+    {
+      name: 'rebuild',
+      req: await approveRequest({
+        kind: 'rebuild', asker: 'rebuild', title: 'Rebuild laptop with uncommitted changes', body: '2 files changed\n  hosts/laptop.nix\n  modules/fonts.nix',
+        payload: lines('dither-rebuild-v1', 'host laptop', `running ${'5'.repeat(40)}`, `diff-sha256 ${'6'.repeat(64)}`, 'system /nix/store/00000000000000000000000000000000-nixos-system-laptop'),
+        actions: yesNo, expiresIn: 900,
+      }),
+      expect: () => unsignedOk('deny', 'not now'),
+    },
+    {
+      name: 'cancelled',
+      req: await approveRequest({ kind: 'merge', asker: 'review', title: 'A merge cancelled after 20 s', body: '', payload: mergePayload, actions: yesNo, expiresIn: 600 }),
+      expect: () => async (m) => `expected no answer (cancelled), got ${JSON.stringify(m).slice(0, 200)}`,
+    },
+    {
+      name: 'short',
+      req: await approveRequest({ kind: 'merge', asker: 'review', title: 'A merge that expires in 40 s', body: '', payload: mergePayload, actions: yesNo, expiresIn: 40 }),
+      expect: () => refusedAs('expired'),
+    },
+  ];
+  for (const p of plan) {
+    asked.set(p.req.id, { name: p.name, id: p.req.id, ask: p.req.frame as never, expect: p.expect(p.req.askText), done: false });
+    log(`-> approve ${p.name} (${p.req.id})`);
+    ws.send(JSON.stringify(p.req.frame));
+  }
+  const cancelled = plan.find((p) => p.name === 'cancelled')!.req.id;
+  setTimeout(() => {
+    log('-> cancel cancelled');
+    current?.send(JSON.stringify({ t: 'cancel', id: cancelled }));
+    asked.get(cancelled)!.done = true;
+    check('cancelled', true, 'cancel sent (the app should drop it: look)');
+    maybeFinish();
+  }, 20_000);
+  setTimeout(() => {
+    for (const a of asked.values()) if (!a.done) check(a.name, false, 'no answer in 15 minutes');
+    finish();
+  }, 15 * 60_000 + 5000);
+}
+
+async function onApprovalAnswer(m: Record<string, unknown>) {
+  const a = asked.get(String(m.id));
+  if (!a) return log(`<- an answer for ${m.id}, not asked: dropped`);
+  if (a.done && a.name !== 'cancelled') return log(`<- a second answer for ${a.name}: dropped`);
+  if (a.name === 'cancelled') return check('cancelled', false, `answered after the cancel: ${JSON.stringify(m).slice(0, 200)}`);
+  a.done = true;
+  const why = await a.expect(m).catch((e) => `threw: ${(e as Error).message}`);
+  check(a.name, why === null, why ?? `${m.ok ? `ok ${m.action}` : m.reason}${m.message ? `, message "${m.message}"` : ''}${m.signature ? ', signed' : ''}`);
+  maybeFinish();
+}
+
+function maybeFinish() {
+  if ([...asked.values()].every((a) => a.done)) setTimeout(finish, 2000);
+}
 
 console.log(`fake-manager on 0.0.0.0:${server.port}`);
 console.log(`pairing link (good 10 minutes, once):\n  dither-approver://pair?url=${encodeURIComponent(publicUrl)}&code=${code}\n`);

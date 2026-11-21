@@ -3,17 +3,23 @@
  * x extractor's feed hooks reach it, and the GraphQL server behind it, with made-up people.
  *
  *   - Scripts: the webpack runtime and main chunk (`/responsive-web/client-web/…`, classic scripts in the page's head),
- *     and the lazy chunks of the Notifications tab and of a post's activity (Likes, Reposts), loaded only by their
- *     routes' loaders (`req.e`): extractors/x/test/fake-page rw-*.js.
+ *     and the lazy chunks of the Notifications tab, of a post's activity (Likes, Reposts), of Home and of the reply
+ *     composer (with the media uploader), loaded only by their routes' or components' loaders (`req.e`):
+ *     extractors/x/test/fake-page rw-*.js.
  *   - GraphQL (`/i/api/graphql/<queryId>/<operation>`): NotificationsTimeline (newest first, four entries a page, Top and
  *     Bottom cursors: Top gives what is newer, Bottom what is older), UserTweets, UserByRestId and TweetDetail (Cara's
  *     garden thread, three pages: gardenThread), TweetResultByRestId, Favoriters and Retweeters (your first post's
  *     likers, ranked, two pages and an empty last one; nobody for anyone else's post, which only its author may see),
  *     in X's shapes (extractors/x/test/feed-fixtures.ts).
- *   - GraphQL mutations (POSTed as JSON): FavoriteTweet, UnfavoriteTweet, CreateRetweet, DeleteRetweet and CreateTweet,
- *     on the posts it knows (yours, the garden thread's, the ones made here), kept in each post (`legacy.favorited`,
- *     `retweeted`, counts), with X's errors: already liked (139), already reposted (327), no such post (144), a
- *     duplicate post (187).
+ *   - HomeTimeline (For you) and HomeLatestTimeline (Following): homeWorld's pages, two and an empty last one each, by
+ *     their Bottom cursors; a Top cursor gives nothing new. Asked with `seenTweetIds`, they are POSTed (recorded).
+ *   - GraphQL mutations (POSTed as JSON): FavoriteTweet, UnfavoriteTweet, CreateRetweet, DeleteRetweet, CreateTweet and
+ *     DeleteTweet, on the posts it knows (yours, the garden thread's, the ones made here), kept in each post
+ *     (`legacy.favorited`, `retweeted`, counts), with X's errors: already liked (139), already reposted (327), no such
+ *     post (144), a duplicate post (187), media ids it did not finish (324), someone else's post to delete (made up).
+ *     CreateTweet keeps `conversation_control` and `media.media_entities` (each must be an upload finished here).
+ *   - Media uploads (`/i/media/upload.json`, x.com's are on upload.x.com): INIT, APPEND (multipart), FINALIZE and STATUS;
+ *     a video is processed over two STATUS calls, and one whose bytes start with `BROKEN` fails in processing.
  *   - `POST /i/api/2/notifications/all/last_seen_cursor.json`: marking notifications seen, recorded so a test can say
  *     it never happened.
  *
@@ -21,9 +27,9 @@
  * `{ op: 'notifications.seen' }`).
  */
 import { join } from 'node:path';
-import { CARA, createRetweetResponse, createTweetResponse, cursorEntry, deleteRetweetResponse, DEV, EMI, favoriteResponse, favoritersResponse, FINN, gardenThread, ME, notificationEntry, reactorsTimeline, retweetersResponse, tweetResultResponse, unfavoriteResponse, xErrorResponse, notificationsResponse, notificationsTimeline, type Person, tweet, tweetDetailResponse, tweetEntry, userByRestIdResponse, userNew, userOld, userTweetsResponse, userTweetsTimeline, withVisibility } from '../extractors/x/test/feed-fixtures.ts';
+import { ANN, CARA, createRetweetResponse, deleteTweetResponse, homeResponse, homeWorld, createTweetResponse, cursorEntry, deleteRetweetResponse, DEV, EMI, favoriteResponse, favoritersResponse, FINN, gardenThread, ME, notificationEntry, reactorsTimeline, retweetersResponse, tweetResultResponse, unfavoriteResponse, xErrorResponse, notificationsResponse, notificationsTimeline, type Person, tweet, tweetDetailResponse, tweetEntry, userByRestIdResponse, userNew, userOld, userTweetsResponse, userTweetsTimeline, withVisibility } from '../extractors/x/test/feed-fixtures.ts';
 
-export { CARA, DEV, EMI, FINN };
+export { ANN, CARA, DEV, EMI, FINN };
 const PAGE = join(import.meta.dir, '../extractors/x/test/fake-page');
 export const RW = '/responsive-web/client-web';
 export const RW_SCRIPTS = [`${RW}/runtime.f4ke0000c0ffee00a.js`, `${RW}/main.f4ke0792c0ffee01a.js`];
@@ -39,6 +45,15 @@ interface Note {
   ts: number;
   entry: any;
 }
+export interface Upload {
+  type: string;
+  category: string;
+  total: number;
+  bytes: Uint8Array[];
+  finalized: boolean;
+  /** STATUS calls left until a video is processed. */
+  pending: number;
+}
 export interface FeedFake {
   /** Your posts the notifications are about. */
   posts: { first: any; long: any };
@@ -46,6 +61,10 @@ export interface FeedFake {
   thread: ReturnType<typeof gardenThread>;
   /** The posts made through CreateTweet, by id. */
   made: Map<string, any>;
+  /** Home's pages and posts (feed-fixtures.ts homeWorld). */
+  home: ReturnType<typeof homeWorld>;
+  /** The uploads, by media id: what INIT said and the bytes APPENDed, and whether FINALIZE came. */
+  uploads: Map<string, Upload>;
   notes: Note[];
   /** A new like of your first post, by `who`, now (as X's servers would add it). */
   like(who: Person): void;
@@ -149,12 +168,74 @@ export async function startFeedFake(self: Person = ME): Promise<FeedFake> {
   files.set(`${RW}/shared~bundle.Notifications~bundle.NotificationDetail.f4ke9002c0ffee34a.js`, chunk('9002'));
   files.set(`${RW}/shared~bundle.QuoteTweetActivity~bundle.TweetActivity.f4ke9004c0ffee78a.js`, chunk('9004', 'rw-activity.js'));
   files.set(`${RW}/bundle.TweetActivity.f4ke9005c0ffee9aa.js`, chunk('9005', 'rw-activity.js'));
+  files.set(`${RW}/shared~bundle.Compose~bundle.HomeTimeline~bundle.LoggedInMain.f4ke9006c0ffeebca.js`, chunk('9006', 'rw-home.js'));
+  files.set(`${RW}/bundle.HomeTimeline.f4ke9007c0ffeedea.js`, chunk('9007', 'rw-home.js'));
+  files.set(`${RW}/bundle.Compose.f4ke9010c0ffeef0a.js`, chunk('9010', 'rw-compose.js'));
+
+  const home = homeWorld(now);
+  for (const t of [home.plain, home.reposted, home.okra1, home.okra2, home.okra3, home.older, home.balcony, home.mulch, home.rain, home.frost]) know(t);
+  /** A home timeline's page by cursor: none for the first, a Bottom cursor for the next; a Top one gives nothing new. */
+  function homePage(which: 'following' | 'foryou', cursor: string | undefined) {
+    const pages = which === 'following' ? home.following : home.foryou;
+    const c = home.cursors;
+    if (!cursor) return pages[0];
+    if (cursor === (which === 'following' ? c.following2 : c.foryou2)) return pages[1];
+    if (cursor === (which === 'following' ? c.following3 : c.foryou3) || cursor === (which === 'following' ? c.followingTop : c.foryouTop)) return pages[2];
+    return null;
+  }
+  const uploads = new Map<string, Upload>();
+  let uploadN = 0;
+  const CATEGORY: Record<string, RegExp> = { tweet_image: /^image\/(png|jpeg|webp)$/, tweet_gif: /^image\/gif$/, amplify_video: /^video\// };
 
   const json = (v: unknown, status = 200) => Response.json(v, { status });
+  /** X's chunked media upload: INIT, APPEND, FINALIZE, STATUS (each recorded as `{ op: 'upload.<command>' }`). */
+  async function upload(req: Request, url: URL, calls: FeedCall[]): Promise<Response> {
+    const q = url.searchParams;
+    const command = q.get('command') ?? '';
+    const variables: Record<string, unknown> = Object.fromEntries([...q.entries()].filter(([k]) => k !== 'command'));
+    calls.push({ op: `upload.${command}`, variables, method: req.method });
+    if (!/(?:^|;\s*)auth_token=fake-session/.test(req.headers.get('cookie') ?? '')) return json({ errors: [{ message: 'Could not authenticate you', code: 32 }] }, 401);
+    const bad = (message: string) => json({ errors: [{ code: 324, message }] }, 400);
+    if (command === 'INIT') {
+      const type = q.get('media_type') ?? '';
+      const category = q.get('media_category') ?? '';
+      if (!CATEGORY[category]?.test(type)) return bad(`media_category ${category} does not take ${type}`);
+      const id = `71000000000000000${String(++uploadN).padStart(2, '0')}`;
+      uploads.set(id, { type, category, total: Number(q.get('total_bytes')), bytes: [], finalized: false, pending: 0 });
+      return json({ media_id: Number(id), media_id_string: id, media_key: `3_${id}`, expires_after_secs: 86_400 });
+    }
+    const id = q.get('media_id') ?? '';
+    const u = uploads.get(id);
+    if (!u) return bad('Invalid media id.');
+    if (command === 'APPEND') {
+      const form = await req.formData();
+      const part = form.get('media');
+      if (!(part instanceof Blob) || Number(q.get('segment_index')) !== u.bytes.length) return bad('Segment out of order.');
+      u.bytes.push(new Uint8Array(await part.arrayBuffer()));
+      return new Response(null, { status: 204 });
+    }
+    const size = u.bytes.reduce((n, b) => n + b.length, 0);
+    const broken = new TextDecoder().decode(u.bytes[0]?.slice(0, 6) ?? new Uint8Array()) === 'BROKEN';
+    if (command === 'FINALIZE') {
+      if (size !== u.total) return bad('File size does not match.');
+      u.finalized = true;
+      const video = u.category === 'amplify_video';
+      if (video) u.pending = 2;
+      return json({ media_id: Number(id), media_id_string: id, media_key: `${video ? 7 : 3}_${id}`, size, expires_after_secs: 86_400, ...(video ? { processing_info: { state: 'pending', check_after_secs: 0 } } : {}) });
+    }
+    if (command === 'STATUS') {
+      if (u.pending > 0 && --u.pending > 0) return json({ media_id_string: id, processing_info: { state: 'in_progress', check_after_secs: 0, progress_percent: 50 } });
+      if (broken) return json({ media_id_string: id, processing_info: { state: 'failed', error: { code: 1, name: 'InvalidMedia', message: 'Unsupported video format.' } } });
+      return json({ media_id_string: id, processing_info: { state: 'succeeded', progress_percent: 100 } });
+    }
+    return bad(`no such command ${command}`);
+  }
   return {
     posts: { first, long },
     thread,
     made,
+    home,
+    uploads,
     notes,
     like(who) {
       const ts = Date.now();
@@ -179,6 +260,7 @@ export async function startFeedFake(self: Person = ME): Promise<FeedFake> {
         if (!t) return json({ errors: [{ message: 'This post cannot be translated.', code: 34 }] }, 404);
         return json({ id_str: tr[1], translation: t.translation, entities: { urls: t.urls ?? [] }, sourceLanguage: t.from, localizedSourceLanguage: t.from, destinationLanguage: 'en', translationSource: 'Grok' });
       }
+      if (p === '/i/media/upload.json') return upload(req, url, calls);
       const m = /^\/i\/api\/graphql\/([\w-]+)\/(\w+)$/.exec(p);
       if (!m) return null;
       if (!/(?:^|;\s*)auth_token=fake-session/.test(req.headers.get('cookie') ?? '')) return json({ errors: [{ message: 'Could not authenticate you', code: 32 }] }, 401);
@@ -207,6 +289,21 @@ export async function startFeedFake(self: Person = ME): Promise<FeedFake> {
           if (variables.focalTweetId !== thread.focal.rest_id) return json({ data: {}, errors: [{ message: '_Missing: No status found with that ID.', code: 144 }] });
           const page = !variables.cursor ? thread.page1 : variables.cursor === thread.cursors.page2 ? thread.page2 : variables.cursor === thread.cursors.page3 ? thread.page3 : null;
           return json(page ? tweetDetailResponse(page) : { errors: [{ message: 'bad cursor' }] }, page ? 200 : 400);
+        }
+        case 'HomeTimeline':
+        case 'HomeLatestTimeline': {
+          const page = homePage(m[2] === 'HomeTimeline' ? 'foryou' : 'following', variables.cursor);
+          return json(page ? homeResponse(page) : { errors: [{ message: 'bad cursor' }] }, page ? 200 : 400);
+        }
+        case 'DeleteTweet': {
+          const id = String(variables.tweet_id);
+          const t = known.get(id);
+          // No such post: X's 144, with no data (the page's client rejects).
+          if (!t) return json({ errors: [{ message: 'NotFound: No status found with that ID.', code: 144 }] });
+          if (personOf(t).id !== self.id) return json({ errors: [{ message: 'Forbidden: You cannot delete a post that is not yours.', code: 9 }] });
+          known.delete(id);
+          made.delete(id);
+          return json(deleteTweetResponse());
         }
         case 'TweetResultByRestId':
           return json(tweetResultResponse(known.get(String(variables.tweetId)) ?? null));
@@ -241,13 +338,19 @@ export async function startFeedFake(self: Person = ME): Promise<FeedFake> {
         }
         case 'CreateTweet': {
           const text = String(variables.tweet_text ?? '');
-          if ([...made.values()].some((t) => t.legacy.full_text.endsWith(text))) return json(xErrorResponse('Duplicate: Status is a duplicate.', 187));
+          if (text && [...made.values()].some((t) => t.legacy.full_text.endsWith(text))) return json(xErrorResponse('Duplicate: Status is a duplicate.', 187));
           const replyTo = variables.reply?.in_reply_to_tweet_id ? known.get(String(variables.reply.in_reply_to_tweet_id)) : undefined;
           if (variables.reply && !replyTo) return json(xErrorResponse('NotFound: No status found with that ID.', 144));
           const quoteId = typeof variables.attachment_url === 'string' ? /\/status\/(\d+)$/.exec(variables.attachment_url)?.[1] : undefined;
           const quote = quoteId ? known.get(quoteId) : undefined;
+          // Pictures and video: each an upload finished here (a video processed), as X checks them.
+          const mediaIds: string[] = (variables.media?.media_entities ?? []).map((e: any) => String(e.media_id));
+          const ups = mediaIds.map((mid) => uploads.get(mid));
+          if (ups.some((u) => !u || !u.finalized || u.pending > 0)) return json(xErrorResponse('BadRequest: Your media IDs are invalid.', 324));
           const id = `18560000000000009${String(++madeN).padStart(2, '0')}`;
-          const t = tweet({ id, by: self, text, ts: Date.now(), ...(replyTo ? { replyTo: { id: replyTo.rest_id, by: personOf(replyTo) }, root: replyTo.legacy.conversation_id_str } : {}), ...(quote ? { quote } : {}) });
+          const media = ups.map((u, i) => ({ url: `https://t.co/m${id.slice(-4)}${i}`, type: (u!.category === 'amplify_video' ? 'video' : u!.category === 'tweet_gif' ? 'animated_gif' : 'photo') as 'photo' | 'video' | 'animated_gif', img: `https://pbs.twimg.com/media/Fk7Made${mediaIds[i]!.slice(-4)}.jpg`, w: 800, h: 600 }));
+          const t = tweet({ id, by: self, text, ts: Date.now(), ...(replyTo ? { replyTo: { id: replyTo.rest_id, by: personOf(replyTo) }, root: replyTo.legacy.conversation_id_str } : {}), ...(quote ? { quote } : {}), ...(media.length ? { media } : {}) });
+          if (variables.conversation_control) t.legacy.conversation_control = { policy: variables.conversation_control.mode };
           made.set(id, t);
           know(t);
           return json(createTweetResponse(t));

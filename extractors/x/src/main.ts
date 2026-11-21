@@ -13,7 +13,9 @@
  * notifications into one read-only conversation (variant 'feed'), announces the profiles of the people in them, and
  * answers `profile` with a person's recent posts and `post` with one post's thread, all through the page's own
  * endpoints (feed.ts, docs/x.md). It also answers on X when asked: `postAct` (like, repost, and back), `publish` (a
- * post, reply or quote) and `postReactors` (who liked or reposted a post), through the same client's own calls.
+ * post, reply or quote, with who may reply and pictures or a video), `unpublish` (delete a post of yours) and
+ * `postReactors` (who liked or reposted a post), and reads the home timelines (`home`: Following, For you), through
+ * the same client's own calls.
  *
  * Config: { testOrigin?, noSandbox?, hookGraceMs?, feedFirstMs?, feedEveryMs? (tests) }. Keeps x-state.json (the
  * newest sequence number announced per conversation; the feed's cursor, newest time and recent message ids) and,
@@ -28,10 +30,10 @@ import { linkHub } from '@dither-chat/protocol/client';
 import { ADD_MEMBERS_MAX, aboutChangeProblem, composeState, createGroupProblem, POST_ACTS, POST_RULES } from '@dither-chat/protocol';
 import { aboutOf, directFact, groupFact, ingestRequests, requestFact, Requests } from './gaps.ts';
 import { ingestInbox, ingestMessages, XState } from './ingest.ts';
-import { FeedTracker, FIRST_READ_MS, FIRST_READ_PAGES, type FeedKept, parseNotifications, parseProfileUser, parsePublished, parseReactors, parseTweetDetail, parseUserTweets, personAbout } from './feed.ts';
+import { FeedTracker, FIRST_READ_MS, FIRST_READ_PAGES, type FeedKept, HOME_COUNT, HOME_COUNT_MAX, parseHome, POST_MEDIA, postMediaProblem, REPLY_CONTROL, parseNotifications, parseProfileUser, parsePublished, parseReactors, parseTweetDetail, parseUserTweets, personAbout } from './feed.ts';
 import { conversationFact, identityFact, parseMediaRef, peerOf, shapeOf, toPlain } from './map.ts';
 import { Pace } from './pace.ts';
-import type { Down, FeedHookName, FeedReply, HookName, OutFile, PageState, PersonRef, PostActReply, PostReply, ProfileReply, PublishReply, ReactorsReply, SelfTest, Up, TranslateReply } from './raw.ts';
+import type { Down, FeedHookName, FeedReply, HomeReply, HookName, OutFile, PageState, PersonRef, PostActReply, PostReply, ProfileReply, PublishReply, ReactorsReply, SelfTest, Up, TranslateReply, UnpublishReply } from './raw.ts';
 import { FEED_HOOK_NAMES } from './raw.ts';
 import { capabilitiesOf, compute, CORE, type Facts, type FeedFacts, HOOK_GRACE_MS } from './status.ts';
 import * as V from './validate.ts';
@@ -95,6 +97,9 @@ const bridge = new BridgeServer<Up, Down>({
   log,
   // A command that times out is told apart in the log: how far it got, the tab's state and the hook's own.
   silence: { name: 'x.com', tab: true, page: true },
+  // A read (or a mark read) the page has not said it has after 3 s is sent again (the page takes an id once); never a
+  // send, a post, a reply, a like or anything else others see (packages/browser bridge.ts).
+  resend: { kinds: ['page.state', 'about', 'feed', 'history', 'home', 'inbox', 'media', 'profile', 'reactors', 'requests', 'sync', 'translate', 'markRead'] },
 });
 
 /** Writes: a person's pace. Opening conversations to read (catching up, history, media): slower. */
@@ -386,7 +391,11 @@ async function onCommand(cmd: P.AdapterCommand): Promise<unknown> {
     case 'translate':
       return translate(cmd.post, cmd.to, cmd.lang);
     case 'publish':
-      return publish(cmd.text, cmd.replyTo, cmd.quote);
+      return publish(cmd.text, cmd.replyTo, cmd.quote, cmd.replies, cmd.media);
+    case 'unpublish':
+      return unpublish(cmd.post);
+    case 'home':
+      return home(cmd.feed, cmd.cursor, cmd.count);
     case 'postReactors':
       return postReactors(cmd.post, cmd.kind, cmd.cursor);
     case 'action':
@@ -598,23 +607,66 @@ async function postAct(id: string, act: P.PostAct): Promise<P.PostViewer> {
 }
 
 /**
- * A post (neither), a reply (`replyTo`) or a quote (`quote`), as X's composer sends it. Checked against X's rules
- * (compose.ts POST_RULES, as the hub checks it). Identity facts for the post's people first, then the post.
+ * A post (neither), a reply (`replyTo`) or a quote (`quote`), as X's composer sends it, with who may reply (`replies`,
+ * a new post only) and pictures, a GIF or a video (`media`, uploaded by X's own uploader first). Checked against X's
+ * rules (compose.ts POST_RULES, as the hub checks it; POST_MEDIA) before the page is asked. Identity facts for the
+ * post's people first, then the post.
  */
-async function publish(text: string, replyTo?: string, quote?: string): Promise<P.PostFact> {
-  if (typeof text !== 'string' || !text.trim()) throw new Error('nothing to post');
+async function publish(text: string, replyTo?: string, quote?: string, replies?: string, media?: P.OutgoingAttachment[]): Promise<P.PostFact> {
+  const files = Array.isArray(media) ? media : [];
+  if (typeof text !== 'string' || (!text.trim() && !files.length)) throw new Error('nothing to post');
   const c = composeState(text, POST_RULES.x!);
-  if (!c.sendable) throw new Error(`too long for X: ${c.length} of ${POST_RULES.x!.maxLength}`);
+  if (text.trim() && !c.sendable) throw new Error(`too long for X: ${c.length} of ${POST_RULES.x!.maxLength}`);
   if (replyTo !== undefined && (typeof replyTo !== 'string' || !POST_ID.test(replyTo))) throw new Error('not an X post id to reply to');
   if (quote !== undefined && (typeof quote !== 'string' || !POST_ID.test(quote))) throw new Error('not an X post id to quote');
+  if (replies !== undefined && (typeof replies !== 'string' || !Object.hasOwn(REPLY_CONTROL, replies))) throw new Error(`not a choice of who can reply: ${String(replies)}`);
+  const control = replies ? REPLY_CONTROL[replies]! : null;
+  if (control && replyTo) throw new Error('X lets you choose who can reply only on a new post, not on a reply');
+  const problem = postMediaProblem(files.map((f) => ({ name: String(f?.name ?? ''), mime: String(f?.mime ?? ''), size: Number(f?.size) || 0 })));
+  if (problem) throw new Error(problem);
   feedNeed('actions', 'post');
   if (quote) feedNeed('posts', 'quote');
-  const r = await run('publish', () => pace.run(() => bridge.request<PublishReply>({ kind: 'publish', text, ...(replyTo ? { replyTo } : {}), ...(quote ? { quote } : {}) }, 120_000)));
+  if (files.length) feedNeed('upload', 'post pictures or video');
+  const out: OutFile[] = files.map((a) => ({ name: a.name, mime: a.mime, base64: readFileSync(a.path).toString('base64') }));
+  if (out.reduce((n, f) => n + f.base64.length * 0.75, 0) > POST_MEDIA.totalBytes) throw new Error('too big to post from here: at most 40 MB of pictures or video on one post');
+  const video = out.some((f) => POST_MEDIA.types[f.mime.toLowerCase()] !== 'image');
+  const ms = !out.length ? 120_000 : video ? 290_000 : 180_000;
+  const r = await run('publish', () => pace.run(() => bridge.request<PublishReply>({ kind: 'publish', text, ...(replyTo ? { replyTo } : {}), ...(quote ? { quote } : {}), ...(control ? { replies: control } : {}), ...(out.length ? { files: out } : {}) }, ms)));
   const made = parsePublished(r, text, { id: st.selfId, handle: st.selfUser?.screenName ?? null }, feedDrops, testOrigin);
   // X answered without saying which post it made: it may have been made. Never "failed": that would invite a second.
   if (!made) throw new Error('X did not say which post it made: look on X before posting again');
   for (const ev of feed.identities(made.users.values(), st.selfId)) hub.emit(ev);
   return made.post;
+}
+
+/**
+ * Delete a post of yours, as its menu's Delete does (the post actions' `destroy`: DeleteTweet), once. A post X says is
+ * gone already (144, "No status found with that ID.") counts as deleted; any other refusal is X's words.
+ */
+async function unpublish(id: string): Promise<{ deleted: true }> {
+  if (typeof id !== 'string' || !POST_ID.test(id)) throw new Error('not an X post id');
+  feedNeed('actions', 'delete a post');
+  const r = await run('unpublish', () => pace.run(() => bridge.request<UnpublishReply>({ kind: 'unpublish', post: id }, 60_000)));
+  if (r?.gone) log('info', 'unpublish: X says the post was gone already');
+  return { deleted: true };
+}
+
+/**
+ * One page of a home timeline as Home shows it (For you, or Following newest first): only when asked, at the reading
+ * pace, one request per call; nothing is marked seen and no impression is logged (the page draws nothing). Identity
+ * facts for every author and every person a reason names first.
+ */
+async function home(which: P.HomeFeed, cursor?: string, count?: number): Promise<P.HomePage> {
+  if (which !== 'following' && which !== 'foryou') throw new Error('not a home timeline: following or foryou');
+  if (cursor !== undefined && (typeof cursor !== 'string' || !cursor || cursor.length > 2000)) throw new Error('not an X cursor');
+  const asked = Number(count ?? HOME_COUNT);
+  const n = Number.isFinite(asked) ? Math.min(Math.max(Math.floor(asked), 1), HOME_COUNT_MAX) : HOME_COUNT;
+  feedNeed('home', 'read the home timeline');
+  const r = await run('home', () => readPace.run(() => bridge.request<HomeReply>({ kind: 'home', feed: which, count: n, ...(cursor ? { cursor } : {}) }, 120_000)));
+  const { page: got, users, named } = parseHome(r?.timeline, feedDrops, testOrigin);
+  for (const ev of feed.identities(users.values(), st.selfId)) hub.emit(ev);
+  for (const ev of feed.stubs(named.filter((id) => !users.has(id)), st.selfId)) hub.emit(ev);
+  return got;
 }
 
 /** Who liked (`kind` like) or reposted a post, a page; identity facts for them first. Only a post's author sees its likes. */

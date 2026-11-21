@@ -1,8 +1,8 @@
 /**
- * Approvers: phones paired to hold passkeys for the privacy and schwab accounts (docs/approver.md). Pair a phone (a
- * one-time code as a QR of dither-approver://pair?url=…&code=…, and as text), see each device's key fingerprint (the
- * app shows the same: compare them), whether it is linked now, and remove it; and the recent requests and how each
- * ended.
+ * Approvers: phones paired to hold passkeys for the privacy and schwab accounts, and the devices (phones and the
+ * laptop's desk signer) that answer approvals (docs/approver.md). Pair a device (a one-time code as a QR of
+ * dither-approver://pair?url=…&code=…, and as text), see each device's kind and key fingerprints (the device shows the
+ * same: compare them), whether it is linked now, and remove it; and the recent requests and how each ended.
  */
 import { signal } from '@preact/signals';
 import { useEffect, useMemo, useState } from 'preact/hooks';
@@ -29,7 +29,9 @@ const OUTCOMES: Record<string, string> = {
   'unknown-credential': 'Not on that phone',
   error: 'Failed',
   'no-device': 'No such device',
+  cancelled: 'Cancelled',
 };
+const KINDS: Record<string, string> = { phone: 'phone', desk: 'desk signer' };
 const day = (ms: number) => new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 
 function Pairing({ p, onClose }: { p: ApproverPairing; onClose: () => void }) {
@@ -90,7 +92,7 @@ export function Approvers() {
   return (
     <div class="page approvers">
       <p class="lede">
-        Phones that hold passkeys for your Privacy.com and Schwab accounts, so this machine never has the key: each sign-in asks your phone, which shows the account, the site and why, and signs after your fingerprint. On an account’s pane, <b>Keep new passkeys on</b> picks the phone new ones go to.
+        Phones that hold passkeys for your Privacy.com and Schwab accounts, so this machine never has the key: each sign-in asks your phone, which shows the account, the site and why, and signs after your fingerprint. On an account’s pane, <b>Keep new passkeys on</b> picks the phone new ones go to. The same devices, and a laptop’s desk signer, answer approval requests, signed with their approval key.
       </p>
       <div class="row toolbar">
         <span class="grow" />
@@ -109,8 +111,8 @@ export function Approvers() {
             <table>
               <thead>
                 <tr>
-                  <th>Phone</th>
-                  <th>Key fingerprint</th>
+                  <th>Device</th>
+                  <th>Key fingerprints</th>
                   <th>Paired</th>
                   <th>Last seen</th>
                   <th />
@@ -128,11 +130,22 @@ export function Approvers() {
                         {d.online ? 'linked now' : d.push ? 'woken by push when needed' : 'no push: open the app to answer'}
                         {d.waiting > 0 && ` · ${d.waiting} waiting`}
                       </div>
+                      <div class="muted small" data-device-kind={d.kind ?? ''}>
+                        {d.kind ? (KINDS[d.kind] ?? d.kind) : 'no approval key yet'}
+                      </div>
                     </td>
                     <td>
-                      <code class="mono" data-fingerprint>
+                      <code class="mono" data-fingerprint title="Its identity key: it signs in to this manager with it">
                         {d.fingerprint}
                       </code>
+                      {d.approvalFingerprint && (
+                        <div class="small">
+                          <span class="muted">approvals </span>
+                          <code class="mono" data-approval-fingerprint title="Its approval key: it signs approvals with it (keys files list this one)">
+                            {d.approvalFingerprint}
+                          </code>
+                        </div>
+                      )}
                     </td>
                     <td>{day(d.pairedAt)}</td>
                     <td>{d.online ? 'now' : ago(d.lastSeenAt)}</td>
@@ -159,7 +172,7 @@ export function Approvers() {
                     <th>When</th>
                     <th>Account</th>
                     <th>Site</th>
-                    <th>Phone</th>
+                    <th>Device</th>
                     <th>Outcome</th>
                   </tr>
                 </thead>
@@ -171,12 +184,15 @@ export function Approvers() {
                         <td title={new Date(r.createdAt).toLocaleString()}>{ago(r.createdAt)}</td>
                         <td>
                           {acc ? named(acc) : r.account}
-                          <div class="muted small">{r.op === 'create' ? 'new passkey' : 'sign-in'}{r.reason ? ` · ${r.reason}` : ''}</div>
+                          <div class="muted small">
+                            {r.op === 'approve' ? 'approval' : r.op === 'create' ? 'new passkey' : 'sign-in'}
+                            {r.reason ? ` · ${r.reason}` : ''}
+                          </div>
                         </td>
-                        <td class="mono small">{r.rpId}</td>
+                        <td class="mono small">{r.rpId || '—'}</td>
                         <td>{deviceName.get(r.device) ?? <span class="muted">{r.device || '—'}</span>}</td>
                         <td title={r.message ?? ''}>
-                          {OUTCOMES[r.outcome] ?? r.outcome}
+                          {r.op === 'approve' && r.outcome === 'ok' && r.message ? `Answered: ${r.message}` : (OUTCOMES[r.outcome] ?? r.outcome)}
                           {r.decidedAt && r.outcome !== 'waiting' && <div class="muted small">after {Math.max(0, Math.round((r.decidedAt - r.createdAt) / 1000))} s</div>}
                         </td>
                       </tr>

@@ -107,7 +107,8 @@ afterEach(() => {
 
 // ------------------------------------------------------------------ the client
 
-function client(opts: { grants?: bigint[]; perChannel?: Record<string, bigint[]> } = {}) {
+/** `audioOff`: the client never enabled its audio, and `enable` resolves when the test says (its getUserMedia). */
+function client(opts: { grants?: bigint[]; perChannel?: Record<string, bigint[]>; audioOff?: { enabled: Promise<void> } } = {}) {
   const grants = opts.grants ?? [MUTE, DEAFEN, MOVE, SOUNDBOARD];
   const handlers = new Map<string, ((a: any) => void)[]>();
   const calls: any[] = [];
@@ -142,6 +143,7 @@ function client(opts: { grants?: bigint[]; perChannel?: Record<string, bigint[]>
   const rest: Record<string, any> = {};
   for (const k of ['get', 'post', 'put', 'patch', 'del']) rest[k] = async (o: any) => (calls.push(['rest', k, o.url, o.body ?? o.query]), { body: {} });
   const audioActions = {
+    ...(opts.audioOff ? { enable: () => (calls.push(['enable']), opts.audioOff!.enabled) } : {}),
     toggleSelfMute() {},
     toggleSelfDeaf() {},
     setLocalVolume: (u: string, v: number) => (calls.push(['setLocalVolume', u, v]), (volumes[u] = v)),
@@ -167,6 +169,7 @@ function client(opts: { grants?: bigint[]; perChannel?: Record<string, bigint[]>
       isLocalMute: (id: string) => localMutes.has(id),
       isSelfMute: () => false,
       isSelfDeaf: () => false,
+      ...(opts.audioOff ? { isEnabled: () => false } : {}),
       getMode: () => settings.mode,
       getNoiseSuppression: () => settings.ns,
       getNoiseCancellation: () => settings.nc,
@@ -238,6 +241,23 @@ function page(c: ReturnType<typeof client>) {
 }
 
 describe("hook.js's in-call section", () => {
+  test('a leave while a bridge join waits on the client enabling its audio: the client never selects the channel', async () => {
+    Object.assign(globalThis, GLOBALS);
+    let enable!: () => void;
+    const enabled = new Promise<void>((r) => (enable = r));
+    const c = client({ audioOff: { enabled } });
+    const p = page(c);
+    const joined = p.cmd({ kind: 'call', call: 'j1', op: 'join', channelId: VOICE, mode: 'bridge' });
+    // The join reaches the client's enable (a few promise steps in), and waits there.
+    for (let i = 0; i < 50 && !c.calls.some((x) => x[0] === 'enable'); i++) await Promise.resolve();
+    expect(c.calls).toContainEqual(['enable']);
+    // The device's socket closed meanwhile: the hub sends leave for the same call.
+    expect((await p.cmd({ kind: 'call', call: 'j1', op: 'leave' })).ok).toBe(true);
+    enable();
+    expect(await joined).toMatchObject({ ok: false, error: expect.stringMatching(/left before the call started/) });
+    expect(c.calls.filter((x) => x[0] === 'select')).toEqual([]);
+  });
+
   test('finds the modules; the call says Go Live, server mutes, your volume and mute for each person', async () => {
     const c = client();
     const p = page(c);

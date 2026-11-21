@@ -4,5 +4,5 @@
   "private": true,
   "type": "module",
   "exports": { ".": "./src/index.ts", "./cbor": "./src/cbor.ts" },
-  "devDependencies": { "@dither-chat/protocol": "workspace:*" }
+  "devDependencies": { "@dither-chat/protocol": "workspace:*", "@dither-accounts/approval": "workspace:*" }
 }

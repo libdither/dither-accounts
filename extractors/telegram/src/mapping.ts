@@ -189,11 +189,16 @@ export function reactionsOf(ctx: MapCtx, r: tl.TypeMessageReactions | undefined)
     const key = reactionKey(rc.reaction);
     if (!key) continue;
     const authors = new Set<string>();
+    // When each reacted: Telegram dates each named reaction (seconds).
+    const at: Record<string, number> = {};
     for (const pr of r.recentReactions ?? []) {
-      if (reactionKey(pr.reaction) === key) authors.add(authorOf(peerOf(pr.peerId)));
+      if (reactionKey(pr.reaction) !== key) continue;
+      const a = authorOf(peerOf(pr.peerId));
+      authors.add(a);
+      if (pr.date) at[a] = pr.date * 1000;
     }
     if (rc.chosenOrder !== undefined) authors.add(userId(ctx.self));
-    const f: P.ReactionFact = { key, authors: [...authors] };
+    const f: P.ReactionFact = { key, authors: [...authors], ...(Object.keys(at).length ? { at } : {}) };
     if (authors.size < rc.count) f.count = rc.count;
     if (rc.reaction._ === 'reactionCustomEmoji') f.emoji = { key, name: 'custom', url: emojiUrl(rc.reaction.documentId) };
     out.push(f);
@@ -244,14 +249,18 @@ export function attachmentsOf(base: string, m: tl.RawMessage): { attachments: P.
         else if (at._ === 'documentAttributeImageSize') Object.assign(a, { width: at.w, height: at.h });
         else if (at._ === 'documentAttributeVideo') Object.assign(a, { kind: 'video', width: at.w, height: at.h });
         else if (at._ === 'documentAttributeAudio') a.kind = 'audio';
-        else if (at._ === 'documentAttributeAnimated') a.kind = 'video';
+        // An animation (Telegram's GIF): a silent looping video, drawn as a GIF.
+        else if (at._ === 'documentAttributeAnimated') Object.assign(a, { kind: 'video', gif: true });
         else if (at._ === 'documentAttributeSticker') {
           kind = 'sticker';
           text = at.alt || undefined;
         }
       }
       if (a.kind === 'file' && /^(image|video|audio)\//.test(d.mimeType) && kind !== 'sticker') a.kind = d.mimeType.split('/')[0] as P.AttachmentKind;
-      if (kind === 'sticker') a.kind = 'image';
+      if (kind === 'sticker') {
+        a.kind = 'image';
+        delete a.gif;
+      }
       return { attachments: [a], kind, ...(text ? { text } : {}) };
     }
     case 'messageMediaGeo':
@@ -279,6 +288,27 @@ export function attachmentsOf(base: string, m: tl.RawMessage): { attachments: P.
     default:
       return { attachments: [], text: `[${media._.replace(/^messageMedia/, '').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()}]` };
   }
+}
+
+/**
+ * A link preview as the embeds the hub shows (Discord's, Signal's): the page's site, title, words and picture, the
+ * picture fetched through fetchMedia as the message's own file would be (`image`: its tg://media link). None while
+ * Telegram is still making it (webPagePending: updateWebPage says when it is ready), when it could not (webPageEmpty),
+ * or when it has nothing to show beyond the link.
+ */
+export function webPageEmbed(page: tl.TypeWebPage, image: string): P.EmbedView | null {
+  if (page._ !== 'webPage') return null;
+  const e: P.EmbedView = { url: page.url };
+  let host = '';
+  try {
+    host = new URL(page.url).hostname;
+  } catch {}
+  if (page.siteName || host) e.provider = page.siteName || host;
+  if (page.title) e.title = page.title;
+  if (page.description) e.description = page.description;
+  if (page.author) e.author = page.author;
+  if (page.photo?._ === 'photo') e.image = image;
+  return e.title || e.description || e.image ? e : null;
 }
 
 export function forwardOf(ctx: MapCtx, f: tl.TypeMessageFwdHeader | undefined): P.ForwardFact | undefined {
@@ -335,6 +365,8 @@ export function messageFact(ctx: MapCtx, m: tl.TypeMessage): P.MessageFact | nul
   if (m.postAuthor) extra.signature = m.postAuthor;
   if (m.ttlPeriod) extra.ttl = m.ttlPeriod;
   if (m.noforwards) extra.protected = true;
+  const preview = m.media?._ === 'messageMediaWebPage' ? webPageEmbed(m.media.webpage, mediaUrl(base, m.id)) : null;
+  if (preview) extra.embeds = [preview];
   if (Object.keys(extra).length) f.extra = extra;
   return f;
 }

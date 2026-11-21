@@ -225,18 +225,29 @@ function systemdMainPid(unit: string): number | null {
  * its extractors running only for a restart. A job line is "<id> <unit> <type> <state>".
  */
 export function restartQueued(unit: string, jobs: () => string = listJobs): boolean {
-  return jobs()
-    .split('\n')
-    .map((l) => l.trim().split(/\s+/))
-    .some((f) => f[1] === unit && /^(restart|try-restart|reload-or-restart|try-reload-or-restart)$/.test(f[2] ?? ''));
+  return restartJob(unit, jobs).restart;
 }
 
-function listJobs(): string {
+/** restartQueued, with what systemd said (main.ts logs it: a stop taken for a restart, or not, says why). */
+export function restartJob(unit: string, jobs: () => string = listJobs): { restart: boolean; why: string } {
+  let out: string;
   try {
-    // Bounded: it runs inside the unit's stop, which systemd gives TimeoutStopSec (30 s) in all.
-    const r = Bun.spawnSync(['systemctl', '--user', 'list-jobs', '--no-legend', '--plain'], { stdout: 'pipe', stderr: 'ignore', timeout: 3000 });
-    return r.exitCode === 0 ? r.stdout.toString() : '';
-  } catch {
-    return '';
+    out = jobs();
+  } catch (e) {
+    return { restart: false, why: (e as Error).message };
   }
+  const mine = out
+    .split('\n')
+    .map((l) => l.trim().split(/\s+/))
+    .filter((f) => f[1] === unit);
+  const restart = mine.some((f) => /^(restart|try-restart|reload-or-restart|try-reload-or-restart)$/.test(f[2] ?? ''));
+  return { restart, why: mine.length ? `its job: ${mine.map((f) => f.slice(2).join(' ')).join(', ')}` : `no job for ${unit}` };
+}
+
+/** systemctl's job list; throws, saying how, when systemctl fails or does not answer. */
+function listJobs(): string {
+  // Bounded: it runs inside the unit's stop, which systemd gives TimeoutStopSec (30 s) in all.
+  const r = Bun.spawnSync(['systemctl', '--user', 'list-jobs', '--no-legend', '--plain'], { stdout: 'pipe', stderr: 'pipe', timeout: 3000 });
+  if (r.exitCode === 0) return r.stdout.toString();
+  throw new Error(`systemctl --user list-jobs ${r.exitCode === null ? `ended by ${r.signalCode ?? 'a signal'} (3 s limit)` : `exited ${r.exitCode}`}: ${r.stderr.toString().trim().slice(0, 200)}`);
 }

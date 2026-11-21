@@ -7,6 +7,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as P from '@dither-chat/protocol';
+import type { tl } from '../src/backend.ts';
 import { readSecretFile, writeSecretFile } from '@dither-chat/protocol/secret-file';
 import { type AdapterOptions, contactsHash, type Host, TELEGRAM_DESKTOP, TelegramAdapter } from '../src/adapter.ts';
 import { FAKE_IDS, FAKE_INVITES, FakeTelegram } from '../src/fake.ts';
@@ -317,6 +318,23 @@ describe('signed in', () => {
     expect(ans).toMatchObject({ live: true, message: { body: 'You said: ping', conversation: DM_BOT, mentionsSelf: true } });
   });
 
+  test('a GIF goes as an animation: an mp4 marked animated and a video, a .gif marked animated; it comes back as a GIF', async () => {
+    const sent = (from: number) => h.fake.calls.slice(from).filter((c) => c.method === 'messages.sendMedia').map((c) => (c.req as { media: tl.RawInputMediaUploadedDocument }).media);
+    const c0 = h.fake.calls.length;
+    const n = h.events.length;
+    const mp4 = (await h.cmd({ t: 'send', conversation: DM_BOB, body: '', attachments: [{ path: file, name: 'cat.mp4', mime: 'video/mp4', size: 70, kind: 'video', gif: true }] })) as { nativeId: string };
+    await h.cmd({ t: 'send', conversation: DM_BOB, body: '', attachments: [{ path: file, name: 'cat.gif', mime: 'image/gif', size: 70, kind: 'image', gif: true }] });
+    const [a, b] = sent(c0);
+    expect(a).toMatchObject({ _: 'inputMediaUploadedDocument', mimeType: 'video/mp4' });
+    expect(a.attributes.map((x) => x._)).toEqual(['documentAttributeFilename', 'documentAttributeAnimated', 'documentAttributeVideo']);
+    expect(a.forceFile).toBeUndefined();
+    expect(b).toMatchObject({ _: 'inputMediaUploadedDocument', mimeType: 'image/gif' });
+    expect(b.attributes.map((x) => x._)).toEqual(['documentAttributeFilename', 'documentAttributeAnimated']);
+    const fact = h.since(n).find((e): e is Extract<Ev, { t: 'message' }> => e.t === 'message' && e.message.nativeId === mp4.nativeId)!.message;
+    expect(fact.attachments).toMatchObject([{ kind: 'video', gif: true }]);
+    expect(h.of('hello')[0].capabilities).toContain('sendGifs');
+  });
+
   test('files: one as a photo, several as an album, and fetchMedia gives the bytes back', async () => {
     const n = h.events.length;
     const one = (await h.cmd({ t: 'send', conversation: DM_BOB, body: 'look', attachments: [attachment()] })) as { nativeId: string };
@@ -352,12 +370,41 @@ describe('signed in', () => {
     expect(h.fake.world.msgs[`channel:${FAKE_IDS.devs}`].some((m) => `${DEVS}#${m.id}` === nativeId)).toBe(false);
   });
 
+  test('a link preview: shown once Telegram made it, then taken off your own message by an edit', async () => {
+    const { nativeId } = (await h.cmd({ t: 'send', conversation: DM_ALICE, body: 'look https://example.com/a' })) as { nativeId: string };
+    const id = Number(nativeId.split('#')[1]);
+    const facts = (n: number) => h.since(n).filter((e): e is Extract<Ev, { t: 'message' }> => e.t === 'message' && e.message.nativeId === nativeId);
+    // Still being made when sent: no preview yet.
+    expect((h.events.filter((e): e is Extract<Ev, { t: 'message' }> => e.t === 'message' && e.message.nativeId === nativeId).at(-1)!.message.extra as any)?.embeds).toBeUndefined();
+    let n = h.events.length;
+    await h.fake.control({ op: 'pageReady', peer: `user:${FAKE_IDS.alice}`, id });
+    await h.until(() => facts(n).length > 0, 'the preview');
+    const image = `tg://media/${DM_ALICE}/${id}`;
+    expect((facts(n)[0].message.extra as any).embeds).toEqual([{ url: 'https://example.com/a', provider: 'example.com', title: 'A page at example.com', image }]);
+    expect(facts(n)[0].live).toBe(false);
+    // Its picture comes as the message's own file would.
+    const pic = (await h.cmd({ t: 'fetchMedia', url: image })) as { mime: string; base64: string };
+    expect(pic.mime).toBe('image/jpeg');
+
+    n = h.events.length;
+    expect(await h.cmd({ t: 'suppressEmbeds', conversation: DM_ALICE, message: nativeId })).toEqual({});
+    const edit = h.fake.calls.filter((c) => c.method === 'messages.editMessage').at(-1)!;
+    expect(edit.req).toMatchObject({ id, message: 'look https://example.com/a', noWebpage: true });
+    const after = facts(n).at(-1)!.message;
+    expect(after.editedTs).toBeGreaterThan(0);
+    expect((after.extra as any)?.embeds).toBeUndefined();
+    // Someone else's: Telegram has no way.
+    expect(await h.cmd({ t: 'suppressEmbeds', conversation: DEVS, message: `${DEVS}#1` }).catch((e) => e.message)).toContain("someone else's");
+  });
+
   test('react: one reaction each, replaced or removed; who reacted', async () => {
     const msg = `${DEVS}#1`;
     let n = h.events.length;
     await h.cmd({ t: 'react', conversation: DEVS, message: msg, key: '👍' });
     await h.until(() => h.since(n).some((e) => e.t === 'reaction'), 'the reaction');
-    expect(h.since(n).find((e) => e.t === 'reaction')).toEqual({ t: 'reaction', conversation: DEVS, message: msg, author: String(S), key: '👍' });
+    // Its time is Telegram's date for it.
+    const devsMsg = () => h.fake.world.msgs[`channel:${FAKE_IDS.devs}`][0];
+    expect(h.since(n).find((e) => e.t === 'reaction')).toEqual({ t: 'reaction', conversation: DEVS, message: msg, author: String(S), key: '👍', ts: devsMsg().reactedAt![S] * 1000 });
     await h.until(() => h.since(n).some((e) => e.t === 'message' && e.message.nativeId === msg), 'the snapshot');
     expect(h.since(n).find((e): e is Extract<Ev, { t: 'message' }> => e.t === 'message' && e.message.nativeId === msg)).toMatchObject({ live: false, message: { reactions: [{ key: '👍', authors: [String(S)] }] } });
     n = h.events.length;
@@ -367,11 +414,12 @@ describe('signed in', () => {
       ['🔥', false],
       ['👍', true],
     ]);
-    expect(await h.cmd({ t: 'reactors', conversation: DEVS, message: msg, key: '🔥' })).toEqual({ authors: [String(S)] });
+    expect(await h.cmd({ t: 'reactors', conversation: DEVS, message: msg, key: '🔥' })).toEqual({ authors: [String(S)], at: { [String(S)]: devsMsg().reactedAt![S] * 1000 } });
     n = h.events.length;
     await h.cmd({ t: 'react', conversation: DEVS, message: msg, key: '🔥', remove: true });
     await h.until(() => h.since(n).some((e) => e.t === 'reaction'), 'removed');
-    expect(h.since(n).find((e) => e.t === 'reaction')).toMatchObject({ key: '🔥', remove: true });
+    // Telegram does not say when one was taken back: no time, and the hub uses when it heard.
+    expect(h.since(n).find((e) => e.t === 'reaction')).toEqual({ t: 'reaction', conversation: DEVS, message: msg, author: String(S), key: '🔥', remove: true });
     expect(h.fake.world.msgs[`channel:${FAKE_IDS.devs}`][0].reactions).toEqual({});
     expect(await h.cmd({ t: 'reactionContext', conversation: DEVS })).toEqual({ canReact: true, custom: [] });
   });
@@ -538,7 +586,8 @@ describe('signed in', () => {
     n = h.events.length;
     await h.fake.control({ op: 'react', peer: `user:${FAKE_IDS.alice}`, id, from: FAKE_IDS.alice, key: '😂' });
     await h.until(() => h.since(n).some((e) => e.t === 'reaction'), 'the reaction');
-    expect(h.since(n).find((e) => e.t === 'reaction')).toEqual({ t: 'reaction', conversation: DM_ALICE, message: `${DM_ALICE}#${id}`, author: String(FAKE_IDS.alice), key: '😂' });
+    const reacted = h.fake.world.msgs[`user:${FAKE_IDS.alice}`].find((m) => m.id === id)!.reactedAt![FAKE_IDS.alice];
+    expect(h.since(n).find((e) => e.t === 'reaction')).toEqual({ t: 'reaction', conversation: DM_ALICE, message: `${DM_ALICE}#${id}`, author: String(FAKE_IDS.alice), key: '😂', ts: reacted * 1000 });
     n = h.events.length;
     await h.fake.control({ op: 'delete', peer: `user:${FAKE_IDS.alice}`, ids: [id] });
     await h.until(() => h.since(n).some((e) => e.t === 'delete'), 'the delete');

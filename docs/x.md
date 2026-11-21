@@ -215,8 +215,10 @@ toast they raise is the refusal.
 | `profile` | someone's profile and recent posts through responsive-web's own endpoints ("Notifications and profiles") |
 | `post` | one post's thread (what it answers, the post, its replies; `cursor` for more replies) through the post page's own endpoint ("Notifications and profiles", `post`) |
 | `postAct` | like, unlike, repost or unrepost a post, the one call its button makes ("Answering on X") |
-| `publish` | a post, a reply (`replyTo`) or a quote (`quote`) through the composer's own `sendTweet` ("Answering on X") |
+| `publish` | a post, a reply (`replyTo`) or a quote (`quote`) through the composer's own `sendTweet`, with who may reply (`replies`) and pictures or a video (`media`, uploaded by the composer's own uploader) ("Answering on X") |
+| `unpublish` | a post of yours deleted, the one call its menu's Delete makes ("Answering on X") |
 | `postReactors` | who liked or reposted a post, a page (`cursor` for more), as its Likes and Reposts tabs ask ("Answering on X") |
+| `home` | a page of the account's Following or For you timeline (`cursor` for more), as Home asks for it ("Home timelines") |
 | `translate` | a post translated into `to`, as its Translate post link does ("Translating a post") |
 | `action diagnose` | the page's shapes into `diagnostics.json` (below) |
 | `action selftest` | the self-test now |
@@ -251,9 +253,10 @@ missing one takes only the feed, `profile`, `posts` or answering on X away.
 | `notifications` | the Notifications tab's timeline module (`getCreationOptions().network`: `getEndpoint(api)` is `api.withEndpoint(factory).fetchNotifications`, `getEndpointParams({count, cursor}, state)` its variables; the one whose `timelineType` is `All`). Its chunk is lazy: the route's own loader (a module whose source is `Promise.all([n.e(…), …]).then(() => n(<id>))`, picked because one of its chunks is named `bundle.Notifications.*` by `require.u`) loads it as opening the tab would (`loader`); if the tab was opened already the module is there (`module`). `pending` until the first read. | no feed |
 | `profiles` | the factories whose source has `fetchOneUser:(` (UserByRestId) and `fetchUserTweets:(` (UserTweets, the Posts tab), found by reading the module sources (`require.m`, each once, with the page's untouched `toString`) and taking the export that holds the words (`module`) | no `profile` capability |
 | `posts` | the factory whose source has `fetchTweetDetail:(` (TweetDetail, a post's page; in x.com's main bundle). x.com keeps it private to its module and exports only the conversation timeline built on it, so the hook makes that timeline for no post and takes the factory from its `network.getEndpoint` with a stand-in api (`timeline`; nothing is fetched); an exported factory is used as is (`module`) | no `posts` capability; no quoting (the quoted post is read through it) |
-| `actions` | the tweet actions factory: the export whose source has `sendTweet:function(` and also `unretweet(` (in x.com's main bundle, one factory with `like`, `unlike`, `retweet`, `unretweet`, `sendTweet`, `destroy`, bookmarks and more), found the same way (`module`) | no `postActions`, no `publish` |
+| `actions` | the tweet actions factory: the export whose source has `sendTweet:function(` and also `unretweet(` (in x.com's main bundle, one factory with `like`, `unlike`, `retweet`, `unretweet`, `sendTweet`, `destroy`, bookmarks and more), found the same way (`module`) | no `postActions`, no `publish`, no `unpublish` |
 | `reactors` | the factory whose source has `fetchLikedBy:(` (`fetchLikedBy`: Favoriters, `fetchRetweetedBy`: Retweeters, `fetchEditHistory`). Its chunk is lazy: `shared~bundle.QuoteTweetActivity~bundle.TweetActivity` (also `bundle.TweetEditHistory`). At the first `postReactors` the route table's loader with a chunk named `bundle.TweetActivity` by `require.u` (else `bundle.TweetEditHistory`) is run as opening a post's likes would: its chunks, then its module (`loader`); found already loaded when someone opened a post's likes in the page (`module`). `pending` until then, and `postReactors` is offered while pending | no `postReactors` |
-
+| `home` | the factory whose source has `fetchHomeLatest(` and `home_timeline_urt` (`fetchHome`: HomeTimeline, For you; `fetchHomeLatest`: HomeLatestTimeline, Following). Its chunk is lazy: `shared~bundle.Compose~bundle.HomeTimeline~bundle.LoggedInMain` (the same module is also in `loader.WideLayout` and others). Found loaded (`module`: Home or the wide layout was opened in the page); else at the first `home` the route table's loader with a chunk named `bundle.HomeTimeline` by `require.u` (else one sharing a chunk with it, `…~bundle.HomeTimeline~…`) is run as opening Home would (`loader`). `pending` until then, and `home` is offered while pending | no `home` |
+| `upload` | the composer's media uploader. Since 2026-11 x.com's composer uploads through its store: in the module that says `Media has no uploader`, an export adding files as media items (arity 2, its source has `withDimensionsAndOrientation` and `Promise.all`: `MR` in the bundle read, `(files, { location })`), one uploading items by id (its source has `Media has no uploader`: `o7`), and one dropping them (arity 1, short, `.dispose()` and `abort()`: `m9`); the location `Tweet` comes from the media kinds' module (the one with `TweetImage:"tweet_image"`, export `rz`). The older shape, an `upload(file, options)` export in a module with `imageCategory` and `withMediaUploadMetrics`, is still taken where a page has it. Found loaded (`module`: a composer was opened in the page); else at the first post with media a lazy component loader is run as the composer would be (`loader`): one named for composing (x.com named it `TweetReplyInlineComposer` until its names were minified), else the loaders whose chunks are the composer's own by their file names (`bundle.Compose`, `bundle.ComposeMedia`, then `bundle\|ondemand\|loader.…Compos…`), at most 8. `pending` until then, and `postMedia` is offered while pending | no `postMedia` |
 The notifications module also exports `updateLastSeenCursor`, the thunk that marks notifications seen on X. It is
 never called; reading the timeline does not mark anything seen (the tab calls that thunk separately).
 
@@ -343,6 +346,39 @@ entries are copied first, so a long thread cut short still says where more repli
 cut). `history` for the feed or the hub's logged posts (`feed:<id>`, `posts:<id>`) is answered at once with nothing:
 they are no chat on X, and the page is never sent looking for one.
 
+## Home timelines
+
+`{ t: 'home', feed: 'following' | 'foryou', cursor?, count? }` → `HomePage` (capability `home`): one page of the
+account's Following (newest first) or For you (X's ranking), read only when asked, at the reading pace, one request
+per call. The hook calls the page's own factory (`home` above) as Home does: Following is `fetchHomeLatest({ count,
+cursor, enableRanking: false })` (Home's "Recent" sort), For you `fetchHome({ count, cursor })`. `count` is 20 unless
+asked (1 to 40). No `userId` is passed: with one the factory sends the page's own list of posts it has seen
+(`seenTweetIds`, as a POST) and clears it; without one it sends nothing of the kind. No `requestContext` either (Home
+sends `launch` on its first page). Nothing is drawn, so no impression is logged and nothing is marked seen.
+
+`HomePage` is `{ items, more, top }`. Each `HomeItem` is `{ post, reason?, above? }`, mapped by `parseHome` in
+`src/feed.ts`:
+
+- a `tweet-<id>` entry is an item; a repost is the reposter's post with `repostOf` (as everywhere);
+- a `home-conversation-<n>` module (a thread X shows together, oldest first) is one item: its last post, with the
+  ones before it as `above` (at most 10); a post already on the page is not repeated;
+- the post's social-context line (`socialContext`) is its `reason`: `text` in X's words ("Ann Lee liked", "Followed by
+  Ann Lee and 2 others"), `kind` from its `contextType` (`Like` like, `Follow` follow, `Conversation` reply, `Pin`
+  pinned, `Community` community, a `TimelineTopicContext` topic with the topic's name as text, any other `other`), and
+  `who`, the person it names, from its link (`twitter://user?id=<id>`; a `screen_name` or an x.com profile link only
+  when the page knows whose handle it is);
+- left out and counted in `feed.dropped`: ads (`promoted-…` entries and anything with `promotedMetadata`:
+  `home.promoted`), who to follow and every other module that is not a home conversation (`home.module-who-to-follow`,
+  by the entry id's prefix), prompts and other items that are not posts (`home.item-TimelineMessagePrompt`), gone
+  posts (`home.tombstone`);
+- `more` is the Bottom cursor (null on a page with nothing but cursors: the end), `top` the Top one.
+
+Identity facts come first for every author, and for each person a reason names; one known only by id (Ann, liking a
+post by someone else) gets a bare identity (`{ nativeId }`), which the hub fills in when she is seen.
+
+The answer is copied out of the page as the others are (FEED_KEYS, plus `home`, `home_timeline_urt`,
+`socialContext`, `contextType`, `landingUrl`, `functionalType`, `topic`), up to 200,000 nodes, cursors first.
+
 ## Answering on X
 
 Likes, reposts, posts and who liked: each the one call X's own button or composer makes, through the page's own
@@ -352,8 +388,9 @@ who liked goes at the reading pace (2.5-6 s, shared with every other read). Ever
 (threads, profiles, the feed, a post just made) carries `viewer: { liked, reposted }`, from the post's
 `legacy.favorited` and `legacy.retweeted` as X answered them for this account (left out when X sends neither).
 
-Capabilities: `postActions` and `publish` when `store`, `endpoints` and `actions` are found; `postReactors` when
-`store` and `endpoints` are found and `reactors` is found or pending.
+Capabilities: `postActions`, `publish` and `unpublish` when `store`, `endpoints` and `actions` are found;
+`postReactors` when `store` and `endpoints` are found and `reactors` is found or pending; `postMedia` (pictures and
+video on `publish`) when `actions` is found too and `upload` is found or pending.
 
 ### `postAct`
 
@@ -386,6 +423,32 @@ Identity facts for the people in it come first. Only when X's answer names no po
 "X did not say which post it made: look on X before posting again" (it may have been made). A failure of the send
 itself is X's words: "Status is a duplicate." (187), "No status found with that ID." (144) and the like.
 
+**Who may reply** (`replies`): `following` sends `conversation_control: 'my_network'`, `mentioned` `'by_invitation'`,
+`verified` `'verified'` in `sendTweet`'s options, as the composer's menu does (its variable builder turns them into
+`{ mode: 'MyNetwork' | 'ByInvitation' | 'Verified' }`); `everyone`, or none, sets nothing. X lets you choose only on a
+new post: with `replyTo` the call is refused before the page is asked, and so is any other word.
+
+**Pictures and video** (`media`, capability `postMedia`): up to 4 pictures (PNG, JPEG, WebP), or one GIF, or one
+video (MP4, MOV), checked before the page is asked (`postMediaProblem` in `src/feed.ts`): anything else, a mix, a
+fifth picture, a GIF over 15 MB, or more than 40 MB in all (the bytes cross to the page in one message) is refused in
+plain words. The text may then be empty. Each file is handed to the page and uploaded there, one after another, by
+the composer's own uploader (`upload` above) with the files as `File`s: they are added to the composer's store as
+media items for a post and uploaded side by side, and the uploader chooses the kind and `media_category` itself
+(`tweet_image`, `tweet_gif`, `amplify_video`), runs INIT, APPEND (in segments), FINALIZE and STATUS until X has
+processed each, and keeps its media id on the item (`uploadId`). The items are dropped from the store once the post
+is made or has failed. (On a page with the older `upload(file, options)`, each file goes one after another, and a
+video is given `videoLimits`: 140 s, 512 MB.) The ids go into `sendTweet`'s options as `media_ids: '<id>,<id>'`, which
+the builder turns into `media.media_entities`. A file X refuses fails the call with X's words ("X did not take file 2:
+…"), and nothing is posted. A post with a video may take up to 5 minutes (the call's own limit).
+
+### `unpublish`
+
+`{ t: 'unpublish', post }` → `{ deleted: true }`: the post actions' `destroy({ id })` (DeleteTweet `{ tweet_id }`),
+once, at the writing pace. X answers `{ delete_tweet: { tweet_results: {} } }`; `destroy` has no check of its own, so
+an answer without `delete_tweet` fails the call ("X did not say the post was deleted: look on X"). A post X says is
+gone already (144, "No status found with that ID.") counts as deleted. Anything else is X's words (someone else's
+post, for one).
+
 ### `postReactors`
 
 `{ t: 'postReactors', post, kind: 'like' | 'repost', cursor? }`: the page's `fetchLikedBy` or `fetchRetweetedBy`
@@ -416,7 +479,23 @@ Read from the public bundle (2026-11-12), run only against the fake:
   `bundle.TweetActivity` (`shared~bundle.QuoteTweetActivity~bundle.TweetActivity` holds the factory), and that loading
   it from /i/chat works;
 - what Favoriters answers for someone else's post (an empty timeline is assumed), whether its last page carries a
-  Bottom cursor with nobody (handled either way), and how many people a page holds with `count: 20`.
+  Bottom cursor with nobody (handled either way), and how many people a page holds with `count: 20`;
+- Home: that the route table's loader for Home is found by a chunk named `bundle.HomeTimeline` and loads from /i/chat
+  (the factory is often loaded already, in `loader.WideLayout`); that `enableRanking: false` is Following's newest
+  first; the social-context shapes (`contextType` values, `landingUrl` as a `twitter://user?id=` deep link, a topic's
+  `TimelineTopicContext`), from memory of X's answers and the bundle's names, not from a live answer; that a home
+  conversation's items come oldest first; what the end of a timeline looks like;
+- deleting: that DeleteTweet answers `{ delete_tweet: { tweet_results: {} } }` and a gone post 144 with no data (if
+  X answers 144 with data, `destroy` resolves without `delete_tweet` and the call says to look on X);
+- who may reply: the option names (`my_network`, `by_invitation`, `verified`) are the builder's; that X takes
+  `conversation_control` on CreateTweet as the composer sends it;
+- the uploader: the marker words (`Media has no uploader`; `TweetImage:"tweet_image"` for the locations), the three
+  thunks told apart by arity and words, that adding takes plain `File`s and `{ location }` and answers the items
+  (each with an `id`), that uploading by those ids answers the items with the upload done (or each one's
+  `uploadPromise`), that the media id is the item's `uploadId` (or the promise's `mediaId`), and where a failed
+  processing's words are (`detailMessage` is assumed, else the error's `errors`, else its message). Seen live
+  2026-11-17: one picture posted and deleted through this path. **Finding it is the weak part**: its chunk loads
+  only through a lazy component's loader, found by the chunk's file name since x.com minified the components' names.
 
 **What a live check should look at**: after one like and unlike of a post of your own, one repost and unrepost, one
 reply to your own post (then delete it on X), and `postReactors` on a post of yours with likes: `hook.actions` should
@@ -426,6 +505,18 @@ say `found (module)` and `hook.reactors` `found (loader)` (or `module`). `action
 `reactors.chunks` (the loaders' activity chunks, when none worked), and the shapes of the last answers:
 `responses.act` (`{ favorite_tweet }`, `{ create_retweet: … }`…), `responses.created` (the normalized post),
 `responses.reactors` (the timeline). The log names each failed act (`postAct.like failed {error}`) with X's words.
+
+For Home, deleting, who may reply and media: read a page of each timeline (`home`, both feeds, and a second page by
+`more`): `hook.home` should say `found (loader)` or `(module)`, and the items should match the app's Home, with For
+you's lines as reasons and no ads. Make a post with `replies: 'following'` and check its reply setting on X, then
+`unpublish` it and see it gone on the phone. Post one picture: `hook.upload` should say `found`; if it says `missing`,
+`diagnostics.json`'s `feed.upload` lists the lazy components' names the page had (`loaders`), the chunks named for
+composing or media (`chunks`), the loaders it tried (`tried`), how many loaded modules hold each of the uploader's
+words (`words`) and how many had `imageCategory` (`marked`): open a post's reply box in the live view once and try
+again. `feed.home` has the
+factory's method names (`fetchHome`, `fetchHomeLatest`) and the chunk it loaded (or the loaders' home chunks);
+`feed.upload` the uploader module's export names and the chunk it came in, with `via: 'store'` and the shapes of the
+last items added and uploaded (or, for the older shape, the one used and how many arguments it takes); `responses.home`, `responses.deleted` and `responses.upload` the last answers' shapes.
 
 ### Users in both layouts
 
@@ -449,15 +540,15 @@ never changes the account's status: the DMs go on whatever it says.
 | layer *inbox* "…; 12 objects dropped" | the shapes moved | `dropped` in the details names the kind and reason |
 | `lastCommand` "send failed" | a command | the log line `send failed {error}` |
 | layer *feed* waiting "first read at 12:34:56" | the feed has not read yet (30-60 s after online) | wait |
-| layer *feed* failed "X changed: store, endpoints not found, so notifications cannot be read" | a feed hook, past the grace period | `hook.webpack`, `hook.store`, `hook.endpoints`, `hook.notifications`, `hook.profiles`, `hook.posts`, `hook.actions`, `hook.reactors`; `feed` in `diagnostics.json` |
-| `lastCommand` "postAct.like failed", "publish failed", "postReactors failed" | answering on X | the log line with X's words; `feed.actions`, `feed.reactors` and `feed.responses` in `diagnostics.json` |
+| layer *feed* failed "X changed: store, endpoints not found, so notifications cannot be read" | a feed hook, past the grace period | `hook.webpack`, `hook.store`, `hook.endpoints`, `hook.notifications`, `hook.profiles`, `hook.posts`, `hook.actions`, `hook.reactors`, `hook.home`, `hook.upload`; `feed` in `diagnostics.json` |
+| `lastCommand` "postAct.like failed", "publish failed", "unpublish failed", "postReactors failed", "home failed" | answering on X, Home | the log line with X's words; `feed.actions`, `feed.reactors`, `feed.home`, `feed.upload` and `feed.responses` in `diagnostics.json` |
 | layer *feed* failed "last read failed: …" | the last read | the log line `feed read failed {error}`; it tries again 4-8 minutes later |
 
 `details` (names, ids and counts only): `display`, `page`, `pageState`, `pinMode`, `extensionAttached`, `hookVersion`,
 `hooks`, `self` (the user id and how it was found), `conversations`, `xchat`, `legacy`, `groups`, `openInPage`,
 `reactRenderers`, `fiberRoots`, `modulesLoaded`, `modulesScanned`, `readsHeld`, `dropped`, `lastCommand`,
 `diagnostics`, `hook.<name>` for each hook (the feed's too: `hook.webpack`, `hook.store`, `hook.endpoints`,
-`hook.notifications`, `hook.profiles`, `hook.posts`, `hook.actions`, `hook.reactors`): `found (via)`, `pending` or `missing`, and the feed's counts: `feed.items`
+`hook.notifications`, `hook.profiles`, `hook.posts`, `hook.actions`, `hook.reactors`, `hook.home`, `hook.upload`): `found (via)`, `pending` or `missing`, and the feed's counts: `feed.items`
 (messages announced since the start), `feed.people` (profiles announced), `feed.lastFetch`, `feed.nextFetch`,
 `feed.lastError`, `feed.dropped`.
 
@@ -472,9 +563,12 @@ open conversation its state's, items' and composer's shapes and counts of items 
 counts; and `feed`: the feed hooks and how they were found, webpack's module count and which words were found, the
 store's own keys and its state's top-level keys, the endpoints object's keys, the notifications module's keys and
 creation options' shape and the chunk it loaded, the post actions factory's method names, the activity chunk loaded
-for who liked (or the loaders' activity chunks when none worked), and the shapes of the last notifications, user,
-posts, thread, act, made post and reactors answers (keys and types, arrays as their length and first element, ids as
-`<id>`). Never a value.
+for who liked (or the loaders' activity chunks when none worked), the home factory's method names and the chunk it
+came in (or the loaders' home chunks), the uploader module's export names, how it uploads (`via: 'store'`, or the
+export used and its argument count) and the loader and chunk it came in (or the lazy components' names, the chunks
+named for composing or media, the loaders tried and the uploader's words counted), and the shapes of the last
+notifications, user, posts, thread, act, made post, reactors, home, delete and upload answers (keys and types, arrays
+as their length and first element, ids as `<id>`). Never a value.
 
 The log (`adapter.log`) has ids, counts, hook and class names and statuses (`feed read: 3 new, 1 page(s)`). Never
 message text, a notification's words, a person's name or handle (the account's own handle is in its *signed in* layer, as for every chat kind), a cookie, a token or the PIN.
@@ -544,6 +638,20 @@ with its author, `replyTo`, `quoteOf` and `root`; a duplicate failing with X's w
 a too-long or empty post refused before the page is asked; who liked your post, ranked, two pages and an empty last
 one, its chunks loaded once by the route's loader, who reposted it, and nobody for someone else's post.
 `feed.test.ts` covers `viewer` in every kind of post, `parsePublished`'s three ways and `parseReactors`.
+
+Home, deleting, who may reply and media, the same way (`rw-home.js`: Home's two lazy chunks, the factory as x.com's,
+which sends `seenTweetIds` when given a `userId`; `rw-compose.js`: the composer's chunk, `bundle.Compose`, with its media
+thunks and locations shaped as x.com's, loaded by a lazy component in the main chunk whose name is minified; the server answers HomeTimeline and
+HomeLatestTimeline from `homeWorld`, DeleteTweet, and `/i/media/upload.json`): Following and For you page by page to
+the end, Home's chunks loaded once by its route's loader, the repost, the home conversation with the posts above it,
+the reasons with whom they name (a bare identity for Ann), the ad, who to follow, the prompt and the gone post left
+out and counted, every request a GET with no `seenTweetIds`; a post made and deleted with one DeleteTweet, deleted
+again (144, done), someone else's refused with X's words; `conversation_control` for each choice and none for
+everyone, refused on a reply; two pictures and a video uploaded (INIT, APPEND, FINALIZE, STATUS until processed) with
+the composer's chunk loaded once, the post naming the media ids; a video X cannot process failing with X's words and
+no post; five pictures, a mix and a PDF refused before the page is asked. In the fake the composer's lazy component is
+in the main chunk, which is not so in the bundle read (see the `upload` hook). `feed.test.ts` covers `parseHome`
+(both timelines, the end, reasons by id and by handle, conversations), the bare identities and `postMediaProblem`.
 
 Also verified the same way: the Requests page's list (a one-to-one request and a group invitation), its
 conversation read with no read reaching the fake, Accept, Delete and Block with their confirmations (and the
@@ -622,7 +730,9 @@ only against the fake):
    `feed` has the shapes of what X answered.
    Answering on X: like and unlike a post of your own, repost and unrepost it, reply to it once (delete the reply on
    X after), and open who liked it; each shows on your phone as if done in the browser, and `hook.actions` and
-   `hook.reactors` say `found` ("Answering on X", "What a live check should look at").
+   `hook.reactors` say `found` ("Answering on X", "What a live check should look at"). Then read Home (`home`,
+   Following and For you) and compare with the app; post once with who may reply set and once with a picture, and
+   delete both with `unpublish`.
 8. Mark a conversation read from dither-chat: it should show read on your phone.
 9. The new hooks: `hook.requests` (`graph`), `hook.answer` (`list:…`), `hook.openDirect` (`search`),
    `hook.createGroup`, `hook.addMembers`, `hook.groupInfo`, `hook.typing`, `hook.forward` should all say `found`;

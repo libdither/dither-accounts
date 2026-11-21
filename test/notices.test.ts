@@ -157,6 +157,19 @@ test('an attention beside a passing state (connecting: an outage) is not "needs 
   await until(() => reads().includes(`attention:${id}`), 10_000, 'read when disabled');
 });
 
+test('a status that says a service it reads changed is a normal notice at once; gone, it is read, and the account is never "needs you"', async () => {
+  const id = (await admin.c.admin({ do: 'create', kind: 'fake', label: 'Canary', config: { changed: true } })).id;
+  await until(() => news().some((n) => n.id === `changed:${id}`), 10_000, 'the changed notice');
+  expect(news().find((n) => n.id === `changed:${id}`)).toMatchObject({ title: 'Canary: a service it reads changed', urgency: 'normal', reason: 'changed', context: 'fake' });
+  expect(m.router.lastStatus(id)?.status).toBe('online');
+  expect(news().some((n) => n.id === `attention:${id}`)).toBe(false);
+  // The next clean run: its status no longer says so.
+  await admin.c.admin({ do: 'update', account: id, config: {} });
+  await admin.c.admin({ do: 'restart', account: id });
+  await until(() => reads().includes(`changed:${id}`), 10_000, 'read when clean');
+  await admin.c.admin({ do: 'update', account: id, enabled: false });
+});
+
 test('an enabled account that cannot run (its directory locked) for 5 minutes (here 400 ms) is a high notice', async () => {
   const sleeper = Bun.spawn(['sleep', '60']);
   try {

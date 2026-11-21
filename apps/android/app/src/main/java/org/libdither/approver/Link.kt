@@ -56,7 +56,7 @@ object Links {
         }
     }
 
-    private fun wanted() = foreground || SystemClock.elapsedRealtime() < wakeUntil || Approvals.pending.isNotEmpty()
+    private fun wanted() = foreground || SystemClock.elapsedRealtime() < wakeUntil || Approvals.pending.isNotEmpty() || Asks.pending.isNotEmpty()
 
     /** Opens or closes links to match what is wanted and which pairings exist. */
     fun refresh() {
@@ -85,6 +85,16 @@ object Links {
             return
         }
         l.send(o)
+    }
+
+    /** The approval key went bad: forget it, and make and send a new one on the open link (or at the next `ready`). */
+    fun forgetApprovalKey(p: Pairing) {
+        synchronized(Store) {
+            p.approvalAlias = null
+            p.approvalFingerprint = null
+            runCatching { Store.save() }
+        }
+        links[p.deviceId]?.sendKeys()
     }
 
     /** Tells every open link this phone's push endpoint (or null after unregistering). */
@@ -132,6 +142,18 @@ class Link(val p: Pairing) {
         if (ready) ws?.send(o.toString()) else outbox.addLast(o)
     }
 
+    /** The approval key's frame, made off the main thread (the key may have to be generated first). */
+    fun sendKeys() {
+        val socket = ws ?: return
+        Thread {
+            val frame = Asks.keysFrame(Links.app, p)
+            main.post {
+                if (frame != null && socket === ws && ready) socket.send(frame.toString())
+                Links.changed()
+            }
+        }.start()
+    }
+
     fun sendPush() {
         if (ready) ws?.send(JSONObject().put("t", "push").put("endpoint", Store.pushEndpoint ?: JSONObject.NULL).toString())
     }
@@ -177,12 +199,16 @@ class Link(val p: Pairing) {
                         backoff = 1000
                         state = "ready"
                         if (Store.pushEndpoint != null) sendPush()
+                        sendKeys()
                         while (outbox.isNotEmpty()) webSocket.send(outbox.removeFirst().toString())
                         Links.refresh()
                     }
                     "ping" -> webSocket.send("""{"t":"pong"}""")
                     "pong" -> {}
-                    "request" -> if (ready) Approvals.onRequest(p, o)
+                    "request" -> if (ready) {
+                        if (o.optString("op") == "approve") Asks.onRequest(p, o) else Approvals.onRequest(p, o)
+                    }
+                    "cancel" -> if (ready) Asks.onCancel(p, o.optString("id"))
                 }
             }
         }

@@ -9,12 +9,29 @@
  * Calls made while the socket is down wait for it (up to their timeout). The client reconnects with backoff and
  * pings every 25 s, so a dead socket shows within a minute.
  *
+ * When the socket drops with calls in flight, reads are sent again on the next socket (the manager answers a repeated
+ * id once, and a read run twice is harmless). A write, manage call or admin change already sent is not: it may have
+ * gone through (the manager may have restarted while its extractor kept running), so it fails at once with code
+ * `unsure` (status 504) and the app decides, for instance by looking in Sent. A call not yet sent waits as before.
+ *
  * An app that manages an account (an `accounts` grant at manage for its kind) also runs it: `admin` creates, changes,
  * restarts and removes accounts and reads their logs, and `liveViewUrl` is the socket that carries an account's live
  * view (its sandboxed browser's VNC stream) for the app to hand on to its own page.
  */
 import { type AccountView, type AdminAction, type AdminResult, type CallError, type ConsumerIn, type ConsumerOut, type Iface, type InputOf, liveViewPath, type OpName, type OutputOf } from '@dither-accounts/spec';
 import type { AccessRequest } from '@dither-accounts/manager/api-types';
+import { IFACES } from '@dither-accounts/interfaces';
+import { ManagerSocket, OPEN } from './socket.ts';
+
+/** Each op's level, by name (op names are unique across interfaces): which calls may be sent again. */
+const OP_LEVEL = new Map<string, string>();
+for (const i of Object.values(IFACES)) for (const [name, spec] of Object.entries(i.ops)) OP_LEVEL.set(name, spec.level);
+
+/**
+ * The code a write fails with when its socket dropped after it was sent: it may or may not have gone through, and
+ * it is not sent again. Status 504, as an extractor's own "no answer in time".
+ */
+export const UNSURE = 'unsure';
 
 export class CallFailed extends Error {
   readonly code: CallError['code'];
@@ -41,12 +58,13 @@ export interface ClientOpts {
   timeoutMs?: number;
 }
 
-type Waiting = { msg: string; resolve: (v: unknown) => void; reject: (e: Error) => void; timer: Timer };
+/** `read`: safe to send again. `sent`: it went out on a socket. */
+type Waiting = { msg: string; read: boolean; sent: boolean; resolve: (v: unknown) => void; reject: (e: Error) => void; timer: Timer };
 
 export class AccountsClient {
   accounts: AccountView[] = [];
   connected = false;
-  private ws: WebSocket | null = null;
+  private ws: ManagerSocket | null = null;
   private closed = false;
   private attempt = 0;
   private waiting = new Map<string, Waiting>();
@@ -61,14 +79,18 @@ export class AccountsClient {
     const u = new URL('/consumer', this.opts.url.replace(/^http/, 'ws'));
     u.searchParams.set('app', this.opts.app);
     u.searchParams.set('token', this.opts.token);
-    const ws = new WebSocket(u.toString());
+    const ws = new ManagerSocket(u.toString());
     this.ws = ws;
     ws.onopen = () => {
       this.connected = true;
       this.attempt = 0;
       this.opts.onConnection?.(true);
-      for (const w of this.waiting.values()) ws.send(w.msg);
-      this.ping = setInterval(() => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ t: 'ping' } satisfies ConsumerIn)), 25_000);
+      // What is still waiting is a read, or was never sent (writes in flight failed when the last socket closed).
+      for (const w of this.waiting.values()) {
+        ws.send(w.msg);
+        w.sent = true;
+      }
+      this.ping = setInterval(() => ws.readyState === OPEN && ws.send(JSON.stringify({ t: 'ping' } satisfies ConsumerIn)), 25_000);
     };
     ws.onmessage = (e) => {
       let m: ConsumerOut;
@@ -97,12 +119,18 @@ export class AccountsClient {
       this.connected = false;
       if (was) this.opts.onConnection?.(false);
       if (this.closed) return;
+      for (const [id, w] of this.waiting) {
+        if (w.read || !w.sent) continue;
+        this.waiting.delete(id);
+        clearTimeout(w.timer);
+        w.reject(new CallFailed({ code: UNSURE, status: 504, message: 'the connection to the manager dropped while this was under way: it may or may not have gone through, and it was not sent again' }));
+      }
       setTimeout(() => this.connect(), Math.min(30_000, 500 * 2 ** this.attempt++));
     };
     ws.onerror = () => {};
   }
 
-  private send(build: (id: string) => ConsumerIn, timeoutMs: number): Promise<unknown> {
+  private send(build: (id: string) => ConsumerIn, timeoutMs: number, read: boolean): Promise<unknown> {
     const id = crypto.randomUUID();
     const msg = JSON.stringify(build(id));
     return new Promise((resolve, reject) => {
@@ -110,8 +138,12 @@ export class AccountsClient {
         this.waiting.delete(id);
         reject(new CallFailed({ code: 'timeout', message: this.connected ? 'the manager did not answer' : 'the manager is not reachable' }));
       }, timeoutMs);
-      this.waiting.set(id, { msg, resolve, reject, timer });
-      if (this.connected) this.ws!.send(msg);
+      const w: Waiting = { msg, read, sent: false, resolve, reject, timer };
+      this.waiting.set(id, w);
+      if (this.connected) {
+        this.ws!.send(msg);
+        w.sent = true;
+      }
     });
   }
 
@@ -121,14 +153,17 @@ export class AccountsClient {
     return this.callRaw(account, op, input as Record<string, unknown>, timeoutMs ?? Math.max(this.opts.timeoutMs ?? 60_000, (spec?.timeoutMs ?? 30_000) + 5_000)) as Promise<OutputOf<I, K>>;
   }
 
-  /** `o.trace`: this app's W3C traceparent for the call, so the manager's spans join its trace. */
+  /**
+   * `o.trace`: this app's W3C traceparent for the call, so the manager's spans join its trace. An op no interface here
+   * knows is taken for a write: it is not sent again after a dropped socket.
+   */
   callRaw(account: string, op: string, input: Record<string, unknown> = {}, timeoutMs = this.opts.timeoutMs ?? 60_000, o: { trace?: string } = {}): Promise<unknown> {
-    return this.send((id) => ({ t: 'call', id, account, op, input, ...(o.trace ? { trace: o.trace } : {}) }), timeoutMs);
+    return this.send((id) => ({ t: 'call', id, account, op, input, ...(o.trace ? { trace: o.trace } : {}) }), timeoutMs, OP_LEVEL.get(op) === 'read');
   }
 
   /** Create, change, start, stop, remove accounts of the kinds this app manages, or read their logs. */
   admin<A extends AdminAction>(action: A, timeoutMs = 60_000): Promise<AdminResult<A>> {
-    return this.send((id) => ({ t: 'admin', id, action }), timeoutMs) as Promise<AdminResult<A>>;
+    return this.send((id) => ({ t: 'admin', id, action }), timeoutMs, action.do === 'kinds' || action.do === 'log') as Promise<AdminResult<A>>;
   }
 
   /** The last lines of an account's extractor log. */

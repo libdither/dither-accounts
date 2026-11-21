@@ -233,12 +233,12 @@ describe('signal adapter against a fake signal-cli', () => {
     expect(calls('send').at(-1).params).toEqual({ recipient: [STRANGER], message: 'first' });
   });
 
-  test('files go by path, and our copy is what the echo points at', async () => {
+  test('files go with their own name and type, and our copy is what the echo points at', async () => {
     const src = join(dir, 'spool-file');
     writeFileSync(src, 'png bytes');
     const mark = events.length;
     const res = (await cmd({ t: 'send', conversation: DM_ALICE, body: '', attachments: [{ path: src, name: 'a.png', mime: 'image/png', size: 9, kind: 'image' }] })) as { nativeId: string };
-    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: '', attachment: [src] });
+    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: '', attachment: ['data:image/png;filename=a.png;base64,cG5nIGJ5dGVz'] });
     const echo = of('message', mark).find((e) => e.message.nativeId === res.nativeId)!.message;
     expect(echo.kind).toBe('media');
     expect(echo.attachments).toHaveLength(1);
@@ -283,11 +283,11 @@ describe('signal adapter against a fake signal-cli', () => {
     writeFileSync(src, 'ogg bytes');
     let mark = events.length;
     const voice = (await cmd({ t: 'send', conversation: DM_ALICE, body: '', attachments: [{ path: src, name: 'voice.ogg', mime: 'audio/ogg', size: 9, kind: 'audio', voice: { seconds: 2 } }] })) as { nativeId: string };
-    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: '', attachment: [src], voiceNote: true });
+    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: '', attachment: ['data:audio/ogg;filename=voice.ogg;base64,b2dnIGJ5dGVz'], voiceNote: true });
     expect(of('message', mark).find((e) => e.message.nativeId === voice.nativeId)!.message.extra).toMatchObject({ attachmentNotes: [{ voiceNote: true }] });
     mark = events.length;
     const once = (await cmd({ t: 'send', conversation: DM_ALICE, body: '', viewOnce: true, attachments: [{ path: src, name: 'a.png', mime: 'image/png', size: 9, kind: 'image' }] })) as { nativeId: string };
-    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: '', attachment: [src], viewOnce: true });
+    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: '', attachment: ['data:image/png;filename=a.png;base64,b2dnIGJ5dGVz'], viewOnce: true });
     const echo = of('message', mark).find((e) => e.message.nativeId === once.nativeId)!.message;
     expect(echo).toMatchObject({ kind: 'media', body: '📷 View-once media', extra: { viewOnce: true } });
     expect(echo.attachments).toBeUndefined();
@@ -316,9 +316,12 @@ describe('signal adapter against a fake signal-cli', () => {
 
   test('react, edit, redact, markRead', async () => {
     let mark = events.length;
+    const reactedFrom = Date.now();
     await cmd({ t: 'react', conversation: GROUP, message: `${ALICE}:${T + 1000}`, key: '🔥' });
     expect(calls('sendReaction').at(-1).params).toEqual({ groupId: GID, emoji: '🔥', targetAuthor: ALICE, targetTimestamp: T + 1000 });
-    expect(of('reaction', mark)).toEqual([{ t: 'reaction', conversation: GROUP, message: `${ALICE}:${T + 1000}`, author: SELF, key: '🔥' }]);
+    // Its time is the one signal-cli sent it with (the fake's are never before the call).
+    expect(of('reaction', mark)).toEqual([{ t: 'reaction', conversation: GROUP, message: `${ALICE}:${T + 1000}`, author: SELF, key: '🔥', ts: expect.any(Number) }]);
+    expect((of('reaction', mark)[0] as { ts: number }).ts).toBeGreaterThanOrEqual(reactedFrom);
     await cmd({ t: 'react', conversation: GROUP, message: `${ALICE}:${T + 1000}`, key: '🔥', remove: true });
     expect(calls('sendReaction').at(-1).params.remove).toBe(true);
 
@@ -328,6 +331,18 @@ describe('signal adapter against a fake signal-cli', () => {
     await cmd({ t: 'edit', conversation: DM_ALICE, message: sent.nativeId, body: 'fixed *now*' });
     expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: 'fixed now', textStyle: ['6:3:ITALIC'], editTimestamp: ts });
     expect(of('message', mark)[0].message).toMatchObject({ nativeId: sent.nativeId, ts, editedTs: expect.any(Number), body: 'fixed *now*' });
+
+    // The preview off: the same words again as an edit, with no preview, as Signal's apps do it.
+    mark = events.length;
+    expect(await cmd({ t: 'suppressEmbeds', conversation: DM_ALICE, message: sent.nativeId, body: 'fixed *now*' })).toEqual({});
+    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: 'fixed now', textStyle: ['6:3:ITALIC'], editTimestamp: ts });
+    expect(of('message', mark)[0].message).toMatchObject({ nativeId: sent.nativeId, ts, editedTs: expect.any(Number), body: 'fixed *now*' });
+    const edits = calls('send').length;
+    await expect(cmd({ t: 'suppressEmbeds', conversation: DM_ALICE, message: sent.nativeId })).rejects.toThrow(/words from the hub/);
+    await expect(cmd({ t: 'suppressEmbeds', conversation: GROUP, message: `${ALICE}:${T + 1000}`, body: 'x' })).rejects.toThrow(/someone else's/);
+    // Past the first 24 hours Signal's apps edit no more.
+    await expect(cmd({ t: 'suppressEmbeds', conversation: DM_ALICE, message: `${SELF}:${T}`, body: 'x' })).rejects.toThrow(/first 24 hours/);
+    expect(calls('send').length).toBe(edits);
 
     mark = events.length;
     await cmd({ t: 'redact', conversation: DM_ALICE, message: sent.nativeId });
@@ -340,6 +355,22 @@ describe('signal adapter against a fake signal-cli', () => {
     const before = calls('sendReceipt').length;
     await cmd({ t: 'markRead', conversation: GROUP, upTo: `${ALICE}:${T + 1000}` }); // already acknowledged: no second receipt
     expect(calls('sendReceipt').length).toBe(before);
+  });
+
+  test('markRead up to a line of our own ("could not be decrypted"): what came before is read, no receipt for the line', async () => {
+    await cmd({ t: 'markRead', conversation: DM_ALICE, upTo: `${ALICE}:${T + 94_000}` }); // what earlier tests left unread
+    push({
+      account: '+15550100',
+      envelope: { sourceNumber: '+15550137', sourceUuid: ALICE, sourceName: 'Alice', sourceDevice: 1, timestamp: T + 95_000, dataMessage: { timestamp: T + 95_000, message: 'before it' } },
+    });
+    await until('unread message', () => of('message').find((e) => e.message.nativeId === `${ALICE}:${T + 95_000}`));
+    expect(await cmd({ t: 'markRead', conversation: DM_ALICE, upTo: `${ALICE}:${T + 96_000}:undecrypted` })).toEqual({ receipts: 1 });
+    expect(calls('sendReceipt').at(-1).params).toEqual({ recipient: ALICE, targetTimestamp: [T + 95_000], type: 'read' });
+    const before = calls('sendReceipt').length;
+    expect(await cmd({ t: 'markRead', conversation: DM_ALICE, upTo: `${ALICE}:${T + 97_000}:undecrypted` })).toEqual({ receipts: 0 });
+    expect(await cmd({ t: 'markRead', conversation: DM_ALICE, upTo: `${SELF}:${T + 98_000}:endsession` })).toEqual({ receipts: 0 });
+    expect(calls('sendReceipt').length).toBe(before);
+    await expect(cmd({ t: 'markRead', conversation: DM_ALICE, upTo: `${ALICE}:${T + 99_000}:bogus` })).rejects.toThrow('not a Signal message id');
   });
 
   test('polls: make one, vote with a higher number each time, take it back, end your own', async () => {

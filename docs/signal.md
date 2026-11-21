@@ -90,11 +90,15 @@ Mapped into `MessageFact.extra` under the keys dither-chat's protocol names (`ex
 | `attachments[].isVoiceNote`, `.caption` | `extra.attachmentNotes`, by position among the files kept | |
 | an attachment with no `id`, or whose file is not there | `extra.missingAttachments` (`name, mime, size`) | signal-cli downloads a message's files before it hands the message over, so a file not there failed or was skipped |
 | `sourceDevice`, `serverReceivedTimestamp`, `serverDeliveredTimestamp` | `extra.sourceDevice`, `serverReceivedTs`, `serverDeliveredTs` | not for edits |
-| a `receive` with an `exception` and nothing readable, from someone else | a system message in your 1:1 with them, "A message from Sam could not be decrypted.", id `<author>:<ts>:undecrypted` | once per message; none for `…Duplicate…` or `SelfSend…` exceptions. The warning is logged as before |
+| a `receive` with an `exception` and nothing readable, from someone else | a system message in your 1:1 with them, "A message from Sam could not be decrypted.", id `<author>:<ts>:undecrypted` | once per message; none for `…Duplicate…` or `SelfSend…` exceptions. The warning is logged as before. Reading up to it (`markRead`) acknowledges what came before it and sends no receipt for the line itself |
 | your `send`'s `results[]` that are not `SUCCESS` (some of a group) | `extra.failed` on the echo (`who, number, reason`) | when nobody gets it signal-cli fails the call, as before |
 
 What you send:
 
+- **Files** go with their own name and type (`src/attach.ts`): `attachment` is a data URI,
+  `data:<type>;filename=<URL-encoded name>;base64,…`. Given a path, signal-cli names the file by the path (the hub's
+  spool name) and takes its type from the extension, else from the first bytes, where a WebP's RIFF header reads as
+  WAV audio. A file over 25 MB, too big to carry in the request, still goes by its path.
 - **Quotes** carry the quoted message as Signal has it: `quoteMessage` with its mentions (`quoteMention`) and styles
   (`quoteTextStyle`), and its files (`quoteAttachment`, `contentType:filename[:preview]`; a picture of 256 KB or less is
   its own thumbnail, a colon in a name becomes `_`). That needs the message seen by this version (the state index keeps
@@ -102,6 +106,10 @@ What you send:
 - **Link previews** (`send`'s `preview`, capability `linkPreviews`): `previewUrl/Title/Description/Image`, only while
   your phone's link-preview setting is on and only for a link that is in the text. The picture is copied into
   `attachments/sent-<ts>-preview` for the echo's embed.
+- **A preview taken off** your own message (`suppressEmbeds`): Signal has no way to do it by itself, so it goes as an
+  edit with the same words (the hub sends them as the command's `body`: signal-cli keeps no copy) and quote and no
+  preview, as Signal's apps do when you close the preview while editing. Only in the message's first 24 hours, as the
+  apps edit (Note to Self always). An ordinary `edit` sends no preview either.
 - **`viewed`**: `sendReceipt --type viewed` for someone else's message, once per message (in memory), only with read
   receipts on, never in a message request.
 - **`resetSession`**: `send --end-session` (`endSession: true`) in a 1:1, and a system line "You reset the secure
@@ -224,6 +232,10 @@ dither-chat's `docs/media-kinds.md` has the app's side; this is what the adapter
   --story-timestamp --story-author` (or `sendReaction --story` with an emoji), in the author's 1:1 or the group of a
   group story, refused in a message request.
 
+GIFs: signal-cli's JSON has no GIF flag on a received attachment (`JsonAttachment` in 0.14.9: content type, name,
+id, size, width, height, caption, upload time, `isVoiceNote`) and `send` has no option for one, so no attachment is
+marked `gif` and `sendGifs` is not advertised; a .gif goes as a file (docs/chat.md "GIFs").
+
 Only a live account can confirm: that a viewed receipt for a story is what Signal's apps send for one, that a story
 reply shows on the phone as a reply to that story, that `getSticker` answers `{ data }` over JSON-RPC as on the CLI,
 that `addStickerPack` takes `uri` as a list over JSON-RPC, and that an Ogg Opus voice note plays on an iPhone.
@@ -272,7 +284,7 @@ sandbox, one JSON object per line.
 | start a call | `calling.startCallingLobby`, then `calling.startCall` with the lobby's call mode (groups: `setOutgoingRing` first, when the device asked to ring) |
 | answer (a `join` while it rings here) | `calling.acceptCall` |
 | decline | `calling.declineCall` |
-| leave, mute | `calling.hangUpActiveCall`, `calling.setLocalAudio` (deafen: the mix to the device is cut) |
+| leave, mute | `calling.hangUpActiveCall`, `calling.setLocalAudio` (deafen: the mix to the device is cut). A leave while a join still waits for the lobby or the call (the device's socket closed, its app gone) ends that join: it starts nothing more, hangs up what it opened, and fails "left before the call started" |
 | camera on or off | `calling.setLocalVideo`; when Signal then asks `getUserMedia` for a camera, it gets the device's camera from the bridge |
 | share a screen | `calling._setPresenting(source, stream)` with the device's screen (and its sound) from the bridge; off: `cancelPresenting` |
 | the device's microphone | played into the `mic_in` sink; its monitor is `device_mic`, the sandbox's default source, which RingRTC records |

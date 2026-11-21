@@ -158,6 +158,8 @@ export interface SendDeps {
   /** One command to the Mail page's hook. */
   page: (cmd: Record<string, unknown>, timeoutMs: number) => Promise<unknown>;
   log: (level: 'debug' | 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
+  /** Called just before the message goes to the page to send (SendOnce: a failure before it sent nothing). */
+  sending?: () => void;
 }
 
 /** Send through the page; the RFC Message-ID Proton gave it, and its id (it is the copy in Sent). */
@@ -175,6 +177,7 @@ export async function send(m: OutgoingChecked, deps: SendDeps): Promise<{ messag
     parent = { id: r.Message.ID, addressID: typeof r.Message.AddressID === 'string' ? r.Message.AddressID : null };
   }
   let answer: unknown;
+  deps.sending?.();
   try {
     answer = await deps.page(
       {

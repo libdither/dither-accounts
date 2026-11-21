@@ -20,9 +20,10 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, 
 import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type * as P from '@dither-chat/protocol';
-import { ADD_MEMBERS_MAX, createGroupProblem, GROUP_RULES, PIN_DURATIONS, pollDraftProblem, signalStickerLink, STICKER_PAGE_PACKS, STORIES_ACTION } from '@dither-chat/protocol';
+import { ADD_MEMBERS_MAX, createGroupProblem, GROUP_RULES, PIN_DURATIONS, pollDraftProblem, previewsRemovable, signalStickerLink, STICKER_PAGE_PACKS, STORIES_ACTION } from '@dither-chat/protocol';
 import { errorText, groupIdOfLink, isMessageRequest, joinError, lookupError, signalError, wantsCaptcha } from './add.ts';
 import { answerJoinParams, approvalParams, groupLeaving, groupModeration, isAdmin, joinRequests, labelOf, labelParams, moderateParams, ownLabel, parseJoinRequest, picturePath, quitParams } from './groups.ts';
+import { attachmentArg } from './attach.ts';
 import { ChildRegistry, type Logger } from './cli.ts';
 import { Daemon, type DaemonExit } from './daemon.ts';
 import { DesktopCalls } from './desktop/calls.ts';
@@ -47,6 +48,7 @@ import {
   msgId,
   noteToSelf,
   parseConversation,
+  parseLineId,
   parseMsgId,
   pendingIds,
   personAbout,
@@ -65,7 +67,7 @@ import { CallBook } from './calls.ts';
 
 export const ADAPTER_VERSION = '0.1.0';
 /** No 'connect': Signal has no friends, follows or contact requests; people are added by messaging them (openDirect). */
-export const CAPABILITIES: P.Capability[] = ['send', 'react', 'edit', 'redact', 'markRead', 'typing', 'media', 'sendMedia', 'openDirect', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'editProfile', 'resolve', 'join', 'requests', 'viewed', 'resetSession', 'callStates', 'relationships', 'disconnect', 'block', 'safetyNumbers', 'contactNotes', 'leave', 'moderate', 'memberLabels', 'setPicture', 'polls', 'pollVote', 'pollCreate', 'pollEnd', 'pin', 'sendStickers', 'installStickers', 'sendVoice', 'sendViewOnce', 'stories'];
+export const CAPABILITIES: P.Capability[] = ['send', 'react', 'edit', 'redact', 'markRead', 'typing', 'media', 'sendMedia', 'openDirect', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'editProfile', 'resolve', 'join', 'requests', 'viewed', 'resetSession', 'callStates', 'relationships', 'disconnect', 'block', 'safetyNumbers', 'contactNotes', 'leave', 'moderate', 'memberLabels', 'setPicture', 'polls', 'pollVote', 'pollCreate', 'pollEnd', 'pin', 'sendStickers', 'installStickers', 'sendVoice', 'sendViewOnce', 'stories', 'suppressEmbeds'];
 
 /**
  * The settings your phone syncs to this device (Settings → Privacy, Chats), as signal-cli keeps them: read-only from its
@@ -1187,11 +1189,14 @@ export class SignalAdapter {
         return this.openDirect(cmd.peer);
       case 'edit':
         return this.edit(cmd.conversation, cmd.message, cmd.body);
+      case 'suppressEmbeds':
+        return this.suppressEmbeds(cmd.conversation, cmd.message, cmd.body);
       case 'react': {
         const m = this.message(cmd.message);
         await this.refuseQuiet(cmd.conversation);
-        await this.call('sendReaction', { ...this.target(cmd.conversation), emoji: cmd.key, targetAuthor: m.author, targetTimestamp: m.ts, ...(cmd.remove ? { remove: true } : {}) });
-        this.host.emit({ t: 'reaction', conversation: cmd.conversation, message: cmd.message, author: this.self, key: cmd.key, ...(cmd.remove ? { remove: true } : {}) });
+        const res = await this.call('sendReaction', { ...this.target(cmd.conversation), emoji: cmd.key, targetAuthor: m.author, targetTimestamp: m.ts, ...(cmd.remove ? { remove: true } : {}) });
+        // Its time is the one it was sent with, as for anyone's.
+        this.host.emit({ t: 'reaction', conversation: cmd.conversation, message: cmd.message, author: this.self, key: cmd.key, ...(cmd.remove ? { remove: true } : {}), ts: res?.timestamp ?? Date.now() });
         return {};
       }
       case 'reactionContext':
@@ -1446,7 +1451,8 @@ export class SignalAdapter {
     if (replyTo) Object.assign(params, this.quoteParams(replyTo));
     if (sticker) params.sticker = `${sticker.packId}:${sticker.stickerId}`;
     if (files.length) {
-      params.attachment = files.map((f) => f.path);
+      // Each with its own name and type (attach.ts): by path, signal-cli knows neither.
+      params.attachment = files.map((f) => attachmentArg(f));
       // Recorded in the composer: Signal's voice note (one file).
       if (files.length === 1 && files[0].voice) params.voiceNote = true;
       if (o.viewOnce) params.viewOnce = true;
@@ -1556,6 +1562,22 @@ export class SignalAdapter {
   }
 
   /**
+   * The link preview off your own message. Signal has no way to take one off by itself: its apps do it by editing the
+   * message and closing the preview, so this edits it with the same words and quote and no preview (edit never sends
+   * one). `body` is its words as the hub has them, since signal-cli keeps no copy. Only in the message's first 24 hours,
+   * as the apps edit (Note to Self always).
+   */
+  private async suppressEmbeds(conversation: string, message: string, body: string | undefined) {
+    const m = this.message(message);
+    if (m.author !== this.self) throw new Error("Signal has no way to take the preview off someone else's message");
+    if (!body?.trim()) throw new Error('Taking a preview off needs the message\'s words from the hub (an older hub does not send them)');
+    const shape = parseConversation(conversation, this.self)?.kind === 'self' ? 'self' : 'direct';
+    if (!previewsRemovable('signal', m.ts, { shape })) throw new Error('Signal lets you change a message only in its first 24 hours');
+    await this.edit(conversation, message, body);
+    return {};
+  }
+
+  /**
    * You played someone's voice note or opened their video: a viewed receipt, as Signal's apps send ("played"). Only
    * where a read receipt would go and only with read receipts on in your phone's settings (not known: none), never in a
    * message request, never for your own, once per message.
@@ -1595,7 +1617,9 @@ export class SignalAdapter {
 
   private async markRead(conversation: string, upTo: string) {
     const self = this.self;
-    const m = this.message(upTo);
+    // Read up to the last line, which can be one of ours ("could not be decrypted"): its time marks the place.
+    const m = parseLineId(upTo);
+    if (!m) throw new Error(`not a Signal message id: ${upTo}`);
     // A message request: no read receipt until it is accepted, and what is unread stays so, for the receipts then.
     if (await this.quiet(conversation)) {
       this.host.log('debug', 'no read receipts: a message request waits for your answer');
@@ -1603,7 +1627,7 @@ export class SignalAdapter {
     }
     const acks = this.state.takeUnread(conversation, m.ts);
     // Nothing tracked (e.g. after a restart): acknowledge the target itself, once.
-    if (!acks.length && m.author !== self && m.ts > (this.acked.get(conversation) ?? 0)) acks.push([m.author, m.ts]);
+    if (!acks.length && !m.own && m.author !== self && m.ts > (this.acked.get(conversation) ?? 0)) acks.push([m.author, m.ts]);
     this.acked.set(conversation, Math.max(this.acked.get(conversation) ?? 0, m.ts));
     this.startExpiry(conversation, m.ts);
     const byAuthor = new Map<string, number[]>();

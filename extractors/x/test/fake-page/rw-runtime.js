@@ -35,8 +35,9 @@
     return f;
   };
   req.p = '/responsive-web/client-web/';
-  var names = { 9001: 'bundle.Notifications', 9002: 'shared~bundle.Notifications~bundle.NotificationDetail', 9003: 'bundle.Bookmarks', 9004: 'shared~bundle.QuoteTweetActivity~bundle.TweetActivity', 9005: 'bundle.TweetActivity' };
-  var hashes = { 9001: 'f4ke9001c0ffee12', 9002: 'f4ke9002c0ffee34', 9003: 'f4ke9003c0ffee56', 9004: 'f4ke9004c0ffee78', 9005: 'f4ke9005c0ffee9a' };
+  // Named chunks by their bundles, as on x.com; the composer's is bundle.Compose (9010).
+  var names = { 9001: 'bundle.Notifications', 9002: 'shared~bundle.Notifications~bundle.NotificationDetail', 9003: 'bundle.Bookmarks', 9004: 'shared~bundle.QuoteTweetActivity~bundle.TweetActivity', 9005: 'bundle.TweetActivity', 9006: 'shared~bundle.Compose~bundle.HomeTimeline~bundle.LoggedInMain', 9007: 'bundle.HomeTimeline', 9010: 'bundle.Compose' };
+  var hashes = { 9001: 'f4ke9001c0ffee12', 9002: 'f4ke9002c0ffee34', 9003: 'f4ke9003c0ffee56', 9004: 'f4ke9004c0ffee78', 9005: 'f4ke9005c0ffee9a', 9006: 'f4ke9006c0ffeebc', 9007: 'f4ke9007c0ffeede', 9010: 'f4ke9010c0ffeef0' };
   req.u = function (id) {
     return '' + (names[id] || id) + '.' + hashes[id] + 'a.js';
   };

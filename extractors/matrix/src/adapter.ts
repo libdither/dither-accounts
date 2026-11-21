@@ -21,7 +21,7 @@ import type * as P from '@dither-chat/protocol';
 import { canonicalReactionKey } from '@dither-chat/protocol';
 import type { HubLink } from '@dither-chat/protocol/client';
 import { addMembers, configureAbout, createGroup, readAbout, type AboutHost, type GroupHost } from './about.ts';
-import { add, answer, answersKnocks, Requests, resolve, type AddHost } from './add.ts';
+import { add, answer, Requests, resolve, takesKnocks, type AddHost } from './add.ts';
 import { AdapterDb, type ThreadRow, type UtdRow } from './db.ts';
 import type { E2ee, VerificationState } from './e2ee.ts';
 import { markdownToMatrix, snippet } from './format.ts';
@@ -763,7 +763,7 @@ export class MatrixAdapter {
    * loading sends only the members who speak) or one that came while the adapter was down.
    */
   private async loadKnocks() {
-    for (const room of this.dir.joined().filter((r) => answersKnocks(r, this.selfId))) {
+    for (const room of this.dir.joined().filter(takesKnocks)) {
       try {
         const res: any = await this.api().request('GET', `/_matrix/client/v3/rooms/${enc(room.id)}/members`, { query: { membership: 'knock' }, retries: 1 });
         this.db.tx(() => {
@@ -1002,12 +1002,14 @@ export class MatrixAdapter {
   }
 
   private reactionSnapshot(target: string): P.ReactionFact[] {
-    const by = new Map<string, Set<string>>();
+    // reactionsFor is oldest first, so each person's time is when they first reacted with that key.
+    const by = new Map<string, Map<string, number>>();
     for (const r of this.db.reactionsFor(target)) {
       const key = canonicalReactionKey(r.key);
-      (by.get(key) ?? by.set(key, new Set()).get(key)!).add(r.sender);
+      const at = by.get(key) ?? by.set(key, new Map()).get(key)!;
+      if (!at.has(r.sender)) at.set(r.sender, r.ts);
     }
-    return [...by].map(([key, authors]) => ({ key, authors: [...authors], ...(key.startsWith('mxc://') ? { emoji: packEmoji(key) } : {}) }));
+    return [...by].map(([key, at]) => ({ key, authors: [...at.keys()], at: Object.fromEntries(at), ...(key.startsWith('mxc://') ? { emoji: packEmoji(key) } : {}) }));
   }
 
   private buildMessage(room: Room, ev: MxEvent, conv: string, ctx: Ctx): P.MessageFact | null {
@@ -1121,22 +1123,23 @@ export class MatrixAdapter {
     this.db.putReaction({ id: ev.event_id, room: room.id, target: rel.eventId, key: rel.key, sender: ev.sender, ts: ev.origin_server_ts });
     const conv = this.db.event(rel.eventId)?.conv ?? room.id;
     const shortcode = ev.content?.['com.beeper.reaction.shortcode'] ?? ev.content?.shortcode;
-    this.hub.emit({ t: 'reaction', conversation: conv, message: rel.eventId, author: ev.sender, key: rel.key, ...(rel.key.startsWith('mxc://') ? { emoji: packEmoji(rel.key, shortcode) } : {}) });
+    this.hub.emit({ t: 'reaction', conversation: conv, message: rel.eventId, author: ev.sender, key: rel.key, ...(rel.key.startsWith('mxc://') ? { emoji: packEmoji(rel.key, shortcode) } : {}), ts: ev.origin_server_ts });
   }
 
   private async redactionEvent(room: Room, ev: MxEvent, ctx: Ctx) {
     this.db.putEvent(ev, room.id, room.id, false);
     const target = typeof ev.redacts === 'string' ? ev.redacts : ev.content?.redacts;
-    if (typeof target === 'string') await this.applyRedaction(room, target);
+    if (typeof target === 'string') await this.applyRedaction(room, target, ev.origin_server_ts);
   }
 
-  private async applyRedaction(room: Room, target: string) {
+  /** `when`: the redaction's own time, where we have it (a taken-back reaction is shown with it). */
+  private async applyRedaction(room: Room, target: string, when?: number) {
     const rx = this.db.reaction(target);
     if (rx) {
       this.db.deleteReaction(target);
       if (!this.db.reactionsBy(rx.target, rx.sender, rx.key).length) {
         const conv = this.db.event(rx.target)?.conv ?? rx.room;
-        this.hub.emit({ t: 'reaction', conversation: conv, message: rx.target, author: rx.sender, key: rx.key, remove: true });
+        this.hub.emit({ t: 'reaction', conversation: conv, message: rx.target, author: rx.sender, key: rx.key, remove: true, ...(when ? { ts: when } : {}) });
       }
       return;
     }
@@ -1158,7 +1161,7 @@ export class MatrixAdapter {
   /** A message we see only in its redacted form: a tombstone, so the timeline shows "deleted". */
   private async redactedEvent(room: Room, ev: MxEvent, ctx: Ctx) {
     if (ev.type === 'm.reaction') {
-      if (this.db.reaction(ev.event_id)) await this.applyRedaction(room, ev.event_id);
+      if (this.db.reaction(ev.event_id)) await this.applyRedaction(room, ev.event_id, ev.unsigned?.redacted_because?.origin_server_ts);
       this.db.putEvent(ev, room.id, room.id, false);
       return;
     }

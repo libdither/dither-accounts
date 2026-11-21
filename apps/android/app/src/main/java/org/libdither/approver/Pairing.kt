@@ -78,5 +78,6 @@ object Pairings {
             Store.save()
         }
         Keys.delete(p.keyAlias)
+        p.approvalAlias?.let { Keys.delete(it) }
     }
 }

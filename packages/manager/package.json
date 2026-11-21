@@ -13,6 +13,7 @@
     "@dither-accounts/spec": "workspace:*",
     "@dither-accounts/interfaces": "workspace:*",
     "@dither-accounts/passkey": "workspace:*",
-    "@dither-chat/protocol": "workspace:*"
+    "@dither-chat/protocol": "workspace:*",
+    "@dither-accounts/approval": "workspace:*"
   }
 }

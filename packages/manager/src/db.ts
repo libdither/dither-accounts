@@ -101,6 +101,9 @@ CREATE TABLE IF NOT EXISTS approval (
   decided_at  INTEGER
 );
 CREATE INDEX IF NOT EXISTS approval_at ON approval(created_at);
+-- Approvals' answers (approvals.ts), kept a day for approvals.answers: the answer event as JSON (the device's action,
+-- your message with it, the signature and statement), so an app that missed the event can catch up.
+CREATE TABLE IF NOT EXISTS approval_answer (id TEXT PRIMARY KEY, answer TEXT NOT NULL, at INTEGER NOT NULL);
 
 -- The manager's own notices (notices.ts, docs/notifications.md), the last 200: one per account and condition (id
 -- "attention:<account>"), its Notification as JSON (the manager's words, an account's label and kind; never an

@@ -1,0 +1,13 @@
+{
+  "name": "@dither-accounts/extractor-mastodon",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./http": "./src/http.ts"
+  },
+  "dependencies": {
+    "@dither-chat/protocol": "workspace:*",
+    "@dither-accounts/manager": "workspace:*"
+  }
+}

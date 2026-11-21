@@ -58,6 +58,8 @@ On SIGTERM, main.ts asks systemd what is happening to its unit (`systemctl --use
 deploy, `systemctl --user restart`) leaves extractors that can outlive it running for the next manager; a `stop` job
 (`systemctl --user stop`, `disable --now`, a shutdown), or no job, stops them all, as before. A `detached` launch
 outside systemd always leaves them; a `child` launch always stops them.
+Its "dither-accounts going" line says which, with the job systemd listed for the unit (or how `systemctl` failed: that
+counts as a stop).
 
 ### Handing over
 

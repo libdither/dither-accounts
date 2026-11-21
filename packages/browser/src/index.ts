@@ -5,7 +5,7 @@
 export { BridgeServer, type BridgeReply, type BridgeResend, type BridgeServerOpts, type BridgeSilence, RESEND_MAX, RESEND_MS, type Reached } from './bridge.ts';
 export { DIAGNOSE_MS, diagnoseSilence, pathTemplate, type SilenceOpts } from './silence.ts';
 export { MEMORY_DISABLED_FEATURES, mergeFeatureFlags } from './flags.ts';
-export { displayTaken, type FreeDisplay, pickFreeDisplay, portInUse } from './display.ts';
+export { claimDisplay, displayTaken, type FreeDisplay, pickFreeDisplay, portInUse } from './display.ts';
 export { MARKER_KEY_ENV, markerHex, markerKey, markerName, stampExtension, stampMarkers } from './markers.ts';
 export { type Bins, type Log, resolveBins, resolveImport, resolveXdotool, Sandbox, type SandboxOptions } from './sandbox.ts';
 export { prepareVncSocket, SOCKET_PATH_MAX, VNC_SOCKET, vncSocketPath, waitForVncSocket, x11vncArgs } from './vnc.ts';

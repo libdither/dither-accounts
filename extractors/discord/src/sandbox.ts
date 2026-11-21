@@ -20,7 +20,18 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { markerKey, stampExtension } from '@dither-accounts/browser/markers';
 import type { Subprocess } from 'bun';
-import { MEMORY_DISABLED_FEATURES, mergeFeatureFlags, prepareVncSocket, refreshWorker, vncSocketPath, waitForVncSocket, x11vncArgs } from '@dither-accounts/browser';
+import {
+  claimDisplay,
+  displayTaken,
+  MEMORY_DISABLED_FEATURES,
+  mergeFeatureFlags,
+  portInUse,
+  prepareVncSocket,
+  refreshWorker,
+  vncSocketPath,
+  waitForVncSocket,
+  x11vncArgs,
+} from '@dither-accounts/browser';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const EXTENSION_SRC = join(HERE, 'extension');
@@ -257,14 +268,45 @@ export class Sandbox {
   }
 }
 
-/** Read the display from config/env, else derive a stable slot in :91-:99. Its live view is a socket, not a port. */
-export function pickDisplay(accountId: string, config: Record<string, any>): { display: number } {
-  const envD = process.env.DITHER_DISPLAY ? Number(process.env.DITHER_DISPLAY) : undefined;
-  if (config.display || envD) return { display: Number(config.display ?? envD) };
-  // derive from account id hash into 91..99
+/** Discord's own displays; the other sandboxes pick theirs elsewhere (packages/browser/src/display.ts). */
+export const DISCORD_DISPLAYS = { from: 91, to: 99 } as const;
+
+/** The account's preferred slot in :91–:99, the same on every start. */
+export function hashedDisplay(accountId: string): number {
   let hc = 0;
   for (const ch of accountId) hc = (hc * 31 + ch.charCodeAt(0)) >>> 0;
-  return { display: 91 + (hc % 9) };
+  return DISCORD_DISPLAYS.from + (hc % (DISCORD_DISPLAYS.to - DISCORD_DISPLAYS.from + 1));
+}
+
+/** A slot nobody holds: no X server on it, no live claim from a sandbox starting, and its extension port free. */
+export async function slotFree(n: number, port: number | null): Promise<boolean> {
+  if (displayTaken(n)) return false;
+  if (port !== null && (await portInUse(port, '127.0.0.1'))) return false;
+  return claimDisplay(n);
+}
+
+/**
+ * The display from config/env when set; else the account's hashed slot in :91–:99 when it is free, or the next free one
+ * after it. Two accounts can hash to the same slot, and the second then failed to start ("Is port 8796 in use?", the
+ * extension port being 8700 + display), so a slot is taken only when slotFree says so. Its live view is a socket, not
+ * a port.
+ */
+export async function pickDisplay(
+  accountId: string,
+  config: Record<string, any>,
+  opts: { portFixed?: boolean; free?: (n: number, port: number | null) => Promise<boolean> } = {},
+): Promise<{ display: number }> {
+  const envD = process.env.DITHER_DISPLAY ? Number(process.env.DITHER_DISPLAY) : undefined;
+  if (config.display || envD) return { display: Number(config.display ?? envD) };
+  const free = opts.free ?? slotFree;
+  const { from, to } = DISCORD_DISPLAYS;
+  const span = to - from + 1;
+  const start = hashedDisplay(accountId) - from;
+  for (let i = 0; i < span; i++) {
+    const n = from + ((start + i) % span);
+    if (await free(n, opts.portFixed ? null : 8700 + n)) return { display: n };
+  }
+  throw new Error(`no free Discord display in :${from}–:${to}; set this account's config.display to one outside it`);
 }
 
 export function readConfigFile<T = any>(path: string, fallback: T): T {

@@ -60,7 +60,8 @@ interface RawReactionContext {
 }
 
 // -------------------------------------------------------------------- state
-const { display } = pickDisplay(hub.accountId, hub.config);
+const portFixed = hub.config.adapterPort != null || !!process.env.DITHER_ADAPTER_WS_PORT;
+const { display } = await pickDisplay(hub.accountId, hub.config, { portFixed });
 /** The live view's Unix socket (the sandbox's x11vnc listens there and on no port); the manager carries it. */
 const vncSocket = vncSocketPath(hub.accountDir);
 const adapterPort = Number(hub.config.adapterPort ?? process.env.DITHER_ADAPTER_WS_PORT ?? 8700 + display);

@@ -9,7 +9,7 @@
  * pages whose CryptoProxy or keys-by-usage thunk the hook cannot find, which must not send.
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AccountsClient, type CallFailed, register } from '@dither-accounts/client';
@@ -313,6 +313,33 @@ it(
 );
 
 it(
+  "mail.send with an idempotencyKey: sent once however often it is asked, at once or after; a refused key may try again; a key whose send may have gone is refused unsure",
+  async () => {
+    await fake.recipient('plain@example.org', 'clear');
+    const msg = { to: [{ name: null, email: 'plain@example.org' }], subject: 'Once only', text: 'one copy' };
+    const before = fake.sent.length;
+    const [a, b] = await Promise.all([call('mail.send', { ...msg, idempotencyKey: 'once-1' }), call('mail.send', { ...msg, idempotencyKey: 'once-1' })]);
+    expect(b).toEqual(a);
+    expect(await call('mail.send', { ...msg, idempotencyKey: 'once-1' })).toEqual(a);
+    expect(fake.sent.length).toBe(before + 1);
+    expect(a.sentId).toBe(fake.sent.at(-1)!.id);
+    // Refused before anything went (another From): the key is forgotten, and the same key sends.
+    expect(((await call('mail.send', { ...msg, from: 'other@example.org', idempotencyKey: 'once-2' }).catch((x) => x)) as CallFailed).code).toBe('from');
+    await call('mail.send', { ...msg, idempotencyKey: 'once-2' });
+    expect(fake.sent.length).toBe(before + 2);
+    // A send that started and never said how it ended (the extractor stopped mid-send): refused, nothing sent.
+    const keys = join(m!.store.account(signedIn)!.dir, 'send-keys.json');
+    const kept = JSON.parse(readFileSync(keys, 'utf8'));
+    kept.keys['once-3'] = { at: Date.now(), state: 'started' };
+    writeFileSync(keys, JSON.stringify(kept), { mode: 0o600 });
+    const e = (await call('mail.send', { ...msg, idempotencyKey: 'once-3' }).catch((x) => x)) as CallFailed;
+    expect([e.code, e.status]).toEqual(['unsure', 504]);
+    expect(fake.sent.length).toBe(before + 2);
+  },
+  60_000,
+);
+
+it(
   'mail.send to both at once, with a file: one package, its type the OR of theirs; each Proton recipient gets the body and the file under their own key, the outside one the keys in the clear',
   async () => {
     const friend = (await fake.recipient('friend@proton.test', 'internal'))!;
@@ -451,8 +478,8 @@ it(
     }
     const back = await call('mail.send', mixed);
     expect([fake.sent.at(-1)!.id, fake.sent.at(-1)!.verified]).toEqual([back.sentId, { encrypted: 1, clear: 1, attachments: 0 }]);
-    // Every send that went out is counted; refusals are not.
-    await until(() => statusOf(signedIn).details.sent === 6, 5000, 'six sent');
+    // Every send that went out is counted; refusals and repeated idempotency keys are not.
+    await until(() => statusOf(signedIn).details.sent === 8, 5000, 'eight sent');
     expect(fake.rejected).toEqual([]);
   },
   60_000,

@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createManager, kindOf, type Manager } from '@dither-accounts/manager';
 import { newToken, Store } from '../packages/manager/src/db.ts';
-import { cgroupMembers, cgroupOf, ownService, procAlive, procsWithEnv, restartQueued, serviceOf } from '../packages/manager/src/procs.ts';
+import { cgroupMembers, cgroupOf, ownService, procAlive, procsWithEnv, restartJob, restartQueued, serviceOf } from '../packages/manager/src/procs.ts';
 import { chooseLaunch } from '../packages/manager/src/supervisor.ts';
 import chatFakeManifest from '../extractors/chat-fake/manifest.ts';
 import fakeManifest from '../extractors/fake/manifest.ts';
@@ -80,6 +80,15 @@ function insertAccount(store: Store, dir: string, id: string, config: Record<str
 }
 
 const online = (m: Manager, id: string) => m.sup.state(id).online;
+/** Lets go of the pauses a manager's restarts for changed code wait in now (a test holds them with a long restartPauseMs). */
+const endPauses = (m: Manager) => {
+  const pauses = (m.sup as any).pauses as Set<{ timer: Timer; done: () => void }>;
+  for (const p of pauses) {
+    clearTimeout(p.timer);
+    pauses.delete(p);
+    p.done();
+  }
+};
 const pidsOf = async (m: Manager, id: string) => (await m.sup.command(id, { t: 'pid' })) as { pid: number; children: number[] };
 const allGone = (pids: number[]) => pids.every((p) => !procAlive(p));
 
@@ -133,7 +142,8 @@ test('an adopted extractor that is SIGKILLed is a crash ("killed"): recorded, it
   const p = await started(m1, dir, 'acc-killed-1');
   const port = m1.http.server.port!;
   await m1.stop({ leaveExtractors: true });
-  const m2 = await manager(dir, { port, errors: true });
+  // Its end is seen on the next look in /proc: often here, rather than a second's wait out of the test's 5 s.
+  const m2 = await manager(dir, { port, errors: true, watchMs: 50 });
   await until(() => online(m2, 'acc-killed-1'), 15_000, 'adopted and back');
   process.kill(p.pid, 'SIGKILL');
   await until(() => m2.sup.details('acc-killed-1').lastExit?.signal === 'killed', 10_000, 'its end seen');
@@ -152,15 +162,18 @@ test('an account stopped while staggered restarts wait stays stopped; the others
   const b = await started(m1, dir, 'acc-stagger-b', {});
   const port = m1.http.server.port!;
   await m1.stop({ leaveExtractors: true });
-  const m2 = await manager(dir, { port, fingerprint: () => 'v2', restartPauseMs: 700 });
+  // The pause before each restart is held until the test lets it go, so both still wait however slow the start was.
+  const m2 = await manager(dir, { port, fingerprint: () => 'v2', restartPauseMs: 600_000 });
   await until(() => online(m2, 'acc-stagger-a') && online(m2, 'acc-stagger-b'), 15_000, 'both adopted and back');
-  expect(m2.sup.codeRestarts()).toMatchObject({ queued: 2, restarted: 0 });
+  expect(m2.sup.codeRestarts()).toMatchObject({ queued: 2, active: 0, restarted: 0 });
   // Stopped on purpose (the page, an app) while it waits its turn.
   await m2.sup.stop('acc-stagger-a');
   expect(procAlive(a.pid)).toBe(false);
-  await until(() => online(m2, 'acc-stagger-b') && !m2.sup.details('acc-stagger-b').adopted, 20_000, 'b restarted');
+  // The pauses let go as each comes: a's turn (passed over), then b's.
+  await until(() => (endPauses(m2), online(m2, 'acc-stagger-b') && !m2.sup.details('acc-stagger-b').adopted), 20_000, 'b restarted');
   expect((await pidsOf(m2, 'acc-stagger-b')).pid).not.toBe(b.pid);
-  await Bun.sleep(1000);
+  // The restarts are over: a was passed over, and nothing is left to start it.
+  await until(() => m2.sup.codeRestarts().active === 0, 10_000, 'the restarts over');
   expect(m2.sup.state('acc-stagger-a').running).toBe(false);
   expect(m2.sup.codeRestarts()).toEqual({ queued: 0, active: 0, restarted: 1, online: 1, crashed: 0 });
   const health = (await (await fetch(`${m2.url}/api/health`)).json()) as any;
@@ -249,6 +262,12 @@ test('launch: a process that only inherited INVOCATION_ID is not a service; scop
   expect(restartQueued('dither-accounts.service', () => '1026833 dither-accounts.service stop running\n')).toBe(false);
   expect(restartQueued('dither-accounts.service', () => '7 other.service restart running\n')).toBe(false);
   expect(restartQueued('dither-accounts.service', () => '')).toBe(false);
+  expect(restartJob('dither-accounts.service', () => '7 other.service restart running\n')).toEqual({ restart: false, why: 'no job for dither-accounts.service' });
+  expect(restartJob('dither-accounts.service', () => '9 dither-accounts.service restart running\n')).toEqual({ restart: true, why: 'its job: restart running' });
+  // systemctl failing is a stop (extractors stopped, never left orphaned), and says how it failed.
+  expect(restartJob('dither-accounts.service', () => {
+    throw new Error('systemctl --user list-jobs exited 1: Failed to connect to bus');
+  })).toEqual({ restart: false, why: 'systemctl --user list-jobs exited 1: Failed to connect to bus' });
 });
 
 test('a second manager on a data directory in use refuses to start', async () => {
@@ -307,6 +326,8 @@ test.skipIf(!systemd)('real systemd: main.ts as a service: a restart leaves its 
   const run = Bun.spawnSync(['systemd-run', '--user', '--quiet', `--unit=${unit}`, '--collect', `--setenv=PATH=${process.env.PATH}`, `--working-directory=${ROOT}`, `--property=StandardOutput=append:${out}`, `--property=StandardError=append:${out}`, process.execPath, MAIN, '--data', dir, '--port', String(port), '--trace', '0', '--errors', '0'], { stdout: 'pipe', stderr: 'pipe' });
   expect(run.exitCode).toBe(0);
   const said = () => (existsSync(out) ? readFileSync(out, 'utf8') : '');
+  const adapterLog = join(dir, 'accounts/acc-svc-1/adapter.log');
+  const logged = () => (existsSync(adapterLog) ? readFileSync(adapterLog, 'utf8') : '');
   const health = async () => {
     try {
       return (await fetch(`http://127.0.0.1:${port}/api/health`)).ok;
@@ -321,22 +342,32 @@ test.skipIf(!systemd)('real systemd: main.ts as a service: a restart leaves its 
       const c = readFileSync(`/proc/${r.pid}/cmdline`, 'utf8').split('\0');
       return /(^|\/)bun[^/]*$/.test(c[0] ?? '') && c.slice(1).some((a) => a.endsWith('/src/main.ts'));
     });
-  await until(health, 20_000, 'the manager up');
-  // Which launch it chose: a clear failure, with its reason, if not scope.
-  await until(() => /launch=\w+: /.test(said()), 10_000, 'the manager to say its launch');
-  expect(said().match(/launch=(\w+): (.*)/)?.slice(1)).toEqual(['scope', `the main process of ${unit}, and systemd-run --user --scope works`]);
-  await until(() => extractors().length === 1 && /dither-accounts-x-acc-svc-1-/.test(cgroupOf(extractors()[0]!.pid) ?? ''), 20_000, 'its extractor running in a scope of its own');
-  const [x] = extractors();
+  // A failure says what both managers and the extractor said: whether the first one took its stop for a restart, and
+  // whether the next one adopted or started afresh.
+  try {
+    await until(health, 20_000, 'the manager up');
+    // Which launch it chose: a clear failure, with its reason, if not scope.
+    await until(() => /launch=\w+: /.test(said()), 10_000, 'the manager to say its launch');
+    expect(said().match(/launch=(\w+): (.*)/)?.slice(1)).toEqual(['scope', `the main process of ${unit}, and systemd-run --user --scope works`]);
+    await until(() => extractors().length === 1 && /dither-accounts-x-acc-svc-1-/.test(cgroupOf(extractors()[0]!.pid) ?? ''), 20_000, 'its extractor running in a scope of its own');
+    const [x] = extractors();
 
-  Bun.spawnSync(['systemctl', '--user', 'restart', unit]);
-  await until(health, 20_000, 'the manager back');
-  await until(() => readFileSync(join(dir, 'accounts/acc-svc-1/adapter.log'), 'utf8').includes(`took over the running fake extractor (pid ${x!.pid})`), 20_000, 'adopted');
-  expect(procAlive(x!.pid, x!.start)).toBe(true);
-  expect(existsSync(join(dir, 'handover.json'))).toBe(false);
+    const restart = Bun.spawnSync(['systemctl', '--user', 'restart', unit], { stdout: 'pipe', stderr: 'pipe' });
+    expect({ code: restart.exitCode, err: restart.stderr.toString() }).toEqual({ code: 0, err: '' });
+    // The first manager has gone by then (a restart waits for its stop), and took it for a restart.
+    expect(said()).toContain('dither-accounts going: a restart, extractors left running for the next manager');
+    await until(health, 20_000, 'the manager back');
+    await until(() => logged().includes(`took over the running fake extractor (pid ${x!.pid})`), 20_000, 'adopted');
+    expect(procAlive(x!.pid, x!.start)).toBe(true);
+    expect(existsSync(join(dir, 'handover.json'))).toBe(false);
 
-  Bun.spawnSync(['systemctl', '--user', 'stop', unit]);
-  await until(() => !procAlive(x!.pid, x!.start), 20_000, 'a stop stops it');
-  await until(() => ofDir(dir).length === 0, 10_000, 'and everything it started');
+    Bun.spawnSync(['systemctl', '--user', 'stop', unit]);
+    await until(() => !procAlive(x!.pid, x!.start), 20_000, 'a stop stops it');
+    await until(() => ofDir(dir).length === 0, 10_000, 'and everything it started');
+  } catch (e) {
+    (e as Error).message += `\n--- manager.out\n${said()}\n--- adapter.log\n${logged()}`;
+    throw e;
+  }
 }, 90_000);
 
 test('main.ts without systemd: SIGTERM leaves a detached launch running, and stops a child launch', async () => {
@@ -433,16 +464,24 @@ test('restarts for changed code: one at a time per kind, different kinds side by
   await until(() => ids.every((id) => online(m1, id)), 15_000, 'all online');
   const port = m1.http.server.port!;
   await m1.stop({ leaveExtractors: true });
-  const m2 = await manager(dir, { kinds: two, port, fingerprint: () => 'v2', restartPauseMs: 300 });
-  await until(() => ids.every((id) => online(m2, id)), 15_000, 'all adopted and back');
+  // The pauses are held until the count below is in place, then let go as they come.
+  const m2 = await manager(dir, { kinds: two, port, fingerprint: () => 'v2', restartPauseMs: 600_000 });
+  // Each restart as it begins, counted where it is recorded, not sampled.
   let maxActive = 0;
+  const rollingNow = (m2.sup as any).rollingNow as Set<string>;
+  const add = rollingNow.add.bind(rollingNow);
+  rollingNow.add = (id: string) => {
+    add(id);
+    maxActive = Math.max(maxActive, rollingNow.size);
+    return rollingNow;
+  };
+  await until(() => ids.every((id) => online(m2, id)), 15_000, 'all adopted and back');
   let bothFakeDown = false;
   const watch = setInterval(() => {
-    maxActive = Math.max(maxActive, m2.sup.codeRestarts().active);
     if (!online(m2, 'acc-pk-a1') && !online(m2, 'acc-pk-a2')) bothFakeDown = true;
   }, 5);
   try {
-    await until(() => ids.every((id) => online(m2, id) && !m2.sup.details(id).adopted), 30_000, 'all restarted');
+    await until(() => (endPauses(m2), ids.every((id) => online(m2, id) && !m2.sup.details(id).adopted)), 30_000, 'all restarted');
   } finally {
     clearInterval(watch);
   }

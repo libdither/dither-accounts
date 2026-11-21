@@ -71,7 +71,7 @@ import { State } from './state.ts';
 import { mentionablesOf, mentionQuery } from './mentions.ts';
 
 export const ADAPTER_VERSION = '0.1.0';
-export const CAPABILITIES: P.Capability[] = ['send', 'history', 'react', 'edit', 'redact', 'markRead', 'typing', 'threads', 'media', 'sendMedia', 'openDirect', 'forward', 'about', 'configure', 'profile', 'resolve', 'join', 'connect', 'requests', 'relationships', 'disconnect', 'addMembers', 'createGroup', 'search', 'mentionables', 'suppressEmbeds'];
+export const CAPABILITIES: P.Capability[] = ['send', 'history', 'react', 'edit', 'redact', 'markRead', 'typing', 'threads', 'media', 'sendMedia', 'openDirect', 'forward', 'about', 'configure', 'profile', 'resolve', 'join', 'connect', 'requests', 'relationships', 'disconnect', 'addMembers', 'createGroup', 'search', 'mentionables', 'suppressEmbeds', 'sendGifs'];
 export const QR_MESSAGE = 'Scan this QR code in Telegram on your phone: Settings → Devices → Link Desktop Device';
 
 export interface Host {
@@ -2005,6 +2005,14 @@ export class TelegramAdapter {
     if (!this.backend) throw new Error('Telegram is not signed in');
     const backend = this.backend;
     const file = await this.pacer.run('upload.saveFilePart', () => backend.uploadFile({ path: f.path, name: f.name, mime: f.mime, size: f.size }));
+    // A GIF goes as an animation, as Telegram's own apps send one: marked animated, and a video one marked as a video
+    // too. Telegram makes an mp4 of a .gif itself.
+    if (f.gif) {
+      const video = f.kind === 'video' || /^video\//.test(f.mime);
+      const attributes: tl.TypeDocumentAttribute[] = [{ _: 'documentAttributeFilename', fileName: f.name }, { _: 'documentAttributeAnimated' }];
+      if (video) attributes.push({ _: 'documentAttributeVideo', duration: 0, w: 0, h: 0, supportsStreaming: true });
+      return { _: 'inputMediaUploadedDocument', file, mimeType: f.mime || (video ? 'video/mp4' : 'image/gif'), attributes };
+    }
     if (f.kind === 'image' && PHOTO_MIMES.has(f.mime) && f.size <= 10 * 1024 * 1024) return { _: 'inputMediaUploadedPhoto', file };
     const attributes: tl.TypeDocumentAttribute[] = [{ _: 'documentAttributeFilename', fileName: f.name }];
     if (f.kind === 'video') attributes.push({ _: 'documentAttributeVideo', duration: 0, w: 0, h: 0, supportsStreaming: true });

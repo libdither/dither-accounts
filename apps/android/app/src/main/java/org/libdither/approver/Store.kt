@@ -18,6 +18,9 @@ data class Pairing(
     val pairedAt: Long,
     /** The manager closed the link with 4401 (it no longer knows this device): no more reconnecting. */
     var forgotten: Boolean = false,
+    /** The approval key for this manager (made after the first `ready`), and its fingerprint. */
+    var approvalAlias: String? = null,
+    var approvalFingerprint: String? = null,
 )
 
 /** A passkey's metadata (the private key stays in the Keystore as `keyAlias`). */
@@ -58,7 +61,8 @@ object Store {
         file = AtomicFile(File(c.filesDir, "state.json"))
         val o = runCatching { JSONObject(String(file.readFully(), Charsets.UTF_8)) }.getOrNull() ?: return
         o.optJSONArray("pairings")?.forEachObject {
-            pairings += Pairing(it.getString("deviceId"), it.getString("url"), it.optString("name"), it.getString("keyAlias"), it.optString("fingerprint"), it.optLong("pairedAt"), it.optBoolean("forgotten"))
+            pairings += Pairing(it.getString("deviceId"), it.getString("url"), it.optString("name"), it.getString("keyAlias"), it.optString("fingerprint"), it.optLong("pairedAt"), it.optBoolean("forgotten"),
+                it.optStringOrNull("approvalAlias"), it.optStringOrNull("approvalFingerprint"))
         }
         o.optJSONArray("credentials")?.forEachObject {
             credentials += Credential(
@@ -79,6 +83,7 @@ object Store {
             .put("pairings", JSONArray(pairings.map {
                 JSONObject().put("deviceId", it.deviceId).put("url", it.url).put("name", it.name).put("keyAlias", it.keyAlias)
                     .put("fingerprint", it.fingerprint).put("pairedAt", it.pairedAt).put("forgotten", it.forgotten)
+                    .put("approvalAlias", it.approvalAlias ?: JSONObject.NULL).put("approvalFingerprint", it.approvalFingerprint ?: JSONObject.NULL)
             }))
             .put("credentials", JSONArray(credentials.map {
                 JSONObject().put("id", it.id).put("rpId", it.rpId).put("url", it.url).put("deviceId", it.deviceId).put("account", it.account)

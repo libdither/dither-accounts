@@ -72,6 +72,8 @@ beforeAll(async () => {
           const msg = JSON.parse(s.data.buf.slice(0, nl));
           s.data.buf = s.data.buf.slice(nl + 1);
           if (msg.cmd) cmds.push(msg.cmd);
+          // The fake bridge handles a command once its copy is acknowledged (fake-bridge.ts).
+          if (msg.seq !== undefined) s.write(JSON.stringify({ ack: msg.seq }) + '\n');
         }
       },
       close: (s) => {

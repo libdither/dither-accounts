@@ -245,23 +245,31 @@ async function refreshBalances() {
 
 const tradeKey = (t: ExchangeTrade) => JSON.stringify([t.state, t.phase, t.payoutState, t.disputeState, t.paymentSent, t.paymentReceived, t.payoutPublished, t.payoutUnlocked, t.completed]);
 
+// One poll at a time: a slow one overlapped by the next could land its older answer last, putting a trade back to a
+// state it had left and announcing it again.
+let polling = false;
 async function poll() {
-  if (phase !== 'online') return;
-  lastPollAt = Date.now();
-  await refreshBalances();
+  if (phase !== 'online' || polling) return;
+  polling = true;
   try {
-    const r = await api.call('Trades', 'GetTrades', { category: 'OPEN' }, 60_000);
-    for (const raw of r?.trades ?? []) {
-      const t = map.trade(raw);
-      const old = trades.get(t.id);
-      trades.set(t.id, t);
-      if (tradesKnown && (!old || tradeKey(old) !== tradeKey(t))) link.emit({ t: 'exchange.trade', trade: t });
+    lastPollAt = Date.now();
+    await refreshBalances();
+    try {
+      const r = await api.call('Trades', 'GetTrades', { category: 'OPEN' }, 60_000);
+      for (const raw of r?.trades ?? []) {
+        const t = map.trade(raw);
+        const old = trades.get(t.id);
+        trades.set(t.id, t);
+        if (tradesKnown && (!old || tradeKey(old) !== tradeKey(t))) link.emit({ t: 'exchange.trade', trade: t });
+      }
+      tradesKnown = true;
+    } catch (e) {
+      link.log('debug', `trades: ${(e as Error).message.slice(0, 120)}`);
     }
-    tradesKnown = true;
-  } catch (e) {
-    link.log('debug', `trades: ${(e as Error).message.slice(0, 120)}`);
+    status();
+  } finally {
+    polling = false;
   }
-  status();
 }
 
 // ------------------------------------------------------------------ the desktop app

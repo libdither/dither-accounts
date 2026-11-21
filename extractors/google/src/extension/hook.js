@@ -307,7 +307,7 @@
   const btoaNative = window.btoa;
   const clearLater = window.clearTimeout;
   const AbortC = window.AbortController;
-  let settings = { authuser: '0', testOrigin: null, testMailOrigin: null, peopleApiBase: null };
+  let settings = { authuser: '0', testOrigin: null, testMailOrigin: null, peopleApiBase: null, fetchMs: null };
 
   const post = (payload) => cloak.send(payload);
   const log = (level, msg, data) => post({ t: 'log', level, msg, data });
@@ -601,6 +601,8 @@
       if (u.origin !== location.origin) return;
       const m = /^(\/sync\/u\/\d{1,2}\/i\/)([a-z]{1,8})$/.exec(u.pathname);
       if (m) {
+        // The first: mail calls can be made now (the extractor waits for this word before refusing one at start).
+        if (!sync.seen) post({ t: 'synced' });
         sync.seen = true;
         sync.base = m[1];
         sync.headers = headerPairs(h).filter((p) => HEADERS_NOT_REPLAYED.indexOf(p[0]) < 0);
@@ -631,6 +633,27 @@
     return head === null || head === undefined || (Array.isArray(head) && head.every((x) => x === null || typeof x !== 'object'));
   }
 
+  // Gmail's own calls made here are cut off at FETCH_MS, so one Gmail never answers fails as itself ({ status: 0,
+  // error: 'timeout' }), well before the extractor's 25 s, not as the page's silence. A download gets FETCH_MS for
+  // its headers and RAW_MS in all. Tests (with a test Gmail origin only) make FETCH_MS shorter (settings.fetchMs).
+  const FETCH_MS = 20000;
+  const RAW_MS = 80000;
+  const fetchMs = () => (settings.testMailOrigin && Number(settings.fetchMs) > 0 ? Number(settings.fetchMs) : FETCH_MS);
+  /** An abort after `ms`: its signal, `aborted()` (it fired), `extend(ms)` (from now) and `done()`. */
+  function cutoff(ms) {
+    const ctl = new AbortC();
+    let timer = cloak.apply(later, window, [() => ctl.abort(), ms]);
+    return {
+      signal: ctl.signal,
+      aborted: () => ctl.signal.aborted,
+      extend(more) {
+        cloak.apply(clearLater, window, [timer]);
+        timer = cloak.apply(later, window, [() => ctl.abort(), more]);
+      },
+      done: () => cloak.apply(clearLater, window, [timer]),
+    };
+  }
+
   /** gmail.sync: a POST to the page's own bv, fd or s, with its headers and its query (the next c), the answer's JSON. */
   async function syncCall(endpoint, body) {
     if (['bv', 'fd', 's'].indexOf(endpoint) < 0) throw new Error('gmail.sync: bv, fd or s only');
@@ -644,8 +667,18 @@
     const headers = {};
     for (const [n, v] of sync.headers || []) headers[n] = v;
     if (!headers['content-type']) headers['content-type'] = 'application/json';
-    const res = await cloak.apply(nativeFetch, window, [location.origin + sync.base + endpoint + '?' + q.toString(), { method: 'POST', headers, body: jsonStringify(body), credentials: 'include', cache: 'no-store' }]);
-    const text = await res.text();
+    const cut = cutoff(fetchMs());
+    let res;
+    let text;
+    try {
+      res = await cloak.apply(nativeFetch, window, [location.origin + sync.base + endpoint + '?' + q.toString(), { method: 'POST', headers, body: jsonStringify(body), credentials: 'include', cache: 'no-store', signal: cut.signal }]);
+      text = await res.text();
+    } catch (e) {
+      if (cut.aborted()) return { status: 0, error: 'timeout' };
+      throw e;
+    } finally {
+      cut.done();
+    }
     let json;
     try {
       json = jsonParse(text.replace(/^\s*\)\]\}'[^\n]*(?:\n|$)/, ''));
@@ -718,8 +751,19 @@
     const headers = {};
     for (const [n, v] of sync.headers || []) headers[n] = v;
     if (!headers['content-type']) headers['content-type'] = 'application/json';
-    const res = await cloak.apply(nativeFetch, window, [location.origin + sync.base + 's?' + q.toString(), { method: 'POST', headers, body: jsonStringify(body), credentials: 'include', cache: 'no-store' }]);
-    const text = await res.text();
+    const cut = cutoff(fetchMs());
+    let res;
+    let text;
+    try {
+      res = await cloak.apply(nativeFetch, window, [location.origin + sync.base + 's?' + q.toString(), { method: 'POST', headers, body: jsonStringify(body), credentials: 'include', cache: 'no-store', signal: cut.signal }]);
+      text = await res.text();
+    } catch (e) {
+      // Gmail may have made the change: the extractor says so (a 504).
+      if (cut.aborted()) return { status: 0, error: 'timeout' };
+      throw e;
+    } finally {
+      cut.done();
+    }
     let json;
     try {
       json = jsonParse(text.replace(/^\s*\)\]\}'[^\n]*(?:\n|$)/, ''));
@@ -819,36 +863,53 @@
     const cap = Number.isInteger(max) && max > 0 ? max : 50 * 1024 * 1024;
     const base = sync.mailBase || '/mail/u/' + encodeURIComponent(String(settings.authuser)) + '/';
     const url = location.origin + base + '?ik=' + encodeURIComponent(sync.ik) + '&view=att&th=' + hex + '&attid=0&disp=comp&safe=1&zw';
-    const res = await cloak.apply(nativeFetch, window, [url, { credentials: 'include', cache: 'no-store' }]);
+    const cut = cutoff(fetchMs());
+    let res;
+    try {
+      res = await cloak.apply(nativeFetch, window, [url, { credentials: 'include', cache: 'no-store', signal: cut.signal }]);
+    } catch (e) {
+      cut.done();
+      if (cut.aborted()) return { status: 0, error: 'timeout' };
+      throw e;
+    }
+    cut.extend(RAW_MS - fetchMs());
     const type = learn.mediaType(res.headers.get('content-type'));
-    // An HTML page (or a 429) is not a message: only what it reads as goes up, never its text or bytes.
-    if (type === 'text/html' || res.status === 429) return { status: res.status, type, page: learn.pageKind(res.status, type, await textUpTo(res, 512 * 1024), res.url) };
-    if (res.status !== 200 || !res.body) {
-      if (res.body) quiet(res.body.cancel());
-      return { status: res.status, type };
-    }
-    if (Number(res.headers.get('content-length')) > cap) {
-      quiet(res.body.cancel());
-      return { status: 200, tooBig: Number(res.headers.get('content-length')), type };
-    }
-    const reader = res.body.getReader();
-    const chunks = [];
+    let bytes;
     let n = 0;
-    for (;;) {
-      const r = await reader.read();
-      if (r.done) break;
-      n += r.value.byteLength;
-      if (n > cap) {
-        quiet(reader.cancel());
-        return { status: 200, tooBig: n, type };
+    try {
+      // An HTML page (or a 429) is not a message: only what it reads as goes up, never its text or bytes.
+      if (type === 'text/html' || res.status === 429) return { status: res.status, type, page: learn.pageKind(res.status, type, await textUpTo(res, 512 * 1024), res.url) };
+      if (res.status !== 200 || !res.body) {
+        if (res.body) quiet(res.body.cancel());
+        return { status: res.status, type };
       }
-      chunks.push(r.value);
-    }
-    const bytes = new Uint8Array(n);
-    let at = 0;
-    for (const c of chunks) {
-      bytes.set(c, at);
-      at += c.byteLength;
+      if (Number(res.headers.get('content-length')) > cap) {
+        quiet(res.body.cancel());
+        return { status: 200, tooBig: Number(res.headers.get('content-length')), type };
+      }
+      const reader = res.body.getReader();
+      const chunks = [];
+      for (;;) {
+        const r = await reader.read();
+        if (r.done) break;
+        n += r.value.byteLength;
+        if (n > cap) {
+          quiet(reader.cancel());
+          return { status: 200, tooBig: n, type };
+        }
+        chunks.push(r.value);
+      }
+      bytes = new Uint8Array(n);
+      let at = 0;
+      for (const c of chunks) {
+        bytes.set(c, at);
+        at += c.byteLength;
+      }
+    } catch (e) {
+      if (cut.aborted()) return { status: 0, error: 'timeout' };
+      throw e;
+    } finally {
+      cut.done();
     }
     for (const [k, v] of raws) if (Date.now() - v.at > 120000) raws.delete(k);
     while (raws.size >= 3) raws.delete(raws.keys().next().value);
@@ -1262,6 +1323,7 @@
       announce();
       session(true);
       sendSeen();
+      if (sync.seen) post({ t: 'synced' });
       return;
     }
     if (p.t !== 'cmd' || !p.cmd) return;

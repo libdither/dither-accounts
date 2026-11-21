@@ -1,0 +1,10 @@
+{
+  "name": "@dither-accounts/desk-signer",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "bin": { "desk-signer": "./src/main.ts" },
+  "dependencies": {
+    "@dither-accounts/approval": "workspace:*"
+  }
+}

@@ -22,6 +22,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BridgeServer, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
+import { SendOnce } from '@dither-accounts/link/once';
 import { type ApiAnswer, type ApiRequest, ProtonApi, ProtonError } from './api.ts';
 import { ProtonContacts } from './contacts.ts';
 import { arrivals, ProtonMail, SYSTEM, stateOf, touched } from './mail.ts';
@@ -78,6 +79,8 @@ type Attention = { kind: string; message: string; liveView: boolean };
 type Layer = { name: string; state: 'ok' | 'waiting' | 'failed' | 'off'; note?: string };
 
 const link = linkManager({ onConnect, onCommand, onShutdown: () => cleanup() });
+/** mail.send's idempotencyKey (packages/link once.ts): a key sent before never sends again. */
+const sendOnce = new SendOnce(join(link.accountDir, 'send-keys.json'));
 const log = (level: 'debug' | 'info' | 'warn' | 'error', msg: string, data?: unknown) => link.log(level, msg, data);
 
 const cfg = link.config;
@@ -144,6 +147,9 @@ const bridge = new BridgeServer<Up, Down>({
   },
   // A command that times out is told apart in the log: how far it got, the tab's state and the hook's own.
   silence: { name: 'Mail', tab: true, page: true },
+  // A read the page has not said it has after 3 s is sent again (the page takes an id once): an api GET, never another
+  // method, nor a send (packages/browser bridge.ts).
+  resend: { kinds: ['page.state', 'api', 'storage', 'pagekeys', 'decrypt', 'contactEmails'], when: (c) => c.kind !== 'api' || String((c as { method?: unknown }).method ?? 'get').toLowerCase() === 'get' },
   log,
 });
 
@@ -763,10 +769,14 @@ async function onCommand(cmd: Command): Promise<unknown> {
       return r;
     }
     case 'mail.send': {
-      const { t: _t, id: _id, ...input } = cmd;
+      const { t: _t, id: _id, idempotencyKey, ...input } = cmd;
       const m = checkOutgoing(input as any, link.accountDir);
-      const r = await send(m, { api, page: (c, ms) => pageCall({ kind: 'send', ...c } as Down, ms), addresses: sendingNow, log });
-      sends++;
+      // Counted where it went: a repeated idempotencyKey answers without sending.
+      const r = await sendOnce.run(idempotencyKey, async (sending) => {
+        const out = await send(m, { api, page: (c, ms) => pageCall({ kind: 'send', ...c } as Down, ms), addresses: sendingNow, log, sending });
+        sends++;
+        return out;
+      });
       pollSoon();
       status();
       return r;

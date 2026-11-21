@@ -1,5 +1,6 @@
 /** The manager as a library: main.ts runs it, tests make one on a temp dir and port. */
 import { join, resolve } from 'node:path';
+import { Approvals, APPROVER_KIND, approverKind } from './approvals.ts';
 import { Approvers } from './approvers.ts';
 import { errorBlocks, ErrorLog } from './errors.ts';
 import { Store } from './db.ts';
@@ -31,6 +32,8 @@ export interface ManagerOpts {
   approverPushHttp?: boolean;
   /** Tests only: how long an approver request waits for its device (3 minutes). */
   approverRequestMs?: number;
+  /** Tests only: how long approvals' answers are kept for approvals.answers (a day). */
+  approvalAnswersMs?: number;
   /**
    * Write every call's span (and the extractors' spans under them) to <data>/traces/manager.trace.ndjson, and every
    * hold of the event loop of 200 ms or more to <data>/traces/event-loop-stalls.ndjson (trace.ts). main.ts sets it.
@@ -56,6 +59,8 @@ export interface ManagerOpts {
   restartOnlineMs?: number;
   /** Tests only: how long an adopted extractor has to connect (60 s). */
   adoptConnectMs?: number;
+  /** Tests only: how often adopted extractors are looked at in /proc (1 s). */
+  watchMs?: number;
   /** Tests only: what a `scope` launch goes through instead of systemd-run. */
   systemdRun?: string;
   /** Tests only: how long a surviving extractor waits for a manager before it ends itself (1800 s). */
@@ -86,6 +91,7 @@ export interface Manager {
   sup: Supervisor;
   http: Http;
   approvers: Approvers;
+  approvals: Approvals;
   notices: Notices;
   /** The error file, when `errors` is on (main.ts installs the process handlers on it). */
   errors: ErrorLog | null;
@@ -117,6 +123,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
   // The extractors' kinds, and the manager's own notices (notices.ts), which no extractor runs.
   const kinds = new Map(o.kinds ?? (await loadKinds(repoRoot)));
   kinds.set(NOTICES_KIND, noticesKind());
+  kinds.set(APPROVER_KIND, approverKind());
   const store = new Store(join(o.dataDir, 'accounts.sqlite'));
   let router!: Router;
   let http!: Http;
@@ -134,6 +141,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     fingerprint: o.fingerprint,
     restartPauseMs: o.restartPauseMs,
     adoptConnectMs: o.adoptConnectMs,
+    watchMs: o.watchMs,
     restartOnlineMs: o.restartOnlineMs,
     systemdRun: o.systemdRun,
     managerGoneExitS: o.managerGoneExitS,
@@ -176,6 +184,8 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
   const pageUrl = /^https?:\/\/(localhost|127\.[\d.]+|\[::1\])(:\d+)?$/.test(publicUrl) ? null : publicUrl;
   notices = new Notices(store, router, sup, { dataDir: o.dataDir, publicUrl: pageUrl, times: o.noticeTimes });
   notices.start();
+  const approvals = new Approvals(store, router, sup, approvers, { dataDir: o.dataDir, keepMs: o.approvalAnswersMs });
+  approvals.start();
   const providers = factories.map((f) => f({ store, router, sup, kinds, dataDir: o.dataDir, publicUrl }));
   http = new Http(store, kinds, sup, router, providers, {
     dataDir: o.dataDir,
@@ -206,6 +216,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     sup,
     http,
     approvers,
+    approvals,
     notices,
     errors,
     kinds,
@@ -216,6 +227,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     async stop(so = {}) {
       for (const p of providers) p.stop?.();
       notices!.stop();
+      approvals.stop();
       const { holding } = await sup.stopAll({ leave: so.leaveExtractors === true });
       // What apps have not had yet: sent now, and what waits for absent ones goes to the next manager.
       router.flushNow();

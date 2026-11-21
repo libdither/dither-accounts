@@ -14,6 +14,13 @@
  * - Threading and bulk headers on a summary (`inReplyTo`, `references`, `bulk`) are optional: an extractor that
  *   cannot see a message's headers without fetching its body gives `null`, `[]` and no `bulk` there (Proton's lists;
  *   its `threadId` is the thread), and `mail.get` has them all.
+ * - Messages left out: `mail.list`, `mail.search` and `mail.changes` may answer `skipped?: string[]`, the messages the
+ *   extractor could not read in this answer (the google kind: a record whose own anchors failed) while it read the
+ *   rest. An entry of digits only is a message id: `mail.get` it later to try it again. An entry `thread:<id>` is a
+ *   thread whose message could not be told apart (its message id was unreadable too); it names no message, so there
+ *   is nothing to get. A skipped message may not even be in the mailbox asked for. `mail.changes` still hands out a
+ *   new state past them: they are not reported again from it, so keep them if you want them. Absent or empty: nothing
+ *   was left out.
  *
  * The `status` event, besides what every extractor's has (`layers`, `details`, `self`, see the README), says (all
  * optional, so an extractor that predates them stays valid):
@@ -216,6 +223,8 @@ export interface MailChanges {
   removed: string[];
   /** More changes wait: call again with the new state. */
   more: boolean;
+  /** Messages left out of this answer (see the header: message ids, or `thread:<id>`). */
+  skipped?: string[];
 }
 
 export interface OutgoingFile {
@@ -242,6 +251,13 @@ export interface OutgoingMail {
   /** A reply to this message (its id): sets In-Reply-To and References, and marks the original answered. */
   replyTo?: string;
   attachments?: OutgoingFile[];
+  /**
+   * The app's own name for this send (1 to 200 characters), so it goes at most once however often the call arrives:
+   * the account keeps it for 7 days. Sent again after it went, the call answers the first send's answer (or fails
+   * `duplicate`, 409, when that answer was not kept); sent again after a send whose outcome is unknown, it fails
+   * `unsure`, 504, and sends nothing. A new message wants a new key; the same message sent again on purpose too.
+   */
+  idempotencyKey?: string;
 }
 
 /** One person `mail.contacts` suggests: an address to write to, and the name the service shows with it. */
@@ -278,12 +294,12 @@ export const mail = iface({
     write: 'Send email as you, and mark, move and delete your messages',
   },
   ops: {
-    'mail.mailboxes': op('read', 'Your mailboxes (folders), with counts', s.object({}), s.typed<{ mailboxes: Mailbox[] }>()),
+    'mail.mailboxes': op('read', 'Your mailboxes (folders), with counts', s.object({}), s.typed<{ mailboxes: Mailbox[] }>(), 60_000),
     'mail.list': op(
       'read',
       "A mailbox's messages, newest first, a page at a time",
       s.object({ mailboxId: s.string, limit: s.optional(s.integer), before: s.optional(s.string), since: s.optional(s.number) }),
-      s.typed<{ messages: MailSummary[]; next: string | null }>(),
+      s.typed<{ messages: MailSummary[]; next: string | null; skipped?: string[] }>(),
       60_000,
     ),
     'mail.get': op('read', 'One message, with its text, HTML and the list of its attachments', s.object({ id: s.string }), s.typed<MailMessage>(), 60_000),
@@ -311,7 +327,7 @@ export const mail = iface({
       'read',
       'Messages with these words in the sender, recipients, subject or text, newest first',
       s.object({ query: s.string, mailboxId: s.optional(s.string), limit: s.optional(s.integer), idsOnly: s.optional(s.boolean), cursor: s.optional(s.string) }),
-      s.typed<{ messages: MailSummary[]; next?: string | null } | { ids: string[]; next: string | null; estimate: number | null }>(),
+      s.typed<{ messages: MailSummary[]; next?: string | null; skipped?: string[] } | { ids: string[]; next: string | null; estimate: number | null; skipped?: string[] }>(),
       120_000,
     ),
     'mail.changes': op('read', 'What changed in a mailbox since a state', s.object({ mailboxId: s.string, state: s.optional(s.string), limit: s.optional(s.integer) }), s.typed<MailChanges>(), 120_000),
@@ -328,14 +344,16 @@ export const mail = iface({
       'Mark messages read or unread, flagged, answered',
       s.object({ ids, threadIds, seen: s.optional(s.boolean), flagged: s.optional(s.boolean), answered: s.optional(s.boolean) }),
       s.typed<MailWriteAnswer>(),
+      90_000,
     ),
     'mail.move': op(
       'write',
       'Move messages to another mailbox; answers their new ids in the same order (null where it did not move, listed in refused or unknown, or where the server would not say: find it with mail.changes)',
       s.object({ ids, threadIds, mailboxId: s.string }),
       s.typed<MailMoveAnswer>(),
+      90_000,
     ),
-    'mail.trash': op('write', 'Move messages to the trash (deleted outright where there is none)', s.object({ ids, threadIds }), s.typed<MailWriteAnswer>()),
+    'mail.trash': op('write', 'Move messages to the trash (deleted outright where there is none)', s.object({ ids, threadIds }), s.typed<MailWriteAnswer>(), 90_000),
     /**
      * Fails with status 422 and one of these codes (CallError.code) when it refuses the message as it stands; nothing
      * was made or sent, and the message is a sentence to show a person (recipients named by number, 1 being the first
@@ -351,6 +369,17 @@ export const mail = iface({
      *
      * Any other refusal has code `failed` and its status (400 bad input, 413 too big, 501 the account cannot send at
      * all: `details.canSend` is false).
+     *
+     * With an `idempotencyKey` (OutgoingMail), a key this account has seen in the last 7 days is not sent again:
+     *
+     * - sent: the first send's answer, again; or `duplicate` (409) when that answer was not kept.
+     * - still sending: the first send's answer, once it has one.
+     * - started, outcome unknown (the extractor stopped mid-send, or the send failed in a way that may have sent it):
+     *   `unsure` (504). Look in Sent; send with a new key if it did not go.
+     *
+     * A send that failed before anything went (a refusal above, the page not ready) forgets its key, so the same key
+     * may try again. `unsure` (504) is also what the app's client answers for any write (mail.send among them) in
+     * flight when its socket to the manager dropped (packages/client): it is not sent again.
      */
     'mail.send': op('write', 'Send a message as you; a copy goes to Sent where the server keeps one', s.typed<OutgoingMail>('an outgoing message'), s.typed<{ messageId: string; sentId: string | null }>(), 120_000),
   },

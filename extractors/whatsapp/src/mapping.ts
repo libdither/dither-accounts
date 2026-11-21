@@ -146,6 +146,8 @@ function attachmentOf(key: MediaKey, media: WaMedia, nativeId: string): P.Attach
   if (media.fileLength) a.size = Number(media.fileLength);
   if (media.width) a.width = media.width;
   if (media.height) a.height = media.height;
+  // WhatsApp's GIF: an mp4 video it plays looping and silent.
+  if (key === 'videoMessage' && media.gifPlayback) a.gif = true;
   return a;
 }
 

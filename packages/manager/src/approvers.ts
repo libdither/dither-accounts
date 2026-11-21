@@ -8,12 +8,15 @@
  *   per device until a link takes them, one at a time, or they expire; a device answers only its own.
  * - The wake-up: a request waiting for a device without a link POSTs exactly {"t":"wake"} to its UnifiedPush endpoint.
  * - Every request and its outcome goes to the `approval` table (never client data or keys) and the daily counts.
+ * - Approvals (approvals.ts): a device's `keys` frame (its kind and approval key, signed by its identity key) is checked
+ *   and kept here; approve requests, their answers and the device's comings and goings go to the `approvals` hooks.
  */
 import type { ServerWebSocket } from 'bun';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { readSecretFile, writeSecretFile } from '@dither-chat/protocol/secret-file';
 import { answerOf, type ApproverAnswer, fingerprint, p256Key, rawSignature } from '@dither-accounts/passkey';
+import { DEVICE_KINDS, type DeviceKind, fingerprint as approvalFingerprint, keyStatement, verifySignature } from '@dither-accounts/approval';
 import type { ApprovalInfo, ApproverDeviceInfo } from './api-types.ts';
 import type { Row, Store } from './db.ts';
 
@@ -26,6 +29,19 @@ export interface Device {
   push: string | null;
   pairedAt: number;
   lastSeenAt: number | null;
+  /** From its last `keys` frame (approvals): what it is, and its approval key's SPKI, base64. Absent until one came. */
+  kind?: DeviceKind;
+  approvalKey?: string;
+}
+
+/** What approvals.ts hears from the links. */
+export interface ApprovalHooks {
+  /** A device's keys frame checked out (on every link): what waits for it can go now. */
+  keys(device: string): void;
+  /** Its link closed, or it was removed: nothing it was sent is held there any more. */
+  gone(device: string): void;
+  /** A `response` to an approve request (an `apv_` id); the link's next frame waits for it. */
+  response(device: string, m: Record<string, unknown>): Promise<void>;
 }
 
 export interface ApproverSocketData {
@@ -36,6 +52,8 @@ export interface ApproverSocketData {
   verifying?: boolean;
   lastHeard: number;
   helloTimer?: Timer;
+  /** Frames after the hello are handled one after another, in the order they came. */
+  chain?: Promise<void>;
 }
 
 interface Waiting {
@@ -75,6 +93,10 @@ export class Approvers {
   private inflight = new Map<string, Waiting>();
   private lastWake = new Map<string, number>();
   private pinger: Timer;
+  /** Approvals (approvals.ts), set once it starts. */
+  hooks: ApprovalHooks | null = null;
+  /** Links whose keys frame checked out (approve requests go only on these). */
+  private keyed = new Set<ServerWebSocket<ApproverSocketData>>();
 
   constructor(
     private store: Store,
@@ -167,12 +189,60 @@ export class Approvers {
     this.links.get(id)?.close(4401, 'this device was removed');
     this.links.delete(id);
     for (const w of [...(this.queues.get(id) ?? []), ...(this.inflight.has(id) ? [this.inflight.get(id)!] : [])]) this.finish(w, { ok: false, reason: 'no-device', message: 'the device was removed' });
+    this.hooks?.gone(id);
     this.opts.onChange?.();
     return true;
   }
 
   async list(): Promise<ApproverDeviceInfo[]> {
-    return Promise.all(this.devices.map(async (d) => ({ id: d.id, name: d.name, fingerprint: await fingerprint(d.publicKey), pairedAt: d.pairedAt, lastSeenAt: this.links.has(d.id) ? Date.now() : d.lastSeenAt, online: this.links.has(d.id), push: !!d.push, waiting: (this.queues.get(d.id)?.length ?? 0) + (this.inflight.has(d.id) ? 1 : 0) })));
+    return Promise.all(
+      this.devices.map(async (d) => ({
+        id: d.id,
+        name: d.name,
+        fingerprint: await fingerprint(d.publicKey),
+        kind: d.kind ?? null,
+        approvalFingerprint: d.approvalKey ? approvalFingerprint(d.approvalKey) : null,
+        pairedAt: d.pairedAt,
+        lastSeenAt: this.links.has(d.id) ? Date.now() : d.lastSeenAt,
+        online: this.links.has(d.id),
+        push: !!d.push,
+        waiting: (this.queues.get(d.id)?.length ?? 0) + (this.inflight.has(d.id) ? 1 : 0),
+      })),
+    );
+  }
+
+  /** Something the page shows changed (approvals.ts: a request ended). */
+  changed() {
+    this.opts.onChange?.();
+  }
+
+  /** Every paired device (approvals.devices). */
+  all(): readonly Device[] {
+    return this.devices;
+  }
+
+  /** Whether the device has a link whose keys frame checked out: approve requests can go to it now. */
+  keyedOnline(id: string): boolean {
+    const ws = this.links.get(id);
+    return !!ws && this.keyed.has(ws);
+  }
+
+  online(id: string): boolean {
+    return this.links.has(id);
+  }
+
+  /** A frame to the device's link, if it has one; whether it went. */
+  send(id: string, frame: Record<string, unknown>): boolean {
+    const ws = this.links.get(id);
+    if (!ws) return false;
+    ws.send(JSON.stringify(frame));
+    return true;
+  }
+
+  /** Wakes a device that has no link (at most once in 5 s), as for passkey requests. */
+  wakeUp(id: string) {
+    const d = this.device(id);
+    if (d) void this.wake(d);
   }
 
   /** The last `limit` requests, newest first. */
@@ -211,35 +281,80 @@ export class Approvers {
     }
     const d = ws.data;
     d.lastHeard = Date.now();
-    if (!d.device) {
-      if (d.verifying || m.t !== 'hello') return;
-      d.verifying = true;
-      const dev = await this.verify(m, d.nonce);
-      d.verifying = false;
-      if (!dev) return void ws.close(4401, 'unknown device or bad signature');
-      clearTimeout(d.helloTimer);
-      d.device = dev.id;
-      const old = this.links.get(dev.id);
-      this.links.set(dev.id, ws);
-      if (old && old !== ws) old.close(4000, 'replaced by a newer link');
-      dev.lastSeenAt = Date.now();
-      this.save();
-      ws.send(JSON.stringify({ t: 'ready', name: dev.name }));
-      this.opts.onChange?.();
-      this.pump(dev.id);
-      return;
+    if (d.device) {
+      const device = d.device;
+      d.chain = (d.chain ?? Promise.resolve()).then(() => this.frame(ws, device, m)).catch((e) => console.error(`[approvers] a ${String(m.t).slice(0, 20)} frame from ${device} failed: ${(e as Error)?.message ?? e}`));
+      return d.chain;
     }
+    if (d.verifying || m.t !== 'hello') return;
+    d.verifying = true;
+    const dev = await this.verify(m, d.nonce);
+    d.verifying = false;
+    if (!dev) return void ws.close(4401, 'unknown device or bad signature');
+    clearTimeout(d.helloTimer);
+    d.device = dev.id;
+    const old = this.links.get(dev.id);
+    this.links.set(dev.id, ws);
+    if (old && old !== ws) {
+      old.close(4000, 'replaced by a newer link');
+      this.keyed.delete(old);
+      // What the old link held is not on this one until its keys frame comes.
+      this.hooks?.gone(dev.id);
+    }
+    dev.lastSeenAt = Date.now();
+    this.save();
+    ws.send(JSON.stringify({ t: 'ready', name: dev.name }));
+    this.opts.onChange?.();
+    this.pump(dev.id);
+  }
+
+  /** A frame from a linked device. */
+  private async frame(ws: ServerWebSocket<ApproverSocketData>, device: string, m: Record<string, unknown>) {
     if (m.t === 'ping') return void ws.send(JSON.stringify({ t: 'pong' }));
     if (m.t === 'pong') return;
-    if (m.t === 'push') return this.setPush(d.device, m.endpoint);
-    if (m.t === 'response') return this.response(d.device, m);
+    if (m.t === 'push') return this.setPush(device, m.endpoint);
+    if (m.t === 'keys') return this.setKeys(ws, device, m);
+    if (m.t === 'response') return this.response(device, m);
+  }
+
+  /**
+   * The keys frame: its kind and approval key, signed by its identity key over
+   * "dither-approver-key-v1\n" + deviceId + "\n" + kind + "\n" + approval. Kept (a new one replaces the old, logged);
+   * one that doesn't check out is ignored, and that link gets no approve requests.
+   */
+  private async setKeys(ws: ServerWebSocket<ApproverSocketData>, id: string, m: Record<string, unknown>) {
+    const dev = this.device(id);
+    const kind = m.kind;
+    const approval = m.approval;
+    if (!dev || !DEVICE_KINDS.includes(kind as DeviceKind) || typeof approval !== 'string' || approval.length > 400 || typeof m.sig !== 'string' || m.sig.length > 200) return void console.log(`[approvers] ${id} sent a malformed keys frame: ignored`);
+    let spki: string;
+    try {
+      await p256Key(approval);
+      spki = Buffer.from(approval, 'base64').toString('base64');
+    } catch {
+      return void console.log(`[approvers] ${id} sent an approval key that is not a P-256 SPKI: ignored`);
+    }
+    if (!(await verifySignature(dev.publicKey, keyStatement(dev.id, kind as string, approval), m.sig))) return void console.log(`[approvers] ${id} sent a keys frame its identity key did not sign: ignored`);
+    // The link closed, or the device was removed, while it was being checked.
+    if (this.links.get(id) !== ws || !this.device(id)) return;
+    if (dev.kind !== kind || dev.approvalKey !== spki) {
+      console.log(`[approvers] ${id} is a ${kind} with approval key ${approvalFingerprint(spki)}${dev.approvalKey ? ` (was ${dev.kind} ${approvalFingerprint(dev.approvalKey)})` : ''}`);
+      dev.kind = kind as DeviceKind;
+      dev.approvalKey = spki;
+      this.save();
+      this.opts.onChange?.();
+    }
+    this.keyed.add(ws);
+    this.hooks?.keys(id);
   }
 
   close(ws: ServerWebSocket<ApproverSocketData>) {
     const d = ws.data;
     clearTimeout(d.helloTimer);
+    this.keyed.delete(ws);
     if (!d.device || this.links.get(d.device) !== ws) return;
     this.links.delete(d.device);
+    this.hooks?.gone(d.device);
     const dev = this.device(d.device);
     if (dev) {
       dev.lastSeenAt = Date.now();
@@ -370,7 +485,8 @@ export class Approvers {
   }
 
   /** A device's answer: only to the request it was sent; anything else is dropped. */
-  private response(device: string, m: Record<string, unknown>) {
+  private async response(device: string, m: Record<string, unknown>) {
+    if (typeof m.id === 'string' && m.id.startsWith('apv_')) return this.hooks?.response(device, m);
     const w = this.inflight.get(device);
     if (!w || m.id !== w.id) return void console.log(`[approvers] ${device} answered a request it does not hold: dropped`);
     this.finish(w, answerOf(m, w.op));

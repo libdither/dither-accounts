@@ -70,6 +70,21 @@ export function forApps<E extends { t: string; [k: string]: unknown }>(ev: E): E
   return { ...ev, liveView: { width, height } };
 }
 
+/**
+ * How long, and how many, call ids an app sent are remembered: a call sent again with the same id (an app's client
+ * resending after its socket dropped) gets the first one's answer instead of running twice. A write's (or manage's,
+ * or an admin action's) answer is kept this long; a read is remembered only until it answers, since running a read
+ * again is harmless and its answer can be large. Tests shrink them.
+ */
+export const REPEATS = { keepMs: 10 * 60_000, max: 10_000 };
+
+/** A call or admin action as first asked, by app and id: what it was, and its answer (or the wait for it). */
+interface Asked {
+  at: number;
+  what: string;
+  answer: Promise<{ ok: true; result: unknown } | { ok: false; error: CallError }>;
+}
+
 /** A Unix socket's path is at most 107 bytes (sun_path, less its NUL). */
 const SOCKET_PATH_MAX = 107;
 
@@ -90,6 +105,8 @@ export class Router {
   private lastAccountEvents = new Map<string, Map<string, { t: string; [k: string]: unknown }>>();
   private buckets = new Map<string, { tokens: number; at: number }>();
   private auditCounts = new Map<string, { n: number; last: number }>();
+  /** Calls by app and id, oldest first (REPEATS). */
+  private asked = new Map<string, Asked>();
   private auditTimer: Timer;
   readonly handlers: Handler[];
   /** Accounts the manager answers itself (the built-in `notices`, notices.ts): their ops go here, not to a process. */
@@ -629,6 +646,50 @@ export class Router {
     return !!this.sockets.get(appId)?.size;
   }
 
+  /**
+   * A call or admin action, run once per app and id (REPEATS): one sent again (its app's socket dropped and it resent
+   * what it was waiting for) answers as the first did, or waits for the first to answer, and is not run again. The
+   * same id for something else is refused. Kept in memory only: a manager that restarted has forgotten them, so the
+   * client resends only reads (packages/client).
+   */
+  /** Whether a call only reads (its op's level; an unknown op or account is treated as one, it will fail anyway). */
+  private isRead(m: Extract<ConsumerIn, { t: 'call' } | { t: 'admin' }>): boolean {
+    if (m.t === 'admin') return m.action?.do === 'kinds' || m.action?.do === 'log';
+    const account = this.store.account(m.account);
+    const iface = account ? this.kinds.get(account.kind)?.opIface.get(m.op) : undefined;
+    return !iface || iface.ops[m.op].level === 'read';
+  }
+
+  private once(appId: string, m: Extract<ConsumerIn, { t: 'call' } | { t: 'admin' }>): Asked['answer'] {
+    const now = Date.now();
+    for (const [k, a] of this.asked) {
+      if (now - a.at < REPEATS.keepMs && this.asked.size < REPEATS.max) break;
+      this.asked.delete(k);
+    }
+    const key = `${appId}\0${typeof m.id === 'string' ? m.id : JSON.stringify(m.id)}`;
+    const what = m.t === 'call' ? `call\0${m.account}\0${m.op}` : `admin\0${JSON.stringify(m.action)}`;
+    const seen = this.asked.get(key);
+    if (seen) {
+      if (seen.what === what) return seen.answer;
+      return Promise.resolve({ ok: false, error: { code: 'invalid', message: `call id ${String(m.id).slice(0, 80)} was used for another call` } });
+    }
+    const answer = (async (): Asked['answer'] => {
+      try {
+        const result = m.t === 'call' ? await this.call(appId, m.account, m.op, m.input, m.trace) : await this.admin(appId, m.action);
+        return { ok: true, result };
+      } catch (e) {
+        return { ok: false, error: e instanceof CallFailure ? e.error : { code: 'failed', message: String((e as Error)?.message ?? e) } };
+      }
+    })();
+    // An id-less call (an old or hand-made client) is never remembered: there is nothing to match a repeat by.
+    if (m.id !== undefined && m.id !== null && m.id !== '') {
+      const asked: Asked = { at: now, what, answer };
+      this.asked.set(key, asked);
+      if (this.isRead(m)) void answer.then(() => this.asked.get(key) === asked && this.asked.delete(key));
+    }
+    return answer;
+  }
+
   async message(ws: ServerWebSocket<ConsumerSocketData>, raw: string | Buffer) {
     let m: ConsumerIn;
     try {
@@ -638,14 +699,8 @@ export class Router {
     }
     if (m.t === 'ping') return ws.send(JSON.stringify({ t: 'pong' } satisfies ConsumerOut));
     if (m.t !== 'call' && m.t !== 'admin') return;
-    let out: ConsumerOut;
-    try {
-      const result = m.t === 'call' ? await this.call(ws.data.appId, m.account, m.op, m.input, m.trace) : await this.admin(ws.data.appId, m.action);
-      out = { t: 'result', id: m.id, ok: true, result };
-    } catch (e) {
-      const error: CallError = e instanceof CallFailure ? e.error : { code: 'failed', message: String((e as Error)?.message ?? e) };
-      out = { t: 'result', id: m.id, ok: false, error };
-    }
+    const answer = await this.once(ws.data.appId, m);
+    const out: ConsumerOut = answer.ok ? { t: 'result', id: m.id, ok: true, result: answer.result } : { t: 'result', id: m.id, ok: false, error: answer.error };
     try {
       ws.send(JSON.stringify(out));
     } catch {}

@@ -94,6 +94,9 @@ test('media: photos, files, stickers, places and polls', () => {
   const doc = (mimeType: string, attributes: tl.TypeDocumentAttribute[]) => msg({ id: 5, peerId: pu(300), media: { _: 'messageMediaDocument', document: { _: 'document', id: Long.fromNumber(1), accessHash: Long.ZERO, fileReference: new Uint8Array(), date: 0, mimeType, size: 1234, dcId: 2, attributes } } });
   expect(attachmentsOf('x', doc('application/pdf', [{ _: 'documentAttributeFilename', fileName: 'a.pdf' }])).attachments[0]).toMatchObject({ kind: 'file', name: 'a.pdf', size: 1234, mime: 'application/pdf' });
   expect(attachmentsOf('x', doc('video/mp4', [{ _: 'documentAttributeVideo', duration: 3, w: 640, h: 480 }])).attachments[0]).toMatchObject({ kind: 'video', width: 640, height: 480 });
+  // An animation is Telegram's GIF: a video drawn looping and silent.
+  expect(attachmentsOf('x', doc('video/mp4', [{ _: 'documentAttributeVideo', duration: 3, w: 320, h: 240 }, { _: 'documentAttributeAnimated' }])).attachments[0]).toMatchObject({ kind: 'video', gif: true, width: 320, height: 240 });
+  expect(attachmentsOf('x', doc('video/mp4', [{ _: 'documentAttributeVideo', duration: 3, w: 640, h: 480 }])).attachments[0].gif).toBeUndefined();
   expect(attachmentsOf('x', doc('audio/ogg', [{ _: 'documentAttributeAudio', duration: 3, voice: true }])).attachments[0].kind).toBe('audio');
   expect(attachmentsOf('x', doc('image/webp', [{ _: 'documentAttributeSticker', alt: '😀', stickerset: { _: 'inputStickerSetEmpty' } }]))).toMatchObject({ kind: 'sticker', text: '😀' });
   const geo = msg({ peerId: pu(300), media: { _: 'messageMediaGeo', geo: { _: 'geoPoint', lat: 1.5, long: 2.5, accessHash: Long.ZERO } } });

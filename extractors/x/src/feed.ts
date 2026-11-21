@@ -20,12 +20,16 @@
  *   - what the account did to a post: `legacy.favorited` and `legacy.retweeted` on every post (PostFact.viewer);
  *   - a post just made: sendTweet's normalized answer (`{ entities: { tweets: { <id>: flat post } }, result: <id> }`) and
  *     the post read back alone (TweetResultByRestId: `{ result: Tweet }`);
- *   - who liked or reposted a post (Favoriters, Retweeters): `TimelineUser` items (`user_results.result`) and cursors.
+ *   - who liked or reposted a post (Favoriters, Retweeters): `TimelineUser` items (`user_results.result`) and cursors;
+ *   - a home timeline (HomeTimeline: For you; HomeLatestTimeline: Following, `home.home_timeline_urt`): `tweet-<id>`
+ *     items with their `socialContext` (TimelineGeneralContext: contextType, text, landingUrl; TimelineTopicContext:
+ *     topic.name), `home-conversation-<id>` modules, ads, who to follow and other modules (left out), Top and Bottom.
  *
  * Anything without what the mapping needs is dropped and counted by kind and reason (`feed.no-time 2`), as the DMs are.
  */
 import type * as P from '@dither-chat/protocol';
 import { identityFact } from './map.ts';
+import type { ReplyControl } from './raw.ts';
 import { type Drops, mediaUrl } from './validate.ts';
 
 /** The feed conversation's native id: one per X account, so two accounts' feeds never meet on the hub. */
@@ -665,6 +669,35 @@ export function parsePublished(reply: unknown, text: string, self: { id: string 
   return { post: withUrl({ id, url: `https://x.com/i/web/status/${id}`, ts: Date.now(), ...(self.id ? { author: self.id } : {}), text }), users };
 }
 
+/** Who may reply, as the composer's own option names it (`conversation_control`); everyone is no option at all. */
+export const REPLY_CONTROL: Record<string, ReplyControl | null> = { everyone: null, following: 'my_network', mentioned: 'by_invitation', verified: 'verified' };
+/**
+ * What X's composer takes on one post (its uploader and help pages): up to 4 pictures, or one GIF, or one video, of
+ * these types. The uploader shrinks a picture over 5 MB itself and refuses a GIF over 15 MB; the bytes cross to the
+ * page in one message, so all of a post's files together stay under 40 MB here (X allows longer videos).
+ */
+export const POST_MEDIA = {
+  images: 4,
+  types: { 'image/png': 'image', 'image/jpeg': 'image', 'image/webp': 'image', 'image/gif': 'gif', 'video/mp4': 'video', 'video/quicktime': 'video' } as Record<string, 'image' | 'gif' | 'video'>,
+  gifBytes: 15 * 1024 * 1024,
+  totalBytes: 40 * 1024 * 1024,
+};
+/** Why X would not take these files on one post, or null. */
+export function postMediaProblem(files: { name: string; mime: string; size: number }[]): string | null {
+  if (!files.length) return null;
+  const kinds = files.map((f) => POST_MEDIA.types[String(f.mime).toLowerCase()]);
+  const bad = files.find((_, i) => !kinds[i]);
+  if (bad) return `X takes pictures (PNG, JPEG, WebP), a GIF or a video (MP4, MOV) on a post, not ${bad.mime || 'that file'}`;
+  const images = kinds.filter((k) => k === 'image').length;
+  if (images !== files.length) {
+    if (files.length > 1) return 'X takes up to 4 pictures, or one GIF, or one video on a post';
+  } else if (images > POST_MEDIA.images) return `X takes at most ${POST_MEDIA.images} pictures on a post`;
+  if (kinds[0] === 'gif' && files[0]!.size > POST_MEDIA.gifBytes) return 'X takes a GIF of at most 15 MB';
+  const total = files.reduce((n, f) => n + (Number(f.size) || 0), 0);
+  if (total > POST_MEDIA.totalBytes) return 'too big to post from here: at most 40 MB of pictures or video on one post';
+  return null;
+}
+
 /**
  * Who liked or reposted a post, one page (the Favoriters or Retweeters timeline): the people in X's order (ranked:
  * the page asks with `enableRanking`), with their followers, whether you follow them and they you, and a check mark
@@ -700,6 +733,137 @@ export function parseReactors(timeline: unknown, drops: Drops, testOrigin?: stri
     }
   }
   return { page: { who, more: who.length ? tl.bottom : null }, users };
+}
+
+// ------------------------------------------------------------ home timelines
+/** At most this many posts above one in a home conversation, and items in a page. */
+export const HOME_ABOVE = 10;
+export const HOME_ITEMS = 100;
+/** How many posts a home read asks for by default, and at most. */
+export const HOME_COUNT = 20;
+export const HOME_COUNT_MAX = 40;
+/** X's social-context kinds (`contextType`) as a HomeReason's kind; any other is 'other'. */
+const CONTEXT_KIND: Record<string, NonNullable<P.HomeReason['kind']>> = { Like: 'like', Follow: 'follow', Conversation: 'reply', Pin: 'pinned', Community: 'community', Topic: 'topic' };
+/** Paths on x.com that are no person's profile. */
+const NOT_PEOPLE = new Set(['home', 'i', 'search', 'explore', 'settings', 'messages', 'notifications', 'intent', 'share', 'hashtag', 'login', 'signup', 'tos', 'privacy', 'compose']);
+
+/**
+ * The one person a social context's link names: X's deep link `twitter://user?id=<id>` (or `?screen_name=`), or a
+ * profile on x.com; a handle only when this page knows whose it is. Null when it names a list, a topic, a community or
+ * nobody.
+ */
+function reasonWho(landing: unknown, users: Map<string, XUser>): string | null {
+  const url = isObj(landing) ? str(landing.url, 2000) : null;
+  if (!url) return null;
+  const byId = /^twitter:\/\/user\?(?:[^#]*&)?(?:id|user_id)=(\d{1,25})(?:&|$)/.exec(url);
+  if (byId) return byId[1]!;
+  let handle = /^twitter:\/\/user\?(?:[^#]*&)?screen_name=(\w{1,50})(?:&|$)/.exec(url)?.[1] ?? null;
+  if (!handle) {
+    const place = xUrl(url);
+    const path = place ? /^https:\/\/(?:[\w-]+\.)?(?:x|twitter)\.com\/(\w{1,50})\/?(?:[?#].*)?$/.exec(place) : null;
+    if (path && !NOT_PEOPLE.has(path[1]!.toLowerCase())) handle = path[1]!;
+  }
+  if (!handle) return null;
+  const h = handle.toLowerCase();
+  for (const u of users.values()) if (u.handle?.toLowerCase() === h) return u.id;
+  return null;
+}
+
+/** A post's social-context line (`socialContext` on its item): X's words, what kind of line it is, whom it names. */
+function homeReason(sc: unknown, users: Map<string, XUser>, drops: Drops): P.HomeReason | undefined {
+  if (!isObj(sc)) return undefined;
+  if (sc.type === 'TimelineTopicContext' || (isObj(sc.topic) && sc.type !== 'TimelineGeneralContext')) {
+    const name = isObj(sc.topic) ? str(sc.topic.name, 200) : null;
+    return name ? { text: name, kind: 'topic' } : (drops.add('home', 'reason-no-text'), undefined);
+  }
+  const text = str(sc.text, 300)?.trim();
+  if (!text) return drops.add('home', 'reason-no-text'), undefined;
+  const kind = CONTEXT_KIND[String(sc.contextType)] ?? 'other';
+  const who = kind === 'topic' || kind === 'community' ? null : reasonWho(sc.landingUrl, users);
+  return { text, kind, ...(who ? { who } : {}) };
+}
+
+/**
+ * One page of a home timeline (HomeTimeline: For you; HomeLatestTimeline: Following) as X shows it: each `tweet-<id>`
+ * entry an item, a `home-conversation-<id>` module one item whose post is its last and `above` the ones before it
+ * (oldest first), reposts as the reposter's post with `repostOf`, the social-context line as `reason`. Ads
+ * (`promoted-…`, `promotedMetadata`), who to follow, topics, prompts and every other module or item that is not a post
+ * are left out and counted (`home.promoted`, `home.module-who-to-follow`, `home.item-TimelineMessagePrompt`), and so are
+ * posts that are gone (`home.tombstone`). `more` is the Bottom cursor (null on a page of nothing but cursors: the end),
+ * `top` the Top one. `named`: the people the
+ * reasons name (each needs an identity before the page goes to the hub; `users` has those this page knows).
+ */
+export function parseHome(timeline: unknown, drops: Drops, testOrigin?: string | null): { page: P.HomePage; users: Map<string, XUser>; named: string[] } {
+  const users = new Map<string, XUser>();
+  const ctx: PostCtx = { users, drops, testOrigin };
+  let t = timeline;
+  // The page's call gives the timeline; a raw answer has it under data.home.home_timeline_urt.
+  if (isObj(t) && isObj(t.data)) t = t.data;
+  if (isObj(t) && isObj(t.home)) t = t.home;
+  if (isObj(t) && isObj(t.home_timeline_urt)) t = t.home_timeline_urt;
+  const tl = entriesOf(t, drops, 'home');
+  const ids = new Set<string>();
+  /** A post item's post, or null (counted): ads, tombstones and anything that is not a post. */
+  const postOf = (item: Record<string, any>): P.PostFact | null => {
+    if (isObj(item.promotedMetadata)) return drops.add('home', 'promoted'), null;
+    if (item.itemType === 'TimelineTombstone' || item.__typename === 'TimelineTombstone') return drops.add('home', 'tombstone'), null;
+    if (!isTweetItem(item)) return drops.add('home', `item-${reason(String(item.__typename ?? item.itemType ?? 'none'))}`), null;
+    const r = isObj(item.tweet_results) ? item.tweet_results.result : null;
+    if (!r) return drops.add('home', 'no-tweet'), null;
+    if (isObj(r) && r.__typename === 'TweetTombstone') return drops.add('home', 'tombstone'), null;
+    return parsePost(r, ctx);
+  };
+  const isModule = (e: Entry) => e.content.entryType === 'TimelineTimelineModule' || e.content.__typename === 'TimelineTimelineModule' || Array.isArray(e.content.items);
+  /** The kind of entry an id names, for the drop counts: `who-to-follow-1234` is who-to-follow. */
+  const prefix = (id: string) => reason(id.replace(/-[\w]*\d[\w-]*$/, '')) || 'none';
+  const pending: { item: P.HomeItem; sc: unknown }[] = [];
+  for (const e of [...tl.pinned, ...tl.entries]) {
+    if (/^promoted-/.test(e.entryId) || isObj(e.content.promotedMetadata) || (isObj(e.content.itemContent) && isObj(e.content.itemContent.promotedMetadata))) {
+      drops.add('home', 'promoted');
+      continue;
+    }
+    if (isModule(e)) {
+      if (!/^home-conversation-/.test(e.entryId) && e.content.displayType !== 'VerticalConversation') {
+        drops.add('home', `module-${prefix(e.entryId)}`);
+        continue;
+      }
+      const posts: P.PostFact[] = [];
+      let sc: unknown;
+      for (const { item } of itemsOf(e)) {
+        const p = postOf(item);
+        if (!p || ids.has(p.id)) continue;
+        posts.push(p);
+        // The line X shows over the conversation: the latest one among its posts.
+        if (isObj(item.socialContext)) sc = item.socialContext;
+      }
+      if (!posts.length) continue;
+      for (const p of posts) ids.add(p.id);
+      const post = posts.at(-1)!;
+      const above = posts.slice(0, -1).slice(-HOME_ABOVE);
+      pending.push({ item: { post, ...(above.length ? { above } : {}) }, sc: sc ?? e.content.socialContext });
+      continue;
+    }
+    if (!isObj(e.content.itemContent)) {
+      if (!cursorOf(e.content)) drops.add('home', `entry-${prefix(e.entryId)}`);
+      continue;
+    }
+    const item = e.content.itemContent;
+    const post = postOf(item);
+    if (!post || ids.has(post.id)) continue;
+    ids.add(post.id);
+    pending.push({ item: { post }, sc: item.socialContext ?? e.content.socialContext });
+  }
+  // The reasons last: a person a line names may be an author further down the page.
+  const named = new Set<string>();
+  const items = pending.slice(0, HOME_ITEMS).map(({ item, sc }) => {
+    const r = homeReason(sc, users, drops);
+    if (r?.who) named.add(r.who);
+    return r ? { ...item, reason: r } : item;
+  });
+  // A page with nothing but cursors is the end (X still gives a Bottom cursor); one whose entries were all left out
+  // (ads, who to follow) is not.
+  const more = tl.entries.length || tl.pinned.length ? tl.bottom : null;
+  return { page: { items, more, top: tl.top }, users, named: [...named] };
 }
 
 // ------------------------------------------------------------ what was said
@@ -764,6 +928,20 @@ export class FeedTracker {
       if (this.people.get(u.id) === fp) continue;
       this.people.set(u.id, fp);
       out.push({ t: 'identity', identity: fact });
+    }
+    return out;
+  }
+
+  /**
+   * Bare identities (`{ nativeId }`) for people known here only by id (a home reason's "Ann Lee liked" links to her id
+   * alone), unless announced already: the hub keeps what it knows of them and fills in the rest when they are seen.
+   */
+  stubs(ids: Iterable<string>, selfId: string | null): P.AdapterEvent[] {
+    const out: P.AdapterEvent[] = [];
+    for (const id of ids) {
+      if (this.people.has(id) || id === selfId || !XID.test(id)) continue;
+      this.people.set(id, 'stub');
+      out.push({ t: 'identity', identity: { nativeId: id } });
     }
     return out;
   }

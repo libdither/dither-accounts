@@ -13,7 +13,10 @@ the account's log as it happens, in one line:
   command to the page's port, and the hook says `got` (at `page`) when the command arrives:
   - "not acknowledged by the service worker": lost between the extractor and the worker (the bridge, a worker that
     Chromium put to sleep);
-  - "handed to the page, which never said it had it": lost in the page's port or content script;
+  - "handed to the page, which never said it had it": lost in the page's port or content script. The content script
+    replaces its port every 250 s, new one first, and keeps the old one open 10 s more, so a command the worker
+    handed to the old port just then still arrives (closing it at once lost such a command now and then:
+    test/port-rotation.test.ts);
   - "received by the page, which never answered": the page has it and is still working on it, or is stuck;
   - "taken by the service worker, which never answered": the statements kinds, whose worker runs commands itself.
 - **The tab, as Chromium sees it** (`tab`, from the worker's `tab.state`): `status` (loading or complete),
@@ -31,6 +34,29 @@ The worker and the hook get 5 s each to answer. Requests that time out together 
 
 Only names of commands, path templates (segments with digits, or long ones, as `*`) and counts go in the line: never a
 request's body, headers, cookies, tokens, a query, or an error's text from the page.
+
+## Lost commands sent again
+
+A command's id is `<boot>.c<n>`: `boot` is random per `BridgeServer`, so a page that outlives its extractor (Chromium
+left running across an extractor restart) never mistakes a new command for one it already took; the content script
+passes each id to its hook only once, and would drop a recycled `c1`. A bridge made with `resend` sends a command
+again, the same id, when its page has not said `got` within 3 s (`RESEND_MS`), up to three times (`RESEND_MAX`); the
+copy that did arrive is dropped by the content script, so a command lost on the way costs about 3 s, not the whole
+timeout. Only the kinds a kind lists (`resend.kinds`, narrowed by `when`): reads, and writes that are the same done
+twice (a mark read, a Gmail label). The id check lasts as long as the page: a copy that arrived just before a reload,
+whose `got` was lost, would run again in the new page. So nothing that sends or posts what other people see (a
+message, a post, a reply, a reaction, an edit, a delete, a Calendar event, a Proton API call other than GET) is listed,
+nor the worker's own commands (every `tab.*`, meta's `mediaFetch`, privacy's `webauthn.answer`). On for google,
+discord, messenger and instagram, proton, x and privacy; the statements kinds have no hook to say `got`.
+A resend is logged at debug (`<kind>: no word from the page in 3 s (…); sent again (1)`), and a timeout's error carries
+how often it was (`resent`).
+
+## Chromium's own noise
+
+Chromium's stderr goes to the account's log at debug, except lines that say nothing about the account
+(packages/browser/src/noise.ts): its push registration refused (`DEPRECATED_ENDPOINT`, `QUOTA_EXCEEDED`), GTK modules
+the sandbox has none of, and `X connection error received` as the display goes at a stop. Those are counted, and one
+line every 10 minutes (and at the stop) says how many of each were left out.
 
 ## The parts
 

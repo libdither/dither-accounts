@@ -260,19 +260,21 @@ test('markRead, markAllRead and mute reach GitHub, and other apps hear notify.re
 test('rate limits: a primary one is waited out without asking, apps hear 429, then it goes on', async () => {
   fake.exhaust(3);
   await until(async () => (await status()).layers[3].note?.startsWith('rate limited until'), 8000, 'the polling layer says so');
+  const sent = fake.calls.length;
   const st = await status();
   expect(st.layers[3].state).toBe('waiting');
   expect(st.status).toBe('online');
   expect(st.attention).toBeNull();
+  const limitedUntil = Date.parse(st.layers[3].note!.slice('rate limited until '.length));
   const t0 = Date.now();
   const e = (await call('notify.list', {}).catch((x) => x)) as CallFailed;
   expect([e.code, e.status]).toEqual(['failed', 429]);
   expect(Date.now() - t0).toBeLessThan(1000);
-  const sent = fake.calls.length;
-  await Bun.sleep(1000);
-  expect(fake.calls.length).toBe(sent);
   await until(async () => (await status()).layers[3].state === 'ok', 10_000, 'polling again');
+  // Nothing reached GitHub while limited (the reset is on a whole second, so it can come at any time in the window):
+  // every request since is from after the reset.
   expect(fake.calls.length).toBeGreaterThan(sent);
+  expect(fake.calls.slice(sent).filter((c) => c.at < limitedUntil)).toEqual([]);
 
   // A secondary one: as long as Retry-After says.
   fake.failNext({ status: 429, retryAfter: 2, match: /GET \/notifications$/ });

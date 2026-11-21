@@ -601,8 +601,8 @@ export class SignalAdapter {
     this.selfName = (me && displayNameOf(me)) || this.selfName;
     const self: P.IdentityFact = { nativeId: acc.aci, handle: acc.number, isSelf: true };
     if (this.selfName) self.displayName = this.selfName;
-    const avatar = this.avatarOf(acc.aci, acc.number);
-    if (avatar) self.avatarUrl = avatar;
+    // '' when signal-cli has no picture (any more): the hub drops a link to a file that is gone.
+    self.avatarUrl = this.avatarOf(acc.aci, acc.number) ?? '';
     this.setStatus('online', null, self);
     this.facts.set(`i:${acc.aci}`, { ...self });
     this.emitFact({ t: 'conversation', conversation: noteToSelf(acc.aci) });
@@ -664,18 +664,23 @@ export class SignalAdapter {
     this.host.emit(ev);
   }
 
-  private avatarOf(aci: string, number?: string | null): string | undefined {
+  /**
+   * The picture signal-cli keeps for someone, or null when it has none. signal-cli deletes a picture its owner took
+   * down, so null goes to the hub as '' (contactIdentity) to clear a link it would otherwise keep to a missing file.
+   */
+  private avatarOf(aci: string, number?: string | null): string | null {
     const names = [number && `profile-${number}`, `profile-${aci}`, number && `contact-${number}`, `contact-${aci}`].filter(Boolean) as string[];
     for (const n of names) {
       const p = join(this.signalDir, 'avatars', n);
       if (existsSync(p)) return fileUrl(p);
     }
-    return undefined;
+    return null;
   }
 
-  private groupAvatar(groupId: string): string | undefined {
+  /** A group's picture, or null when signal-cli has none (see avatarOf). */
+  private groupAvatar(groupId: string): string | null {
     const p = join(this.signalDir, 'avatars', `group-${groupId.replace(/\//g, '_')}`);
-    return existsSync(p) ? fileUrl(p) : undefined;
+    return existsSync(p) ? fileUrl(p) : null;
   }
 
   private nameOf = (aci: string): string => this.names.get(aci) ?? (String(this.facts.get(`i:${aci}`)?.handle ?? '') || 'Someone');
@@ -2544,7 +2549,7 @@ export class SignalAdapter {
       const f = contactIdentity(c, { contact: inContacts, avatarUrl });
       if (f) this.emitFact({ t: 'identity', identity: f });
       this.noteAbout(c, inContacts);
-      const p = personAbout(c, { inContacts, avatarUrl });
+      const p = personAbout(c, { inContacts, avatarUrl: avatarUrl ?? undefined });
       const safety = await this.safetyWith(id);
       if (safety) p.safety = safety;
       return p;

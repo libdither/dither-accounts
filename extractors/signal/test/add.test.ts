@@ -253,7 +253,7 @@ describe('adding on Signal against a fake signal-cli', () => {
     ] as RequestFact[]);
     const at = events.indexOf(list);
     expect(firstIndex(0, (e) => e.t === 'identity' && e.identity.nativeId === JAMIE)).toBeLessThan(at);
-    expect(events.find((e) => e.t === 'identity' && e.identity.nativeId === JAMIE)).toEqual({ t: 'identity', identity: { nativeId: JAMIE, displayName: 'Jamie' } });
+    expect(events.find((e) => e.t === 'identity' && e.identity.nativeId === JAMIE)).toEqual({ t: 'identity', identity: { nativeId: JAMIE, displayName: 'Jamie', avatarUrl: '' } });
     expect(of('conversation').some((c) => c.conversation.nativeId === `group:${PARTY}`)).toBe(false);
     expect(of('conversation').some((c) => c.conversation.nativeId === dm(JAMIE))).toBe(true); // its conversation as usual
     expect(of('conversation').some((c) => c.conversation.nativeId === `group:${CREW}`)).toBe(true);
@@ -462,7 +462,7 @@ describe('adding on Signal against a fake signal-cli', () => {
     const link = 'https://signal.me/#eu/FakeUsernameLinkForMei0000';
     expect(await cmd({ t: 'resolve', ref: who(link) })).toEqual({ what: 'person', name: 'Mei', nativeId: MEI, relationship: 'stranger', actions: ['message'] });
     expect(calls('getUserStatus').at(-1).params).toEqual({ username: [link] });
-    expect(of('identity', mark).map((e) => e.identity)).toEqual([{ nativeId: MEI, displayName: 'Mei' }]); // before the reply
+    expect(of('identity', mark).map((e) => e.identity)).toEqual([{ nativeId: MEI, displayName: 'Mei', avatarUrl: '' }]); // before the reply
     await expect(cmd({ t: 'resolve', ref: who('+15550111') })).rejects.toThrow('No Signal account has this number');
     await expect(cmd({ t: 'resolve', ref: who('nobody.99') })).rejects.toThrow('No Signal account has this username');
     await expect(cmd({ t: 'resolve', ref: who('busy.42') })).rejects.toThrow(/^Signal is limiting how often this device can look people up; try again in 10 minutes$/);

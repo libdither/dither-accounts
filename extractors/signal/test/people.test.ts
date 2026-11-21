@@ -158,7 +158,7 @@ describe('signal people and this device against a fake signal-cli', () => {
     expect(rel.list.some((r) => r.identity === SELF)).toBe(false);
     const alice = of('identity').find((e) => e.identity.nativeId === ALICE)!.identity;
     // Nothing to say yet: an empty nickname or note goes only to clear one the hub was told.
-    expect(alice).toEqual({ nativeId: ALICE, handle: '+15550137', displayName: 'Alice Chen', contact: true });
+    expect(alice).toEqual({ nativeId: ALICE, handle: '+15550137', displayName: 'Alice Chen', avatarUrl: '', contact: true });
   });
 
   test('a safety number on the profile; a changed key is a line in the 1:1 and a mark on the profile', async () => {

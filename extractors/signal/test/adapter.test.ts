@@ -161,7 +161,7 @@ describe('signal adapter against a fake signal-cli', () => {
     writeFileSync(join(signalDir, 'fake-scan'), '');
     const online = await until('online', () => of('status', mark).find((s) => s.status === 'online'));
     expect(of('status', mark)[0]).toMatchObject({ status: 'connecting', attention: null });
-    expect(online.self).toEqual({ nativeId: SELF, handle: '+15550100', displayName: 'Quinn', isSelf: true });
+    expect(online.self).toEqual({ nativeId: SELF, handle: '+15550100', displayName: 'Quinn', isSelf: true, avatarUrl: '' });
     expect(secret).toMatchObject({ number: '+15550100', aci: SELF });
     const d = argvs('daemon')[0].argv as string[];
     expect(d).toEqual(expect.arrayContaining(['-a', SELF, 'daemon', '--socket', '--receive-mode', 'on-connection', '--no-receive-stdout', '--ignore-stories']));
@@ -172,14 +172,15 @@ describe('signal adapter against a fake signal-cli', () => {
   test('snapshot: contacts, groups and Note to Self', async () => {
     await until('group conversation', () => of('conversation').find((c) => c.conversation.nativeId === GROUP));
     const idn = (id: string) => of('identity').find((e) => e.identity.nativeId === id)?.identity;
-    expect(idn(ALICE)).toEqual({ nativeId: ALICE, handle: '+15550137', displayName: 'Alice Chen', contact: true });
-    expect(idn(SAM)).toEqual({ nativeId: SAM, handle: '+15550161', displayName: 'Sam Rivera', contact: true });
+    expect(idn(ALICE)).toEqual({ nativeId: ALICE, handle: '+15550137', displayName: 'Alice Chen', avatarUrl: '', contact: true });
+    expect(idn(SAM)).toEqual({ nativeId: SAM, handle: '+15550161', displayName: 'Sam Rivera', avatarUrl: '', contact: true });
     expect(of('conversation').find((c) => c.conversation.nativeId === GROUP)!.conversation).toEqual({
       nativeId: GROUP,
       shape: 'group',
       encrypted: true,
       name: 'Climbing crew 🧗',
       topic: 'thursday nights',
+      avatarUrl: '',
       participants: [SELF, ALICE, SAM],
     });
     expect(of('conversation').find((c) => c.conversation.nativeId === `dm:${SELF}:${SELF}`)!.conversation.shape).toBe('self');
@@ -666,6 +667,14 @@ describe('signal adapter against a fake signal-cli', () => {
       facts: [{ label: 'Profile name', value: 'Alice' }],
     });
     expect(of('identity', mark).map((e) => e.identity)).toEqual([{ nativeId: ALICE, handle: '+15550137', displayName: 'Alice Chen', avatarUrl: pathToFileURL(avatar).href, contact: true }]);
+
+    // She takes her picture down: signal-cli deletes its copy, and the next read tells the hub to drop the link it holds
+    // (a hub that kept it would ask fetchMedia for a file that is gone every time it shows her).
+    rmSync(avatar);
+    const gone = events.length;
+    expect((await profile(ALICE)).avatar).toBeUndefined();
+    expect(of('identity', gone).map((e) => e.identity)).toEqual([{ nativeId: ALICE, handle: '+15550137', displayName: 'Alice Chen', avatarUrl: '', contact: true }]);
+    await expect(cmd({ t: 'fetchMedia', url: pathToFileURL(avatar).href })).rejects.toThrow('no such Signal media file');
   });
 
   test('profile: blocked, a stranger (the second read, with allRecipients), and someone signal-cli does not know', async () => {
@@ -681,7 +690,7 @@ describe('signal adapter against a fake signal-cli', () => {
     const mark = events.length;
     expect(await profile(ROBIN)).toEqual({ displayName: 'Robin', bio: 'Gone bouldering', relationship: 'stranger' });
     expect(reads()).toEqual([{ recipient: [ROBIN] }, { recipient: [ROBIN], allRecipients: true }]);
-    expect(of('identity', mark).map((e) => e.identity)).toEqual([{ nativeId: ROBIN, displayName: 'Robin' }]);
+    expect(of('identity', mark).map((e) => e.identity)).toEqual([{ nativeId: ROBIN, displayName: 'Robin', avatarUrl: '' }]);
     expect(await profile('e0000000-8888-4bbb-8ccc-000000000008')).toEqual({});
     expect(reads()).toHaveLength(2);
     // A number would make signal-cli look it up on the server: refused before any read.

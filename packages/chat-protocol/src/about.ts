@@ -212,6 +212,8 @@ export const GROUP_RULES: Partial<Record<Network, GroupRule>> = {
   telegram: { noun: 'group', who: 'known', mode: 'add', name: 'required', nameMax: 128, min: 1, max: 10 },
   // XChat (X's web client): New message → Create a group, people its search offers as addable, a name of up to 32.
   x: { noun: 'group', who: 'known', mode: 'add', name: 'optional', nameMax: 32, min: 1, max: 10 },
+  // Zulip's group direct message: anyone in the organization, no name of its own, made by its first message.
+  zulip: { noun: 'group conversation', who: 'known', mode: 'add', name: 'optional', nameMax: 0, min: 2, max: 50 },
 };
 
 /** What `createGroup` answers, in native ids. */
@@ -242,6 +244,7 @@ export function createGroupProblem(network: Network, name: string | undefined, p
   if (people > r.max) return `${what} starts with at most ${r.max} ${them(r.max)}`;
   const n = (name ?? '').trim();
   if (!n) return r.name === 'required' ? `Give the ${r.noun} a name` : null;
+  if (r.nameMax === 0) return `${what} has no name of its own`;
   if ([...n].length > r.nameMax) return `${what}'s name is at most ${r.nameMax} characters`;
   return null;
 }
@@ -417,6 +420,14 @@ export const ABOUT_RULES: Record<Network, AboutRules> = {
   bluesky: {
     conversation: [],
     space: [],
+  },
+  // Zulip: a channel's name, description, who may post, public or private, and whether new members see its history;
+  // a topic's name (renaming moves its messages); the organization's name and description. Names are at most 60.
+  zulip: {
+    conversation: ['name', 'topic', 'announceOnly', 'joinRule', 'history'],
+    space: ['name', 'topic'],
+    nameMax: 60,
+    topicMax: 1024,
   },
 };
 

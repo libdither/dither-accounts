@@ -108,12 +108,16 @@ export interface PollRules {
   defaultHours?: number;
   /** A vote can be changed or taken back later, so a tap votes at once; otherwise you choose, then press Vote. */
   voteChangeable: boolean;
+  /** Every poll takes several choices (Zulip's): there is no one-choice poll to make. */
+  multiOnly?: boolean;
 }
 
 /** What each network lets a poll be. Networks without polls are absent. */
 export const POLL_RULES: Partial<Record<Network, PollRules>> = {
   discord: { minOptions: 2, maxOptions: 10, questionMax: 300, optionMax: 55, hours: [1, 4, 8, 24, 72, 168], defaultHours: 24, voteChangeable: true },
   signal: { minOptions: 2, maxOptions: 10, questionMax: 200, optionMax: 150, voteChangeable: true },
+  // Zulip's /poll: any number of options, each person votes for as many as they like and can change it; no end.
+  zulip: { minOptions: 2, maxOptions: 20, questionMax: 300, optionMax: 300, voteChangeable: true, multiOnly: true },
 };
 
 /** Why this poll cannot be made on this network, or null. */
@@ -130,6 +134,7 @@ export function pollDraftProblem(network: Network, d: PollDraft): string | null 
   if (opts.some((o) => [...o].length > r.optionMax)) return `An option is at most ${r.optionMax} characters here`;
   if (new Set(opts.map((o) => o.toLowerCase())).size !== opts.length) return 'Two options say the same';
   if (typeof d.multi !== 'boolean') return 'single or multiple choice?';
+  if (r.multiOnly && !d.multi) return 'Polls here always take several choices';
   if (d.hours !== undefined && !r.hours?.includes(d.hours)) return r.hours ? 'Not one of the durations this network offers' : 'Polls here have no timer';
   return null;
 }

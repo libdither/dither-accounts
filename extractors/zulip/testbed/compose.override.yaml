@@ -1,0 +1,21 @@
+# The sandbox's own settings, merged over compose.yaml by sandbox.ts.
+# - EXTERNAL_HOST needs a dot and Zulip serves only https, hence zulip.localhost with a self-signed
+#   certificate; clients trust it through NODE_EXTRA_CA_CERTS (sandbox.ts writes ca.crt).
+# - LOADBALANCER_IPS covers podman's default compose networks, so the proxy headers are trusted.
+# - File secrets in ./secrets (sandbox.ts generates them, without trailing newlines): podman-compose 1.6
+#   rejects secrets sourced from `environment:` and the `!override` tag.
+secrets:
+  zulip__postgres_password: { file: "./secrets/postgres_password" }
+  zulip__memcached_password: { file: "./secrets/memcached_password" }
+  zulip__rabbitmq_password: { file: "./secrets/rabbitmq_password" }
+  zulip__redis_password: { file: "./secrets/redis_password" }
+  zulip__secret_key: { file: "./secrets/secret_key" }
+  zulip__email_password: { file: "./secrets/email_password" }
+services:
+  zulip:
+    environment:
+      SETTING_EXTERNAL_HOST: "zulip.localhost:${ZULIP_SANDBOX_PORT:-8591}"
+      SETTING_ZULIP_ADMINISTRATOR: "admin@example.com"
+      LOADBALANCER_IPS: "10.89.0.0/16"
+      CERTIFICATES: "self-signed"
+      SETTING_PUSH_NOTIFICATION_BOUNCER_URL: "None"

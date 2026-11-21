@@ -199,6 +199,8 @@ function fromUrl(u: URL): AddRef[] {
   }
   if (proto !== 'https:' && proto !== 'http:') return [];
   const host = u.hostname.toLowerCase().replace(/^www\./, '');
+  // A Zulip channel link, on any organization's own address: …/#narrow/channel/12-design (dither-accounts' docs/zulip.md).
+  if (/^#narrow\/(channel|stream)\/\d+/.test(u.hash)) return [{ kind: 'place', network: 'zulip', address: u.toString() }];
   const seg = u.pathname.split('/').filter(Boolean).map((s) => decodeURIComponent(s));
   const [a = '', b = ''] = seg;
   switch (host) {

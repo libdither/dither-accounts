@@ -13,6 +13,9 @@ same wire as before: dither-chat's adapter protocol, copied as `packages/chat-pr
 | `matrix` | `extractors/matrix` | the Client-Server API with plain fetch; the Rust crypto (wasm) when encryption is on |
 | `whatsapp` | `extractors/whatsapp` | a whatsmeow sidecar (`bridge/`, Go, built with nix) as a linked device; adding and join requests: [whatsapp.md](whatsapp.md) |
 | `t3` | `extractors/t3` | T3 Code's coding threads on this machine, through its shell stream, MCP endpoint and command line ([t3.md](t3.md)): no adapter in dither-chat |
+| `mastodon` | `extractors/mastodon` | a Mastodon server's REST API with plain fetch: posts only, notifications as a feed ([mastodon.md](mastodon.md)): no adapter in dither-chat |
+| `lemmy` | `extractors/lemmy` | a Lemmy instance's API v3 with plain fetch: posts and comments only, replies and mentions as a feed ([lemmy.md](lemmy.md)): no adapter in dither-chat |
+| `bluesky` | `extractors/bluesky` | the AT Protocol's HTTP API (XRPC) on the account's own server with plain fetch: posts only, notifications as a feed ([bluesky.md](bluesky.md)): no adapter in dither-chat |
 | `chat-fake` | `extractors/chat-fake` | a fake for tests: you and Alice in one DM |
 
 ## The `chat` interface
@@ -26,6 +29,33 @@ typed from the protocol, and every `AdapterEvent` but replies and logs is an eve
 
 `hello` and `status` are the account's own state: the manager keeps the latest of each and gives them to an app when it
 connects or when a grant first lets it see the account.
+
+**When each reacted.** A `reaction` event carries `ts`, the network's time for it, and a snapshot names each person's
+(`MessageFact.reactions[].at`, and the `reactors` reply's `at`, both by author), where the network gives one.
+dither-chat shows them on hover and in who reacted (its `docs/reactions.md`, "When"); without one the hub uses the time
+it heard and shows "by".
+
+| kind | added | taken back |
+|---|---|---|
+| `signal` | the reaction message's timestamp (yours: the one signal-cli sent it with) | the same, from the message taking it back |
+| `whatsapp` | `senderTimestampMS`, else its message's time; history's reactions too | the time of the message taking it back |
+| `matrix` | the `m.reaction` event's `origin_server_ts`; a backfill snapshot's from the reaction index | the redaction's `origin_server_ts` (or `redacted_because`'s) |
+| `telegram` | the `messagePeerReaction` date of each person it names; `reactors` too | none: Telegram drops it from the list |
+| `discord`, `x`, `meta`, `gmessages` | none: their reactions come as lists of who | none |
+
+**A Discord page that never starts or stops answering** (`extractors/discord/src/pagewatch.ts`). The extension's
+worker can be attached while its tab has no working page: after a restart under load, Chromium's network service
+crashed while the page loaded and the hook never ran. The worker now refuses a command it has no page for at once
+("the Discord page is not open in the sandbox") instead of dropping it, and the extractor reloads the tab through the
+worker (`tab.reload`: the Discord tab sent back to its start address, or a new one when there is none) when the page
+has not spoken 2 minutes after the worker attached, or left 3 requests in a row unanswered with no word between. Each
+reload with no word since doubles the next wait, up to 15 minutes.
+
+**A command in the first seconds** (`extractors/discord/src/startup.ts`). A restart (a deploy) leaves the extractor
+a few seconds with no extension attached and then no client loaded, while the hub may already be sending (a
+`markRead` as the owner reads). A command that comes in then waits for the client's first snapshot, or for a sign-in
+page or captcha that will not go away by itself, for at most 15 s after the extractor started, and then runs; its span
+has a "waited for the client to start" event. After that window nothing waits: a later lost extension fails at once.
 
 ## Network search and member walks
 
@@ -181,6 +211,14 @@ Everything above is tested against fakes of the client's modules (`test/hook.tes
 answers, the 80013 refusal and the confirm, the spam and stranger flags, and the analytics contexts are what the
 client is known to use (read from its bundle as of November 2026), and are confirmed only on a live account.
 
+## A command the page does not answer (Discord)
+
+Each command to the Discord page that times out is told apart in the log at once, in one line: `the Discord page's
+silence: request …`, with how far the request got (the worker handed it to the page, the hook had it), how Chromium
+sees the tab, and what the hook says of itself without the network (`page.state`: visibility, lifecycle events, error
+counts, the commands still open). The hook also logs a command still open after 20 s. See
+[page-silence.md](page-silence.md); command names only, never a body or an id.
+
 ## The account itself (Discord)
 
 What Discord says of the account and its person-level actions, for dither-chat's docs/account-self.md
@@ -204,7 +242,7 @@ own stores as they change, and written the way its own settings pages and button
 | `setPresence` | `SettingsActions.updateAsync('status', draft => ..., 0)` as the status picker: `status`, `statusExpiresAtMs`, `customStatus` (text, emoji name, expiry), made with the proto's own message types read from `ProtoClass.fields`. A server's own emoji cannot be named in text and is refused. |
 | `sessions` | `GET /auth/sessions` as the Devices page, the sandbox's own marked by `AuthenticationStore.getAuthSessionIdHash()`. Signing others out asks for the password: the live view. |
 | `setProfile` beyond the bio | Your own profile lists `editable`: `bio`, `name`, `avatar`, `pronouns`, `banner`, `accent`. `PATCH /users/@me` (`global_name` from `name`, `avatar` as a data URL) and `PATCH /users/@me/profile` (`bio`, `pronouns`, `banner`, `accent_color`), as the profile settings. `emoji` and `username` are refused in words. A banner without Nitro is Discord's refusal, passed on. |
-| `profile` | Also badges (`getUserProfile().badges`), theme colours, the avatar decoration's asset, and your note (above). |
+| `profile` | Also badges (`getUserProfile().badges`), theme colours, the avatar decoration's asset, and your note (above). Each shared server carries their own bio and pronouns there (`getGuildMemberProfile`, else the fetch's `guild_member_profile`) when set and not the same as the main ones. Facts add the server tag by their name (`primary_guild`, only while they show it, with the server's name when the client knows it), Nitro since and Boosting since, and a bot's app description (300 characters at most). |
 
 Untested against a live account: shapes are from the client's code (build of 2026-11-12) and the fakes in
 `test/self.test.ts`.
@@ -403,7 +441,9 @@ later needs nothing here: it sends through the ordinary `send` at its time.
   `allowedMentions: { parse: [users, roles, everyone], replied_user: false }`, as its reply bar's @ toggle and @silent
   build them; on the REST path, the same as `flags` and `allowed_mentions`. Capabilities `silentSend`, `replyMention`.
 - `suppressEmbeds`: the patch its own Remove Embeds sends, with `SUPPRESS_EMBEDS` added to the flags the message has
-  (read first, as a jump to it does, when the client has not loaded it).
+  (read first, as a jump to it does, when the client has not loaded it). With `moderator`, someone else's message:
+  only where the client says Manage Messages here (`canModerateMessages`), as its × on their embed is offered; the
+  reaction context's `moderation.embeds` says so first.
 - Saved messages (`savedMessages`, needs `SavedMessagesStore` and its save module): `save` (with `dueAt`, a reminder)
   and remove through the client's own functions; `savedList` runs its Saved list's own fetch (the next page with
   `before`) and reads its store. `SAVED_MESSAGES_UPDATE` (loaded by the client itself on connecting),
@@ -431,7 +471,34 @@ A sticker goes through `MessageActions.sendStickers` (REST `sticker_ids` without
 same upload path files take (upload URL, PUT, the message), as the client's recorder sends one: flag IS_VOICE_MESSAGE,
 no text, the file named `voice-message.ogg` with `duration_secs` and `waveform`; only an Ogg file is sent that way.
 Checked against the bundle replica in `test/hook.test.ts`, not on a live account. dither-chat's `docs/media-kinds.md`
-has the app's side (and why there is no GIF picker).
+has the app's side.
+
+## GIFs
+
+`searchGifs` (Discord) and `sendGifs` (Telegram, WhatsApp), with `gif: true` on an attachment both ways: incoming, a
+GIF the network sends as a video (drawn looping and silent); outgoing, a file to send as the network's own GIF.
+
+- **Discord: the `gifs` command** (hook.js `gifs`, `src/media.ts` `gifPageOf`) makes the requests the client's own
+  GIF picker makes: `GET /gifs/search` with `{ q, media_format, locale, limit }`, or with no query `GET
+  /gifs/trending-gifs` with `{ media_format, locale, limit }`. `media_format` is the picker store's
+  (`GIFPickerViewStore.getSelectedFormat()`: "webm", or "tinywebp" on some clients; "webm" without the store), `locale`
+  is `LocaleStore.locale` (the browser's language without it). Each result's `url` is the page link the picker sends
+  as the message, `src` its video and `gif_src` its .gif, made https where they come as `//…`. The picker has no
+  offset, only a limit, so a page asks for the next limit (50, 100, … up to 200) and keeps the new tail; fewer results
+  than asked is the end. The picker's analytics (`/gifs/select`, its search events) are not sent. These shapes are
+  read from the client's bundle (2026-11-16), checked against the replica in `test/hook.test.ts`, and not tried on a
+  live account. Sending one to Discord is the hub sending its link as text; an incoming gifv embed is already drawn as
+  a GIF.
+- **Telegram**: an incoming document with `documentAttributeAnimated` is a GIF. One sent with `gif` goes as an
+  animation, as Telegram's apps send one: an mp4 with the animated and video attributes, a .gif with the animated one
+  (Telegram makes the mp4).
+- **WhatsApp**: an incoming video with `gifPlayback` is a GIF. One sent with `gif` that is an mp4 goes as a video
+  with `gifPlayback`. WhatsApp takes only an mp4 for that and nothing here converts, so a .gif goes as it does without
+  the flag: a document (as an image WhatsApp would show one still frame).
+- **Signal**: signal-cli's JSON (`JsonAttachment`, 0.14.9) has no GIF flag on a received attachment and `send` has no
+  option to send one, so nothing is marked and `sendGifs` is not advertised. A .gif goes as a file, which Signal's
+  apps play.
+- Matrix: nothing.
 
 ## Making a group
 

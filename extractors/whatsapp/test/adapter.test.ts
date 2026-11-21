@@ -110,6 +110,8 @@ async function harness(o: { loggedIn?: boolean; opts?: Partial<AdapterOptions> }
       return events.slice(n);
     },
     cmd: (op: string, nth = 0) => cmds.filter((c) => c.op === op)[nth],
+    /** No bridge connected to the test: the last one has gone, and nothing more can reach one. */
+    bridgeGone: () => conns.length === 0,
     status: () => [...events].reverse().find((e): e is Extract<P.AdapterEvent, { t: 'status' }> => e.t === 'status')!,
     close: async () => {
       await adapter.shutdown();
@@ -364,6 +366,20 @@ test('send a file: upload, then a media message with the caption', async () => {
   expect(sent.attachments![0]).toMatchObject({ kind: 'image', url: `wa-media:${msgId(ALICE, 'SENT1')}` });
 });
 
+test('send a GIF: an mp4 is a video with GIF playback, a .gif goes as a document as before', async () => {
+  const h = await harness();
+  await h.emit(fx('text'));
+  await h.ctl({ result: { op: 'upload', value: { url: 'https://mmg/g', directPath: '/v/g', mediaKey: 'a2V5', fileEncSHA256: 'ZW5j', fileSHA256: 'c2hh', fileLength: 7 } } });
+  await h.adapter.command({ t: 'send', id: '1', conversation: ALICE, body: '', attachments: [{ path: '/tmp/cat.mp4', name: 'cat.mp4', mime: 'video/mp4', size: 7, kind: 'video', gif: true }] });
+  expect(h.cmd('upload')).toMatchObject({ path: '/tmp/cat.mp4', kind: 'video' });
+  expect(h.cmd('send').message).toEqual({ videoMessage: { url: 'https://mmg/g', directPath: '/v/g', mediaKey: 'a2V5', fileEncSHA256: 'ZW5j', fileSHA256: 'c2hh', fileLength: '7', mimetype: 'video/mp4', gifPlayback: true } });
+  expect(ofType(h.events, 'message').at(-1)!.message.attachments![0]).toMatchObject({ kind: 'video', gif: true });
+  await h.adapter.command({ t: 'send', id: '2', conversation: ALICE, body: '', attachments: [{ path: '/tmp/cat.gif', name: 'cat.gif', mime: 'image/gif', size: 7, kind: 'image', gif: true }] });
+  expect(h.cmd('upload', 1)).toMatchObject({ path: '/tmp/cat.gif', kind: 'document' });
+  expect(h.cmd('send', 1).message.documentMessage).toMatchObject({ mimetype: 'image/gif', fileName: 'cat.gif' });
+  expect(h.cmd('send', 1).message.documentMessage.gifPlayback).toBeUndefined();
+});
+
 test('send a voice note with text: the text goes out first as its own message, the audio has no caption', async () => {
   const h = await harness();
   await h.emit(fx('text'));
@@ -384,9 +400,11 @@ test('react: message keys for a DM and for a LID-addressed group, one reaction a
   expect(h.cmd('send').message.reactionMessage).toMatchObject({ key: { remoteJID: ALICE, fromMe: false, ID: 'A1' }, text: '👍' });
   expect(h.cmd('send').message.reactionMessage.key.participant).toBeUndefined();
   await h.adapter.command({ t: 'react', id: '2', conversation: ALICE, message: msgId(ALICE, 'A1'), key: '😂' });
+  // Both at the time the reaction was sent with.
+  const sentAt = Number(h.cmd('send', 1).message.reactionMessage.senderTimestampMS);
   expect(ofType(h.events, 'reaction').slice(-2)).toEqual([
-    { t: 'reaction', conversation: ALICE, message: msgId(ALICE, 'A1'), author: ME, key: '👍', remove: true },
-    { t: 'reaction', conversation: ALICE, message: msgId(ALICE, 'A1'), author: ME, key: '😂' },
+    { t: 'reaction', conversation: ALICE, message: msgId(ALICE, 'A1'), author: ME, key: '👍', remove: true, ts: sentAt },
+    { t: 'reaction', conversation: ALICE, message: msgId(ALICE, 'A1'), author: ME, key: '😂', ts: sentAt },
   ]);
   await h.adapter.command({ t: 'react', id: '3', conversation: ALICE, message: msgId(ALICE, 'A1'), key: '😂', remove: true });
   expect(h.cmd('send', 2).message.reactionMessage.text).toBe('');
@@ -493,9 +511,10 @@ test('fetchMedia downloads through the bridge; avatars through the picture URL',
   await h.ctl({ result: { op: 'avatar', value: { url: 'https://pps.whatsapp.net/x', id: '9' } } });
   expect(await h.adapter.command({ t: 'fetchMedia', id: '2', url: `wa-avatar:${ALICE}?9` })).toEqual({ mime: 'image/png', base64: Buffer.from('png').toString('base64') });
   await h.ctl({ result: { op: 'avatar', value: null } });
-  await expect(h.adapter.command({ t: 'fetchMedia', id: '3', url: `wa-avatar:${BOB}` })).rejects.toThrow('no profile picture');
+  // A 404, an answer rather than a failure, both times
+  await expect(h.adapter.command({ t: 'fetchMedia', id: '3', url: `wa-avatar:${BOB}` })).rejects.toMatchObject({ message: 'no profile picture', status: 404 });
   // and does not ask again for a while
-  await expect(h.adapter.command({ t: 'fetchMedia', id: '4', url: `wa-avatar:${BOB}` })).rejects.toThrow('no profile picture');
+  await expect(h.adapter.command({ t: 'fetchMedia', id: '4', url: `wa-avatar:${BOB}` })).rejects.toMatchObject({ message: 'no profile picture', status: 404 });
   expect(h.cmds.filter((c) => c.op === 'avatar')).toHaveLength(2);
 });
 
@@ -870,6 +889,8 @@ test('profiles ask WhatsApp nothing once the session is replaced, and answer fro
   const h = await harness();
   await h.emit({ t: 'contact', jid: ALICE, alt: ALICE_LID, fullName: 'Alice Chen' });
   await h.emit({ t: 'stream_replaced' });
+  // The adapter stops the bridge: wait until it has gone, so the hook has nothing left to stop.
+  await h.waitFor(h.bridgeGone);
   const before = h.cmds.length;
   expect(await profile(h, ALICE)).toEqual({
     displayName: 'Alice Chen',
@@ -878,7 +899,6 @@ test('profiles ask WhatsApp nothing once the session is replaced, and answer fro
     links: [{ label: 'Phone', value: '+15550000002', url: 'https://wa.me/15550000002' }],
     relationship: 'contact',
   });
-  await Bun.sleep(50);
   expect(h.cmds.slice(before)).toEqual([]);
 });
 

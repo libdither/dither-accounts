@@ -90,11 +90,15 @@ Mapped into `MessageFact.extra` under the keys dither-chat's protocol names (`ex
 | `attachments[].isVoiceNote`, `.caption` | `extra.attachmentNotes`, by position among the files kept | |
 | an attachment with no `id`, or whose file is not there | `extra.missingAttachments` (`name, mime, size`) | signal-cli downloads a message's files before it hands the message over, so a file not there failed or was skipped |
 | `sourceDevice`, `serverReceivedTimestamp`, `serverDeliveredTimestamp` | `extra.sourceDevice`, `serverReceivedTs`, `serverDeliveredTs` | not for edits |
-| a `receive` with an `exception` and nothing readable, from someone else | a system message in your 1:1 with them, "A message from Sam could not be decrypted.", id `<author>:<ts>:undecrypted` | once per message; none for `…Duplicate…` or `SelfSend…` exceptions. The warning is logged as before |
+| a `receive` with an `exception` and nothing readable, from someone else | a system message in your 1:1 with them, "A message from Sam could not be decrypted.", id `<author>:<ts>:undecrypted` | once per message; none for `…Duplicate…` or `SelfSend…` exceptions. The warning is logged as before. Reading up to it (`markRead`) acknowledges what came before it and sends no receipt for the line itself |
 | your `send`'s `results[]` that are not `SUCCESS` (some of a group) | `extra.failed` on the echo (`who, number, reason`) | when nobody gets it signal-cli fails the call, as before |
 
 What you send:
 
+- **Files** go with their own name and type (`src/attach.ts`): `attachment` is a data URI,
+  `data:<type>;filename=<URL-encoded name>;base64,…`. Given a path, signal-cli names the file by the path (the hub's
+  spool name) and takes its type from the extension, else from the first bytes, where a WebP's RIFF header reads as
+  WAV audio. A file over 25 MB, too big to carry in the request, still goes by its path.
 - **Quotes** carry the quoted message as Signal has it: `quoteMessage` with its mentions (`quoteMention`) and styles
   (`quoteTextStyle`), and its files (`quoteAttachment`, `contentType:filename[:preview]`; a picture of 256 KB or less is
   its own thumbnail, a colon in a name becomes `_`). That needs the message seen by this version (the state index keeps
@@ -102,6 +106,10 @@ What you send:
 - **Link previews** (`send`'s `preview`, capability `linkPreviews`): `previewUrl/Title/Description/Image`, only while
   your phone's link-preview setting is on and only for a link that is in the text. The picture is copied into
   `attachments/sent-<ts>-preview` for the echo's embed.
+- **A preview taken off** your own message (`suppressEmbeds`): Signal has no way to do it by itself, so it goes as an
+  edit with the same words (the hub sends them as the command's `body`: signal-cli keeps no copy) and quote and no
+  preview, as Signal's apps do when you close the preview while editing. Only in the message's first 24 hours, as the
+  apps edit (Note to Self always). An ordinary `edit` sends no preview either.
 - **`viewed`**: `sendReceipt --type viewed` for someone else's message, once per message (in memory), only with read
   receipts on, never in a message request.
 - **`resetSession`**: `send --end-session` (`endSession: true`) in a 1:1, and a system line "You reset the secure
@@ -224,6 +232,10 @@ dither-chat's `docs/media-kinds.md` has the app's side; this is what the adapter
   --story-timestamp --story-author` (or `sendReaction --story` with an emoji), in the author's 1:1 or the group of a
   group story, refused in a message request.
 
+GIFs: signal-cli's JSON has no GIF flag on a received attachment (`JsonAttachment` in 0.14.9: content type, name,
+id, size, width, height, caption, upload time, `isVoiceNote`) and `send` has no option for one, so no attachment is
+marked `gif` and `sendGifs` is not advertised; a .gif goes as a file (docs/chat.md "GIFs").
+
 Only a live account can confirm: that a viewed receipt for a story is what Signal's apps send for one, that a story
 reply shows on the phone as a reply to that story, that `getSticker` answers `{ data }` over JSON-RPC as on the CLI,
 that `addStickerPack` takes `uri` as a list over JSON-RPC, and that an Ogg Opus voice note plays on an iPhone.
@@ -238,7 +250,99 @@ docs/calls.md "Ringing" has the hub's side.
 Not `subscribeCallEvents`, `rejectCall`, `startCall` or `acceptCall`: signal-cli 0.14.8 tracks a call only while
 subscribed to call events, and then spawns `signal-call-tunnel` for every incoming offer. The nix build ships none, the
 spawn fails, and signal-cli hangs up on the caller (`endCall` 'tunnel_spawn_error'): every call would end on the phone
-too. No `declineCall` until a tunnel is packaged.
+too. Calls from here go through Signal Desktop instead (next section).
+
+## Calls through Signal Desktop
+
+With the account's **calls** setting on (off by default: `bun packages/manager/src/cli.ts set <account> calls on`, or
+`PATCH /api/accounts/<id>` with `{"settings": {"calls": true}}`; the extractor restarts to take it), the extractor runs
+Signal Desktop as the account's calls body: the official app, linked as one more device of the account, in the
+account's own sandbox ([native-sandbox.md](native-sandbox.md)) with audio devices of its own, and a hook of ours inside
+its window. signal-cli goes on doing everything else; Desktop is only used for calls. dither-chat calls through it in
+bridge mode, the same way it calls through Discord's client (dither-chat's docs/calls.md, "Video (bridge mode)").
+
+**Linking it.** On an account whose primary is a phone, the account's status gets a `calls` layer, "link Signal
+Desktop: scan the code in the live view with Signal on your phone (Settings → Linked devices)", and the live view is
+Desktop's display. On an account whose primary is signal-cli itself (a number registered here, like a test account),
+the extractor links Desktop with signal-cli's `addDevice` and the code Desktop shows, with nobody involved. Desktop's
+data is `<account>/desktop/home/.config/Signal`. It runs with `--password-store=basic`, because the sandbox has no
+keyring and Signal would wait for one, so its database key is kept as signal-cli's keys are: in the 0700 account
+directory.
+
+**What it advertises**, only while Desktop is linked and its hook is connected (the hello goes out again when that
+changes): `calls`, `declineCall`, `ringCalls` and `callVideo`, beside `callStates`.
+
+**How the hook gets in.** nixpkgs runs Signal Desktop on its own Electron (`electron app.asar`), so the extractor runs
+`electron -r hook/main.cjs app.asar`. `main.cjs` adds `hook/preload.cjs` to the app's sessions, so it runs in Signal's
+own preload world, beside the app's code, with the same `window.reduxActions` and `@signalapp/ringrtc` its buttons use
+(required from the same `app.asar`, so it is the same module instance). Nothing is patched on disk and no debugging
+port is opened. The hook talks to the extractor over one Unix socket in the sandbox's runtime directory, bound into the
+sandbox, one JSON object per line.
+
+| What | How |
+|---|---|
+| start a call | `calling.startCallingLobby`, then `calling.startCall` with the lobby's call mode (groups: `setOutgoingRing` first, when the device asked to ring) |
+| answer (a `join` while it rings here) | `calling.acceptCall` |
+| decline | `calling.declineCall` |
+| leave, mute | `calling.hangUpActiveCall`, `calling.setLocalAudio` (deafen: the mix to the device is cut). A leave while a join still waits for the lobby or the call (the device's socket closed, its app gone) ends that join: it starts nothing more, hangs up what it opened, and fails "left before the call started" |
+| camera on or off | `calling.setLocalVideo`; when Signal then asks `getUserMedia` for a camera, it gets the device's camera from the bridge |
+| share a screen | `calling._setPresenting(source, stream)` with the device's screen (and its sound) from the bridge; off: `cancelPresenting` |
+| the device's microphone | played into the `mic_in` sink; its monitor is `device_mic`, the sandbox's default source, which RingRTC records |
+| the call's audio | RingRTC plays into `call_out`, the default sink; the hook records its monitor (`call_mix`, no echo cancelling, gain control or noise suppression) and sends it on mid 0 |
+| others' video | each frame Signal's own call view pulls from RingRTC (`Call.receiveVideoFrame`, `GroupCall.getVideoSource`) is copied to a canvas of its own, whose stream goes on one of the bridge's video slots (mids 4–7, screens first); CallState.video says whose |
+| the call's state | read from the store four times a second: participants (ACIs) with mute, speaking (audio level over 0.05), camera and screen; `self.connected` once Signal's own call is connected (direct: `connected`; group: connected and joined) |
+| group rings | a group call ringing this account (`ringId`, not yet joined) is a `callState` fact `ring:<ringId>`; signal-cli does not see these. 1:1 rings stay signal-cli's (above) |
+
+In the sandbox the hook allows Signal's own microphone and camera settings, since there they always mean the device's.
+
+**When Desktop's window fails.** A crashed renderer is loaded again by `main.cjs`. A window that hangs first has its main
+thread paused once through Electron's debugger, and where it stood (function names, files and lines; never a value) is
+written to `~/dither-hang.json` in the sandbox, which the extractor logs as "Signal Desktop hung" when the hook goes. A
+call through Desktop ends for the device as soon as the hook goes ("Signal Desktop stopped"), and a Desktop whose hook
+has not come back after 45 s is started again. The copy of others' video keeps to the largest size Signal pulled in the
+last second, because Signal's call view can pull one screen share at two sizes, and a canvas resized on every frame
+restarts the encoder behind it each time.
+
+**Measured** (one machine, 2026-11-15):
+
+- Desktop idle, linked, in the sandbox: about 470 MB resident and under 1 % of a core. Started with
+  `--password-store=basic` it is up in about a second; without it, it waits about 50 s for a keyring.
+- A 1:1 call from the test account to a phone, answered on the phone: the bridge's answer reaches the device 0.25 s
+  after its offer. Audio and video went both ways (heard and seen on the phone; the phone's camera and voice reached the
+  device). The phone's video arrived at the device at 176 to 528 pixels wide.
+- Two accounts here, each with Desktop as its calls body, called each other through dither-chat with a headless
+  device on each end (dither-chat's two-device call lab), with no phone involved: the ring was answered and both sides
+  were connected in 3–5 s. Audio went both ways in every phase. Cameras went both ways, ramping from 240×180 to
+  720×540 at about 20 fps. Screen sharing worked both ways (an 800×450 tab, seen at the far end).
+- With a phone on mobile data, the phone's own answer capped the call at 300 kbit/s, and its video came through at
+  under 1 fps. Once in that call, the phone's voice faded at the device a few seconds after the answer although
+  RingRTC received it; this was not seen again between the two accounts here. Each call logs its media every 5 s
+  (`[desktop] call media`: the call mix's level, the tracks, frames per remote), which is where to look if it is.
+
+**A calls-only account for the call lab.** To test calls between two Signal accounts automatically, the way
+dither-chat's call lab does for Discord, a lab manager can hold an account in calls-only mode: config `callsOnly: true`
+and `peers`, a list of ACIs. It runs Signal Desktop alone, without signal-cli, so the real account it is linked to gains
+exactly one linked device. Nothing of the account's messages, contacts or groups goes to the hub. The hub hears only who
+this account is, and a 1:1 with each peer (named as Signal names them). It advertises `callStates` and the call
+capabilities, nothing else. Desktop itself still receives what any linked device receives, in its own database in
+the lab's account directory. Delete that directory and unlink the device (on the phone: Settings → Linked devices) when
+the lab is done.
+
+**Why Desktop, and not the others** (weighed for this, 2026-11-14):
+
+| | signal-cli + `signal-call-tunnel` | Signal Desktop in the sandbox | Android app in the emulator |
+|---|---|---|---|
+| 1:1 voice | yes | yes | yes |
+| video | no: signal-cli always offers `AUDIO_CALL`, and the tunnel drops incoming frames and feeds no outgoing ones | yes | yes, but video in needs v4l2loopback (a kernel module) or a file, and video out is only a screen capture |
+| group calls | no: `startCall` takes one recipient; the tunnel's group handling does nothing | yes | yes |
+| media taps | per-call PulseAudio devices | PulseAudio devices of the sandbox's own, and video frames in the renderer | the emulator's gRPC audio in and out; camera by v4l2 or file |
+| packaging here | not in nixpkgs; builds against a prebuilt WebRTC download, but a nested cargo build stalled in a first attempt | nixpkgs `signal-desktop` | the SDK's emulator needs an FHS environment on NixOS; the image has no Play services |
+| cost | small (estimated) | 470 MB idle, measured | 2.5–3.5 GB and 1–2 cores in a video call (estimated, not booted) |
+| risk to the account | signal-cli ends any call it gives up on with a hangup to the caller (tunnel error, daemon restart, 60 s of ringing), which ends the call on the caller's side | the official client, one more linked device | a whole phone to keep registered |
+
+The tunnel is [signal-call-tunnel](https://github.com/visigoth/signal-call-tunnel) (RingRTC 2.65); signal-cli added
+calls in 0.14.2 ([CHANGELOG](https://github.com/AsamK/signal-cli/blob/master/CHANGELOG.md)) and has an open request
+for video ([#1735](https://github.com/AsamK/signal-cli/issues/1735)).
 
 ## Not built
 

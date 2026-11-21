@@ -3,13 +3,14 @@
  * (docs/google.md, "The Gmail self-check"). Never a subject, an address, a name, a body, a label's name or an id: each
  * step keeps numbers it counted and yes/no answers, and errors keep only this extractor's own sentences, which name no
  * value. It reads one message whole, and only one that is already read and more than 30 days old, found by a search for
- * exactly those (is:read older_than:30d) and checked again here: unread mail is never opened.
+ * exactly those (is:read older_than:30d) and checked again here: unread mail is never opened. `readMessage: false` (the
+ * canary, canary.ts) reads none: lists, searches and the mailboxes only.
  */
 import type { MailSummary } from '@dither-accounts/interfaces';
 import type { GmailMail, SyncInfo } from './mail.ts';
 import { parseMessage } from './mime.ts';
 import { ENDPOINTS } from './protocol.ts';
-import { hex55, localIdKinds } from './protocol.ts';
+import { hex55, localIdKinds, noLabels } from './protocol.ts';
 
 const DAY = 86_400_000;
 const Y2K = Date.UTC(2000, 0, 1);
@@ -60,7 +61,8 @@ export function fill(list: MailSummary[], mailboxId: string | null, now: number)
   };
 }
 
-export async function selfCheck(mail: GmailMail, info: () => Promise<SyncInfo>, now: () => number = Date.now) {
+export async function selfCheck(mail: GmailMail, info: () => Promise<SyncInfo>, now: () => number = Date.now, opts: { readMessage?: boolean } = {}) {
+  const readMessage = opts.readMessage !== false;
   const t0 = Date.now();
   const page = await step(info);
   const pageOut = page.value ? { syncSeen: page.value.sync, syncHeaders: page.value.headers, accountKey: page.value.ik, syncPoint: !!page.value.history, ms: page.ms } : { error: page.error, ms: page.ms };
@@ -131,13 +133,17 @@ export async function selfCheck(mail: GmailMail, info: () => Promise<SyncInfo>, 
     : { error: ids.error, ms: ids.ms };
 
   // One message: already read and older than 30 days, from a search for exactly those, checked again here.
-  const message: Record<string, unknown> = { chosenFrom: 'is:read older_than:30d' };
-  const pool = await step(() => mail.search({ query: 'is:read older_than:30d', limit: 20 }) as Promise<{ messages: MailSummary[] }>);
-  message.searchMs = pool.ms;
-  if (pool.error) message.error = pool.error;
+  const message: Record<string, unknown> = readMessage ? { chosenFrom: 'is:read older_than:30d' } : { notRead: true };
+  const pool = readMessage ? await step(() => mail.search({ query: 'is:read older_than:30d', limit: 20 }) as Promise<{ messages: MailSummary[] }>) : { ms: 0 as number, value: undefined, error: undefined };
+  if (readMessage) {
+    message.searchMs = pool.ms;
+    if (pool.error) message.error = pool.error;
+  }
   const pick = pool.value?.messages.find((m) => m.flags.seen && m.date < now() - 30 * DAY && m.date >= Y2K);
-  message.found = !!pick;
-  message.candidates = pool.value?.messages.length ?? 0;
+  if (readMessage) {
+    message.found = !!pick;
+    message.candidates = pool.value?.messages.length ?? 0;
+  }
   if (pick) {
     const raw = await step(() => mail.raw({ id: pick.id }));
     if (raw.value) {
@@ -210,12 +216,17 @@ export async function selfCheck(mail: GmailMail, info: () => Promise<SyncInfo>, 
     notYetGmail: ev.notYetGmail,
     hex55: { ...hex55 },
     localIdKinds: { ...localIdKinds },
+    // Messages listed with null labels, left out, by endpoint.
+    noLabels: { ...noLabels },
+    // Records left out because their own anchors failed, and thread rows at no known place, by endpoint.
+    skipped: { ...ev.skipped },
+    strayRows: { ...ev.strayRows },
   };
   const fingerprints = Object.fromEntries(ENDPOINTS.map((e) => [e, { calls: mail.fp[e].calls, ok: mail.fp[e].ok, failed: mail.fp[e].failed, firstMismatch: mail.fp[e].first }]));
   const errors = [page.error, boxes.error, (inbox as { error?: string }).error, (allMail as { error?: string }).error, ids.error, pool.error].filter(Boolean).length;
   return {
     at: new Date().toISOString(),
-    ok: errors === 0 && !!pick && !(message.raw as { error?: string })?.error && !(message.get as { error?: string })?.error,
+    ok: errors === 0 && (!readMessage || (!!pick && !(message.raw as { error?: string })?.error && !(message.get as { error?: string })?.error)),
     page: pageOut,
     mailboxes,
     inbox,

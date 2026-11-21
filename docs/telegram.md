@@ -309,17 +309,18 @@ snapshot.
 
 Messages: text with its entities as the hub's Markdown (`src/entities.ts`: bold, italic, underline, strike, spoiler,
 code, pre with its language, links, quotes, mentions by name as `<@id>`), replies (across chats too), forwards with
-where from, edits, `mentionsSelf` from Telegram's own flag, photos, files, video, voice, stickers (kind `sticker`,
+where from, edits, `mentionsSelf` from Telegram's own flag, photos, files, video, GIFs (animations, `gif: true`), voice, stickers (kind `sticker`,
 body the emoji), places, contacts, polls and dice as text, service messages in words (joins, renames, calls, topics,
 timers), views and album ids under `extra`. Reactions: a message's whole set as a snapshot (`reactions`, with the
-people Telegram names and its totals), and live changes as `reaction` events for those it names.
+people Telegram names, when each reacted, and its totals), and live changes as `reaction` events for those it names
+(with Telegram's date for one added; it gives none for one taken back).
 
 Events: `message` (live, and `live: false` for the snapshot and history), `delete`, `reaction`, `read` (with Telegram's
 own unread and mention counts), `receipt` (read, in private chats: Telegram says who only there), `typing` (6 s, as
 Telegram's apps), `pin`, `role` (admins given and taken), `identity`, `conversation`, `leave`.
 
 Commands: `send` (Markdown to entities, replies, into a topic, one file as a photo or document, several as an
-album), `edit`, `redact` (deleted for everyone), `react` (one reaction each without Premium, as REACTION_RULES says),
+album, a file with `gif` as an animation: `sendGifs`, docs/chat.md "GIFs"), `edit`, `suppressEmbeds` (below), `redact` (deleted for everyone), `react` (one reaction each without Premium, as REACTION_RULES says),
 `reactionContext`, `reactors`, `markRead` (topics too), `typing`, `history` (paged back by date), `fetchMedia` (up to
 64 MB; a download that gets no part of the file for 20 s fails rather than waiting on), `openDirect` (@username,
 +phone, or a user id it knows; a public group's @name gives that group),
@@ -328,6 +329,19 @@ album), `edit`, `redact` (deleted for everyone), `react` (one reaction each with
 topic's name), `profile` (bio, username, phone where shown, groups in common, birthday; for you, your contacts).
 `resolve`, `add` and `answer`, with the `requests` events: [below](#joining-contacts-join-requests). `remove`, with
 the `relationships` events: [below](#contacts-and-blocks-relationships-and-remove). `call` is refused.
+
+## Link previews
+
+A message's link preview (`messageMediaWebPage`) is its `extra.embeds`, as Signal's and Discord's are: the page's
+site, title, words and author, and its picture as `tg://media/<chat>/<id>` (fetched through `fetchMedia` like the
+message's own file). A preview Telegram is still making (`webPagePending`, usual for a link just sent) shows nothing
+yet: the message is kept by the preview's id, and `updateWebPage` (`updateChannelWebPage`) sends it again with the
+preview, without asking Telegram for anything. A preview with nothing beyond the link is left out.
+
+`suppressEmbeds` takes the preview off your own message. Telegram has no way to do that by itself: its apps edit the
+message and close the preview, so this sends `messages.editMessage` with the message's own text and entities (read
+again first) and `no_webpage`. Telegram allows it in a message's first 48 hours, and always in a channel's posts and
+Saved Messages; past that its `MESSAGE_EDIT_TIME_EXPIRED` comes back as a sentence.
 
 ## Joining, contacts, join requests
 

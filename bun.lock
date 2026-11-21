@@ -5,6 +5,7 @@
     "": {
       "name": "dither-accounts",
       "dependencies": {
+        "@dither-accounts/approval": "workspace:*",
         "@dither-accounts/client": "workspace:*",
         "@dither-accounts/interfaces": "workspace:*",
         "@dither-accounts/link": "workspace:*",
@@ -23,6 +24,15 @@
         "vite": "^8.3.5",
       },
     },
+    "apps/desk-signer": {
+      "name": "@dither-accounts/desk-signer",
+      "bin": {
+        "desk-signer": "./src/main.ts",
+      },
+      "dependencies": {
+        "@dither-accounts/approval": "workspace:*",
+      },
+    },
     "extractors/amazon": {
       "name": "@dither-accounts/extractor-amazon",
       "dependencies": {
@@ -31,6 +41,13 @@
         "@dither-accounts/link": "workspace:*",
         "@dither-accounts/manager": "workspace:*",
         "@dither-accounts/statements-common": "workspace:*",
+      },
+    },
+    "extractors/bluesky": {
+      "name": "@dither-accounts/extractor-bluesky",
+      "dependencies": {
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
       },
     },
     "extractors/bugwatch": {
@@ -166,6 +183,21 @@
         "@dither-accounts/manager": "workspace:*",
       },
     },
+    "extractors/lemmy": {
+      "name": "@dither-accounts/extractor-lemmy",
+      "dependencies": {
+        "@dither-accounts/extractor-mastodon": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+    },
+    "extractors/mastodon": {
+      "name": "@dither-accounts/extractor-mastodon",
+      "dependencies": {
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+    },
     "extractors/matrix": {
       "name": "@dither-accounts/extractor-matrix",
       "dependencies": {
@@ -239,6 +271,14 @@
         "@types/mailparser": "^3.9.0",
       },
     },
+    "extractors/reddit": {
+      "name": "@dither-accounts/extractor-reddit",
+      "dependencies": {
+        "@dither-accounts/browser": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+    },
     "extractors/schwab": {
       "name": "@dither-accounts/extractor-schwab",
       "dependencies": {
@@ -254,6 +294,7 @@
       "name": "@dither-accounts/extractor-signal",
       "dependencies": {
         "@dither-accounts/manager": "workspace:*",
+        "@dither-accounts/sandbox": "workspace:*",
         "@dither-chat/protocol": "workspace:*",
       },
     },
@@ -272,6 +313,17 @@
         "@dither-accounts/browser": "workspace:*",
         "@dither-accounts/interfaces": "workspace:*",
         "@dither-accounts/link": "workspace:*",
+      },
+    },
+    "extractors/substack": {
+      "name": "@dither-accounts/extractor-substack",
+      "dependencies": {
+        "@dither-accounts/browser": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+      "devDependencies": {
+        "@dither-accounts/client": "workspace:*",
       },
     },
     "extractors/t3": {
@@ -320,6 +372,9 @@
         "react-dom": "^19.2.0",
       },
     },
+    "packages/approval": {
+      "name": "@dither-accounts/approval",
+    },
     "packages/browser": {
       "name": "@dither-accounts/browser",
     },
@@ -329,6 +384,7 @@
     "packages/client": {
       "name": "@dither-accounts/client",
       "dependencies": {
+        "@dither-accounts/interfaces": "workspace:*",
         "@dither-accounts/manager": "workspace:*",
         "@dither-accounts/spec": "workspace:*",
       },
@@ -349,6 +405,7 @@
     "packages/manager": {
       "name": "@dither-accounts/manager",
       "dependencies": {
+        "@dither-accounts/approval": "workspace:*",
         "@dither-accounts/interfaces": "workspace:*",
         "@dither-accounts/passkey": "workspace:*",
         "@dither-accounts/spec": "workspace:*",
@@ -358,6 +415,7 @@
     "packages/passkey": {
       "name": "@dither-accounts/passkey",
       "devDependencies": {
+        "@dither-accounts/approval": "workspace:*",
         "@dither-chat/protocol": "workspace:*",
       },
     },
@@ -414,11 +472,17 @@
 
     "@babel/types": ["@babel/types@7.29.11", "", { "dependencies": { "@babel/helper-string-parser": "^7.29.11", "@babel/helper-validator-identifier": "^7.29.7" } }, "sha512-WCsemW40Cpc6gouC1SrY6PBaZ+oLRlEVY9XBvZBI7il/HyUrb2nJ505wE1MHEFyDZNnrWDEuy4jL50WVHfTTSQ=="],
 
+    "@dither-accounts/approval": ["@dither-accounts/approval@workspace:packages/approval"],
+
     "@dither-accounts/browser": ["@dither-accounts/browser@workspace:packages/browser"],
 
     "@dither-accounts/client": ["@dither-accounts/client@workspace:packages/client"],
 
+    "@dither-accounts/desk-signer": ["@dither-accounts/desk-signer@workspace:apps/desk-signer"],
+
     "@dither-accounts/extractor-amazon": ["@dither-accounts/extractor-amazon@workspace:extractors/amazon"],
+
+    "@dither-accounts/extractor-bluesky": ["@dither-accounts/extractor-bluesky@workspace:extractors/bluesky"],
 
     "@dither-accounts/extractor-bugwatch": ["@dither-accounts/extractor-bugwatch@workspace:extractors/bugwatch"],
 
@@ -448,6 +512,10 @@
 
     "@dither-accounts/extractor-instagram": ["@dither-accounts/extractor-instagram@workspace:extractors/instagram"],
 
+    "@dither-accounts/extractor-lemmy": ["@dither-accounts/extractor-lemmy@workspace:extractors/lemmy"],
+
+    "@dither-accounts/extractor-mastodon": ["@dither-accounts/extractor-mastodon@workspace:extractors/mastodon"],
+
     "@dither-accounts/extractor-matrix": ["@dither-accounts/extractor-matrix@workspace:extractors/matrix"],
 
     "@dither-accounts/extractor-messenger": ["@dither-accounts/extractor-messenger@workspace:extractors/messenger"],
@@ -462,11 +530,15 @@
 
     "@dither-accounts/extractor-proton": ["@dither-accounts/extractor-proton@workspace:extractors/proton"],
 
+    "@dither-accounts/extractor-reddit": ["@dither-accounts/extractor-reddit@workspace:extractors/reddit"],
+
     "@dither-accounts/extractor-schwab": ["@dither-accounts/extractor-schwab@workspace:extractors/schwab"],
 
     "@dither-accounts/extractor-signal": ["@dither-accounts/extractor-signal@workspace:extractors/signal"],
 
     "@dither-accounts/extractor-simplefin": ["@dither-accounts/extractor-simplefin@workspace:extractors/simplefin"],
+
+    "@dither-accounts/extractor-substack": ["@dither-accounts/extractor-substack@workspace:extractors/substack"],
 
     "@dither-accounts/extractor-t3": ["@dither-accounts/extractor-t3@workspace:extractors/t3"],
 

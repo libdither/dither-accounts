@@ -8,6 +8,8 @@
  */
 'use strict';
 
+/*@include worker-watch@*/
+
 let CONFIG = null;
 let ws = null;
 let wsReady = false;
@@ -75,7 +77,24 @@ async function connect() {
       return;
     }
     if (cmd.t === 'ping') return; // keepalive from the adapter
+    // tab.state: how Chromium sees the newest page's tab, asked when the page stops answering (packages/browser's
+    // silence.ts).
+    if (cmd.t === 'cmd' && cmd.cmd && cmd.cmd.kind === 'tab.state') {
+      const last = Array.from(ports).pop();
+      return void workerWatch.answer(sendToAdapter, cmd.id, last && last.sender && last.sender.tab ? last.sender.tab.id : null, { ports: ports.size });
+    }
+    if (cmd.t === 'cmd' && cmd.cmd && cmd.cmd.kind === 'tab.reload') {
+      reloadTab(cmd.id, cmd.cmd);
+      return;
+    }
+    // No page to run it in: say so now, rather than drop it and leave the adapter to time out.
+    if (cmd.t === 'cmd' && ports.size === 0) {
+      sendToAdapter({ t: 'reply', id: cmd.id, ok: false, error: NO_PAGE, from: 'worker' });
+      return;
+    }
     toPorts(cmd); // { t:'cmd', id, cmd } -> content.js -> hook.js
+    // Handed to the pages' ports: one never answered was lost in a page, not on the way to it.
+    if (cmd.t === 'cmd' && ports.size) workerWatch.got(sendToAdapter, cmd.id);
   };
   ws.onclose = () => {
     wsReady = false;
@@ -88,6 +107,28 @@ async function connect() {
       ws && ws.close();
     } catch (e) {}
   };
+}
+
+const NO_PAGE = 'the Discord page is not open in the sandbox';
+const HOME = 'https://discord.com/app';
+
+/**
+ * tab.reload: the Discord tab sent back to `url` (a navigation, which also gets a tab stuck loading or on an error page
+ * going again), or a new tab on it when there is none. The adapter asks when the page never spoke or stopped answering.
+ */
+async function reloadTab(id, cmd) {
+  try {
+    const url = typeof cmd.url === 'string' && /^https:\/\/discord\.com\//.test(cmd.url) ? cmd.url : HOME;
+    const tabs = await chrome.tabs.query({ url: 'https://discord.com/*' });
+    let how = 'opened';
+    if (tabs.length) {
+      await chrome.tabs.update(tabs[0].id, { url });
+      how = 'navigated';
+    } else await chrome.tabs.create({ url, active: true });
+    sendToAdapter({ t: 'reply', id, ok: true, result: { how }, from: 'worker' });
+  } catch (e) {
+    sendToAdapter({ t: 'reply', id, ok: false, error: String((e && e.message) || e), from: 'worker' });
+  }
 }
 
 chrome.runtime.onConnect.addListener((port) => {

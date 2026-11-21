@@ -230,6 +230,12 @@ Kept in the account's directory: `profile/` (Chromium's, with the sign-in), `ext
 `config.json` holds the bridge token and the learned shapes, 0600), `learned.json` (0600), `adapter.log`. Logs and
 statuses hold ids, counts, module names and statuses only: never message text, people's names, cookies or tokens.
 
+## A command the page does not answer
+
+Each command that times out is told apart in the log at once, in one line: `the Messenger page's silence: request …` (or Instagram's), with
+how far the request got, how Chromium sees the tab, and what the hook says of itself without the network (`page.state`). The hook also logs a command still open after 20 s. See [page-silence.md](page-silence.md); command names
+and path templates only, never a body or an id.
+
 ## Tests
 
 - `extractors/meta/test/hook-messenger.test.ts`, `hook-instagram.test.ts`: `hook.js` and the fake page in a stand-in

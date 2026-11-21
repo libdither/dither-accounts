@@ -6,8 +6,8 @@
  * Runtime checks stay shallow (an object): the extractors are this repo's own code and check their commands
  * themselves, and the types here keep apps honest at build time.
  */
-import type { About, AdapterCommand, AdapterEvent, AddMembersResult, AddPreview, AddResult, AppAutocompleteResult, AppCommandsResult, BansResult, CreateGroupResult, DirectVoiceSession, GateResult, HistoryResult, InteractResult, LeaveResult, NativeMute, NativeScheduledResult, NetworkSearchResult, OpenDirectResult, NetworkTranslation, OwnPresence, PersonAbout, PostFact, PostThread, PostViewer, ReactionContext, ReactorsPage, SavedFact, SavedListResult, ScheduledEventFact, ScheduledEventsResult, SessionsResult, SpaceGate, ThreadsResult } from '@dither-chat/protocol';
-import type { StickerPackFact, StickerPage } from '@dither-chat/protocol';
+import type { About, AdapterCommand, AdapterEvent, AddMembersResult, AddPreview, AddResult, AppAutocompleteResult, AppCommandsResult, BansResult, CreateGroupResult, DirectVoiceSession, GateResult, HistoryResult, HomePage, InteractResult, LeaveResult, NativeMute, NativeScheduledResult, NetworkSearchResult, OpenDirectResult, NetworkTranslation, OwnPresence, PersonAbout, PostFact, PostThread, PostViewer, ReactionContext, ReactorsPage, SavedFact, SavedListResult, ScheduledEventFact, ScheduledEventsResult, SessionsResult, SpaceGate, ThreadsResult } from '@dither-chat/protocol';
+import type { GifPage, StickerPackFact, StickerPage } from '@dither-chat/protocol';
 import type { CreateThreadResult, ThreadFact } from '@dither-chat/protocol';
 import { ev, iface, op, type Schema, s } from '@dither-accounts/spec';
 import type { Mentionables } from '@dither-chat/protocol';
@@ -43,6 +43,7 @@ export const chat = iface({
     profile: op('read', 'What the network says about a person', input('profile'), out<PersonAbout>(), 60_000),
     post: op('read', "A post's thread: what it answers and its replies", input('post'), out<PostThread>(), 120_000),
     postReactors: op('read', 'Who liked or reposted a post', input('postReactors'), out<ReactorsPage>(), 120_000),
+    home: op('read', "A page of the account's home timeline: Following or For you", input('home'), out<HomePage>(), 120_000),
     translate: op('read', "A post translated by its network, as its own Translate post does", input('translate'), out<NetworkTranslation>(), 60_000),
     resolve: op('read', 'What an invite, address, name or handle is, without acting on it', input('resolve'), out<AddPreview>(), 60_000),
     scheduledEvents: op('read', "A server's scheduled events as the network has them now, with counts and your answers", input('scheduledEvents'), out<ScheduledEventsResult>(), 60_000),
@@ -50,10 +51,12 @@ export const chat = iface({
     appCommands: op('read', "The bots' slash commands (or apps' message commands) you may run in a conversation", input('appCommands'), out<AppCommandsResult>(), 60_000),
     appAutocomplete: op('read', "A bot's suggestions for an option of its command as you type it", input('appAutocomplete'), out<AppAutocompleteResult>(), 30_000),
     stickers: op('read', 'A page of the stickers you may send in a conversation', input('stickers'), out<StickerPage>(), 30_000),
+    gifs: op('read', "A page of GIFs from the network's own GIF picker: trending ones, or what a search finds", input('gifs'), out<GifPage>(), 30_000),
     send: op('write', 'Send a message', input('send'), out<{ nativeId?: string } | undefined>(), 120_000),
     forward: op('write', 'Forward a message', input('forward'), out<{ nativeId?: string; fallback?: string }>(), 60_000),
     postAct: op('write', 'Like or repost a post, or take it back', input('postAct'), out<PostViewer>(), 60_000),
-    publish: op('write', 'Write a post: a reply, a quote or a new one', input('publish'), out<PostFact>(), 120_000),
+    publish: op('write', 'Write a post: a reply, a quote or a new one, with pictures or a video', input('publish'), out<PostFact>(), 300_000),
+    unpublish: op('write', 'Delete a post of yours', input('unpublish'), out<{ deleted: true }>(), 60_000),
     openDirect: op('write', 'Open or find a direct conversation', input('openDirect'), out<OpenDirectResult>()),
     markRead: op('write', 'Mark a conversation read', input('markRead'), out<unknown>()),
     markUnread: op('write', 'Mark a conversation unread from a message on', input('markUnread'), out<unknown>()),
@@ -96,7 +99,7 @@ export const chat = iface({
     savedList: op('read', 'What you saved on the network, with its reminders, as its own list reads it', input('savedList'), out<SavedListResult>(), 60_000),
     nativeScheduled: op('read', "Messages scheduled with the network's own Send later", input('nativeScheduled'), out<NativeScheduledResult>(), 60_000),
     save: op('write', 'Save a message on the network, with a reminder, or stop keeping it', input('save'), out<SavedFact | Record<string, never>>(), 60_000),
-    suppressEmbeds: op('write', 'Take the link previews off your own message', input('suppressEmbeds'), out<unknown>(), 60_000),
+    suppressEmbeds: op('write', "Take the link previews off your own message, or as a moderator off someone else's", input('suppressEmbeds'), out<unknown>(), 60_000),
     cancelScheduled: op('write', "Cancel a message scheduled with the network's own Send later", input('cancelScheduled'), out<unknown>(), 60_000),
     lab: op('manage', 'Call-lab probe (DITHER_LAB only)', input('lab'), out<unknown>(), 120_000),
     sessions: op('read', 'Where the account is signed in', input('sessions'), out<SessionsResult>(), 60_000),

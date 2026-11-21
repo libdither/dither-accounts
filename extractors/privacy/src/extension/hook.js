@@ -28,15 +28,22 @@
   /*@include main-world@*/
   if (!cloak.once()) return;
   /*@include webauthn@*/
+  /*@include command-watch@*/
 
   const post = (payload) => cloak.send(payload);
+  // Each command's `got` and a command still open after 20 s (packages/browser's command-watch.js); this hook's own
+  // page.state answers with what the watch knows too.
+  const watch = commandWatch({ post, log: (level, msg) => post({ t: 'log', level, msg }), ownState: true });
 
   cloak.onDown((p) => {
     if (p.t === 'cmd' && typeof p.id === 'string') {
-      command(p.cmd || {}).then(
-        (result) => post({ t: 'reply', id: p.id, ok: true, result }),
-        (e) => post({ t: 'reply', id: p.id, ok: false, error: String((e && e.message) || e).slice(0, 300) }),
-      );
+      const done = watch.take(p);
+      command(p.cmd || {})
+        .then(
+          (result) => post({ t: 'reply', id: p.id, ok: true, result }),
+          (e) => post({ t: 'reply', id: p.id, ok: false, error: String((e && e.message) || e).slice(0, 300) }),
+        )
+        .finally(done);
     }
   });
 
@@ -160,7 +167,7 @@
   async function command(c) {
     switch (c.kind) {
       case 'page.state':
-        return pageState();
+        return { ...pageState(), watch: watch.state() };
       case 'page.passkey': {
         const b = passkeyButton();
         if (!b) return { clicked: false };

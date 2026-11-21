@@ -34,6 +34,20 @@ export function parseMsgId(id: string): { author: string; ts: number } | null {
   return { author: id.slice(0, i), ts };
 }
 
+/** The lines this extractor writes itself, an id of their own: `<author>:<ts>:<suffix>`. */
+const SYSTEM_SUFFIXES = ['undecrypted', 'endsession'];
+
+/**
+ * Any line of a conversation, a message or one of the extractor's own lines (a message that could not be decrypted,
+ * a reset session), for what only needs its place in the conversation: where it was read up to.
+ */
+export function parseLineId(id: string): { author: string; ts: number; own: boolean } | null {
+  const i = id.lastIndexOf(':');
+  const own = i > 0 && SYSTEM_SUFFIXES.includes(id.slice(i + 1));
+  const m = parseMsgId(own ? id.slice(0, i) : id);
+  return m && { ...m, own };
+}
+
 export type ConvTarget = { kind: 'group'; groupId: string } | { kind: 'dm'; peer: string } | { kind: 'self' };
 
 export function parseConversation(id: string, self: string): ConvTarget | null {
@@ -523,6 +537,8 @@ function dataCommon(b: Build, dm: Partial<SigDataMessage>, author: string, conve
         author,
         key: dm.reaction.emoji,
         ...(dm.reaction.isRemove ? { remove: true } : {}),
+        // When it was made: the reaction message's own timestamp (dither-chat docs/reactions.md "When").
+        ...(ts ? { ts } : {}),
       });
     }
     return;

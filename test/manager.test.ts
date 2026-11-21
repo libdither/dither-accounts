@@ -73,6 +73,20 @@ test('an approved admin app makes an account; its extractor runs and reports in'
   expect(await c.call(testEcho, account, 'echo', { text: 'hi' })).toEqual({ text: 'hi' });
 });
 
+test("a kind's own settings: only its declared keys and values, kept in the config, and the extractor restarted to take them", async () => {
+  const info = async () => ((await (await api('/api/state')).json()) as any).accounts.find((a: any) => a.id === account);
+  expect((await info()).settings).toEqual([{ key: 'loud', label: 'Loud', note: 'A setting for tests: it does nothing.', value: false }]);
+  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { nope: true } })).status).toBe(400);
+  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { loud: 'yes' } })).status).toBe(400);
+  expect((await info()).settings[0].value).toBe(false);
+  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { loud: true } })).status).toBe(200);
+  expect((await info()).settings[0].value).toBe(true);
+  await until(async () => (await info()).online, 10_000, 'the extractor back online');
+  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { loud: false } })).status).toBe(200);
+  expect((await info()).settings[0].value).toBe(false);
+  await until(async () => (await info()).online, 10_000, 'the extractor back online');
+});
+
 test('levels: read-only cannot write; approving narrower than asked holds', async () => {
   await approve(reader.requests[0].id, { level: 'read' });
   const { c } = client(reader.app, reader.token);

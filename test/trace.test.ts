@@ -139,7 +139,11 @@ describe('through the manager', () => {
     m = undefined;
     const file = join(dir, 'traces/manager.trace.ndjson');
     expect(existsSync(file)).toBe(true);
-    expect(existsSync(join(dir, 'traces/event-loop-stalls.ndjson'))).toBe(false);
+    // A busy machine can hold this test's loop for 200 ms, and the stall watch is on: whether there is a stall file
+    // is up to the machine. What is up to the manager is that spans never go into it.
+    const stallFile = join(dir, 'traces/event-loop-stalls.ndjson');
+    const stalls = existsSync(stallFile) ? readFileSync(stallFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as StallRecord) : [];
+    for (const s of stalls) expect(s).toMatchObject({ work: 'manager', heldMs: expect.any(Number), spans: expect.any(Array) });
     const spans = readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as SpanRecord);
     const calls = spans.filter((s) => s.name === 'call echo');
     expect(calls).toHaveLength(2);

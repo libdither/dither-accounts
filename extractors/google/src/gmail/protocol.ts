@@ -7,9 +7,17 @@
  * are positional arrays. So nothing here trusts a position alone. Thread rows are found by their anchors (a list whose
  * element 3 is a thread id, `thread-f:<n>`, and element 2 a 13-digit date in ms) wherever they are, and messages by
  * theirs (element 0 a message id, `msg-f:<n>`, and a list of label ids starting with ^); then each endpoint's
- * fingerprint checks that what was found is where the recorded shapes had it, and of the right type. Anything else
- * throws a LayoutError (where, what was expected, what kind of thing was there: never a value), and the caller
- * refuses the call rather than answer with mail it may have misread.
+ * fingerprint checks that what was found is where the recorded shapes had it, and of the right type.
+ *
+ * Two kinds of check. The whole answer's anchors (json[0], the closing number, where the sync point is, the label list
+ * and counts) throw a LayoutError (where, what was expected, what kind of thing was there: never a value), and the
+ * caller refuses the call rather than answer with mail it may have misread. One record's anchors (a thread row, a
+ * message) cost that record only: it is left out and listed in the answer's `skipped` (its id when it has one, where,
+ * and why), the rest read as usual. Unless most of the answer fails so (SYSTEMIC): then the layout changed, and the
+ * whole answer is refused as before. In s's answers, which move the sync point, a row at a place no known layout has,
+ * or a record left out with neither a message id nor a thread id, refuses the whole answer: nothing is passed that
+ * could not be asked for again. In bv's, rows at the other layout's place too are counted (`stray`) and their messages
+ * named in `skipped`.
  *
  * Read-only: no body built here changes anything. The sync call (s) carries label changes when the page writes; the
  * one built here never does, and the hook refuses any that would on the reading path (gmail.sync). Writes are built in
@@ -247,6 +255,21 @@ export interface GMessage {
   inReplyTo: string | null;
   references: string[];
 }
+/**
+ * A record left out of an answer because its own anchors failed: Gmail's message id (decimal) when it had one, else its
+ * thread's, else neither (then it is only counted); where it was and why, never a value.
+ */
+export interface Skip {
+  id: string | null;
+  thread: string | null;
+  where: string;
+  reason: string;
+}
+/** How a skip is named to an app: the message id (all digits), else `thread:<thread id>`; null when neither is known. */
+export const skipKey = (k: Skip): string | null => k.id ?? (k.thread ? `thread:${k.thread}` : null);
+/** At least this many records failing, and more of them than read well, is a changed layout: the answer is refused. */
+export const SYSTEMIC = 3;
+
 export interface ThreadRow {
   /** Gmail's thread id, decimal (from `thread-f:`, else from the row's hex id); null when neither is there. */
   thread: string | null;
@@ -254,6 +277,15 @@ export interface ThreadRow {
   /** The row's own date: no message in it is newer. */
   date: number;
   messages: GMessage[];
+  /**
+   * Gmail's ids of messages the row lists with null where the labels go. Seen live in s's answers (2026-11-16), on two
+   * accounts at once; what it means is not known (a message deleted for good that the thread still names, most
+   * likely). Never read as a message, never listed, never reported removed (not proven gone); forgotten, so a later
+   * read asks Gmail again.
+   */
+  nullLabels: string[];
+  /** Messages of the row left out: their anchors failed. */
+  skipped: Skip[];
 }
 export interface LabelDef {
   id: string;
@@ -284,10 +316,15 @@ export interface BvAnswer {
   labels: LabelDef[] | null;
   /** The own layout's counts (json[6][0], `[id, unread, total]` as s's); null when the answer has none. */
   counts: Map<string, Count> | null;
+  /** Rows and messages left out (their anchors failed); the rows' own skips are in here too. */
+  skipped: Skip[];
+  /** Thread rows found at the other layout's place too, left out (their messages named in skipped). */
+  stray: number;
 }
 export interface FdAnswer {
-  threads: { thread: string | null; messages: GMessage[] }[];
+  threads: { thread: string | null; messages: GMessage[]; nullLabels: string[] }[];
   trailer: number | null;
+  skipped: Skip[];
 }
 export interface SAnswer {
   history: string;
@@ -295,6 +332,47 @@ export interface SAnswer {
   rows: ThreadRow[];
   counts: Map<string, Count>;
   trailer: number | null;
+  skipped: Skip[];
+  stray: number;
+}
+
+/** One answer's records as they are read: what was read, what was left out, and the check that most did not fail. */
+class Tally {
+  ok = 0;
+  skipped: Skip[] = [];
+  private first: LayoutError | null = null;
+  constructor(private ep: Endpoint) {}
+  skip(e: LayoutError, id: string | null, thread: string | null): Skip {
+    this.first ??= e;
+    const k = { id, thread, where: e.where, reason: e.message };
+    this.skipped.push(k);
+    return k;
+  }
+  /**
+   * Throws the first failure when the answer looks changed rather than holding a bad record or two. `named`: every
+   * record left out must be named (its message id or its thread), as in an answer that moves the sync point past it:
+   * one that cannot be named could never be asked for again, so the whole answer is refused instead.
+   */
+  check(named = false) {
+    const n = this.skipped.length;
+    if (n >= SYSTEMIC && n > this.ok) throw new LayoutError(this.ep, this.first!.where, this.first!.expected, `${this.first!.got}, and ${n} of ${n + this.ok} records failed`);
+    const anon = named ? this.skipped.find((k) => !k.id && !k.thread) : undefined;
+    if (anon) throw new LayoutError(this.ep, anon.where, anon.reason.replace(/^at \S+: expected /, '').replace(/, got .*$/, ''), `${anon.reason.replace(/^.*, got /, '')}, in a record with neither a message id nor a thread id`);
+  }
+}
+/** A record's message id (decimal), from wherever it may be: Gmail's own (msg-f), else [55] in hex. */
+function idOfRecord(m: unknown, hexAt?: number): string | null {
+  if (!Array.isArray(m)) return null;
+  if (typeof m[0] === 'string') {
+    const d = fDecimal(m[0]);
+    if (d) return d;
+  }
+  return hexAt === undefined ? null : decimalOfHex(m[hexAt]);
+}
+/** A row's thread id (decimal), from [3] or its hex at [19]. */
+function threadOfRow(r: unknown): string | null {
+  if (!Array.isArray(r)) return null;
+  return (typeof r[3] === 'string' ? fDecimal(r[3]) : null) ?? decimalOfHex(r[19]);
 }
 
 type Found = { path: string; rec: unknown[] };
@@ -341,6 +419,14 @@ const addresses = (v: unknown): MailAddress[] => (Array.isArray(v) ? v.map(addre
  * against). The counts go to the self-check.
  */
 export const hex55 = { agree: 0, disagree: 0, absent: 0, used: 0 };
+/** Messages read with null labels, left out, by endpoint, for the self-check. */
+export const noLabels: Record<string, number> = {};
+const NO_LABELS = Symbol('no labels');
+/** A message's labels null: the one other thing its labels' place may hold. Counted; the caller leaves the message out. */
+function nullLabelsId(ep: Endpoint, id: unknown): string | null {
+  noLabels[ep] = (noLabels[ep] ?? 0) + 1;
+  return typeof id === 'string' ? fDecimal(id) : null;
+}
 const hex55Trusted = () => hex55.agree >= 5 && hex55.disagree === 0;
 
 /** After a whole answer is read (its msg-f messages counted first): msg-a messages take their [55] id when it is trusted. */
@@ -356,7 +442,7 @@ export function resolveLocalIds(rows: { messages: GMessage[] }[]): void {
       }
 }
 
-function message(ep: Endpoint, m: unknown, where: string): GMessage {
+function message(ep: Endpoint, m: unknown, where: string): GMessage | typeof NO_LABELS {
   if (!Array.isArray(m)) throw new LayoutError(ep, where, 'a message (a list)', kindOf(m));
   if (!isAnyMsgId(m[0])) throw new LayoutError(ep, `${where}[0]`, 'a message id (msg-…:…)', kindOf(m[0]));
   if (!isMsgId(m[0]) || !m[0].startsWith('msg-f:')) {
@@ -364,6 +450,7 @@ function message(ep: Endpoint, m: unknown, where: string): GMessage {
     localIdKinds[k] = (localIdKinds[k] ?? 0) + 1;
   }
   if (!isMs(m[6])) throw new LayoutError(ep, `${where}[6]`, "the message's date in ms (13 digits)", kindOf(m[6]));
+  if (m[10] === null) return NO_LABELS;
   if (!isLabelList(m[10])) throw new LayoutError(ep, `${where}[10]`, "the message's labels (^…)", kindOf(m[10]));
   let id = fDecimal(m[0]);
   const h = decimalOfHex(m[55]);
@@ -387,15 +474,33 @@ function message(ep: Endpoint, m: unknown, where: string): GMessage {
   };
 }
 
-/** A thread row: [0] subject, [1] snippet, [2] date, [3] thread id, [4] its messages, [19] its id in hex. */
-function row(ep: Endpoint, r: unknown[], where: string): ThreadRow {
+/**
+ * A thread row: [0] subject, [1] snippet, [2] date, [3] thread id, [4] its messages, [19] its id in hex. A message
+ * whose anchors fail is left out and counted in the tally (with its id when it has one, else the thread's).
+ */
+function row(ep: Endpoint, r: unknown[], where: string, tally: Tally): ThreadRow {
   const msgs = r[4] as unknown[];
-  return {
-    thread: fDecimal(r[3] as string) ?? decimalOfHex(r[19]),
-    subject: typeof r[0] === 'string' ? r[0] : '',
-    date: r[2] as number,
-    messages: msgs.map((m, i) => message(ep, m, `${where}[4][${i}]`)),
-  };
+  const messages: GMessage[] = [];
+  const nullLabels: string[] = [];
+  const skipped: Skip[] = [];
+  const thread = threadOfRow(r);
+  for (const [i, m] of msgs.entries()) {
+    let g: GMessage | typeof NO_LABELS;
+    try {
+      g = message(ep, m, `${where}[4][${i}]`);
+    } catch (e) {
+      if (!(e instanceof LayoutError)) throw e;
+      skipped.push(tally.skip(e, idOfRecord(m, 55), thread));
+      continue;
+    }
+    tally.ok++;
+    if (g !== NO_LABELS) messages.push(g);
+    else {
+      const id = nullLabelsId(ep, (m as unknown[])[0]);
+      if (id !== null) nullLabels.push(id);
+    }
+  }
+  return { thread, subject: typeof r[0] === 'string' ? r[0] : '', date: r[2] as number, messages, nullLabels, skipped };
 }
 
 /** A Message-ID as Gmail's records carry them, with its brackets. */
@@ -433,6 +538,7 @@ function countList(ep: Endpoint, list: unknown, where: string): Map<string, Coun
 const OWN_ROW = /^json\[2\]\[\d+\]\[0\]$/;
 const PAGE_ROW = /^json\[19\]\[0\]\[1\]\[\d+\]\[0\]$/;
 const BOTH_PLACES = 'thread rows only at json[2][n][0] or json[19][0][1][n][0]';
+const S_ROW = /^json\[1\]\[5\]\[\d+\]\[0\]\[2\]\[6\]\[0\]$/;
 
 /**
  * bv's answer, in either of its two known layouts. Both: [0, …, json[4] a number, …, json[18] [a number], …], each
@@ -442,38 +548,58 @@ const BOTH_PLACES = 'thread rows only at json[2][n][0] or json[19][0][1][n][0]';
  *         [1, n], json[18] [n].
  *   page  (the page's own list calls, recorded): json[11] [1, 50], json[18] [n], json[19] [[2, rows, 1, …]].
  *
- * Fingerprint: json[0] is 0 and json[18] holds a number (so an empty answer is told from another kind of answer);
- * thread rows (found by their anchors anywhere) only at json[2][n][0] or json[19][0][1][n][0], all of them in one of
- * the two, and every entry there a row; each row's messages pass message()'s anchors. In the own layout, json[1] (when
- * there) is a label list whose entries' ids are label ids, and json[6] (when there) holds the counts' list.
+ * Fingerprint, of the whole answer: json[0] is 0 and json[18] holds a number (so an empty answer is told from another
+ * kind of answer); thread rows (found by their anchors anywhere) at json[2][n][0] or json[19][0][1][n][0] (the own
+ * layout's when there are rows in both; rows anywhere else are counted as stray, and refused only when no row is at
+ * either place). In the own layout, json[1] (when there) is a label list whose entries' ids are label ids, and json[6]
+ * (when there) holds the counts' list. Of each record: an entry in the rows' place that is not a row, and a message
+ * that fails message()'s anchors, are skipped (Tally).
  */
 export function parseBv(json: unknown): BvAnswer {
   const ep = 'bv';
   if (!Array.isArray(json)) throw new LayoutError(ep, 'json', 'a list', kindOf(json));
   if (json[0] !== 0) throw new LayoutError(ep, 'json[0]', '0', kindOf(json[0]));
   if (trailerOf(json[18]) === null) throw new LayoutError(ep, 'json[18]', 'a list holding a number', kindOf(json[18]));
-  const found = findRows(json);
-  for (const f of found) if (!OWN_ROW.test(f.path) && !PAGE_ROW.test(f.path)) throw new LayoutError(ep, f.path, BOTH_PLACES, 'a thread row');
-  const own = found.filter((f) => OWN_ROW.test(f.path));
-  if (own.length && own.length < found.length) {
-    const odd = found.find((f) => !OWN_ROW.test(f.path))!;
-    throw new LayoutError(ep, odd.path, 'thread rows in one place only (json[2][n][0] or json[19][0][1][n][0])', 'a thread row in the other place too');
-  }
+  const all = findRows(json);
+  const own = all.filter((f) => OWN_ROW.test(f.path));
+  const page = all.filter((f) => PAGE_ROW.test(f.path));
+  const known = own.length ? own : page;
+  if (all.length && !own.length && !page.length) throw new LayoutError(ep, all[0]!.path, BOTH_PLACES, 'a thread row');
+  const stray = all.length - known.length;
+  const found = known;
+  // Rows at the other layout's place too: their messages that the known place does not also hold are named in skipped.
+  // (A message with no Gmail id of its own, a draft's, counts as read when its thread's row is read at the known place.)
+  const readIds = new Set(known.flatMap((f) => (f.rec[4] as unknown[]).map((m) => idOfRecord(m, 55)).filter(Boolean)));
+  const readThreads = new Set(known.map((f) => threadOfRow(f.rec)).filter(Boolean));
+  const strays: Skip[] = [];
+  for (const f of all)
+    if (!known.includes(f))
+      for (const [i, m] of (f.rec[4] as unknown[]).entries()) {
+        const id = idOfRecord(m, 55);
+        if (id ? readIds.has(id) : readThreads.has(threadOfRow(f.rec))) continue;
+        const where = `${f.path}[4][${i}]`;
+        strays.push({ id, thread: threadOfRow(f.rec), where, reason: `at ${where}: expected ${BOTH_PLACES} (one place at a time), got a message of a thread row in the other place` });
+      }
   const pageBox = Array.isArray(json[19]) && Array.isArray(json[19][0]) ? json[19][0][1] : undefined;
   // Where the rows are: where they were found; with none found, the page layout if json[19] has its box, else the own
   // layout if json[2] is a list (whose entries must then be rows), else an empty answer of the own layout if it has a
   // label list, else of neither.
   const layout: BvLayout | null = found.length ? (own.length ? 'own' : 'page') : pageBox !== undefined ? 'page' : Array.isArray(json[2]) || Array.isArray(json[1]) ? 'own' : null;
   const rows: ThreadRow[] = [];
+  const tally = new Tally(ep);
   const box = layout === 'page' ? pageBox : layout === 'own' ? json[2] : undefined;
   const at = layout === 'page' ? 'json[19][0][1]' : 'json[2]';
   if (box !== undefined && box !== null && !Array.isArray(box)) throw new LayoutError(ep, at, 'the list of thread rows', kindOf(box));
   for (const [i, e] of ((box as unknown[] | null | undefined) ?? []).entries()) {
     const where = `${at}[${i}][0]`;
     const r = Array.isArray(e) ? e[0] : e;
-    if (!isRow(r)) throw rowError(ep, r, where);
-    rows.push(row(ep, r, where));
+    if (!isRow(r)) {
+      tally.skip(rowError(ep, r, where), null, threadOfRow(r));
+      continue;
+    }
+    rows.push(row(ep, r, where, tally));
   }
+  tally.check();
   let labels: LabelDef[] | null = null;
   let counts: Map<string, Count> | null = null;
   if (layout === 'own') {
@@ -483,14 +609,14 @@ export function parseBv(json: unknown): BvAnswer {
   // json[4] is not the result estimate: live answers carry a 6 to 7 digit number there for searches with a few dozen
   // results (self-check, 2026-11-13). Kept as evidence, never reported as an estimate.
   resolveLocalIds(rows);
-  return { rows, layout, estimate: null, json4: isCount(json[4]) ? json[4] : null, trailer: trailerOf(json[18]), labels, counts };
+  return { rows, layout, estimate: null, json4: isCount(json[4]) ? json[4] : null, trailer: trailerOf(json[18]), labels, counts, skipped: [...tally.skipped, ...strays], stray };
 }
 
 /**
  * fd's answer to a thread fetch. Recorded: [0, [[thread-f, [meta, summaries], fulls, null, n], …], null, null, [n]],
- * meta [thread-f, subject, snippet, date, …], each summary [msg-f, [1, address, name], date, labels, …]. Fingerprint:
- * json[0] is 0, json[1] a list of entries whose [0] is a thread id; a summary's [0] a message id, [2] a date, [3]
- * its labels.
+ * meta [thread-f, subject, snippet, date, …], each summary [msg-f, [1, address, name], date, labels, …]. Fingerprint,
+ * of the whole answer: json[0] is 0, json[1] a list. Of each record (skipped when it fails, Tally): an entry's [0] a
+ * thread id and [1][1] its summaries; a summary's [0] a message id, [2] a date, [3] its labels.
  */
 export function parseFd(json: unknown): FdAnswer {
   const ep = 'fd';
@@ -498,30 +624,60 @@ export function parseFd(json: unknown): FdAnswer {
   if (json[0] !== 0) throw new LayoutError(ep, 'json[0]', '0', kindOf(json[0]));
   if (!Array.isArray(json[1])) throw new LayoutError(ep, 'json[1]', 'the list of threads', kindOf(json[1]));
   const threads: FdAnswer['threads'] = [];
+  const tally = new Tally(ep);
   for (const [i, e] of json[1].entries()) {
     const w = `json[1][${i}]`;
-    if (!Array.isArray(e) || !isThreadId(e[0])) throw new LayoutError(ep, `${w}[0]`, 'a thread id (thread-f:…)', kindOf(Array.isArray(e) ? e[0] : e));
+    if (!Array.isArray(e) || !isThreadId(e[0])) {
+      tally.skip(new LayoutError(ep, `${w}[0]`, 'a thread id (thread-f:…)', kindOf(Array.isArray(e) ? e[0] : e)), null, null);
+      continue;
+    }
+    const thread = fDecimal(e[0]);
     const messages: GMessage[] = [];
+    const nullLabels: string[] = [];
     if (e[1] !== null && e[1] !== undefined) {
-      if (!Array.isArray(e[1]) || !Array.isArray(e[1][1])) throw new LayoutError(ep, `${w}[1][1]`, "the thread's message summaries", kindOf(Array.isArray(e[1]) ? e[1][1] : e[1]));
+      if (!Array.isArray(e[1]) || !Array.isArray(e[1][1])) {
+        tally.skip(new LayoutError(ep, `${w}[1][1]`, "the thread's message summaries", kindOf(Array.isArray(e[1]) ? e[1][1] : e[1])), null, thread);
+        continue;
+      }
       for (const [j, m] of (e[1][1] as unknown[]).entries()) {
         const mw = `${w}[1][1][${j}]`;
-        if (!Array.isArray(m) || !isMsgId(m[0])) throw new LayoutError(ep, `${mw}[0]`, 'a message id (msg-f:…)', kindOf(Array.isArray(m) ? m[0] : m));
-        if (!isMs(m[2])) throw new LayoutError(ep, `${mw}[2]`, "the message's date in ms (13 digits)", kindOf(m[2]));
-        if (!isLabelList(m[3])) throw new LayoutError(ep, `${mw}[3]`, "the message's labels (^…)", kindOf(m[3]));
+        const bad = (where: string, expected: string, got: unknown) => tally.skip(new LayoutError(ep, `${mw}${where}`, expected, kindOf(got)), idOfRecord(m, 27), thread);
+        if (!Array.isArray(m) || !isMsgId(m[0])) {
+          bad('[0]', 'a message id (msg-f:…)', Array.isArray(m) ? m[0] : m);
+          continue;
+        }
+        if (!isMs(m[2])) {
+          bad('[2]', "the message's date in ms (13 digits)", m[2]);
+          continue;
+        }
+        tally.ok++;
+        if (m[3] === null) {
+          const id = nullLabelsId(ep, m[0]);
+          if (id !== null) nullLabels.push(id);
+          continue;
+        }
+        if (!isLabelList(m[3])) {
+          tally.ok--;
+          bad('[3]', "the message's labels (^…)", m[3]);
+          continue;
+        }
         messages.push({ id: fDecimal(m[0]), from: address(m[1]), to: [], cc: [], date: m[2], labels: m[3], snippet: typeof m[10] === 'string' ? m[10] : null, attachments: 0, messageId: null, inReplyTo: null, references: [] });
       }
     }
-    threads.push({ thread: fDecimal(e[0]), messages });
+    threads.push({ thread, messages, nullLabels });
   }
-  return { threads, trailer: trailerOf(json[4]) };
+  tally.check();
+  return { threads, trailer: trailerOf(json[4]), skipped: tally.skipped };
 }
 
 /**
  * s's answer. Recorded: [writes|null, [0, null, labels|null, null, [d, d], updates|null, 1, history, null, null, d],
  * [[counts]], [n]]: labels [[id, name, …, (17) type, …], n], each update [thread-f, null, [null ×6, threadRow, …]],
- * counts [id, unread, total]. Fingerprint: json[1][0] is 0 and json[1][7] the new sync point (a number); thread rows
- * only at json[1][5][n][0][2][6][0]; label entries an id (^…) and a name; json[2][0] the counts.
+ * counts [id, unread, total]. Fingerprint, of the whole answer: json[1][0] is 0 and json[1][7] the new sync point (a
+ * number); thread rows only at json[1][5][n][0][2][6][0] (a row anywhere else refuses the answer: the sync point
+ * would move past it); label entries an id (^…) and a name; json[2][0] the counts. Of each record: a message that
+ * fails message()'s anchors, or a changed thread's row that fails its own, is skipped (Tally), and must be named by
+ * its message id or its thread.
  */
 export function parseS(json: unknown): SAnswer {
   const ep = 's';
@@ -529,16 +685,28 @@ export function parseS(json: unknown): SAnswer {
   const block = json[1];
   if (!Array.isArray(block) || block[0] !== 0) throw new LayoutError(ep, 'json[1][0]', '0 (the sync block)', kindOf(Array.isArray(block) ? block[0] : block));
   if (!isCount(block[7])) throw new LayoutError(ep, 'json[1][7]', 'the new sync point (a number)', kindOf(block[7]));
-  for (const f of findRows(json)) if (!/^json\[1\]\[5\]\[\d+\]\[0\]\[2\]\[6\]\[0\]$/.test(f.path)) throw new LayoutError(ep, f.path, 'thread rows only at json[1][5][n][0][2][6][0]', 'a thread row');
+  if (block[5] !== null && block[5] !== undefined && !Array.isArray(block[5])) throw new LayoutError(ep, 'json[1][5]', 'the list of changed threads', kindOf(block[5]));
+  const all = findRows(json);
+  const known = all.filter((f) => S_ROW.test(f.path));
+  // A row anywhere else is refused, whole: the sync point would move past it, and a row at no known place is no record
+  // this extractor could ask for again.
+  const odd = all.find((f) => !S_ROW.test(f.path));
+  if (odd) throw new LayoutError(ep, odd.path, 'thread rows only at json[1][5][n][0][2][6][0]', 'a thread row');
   const labels = block[2] !== null && block[2] !== undefined ? labelList(ep, block[2], 'json[1][2]', true) : null;
   const rows: ThreadRow[] = [];
-  if (block[5] !== null && block[5] !== undefined) {
-    if (!Array.isArray(block[5])) throw new LayoutError(ep, 'json[1][5]', 'the list of changed threads', kindOf(block[5]));
-    for (const f of findRows(block[5], 'json[1][5]')) rows.push(row(ep, f.rec, f.path));
+  const tally = new Tally(ep);
+  for (const f of known) rows.push(row(ep, f.rec, f.path, tally));
+  // A changed thread whose row is there but fails its anchors (not found above): skipped, by the update's thread id. An
+  // update with nothing in the row's place is no row at all (as before).
+  for (const [n, u] of ((block[5] as unknown[] | null | undefined) ?? []).entries()) {
+    const head = Array.isArray(u) ? u[0] : undefined;
+    const r = Array.isArray(head) && Array.isArray(head[2]) && Array.isArray(head[2][6]) ? head[2][6][0] : undefined;
+    if (Array.isArray(r) && r.length >= 5 && !isRow(r)) tally.skip(rowError(ep, r, `json[1][5][${n}][0][2][6][0]`), null, (Array.isArray(head) && typeof head[0] === 'string' ? fDecimal(head[0]) : null) ?? threadOfRow(r));
   }
+  tally.check(true);
   const counts = countList(ep, Array.isArray(json[2]) ? json[2][0] : undefined, 'json[2][0]');
   resolveLocalIds(rows);
-  return { history: String(block[7]), labels, rows, counts, trailer: trailerOf(json[3]) };
+  return { history: String(block[7]), labels, rows, counts, trailer: trailerOf(json[3]), skipped: tally.skipped, stray: 0 };
 }
 
 // ------------------------------------------------------------------ the download route

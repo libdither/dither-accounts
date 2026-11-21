@@ -3,8 +3,8 @@
  * and an app on its wire: every mail op, IDLE events, UIDVALIDITY → 410, a bad password, the server going away and
  * coming back, a restart that keeps its state, and a certificate change refused under pinning.
  *
- * Ports 18550 (IMAP, STARTTLS), 18551 (IMAPS), 18552 (SMTP), 18560 (an SMTP server that starts late). Dovecot comes
- * from nix (or DOVECOT_BIN).
+ * Ports 18550 (IMAP, STARTTLS), 18551 (IMAPS), 18552 (SMTP), 18560 (a test's own SMTP server: one that starts late,
+ * one on the renewed certificate). Dovecot comes from nix (or DOVECOT_BIN).
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -339,8 +339,8 @@ describe('keeping up', () => {
     const st = (await h.call(acc, 'mail.changes', { mailboxId: work.id })).state;
     const page = await h.call(acc, 'mail.list', { mailboxId: work.id, limit: 2 });
     await other(async (c) => {
+      // Dovecot gives the new mailbox a UIDVALIDITY above the last one it handed out, even within the same second.
       await c.mailboxDelete('Work');
-      await Bun.sleep(1100);
       await c.mailboxCreate('Work');
       await c.append('Work', rfc822({ subject: 'Work again', text: 'w' }));
     });
@@ -452,6 +452,27 @@ describe('writing', () => {
     expect(await h.fails(acc, 'mail.send', { to: [{ name: null, email: bob.email }], subject: 'x', text: 'y', attachments: [{ filename: 's', mime: 'text/plain', path: secret }] })).toMatchObject({ status: 403 });
     expect(await h.fails(acc, 'mail.send', { to: [{ name: null, email: bob.email }], subject: 'x', text: 'y', attachments: [{ filename: 's', mime: 'text/plain', path: 'relative.txt' }] })).toMatchObject({ status: 400 });
   });
+
+  it('mail.send with an idempotencyKey: sent once however often it is asked, at once or after; a refused key may try again; a key whose send may have gone is refused unsure', async () => {
+    const msg = { to: [{ name: null, email: bob.email }], subject: 'Once only', text: 'one copy' };
+    const before = sink.received.length;
+    const [a, b] = await Promise.all([h.call(acc, 'mail.send', { ...msg, idempotencyKey: 'once-1' }), h.call(acc, 'mail.send', { ...msg, idempotencyKey: 'once-1' })]);
+    expect(b).toEqual(a);
+    expect(await h.call(acc, 'mail.send', { ...msg, idempotencyKey: 'once-1' })).toEqual(a);
+    expect(sink.received.length).toBe(before + 1);
+    expect(sink.received.at(-1)!.raw.toString()).toContain(a.messageId);
+    // Refused before anything went (another From): the key is forgotten, and the same key sends.
+    expect(await h.fails(acc, 'mail.send', { ...msg, from: 'mallory@example.test', idempotencyKey: 'once-2' })).toMatchObject({ code: 'from' });
+    await h.call(acc, 'mail.send', { ...msg, idempotencyKey: 'once-2' });
+    expect(sink.received.length).toBe(before + 2);
+    // A send that started and never said how it ended (the extractor stopped mid-send): refused, nothing sent.
+    const keys = join(h.accountDir(acc), 'send-keys.json');
+    const kept = JSON.parse(readFileSync(keys, 'utf8'));
+    kept.keys['once-3'] = { at: Date.now(), state: 'started' };
+    writeFileSync(keys, JSON.stringify(kept), { mode: 0o600 });
+    expect(await h.fails(acc, 'mail.send', { ...msg, idempotencyKey: 'once-3' })).toMatchObject({ code: 'unsure', status: 504 });
+    expect(sink.received.length).toBe(before + 2);
+  }, 30_000);
 });
 
 describe('when things go wrong', () => {
@@ -546,10 +567,20 @@ describe('when things go wrong', () => {
     await until(async () => (await h.layer(id, 'TLS'))?.state === 'failed', 20_000, 'TLS failed');
     expect((await h.detail(id)).status.attention.message).toContain('pinned');
     await fetch(`${h.m.url}/api/accounts/${id}`, { method: 'DELETE' });
-    const ok = await h.add(config({ certificate: dv.cert.fingerprint.replace(/:/g, '').toLowerCase(), imapPort: String(IMAPS), imapSecurity: 'tls' }), alice.password, 'Right pin, IMAPS');
-    await h.waitOnline(ok);
-    expect((await h.layer(ok, 'TLS'))?.note).toContain('pinned');
-    await fetch(`${h.m.url}/api/accounts/${ok}`, { method: 'DELETE' });
+    // The pin holds for SMTP too, so its SMTP server offers the same certificate. The shared sink still offers the one
+    // the last test replaced: the account went to attention whenever its SMTP check came before it was seen online.
+    const smtp = new SmtpSink(LATE_SMTP, [alice, bob], dv, dv.cert);
+    await smtp.start();
+    try {
+      const ok = await h.add(config({ certificate: dv.cert.fingerprint.replace(/:/g, '').toLowerCase(), imapPort: String(IMAPS), imapSecurity: 'tls', smtpPort: String(LATE_SMTP) }), alice.password, 'Right pin, IMAPS');
+      await h.waitOnline(ok);
+      expect((await h.layer(ok, 'TLS'))?.note).toContain('pinned');
+      await until(async () => (await h.layer(ok, 'SMTP'))?.state === 'ok', 20_000, 'SMTP on the pinned certificate');
+      expect((await h.detail(ok)).status.status).toBe('online');
+      await fetch(`${h.m.url}/api/accounts/${ok}`, { method: 'DELETE' });
+    } finally {
+      await smtp.stop();
+    }
   }, 60_000);
 
   it('verify (the default): a self-signed server is not trusted, and the fingerprint to pin is shown', async () => {

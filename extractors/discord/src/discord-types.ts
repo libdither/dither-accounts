@@ -231,6 +231,15 @@ export interface RawStickerPage {
 }
 
 /** The least Discord sends to draw a sticker: https://docs.discord.food/resources/sticker#sticker-item-structure */
+/**
+ * The gifs hook command's reply: what the client's GIF picker gets from /gifs/search or /gifs/trending-gifs (read from
+ * its bundle, 2026-11-16), the first `limit` results; `note` when the client could not ask.
+ */
+export interface RawGifPage {
+  gifs: { id: string; title?: string; url: string; src: string; gif_src?: string; width: number; height: number }[];
+  note?: string;
+}
+
 export interface RawStickerItem {
   id?: string;
   name: string;
@@ -390,8 +399,9 @@ export type BridgeUp =
   | { t: 'loginIssue'; route: string; status: number; captcha?: string; message?: string; code?: number }
   /** A call's bridge signalling, its participants (with their users, so they have names), or its end. */
   | { t: 'call'; call: string; signal?: unknown; state?: { channelId: string; participants: CallParticipant[]; stage?: CallStage; self?: CallSelf; video?: CallVideo[] }; users?: RawUser[]; ended?: string; effect?: CallEffect }
-  | { t: 'reply'; id: string; ok: true; result?: unknown }
-  | { t: 'reply'; id: string; ok: false; error: string; retryAfter?: number }
+  /** `from: 'worker'`: the service worker answered (a tab command, or no page to run it in), not the page. */
+  | { t: 'reply'; id: string; ok: true; result?: unknown; from?: 'worker' }
+  | { t: 'reply'; id: string; ok: false; error: string; retryAfter?: number; from?: 'worker' }
   | { t: 'log'; level: 'debug' | 'info' | 'warn' | 'error'; msg: string; data?: unknown }
   /** The account itself: notices, settings, whom you ignore (self.ts). */
   | RawSelfUp;
@@ -467,6 +477,8 @@ export type HookCommand =
   /** suppressEmbeds, save, savedList, nativeScheduled, cancelScheduled (sending.ts). */
   | SendingHookCommand
   | { kind: 'lab'; op: string; [k: string]: unknown }
+  /** Run by the service worker itself: send the Discord tab back to `url`, or open one if there is none (pagewatch.ts). */
+  | { kind: 'tab.reload'; url: string }
   | {
       kind: 'send';
       channelId: string;
@@ -484,6 +496,8 @@ export type HookCommand =
     }
   /** reply RawStickerPage: the stickers the client's own rule lets this account send here, a page of packs from `offset`. */
   | { kind: 'stickers'; channelId: string; offset: number; limit: number }
+  /** reply RawGifPage: the GIF picker's first `limit` results, trending ones without `query` (hook.js gifs). */
+  | { kind: 'gifs'; query?: string; limit: number }
   /** reply { nativeId } of the forward; the note follows it as its own message, as the client's forward does. */
   | { kind: 'forward'; channelId: string; source: { channelId: string; messageId: string }; note?: string; nonce: string }
   | { kind: 'openDirect'; userId: string }
@@ -689,6 +703,9 @@ export interface RawMutualGuild {
   /** Their roles there, when the client has them as a member. */
   roles?: RawRole[];
   joined_at?: string | null;
+  /** Their bio and pronouns on this server, when the client has their profile there. */
+  bio?: string | null;
+  pronouns?: string | null;
 }
 
 /**
@@ -728,6 +745,14 @@ export interface RawProfile {
   decoration?: string;
   /** Your note on them (never asked for yourself). null: none. */
   note?: string | null;
+  /** The server tag by their name (their primary guild): shown only when identity_enabled. */
+  primary_guild?: { tag: string | null; identity_enabled: boolean; identity_guild_id: string | null; guild_name: string | null } | null;
+  /** Since when they have had Nitro (ISO). */
+  premium_since?: string | null;
+  /** Since when they have boosted a server (ISO). */
+  premium_guild_since?: string | null;
+  /** A bot's application. */
+  application?: { id: string; name: string | null; description: string | null } | null;
 }
 
 // --------------------------------------------------------------------- adding

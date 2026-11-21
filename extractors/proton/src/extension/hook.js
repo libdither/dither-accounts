@@ -19,7 +19,8 @@
  * the saved session) and `send`: the safe subset of what Proton's composer sends (Proton users, encrypted to their
  * key; outside addresses with no key, in the clear), in Proton's own formats, and a refusal before anything is made
  * for every other case (docs/proton.md, "Sending"). Key material stays in the page: only plaintext that was asked for,
- * counts and ids leave it.
+ * counts and ids leave it. And `contactEmails`: the store's contact emails, which Proton's composer suggests addresses
+ * from, with only the fields that ranking uses (docs/proton.md, "Suggesting people").
  *
  * It never refreshes the session itself: on a 401 it waits for the app to refresh (the app refreshes when its own
  * calls get a 401, under its own cross-tab lock) and tries once more. It never sees the extractor's token; it only
@@ -29,6 +30,7 @@
 (() => {
   'use strict';
   /*@include main-world@*/
+  /*@include command-watch@*/
   const nativeFetch = window.fetch;
   const then = Promise.prototype.then;
   /** Headers whose values say which client is calling (no secrets); copied onto our calls. */
@@ -38,6 +40,9 @@
 
   const post = (payload) => cloak.send(payload);
   const log = (level, msg) => post({ t: 'log', level, msg });
+  // Each command's `got`, page.state and a command still open after 20 s (packages/browser's command-watch.js). An
+  // api call is named by its method and path template, nothing else.
+  const watch = commandWatch({ post, log, name: (c) => (c.kind === 'api' ? `api ${String(c.method || 'get').toUpperCase()} ${watchPath(c.path || '')}` : String(c.kind)) });
 
   // ------------------------------------------------------------ the app's own calls
   const app = {
@@ -1131,6 +1136,27 @@
     if (clear && attachmentIds.length ? !isObj(ak) || Object.keys(ak).length !== attachmentIds.length || !attachmentIds.every((id) => isObj(ak[id])) : ak !== undefined) throw new Error('the clear attachment keys are wrong');
   }
 
+  /**
+   * The addresses in your contacts as the composer completes from them: the store's contact emails (the
+   * `contactEmails` slice), each with only Email, Name, LastUsedTime and Order. `emails: null` when the store has no
+   * list (not found, or not loaded yet): then the extractor reads the API's.
+   */
+  function contactEmails() {
+    const s = mod.Store;
+    let list = null;
+    try {
+      const st = s ? s.getState() : null;
+      list = isObj(st) && isObj(st.contactEmails) && Array.isArray(st.contactEmails.value) ? st.contactEmails.value : null;
+    } catch (e) {}
+    if (!list) return { emails: null };
+    const out = [];
+    for (let i = 0; i < list.length && i < 100000; i++) {
+      const c = list[i];
+      if (isObj(c)) out.push({ Email: c.Email, Name: c.Name, LastUsedTime: c.LastUsedTime, Order: c.Order });
+    }
+    return { emails: out };
+  }
+
   // ------------------------------------------------------------ the pipe
   cloak.onDown(async (p) => {
     if (p.t === 'settings') {
@@ -1141,6 +1167,8 @@
       return;
     }
     if (p.t !== 'cmd' || !p.cmd) return;
+    const done = watch.take(p);
+    if (!done) return;
     try {
       let result;
       const k = p.cmd.kind;
@@ -1149,10 +1177,13 @@
       else if (k === 'pagekeys') result = await pageKeys();
       else if (k === 'decrypt') result = await decrypt(p.cmd);
       else if (k === 'send') result = await send(p.cmd);
+      else if (k === 'contactEmails') result = contactEmails();
       else throw new Error(`no command ${k}`);
       post({ t: 'reply', id: p.id, ok: true, result });
     } catch (err) {
       post({ t: 'reply', id: p.id, ok: false, error: String((err && err.message) || err).slice(0, 300) });
+    } finally {
+      done();
     }
   });
 

@@ -93,6 +93,11 @@ export async function run(siteId: SiteId) {
       status();
     },
     log,
+    // A command that times out is told apart in the log: how far it got, the tab's state and the hook's own.
+    silence: { name: site.name, tab: true, page: true },
+    // A read (or a mark read) the page has not said it has after 3 s is sent again (the page takes an id once); never a
+    // send, a reaction, an edit, nor the worker's own mediaFetch (packages/browser bridge.ts).
+    resend: { kinds: ['page.state', 'history', 'media', 'snapshot', 'markRead'] },
   });
   const pace = new PaceQueue({ minGapMs: 1500, jitterMs: 1500, log: (m, d) => log('debug', m, d) });
   const historyPace = new PaceQueue({ minGapMs: 3000, jitterMs: 3000, log: (m, d) => log('debug', m, d) });

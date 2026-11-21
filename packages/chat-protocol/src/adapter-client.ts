@@ -9,7 +9,8 @@
  * Events emitted while disconnected are queued (bounded) and flushed on reconnect. Under dither-accounts the adapter
  * outlives a manager that restarts (its docs/supervisor.md): this reconnects within seconds and onConnect says hello
  * again; without a manager for DITHER_MANAGER_GONE_EXIT_S it shuts down.
- * Throwing from onCommand sends { ok: false, error }.
+ * Throwing from onCommand sends { ok: false, error }, with the error's numeric `status` when it has one (a
+ * RefusalError): a 4xx tells the manager's trace, and bugwatch, that the call was answered "no", not that it broke.
  */
 
 import { join } from 'node:path';
@@ -29,6 +30,19 @@ export interface HubLink {
   saveSecret(value: unknown): void;
   readonly connected: boolean;
   close(): void;
+}
+
+/**
+ * Throw one of these from onCommand to refuse with a status: 404 for something the network does not have (a contact
+ * with no profile picture), 4xx for another expected "no". Plain errors stay failures.
+ */
+export class RefusalError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
 }
 
 export interface LinkOptions {
@@ -99,7 +113,7 @@ export function linkHub(opts: LinkOptions): HubLink {
         const result = await opts.onCommand(cmd);
         if ('id' in cmd) send(JSON.stringify({ t: 'reply', id: cmd.id, ok: true, result } satisfies AdapterEvent));
       } catch (err: any) {
-        if ('id' in cmd) send(JSON.stringify({ t: 'reply', id: cmd.id, ok: false, error: String(err?.message ?? err) } satisfies AdapterEvent));
+        if ('id' in cmd) send(JSON.stringify({ t: 'reply', id: cmd.id, ok: false, error: String(err?.message ?? err), ...(typeof err?.status === 'number' ? { status: err.status } : {}) } satisfies AdapterEvent));
       }
     };
     ws.onclose = () => {

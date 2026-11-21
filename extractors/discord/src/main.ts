@@ -15,8 +15,8 @@ import { join } from 'node:path';
 import { linkHub } from '@dither-chat/protocol/client';
 import type * as P from '@dither-chat/protocol';
 import { createGroupProblem, STICKER_PAGE_PACKS } from '@dither-chat/protocol';
-import { stickerPageOf, voiceOut } from './media.ts';
-import type { BridgeUp, HookCommand, PageState, RawAbout, RawAddRecipients, RawCreateGroupDM, RawChannel, RawEmoji, RawFriend, RawGuild, RawInvite, RawJoin, RawPerson, RawProfile, RawStickerPage, RawUser } from './discord-types.ts';
+import { gifLimitOf, gifPageOf, stickerPageOf, voiceOut } from './media.ts';
+import type { BridgeUp, HookCommand, PageState, RawAbout, RawAddRecipients, RawCreateGroupDM, RawChannel, RawEmoji, RawFriend, RawGuild, RawInvite, RawJoin, RawPerson, RawProfile, RawGifPage, RawStickerPage, RawUser } from './discord-types.ts';
 import { addCapabilities, addCommand, answerCommand, answerOutcome, friendOutcome, invitePreview, isRelationshipEvent, isRequestEvent, joinOutcome, personPreview, RELATIONSHIP_EVENTS, relationshipEvents, relationshipsEvent, removeCommand, removeOutcome, requestsEvent, resolveCommand, snapshotRelationships, snapshotRequests } from './add.ts';
 import { aboutSeenMembers, aboutUsers, addPlan, configurePlan, mapAbout, NOT_GROUP, withChange, withRecipients } from './about.ts';
 import { mapMentionables, mentionablesCommand, mentionCapabilities, type RawMentionables } from './mentionables.ts';
@@ -31,6 +31,8 @@ import { BridgeServer, PaceQueue } from './server.ts';
 import { annotate, hookPhases, phase, sinceStart, traced } from './trace.ts';
 import { vncSocketPath } from '@dither-accounts/browser';
 import { Sandbox, pickDisplay } from './sandbox.ts';
+import { PageWatch } from './pagewatch.ts';
+import { StartupGate } from './startup.ts';
 import { callCapabilities, callEvents, CALL_EVENTS, newCallMemory } from './calls.ts';
 import { SERVER_DISPATCHES, ServerOps, serverCapabilities, serverDispatch } from './servers.ts';
 import { pollCapabilities, PollOps } from './polls.ts';
@@ -41,7 +43,7 @@ import { forumFact as mapForum, ThreadOps, threadCapabilities, threadDispatch, T
 import { attentionCapabilities, attentionDispatch, attentionSnapshot, markReadManyHookCommand, markUnreadHookCommand, mentionEvents, MentionsPacer, messageAnswerOutcome, messageRequestChannel, muteHookCommand, muteOutcome, newAttention, withMessageRequests, type RawMuted } from './attention.ts';
 import { commandsOutcome, interactCapabilities, interactCapability, interactDispatch, interactHookCommand, INTERACT_DISPATCHES, type RawCommands } from './interact.ts';
 
-const CAPABILITIES: P.Capability[] = ['send', 'history', 'react', 'edit', 'redact', 'markRead', 'typing', 'threads', 'media', 'liveView', 'sendMedia', 'openDirect', 'calls', 'forward', 'about', 'configure', 'profile', 'editProfile', 'members', 'search', 'walkMembers', 'listThreads', 'moderate', 'setPicture', 'sendStickers', 'sendVoice'];
+const CAPABILITIES: P.Capability[] = ['send', 'history', 'react', 'edit', 'redact', 'markRead', 'typing', 'threads', 'media', 'liveView', 'sendMedia', 'openDirect', 'calls', 'forward', 'about', 'configure', 'profile', 'editProfile', 'members', 'search', 'walkMembers', 'listThreads', 'moderate', 'setPicture', 'sendStickers', 'searchGifs', 'sendVoice'];
 const VERSION = '0.1.0';
 const WIDTH = 1280;
 const HEIGHT = 800;
@@ -74,6 +76,9 @@ let lastPage: PageState = 'loading';
 let lastFinders: Record<string, boolean> = {};
 let gotFinders = false;
 let snapshotReceived = false;
+/** Commands sent while the client is still starting wait for its first snapshot, for at most this long (startup.ts). */
+const STARTUP_WAIT_MS = 15_000;
+const startup = new StartupGate(Date.now() + STARTUP_WAIT_MS);
 /** The sandbox started (display, browser, VNC), or why it did not. */
 let sandboxUp = false;
 let sandboxError: string | null = null;
@@ -175,20 +180,56 @@ function deriveBridgeToken(): string {
 }
 const bridgeToken: string = hub.config.__bridgeToken ?? deriveBridgeToken();
 
+/** When to reload the Discord tab: a page that never spoke, or stopped answering (pagewatch.ts). */
+const pageWatch = new PageWatch();
+
 const bridge = new BridgeServer({
   port: adapterPort,
   token: bridgeToken,
   onMessage: handleBridge,
   onConnect: () => {
     log('info', 'sandbox extension attached');
+    pageWatch.attached();
     pushStatus();
   },
   onDisconnect: () => {
     log('info', 'sandbox extension detached');
+    pageWatch.detached();
     pushStatus();
   },
+  onFrame: (msg) => {
+    // The worker's own frames are not the page's: its hello, its answers to tab commands, its "no page" refusals.
+    if (msg.t === 'ready') return;
+    if (msg.t === 'reply' && msg.from === 'worker') {
+      if (!msg.ok) pageWatch.unanswered();
+      return;
+    }
+    pageWatch.heard();
+  },
+  onTimeout: () => pageWatch.unanswered(),
   log,
+  // A command that times out is told apart in the log: how far it got, the tab's state and the hook's own.
+  silence: { name: 'Discord', tab: true, page: true },
+  // A read (or a mark read) the page has not said it has after 3 s is sent again (the page takes an id once); never a
+  // send, a reaction, an edit or anything else others see (packages/browser bridge.ts).
+  resend: {
+    kinds: ['page.state', 'history', 'browse', 'search', 'walkMembers', 'mentionables', 'threads', 'myArchivedThreads', 'reactors', 'reactionContext', 'stickers', 'gifs', 'about', 'profile', 'person', 'refreshUrls', 'inviteResolve', 'recentMentions', 'savedList', 'pinnedList', 'bans', 'selfSessions', 'ixCommands', 'ixSuggest', 'markRead', 'markReadMany'],
+  },
 });
+
+/** Reload the Discord tab through the worker when the page watch says so. */
+async function checkPage() {
+  const why = bridge.connected ? pageWatch.due() : null;
+  if (!why) return;
+  pageWatch.reloaded();
+  log('warn', `${why}; reloading its tab`);
+  try {
+    const r = await bridge.request<{ how: string }>({ kind: 'tab.reload', url: startUrl }, 15_000);
+    log('info', `the Discord tab was ${r?.how ?? 'reloaded'}`);
+  } catch (e) {
+    log('warn', 'the Discord tab could not be reloaded', String((e as Error)?.message ?? e).slice(0, 200));
+  }
+}
 
 const pace = new PaceQueue({ minGapMs: 1200, jitterMs: 600, log: (m, d) => log('debug', m, d) });
 const historyPace = new PaceQueue({ minGapMs: 1500, jitterMs: 1500, log: (m, d) => log('debug', m, d) });
@@ -286,6 +327,8 @@ async function boot() {
     // once through the live view and the persistent profile keeps the session.
     log('info', 'secret.json present, but auto-login is not enabled; log in via the live view once');
   }
+
+  setInterval(() => void checkPage(), 10_000);
 
   // Watchdog: if Chromium dies, surface it; the hub supervisor will restart us.
   const watch = setInterval(() => {
@@ -418,6 +461,8 @@ function onLoginIssue(i: Extract<BridgeUp, { t: 'loginIssue' }>) {
 }
 
 function onPageState(state: PageState) {
+  // A page that needs the owner will not load by itself: commands stop waiting for it and fail as they would.
+  if (state === 'login' || state === 'captcha' || state === 'verify') startup.open();
   if (state === 'captcha') setStatus('attention', { kind: 'captcha', message: 'A captcha is on screen. Open the live view to solve it.', liveView: true });
   else if (state === 'verify') setStatus('attention', { kind: 'verify', message: 'Discord wants to verify this login. Open the live view.', liveView: true });
   else if (state === 'login') setStatus('attention', { kind: 'login', message: loginNote ?? 'Not logged in. Open the live view and sign in.', liveView: true });
@@ -447,6 +492,7 @@ function evaluateHealth(): boolean {
 // ------------------------------------------------------------------- snapshot
 function ingestSnapshot(data: Parameters<typeof translateSnapshot>[0]) {
   snapshotReceived = true;
+  startup.open();
   if (data.self) selfUser = data.self;
   const { events, backfillTargets, newest } = translateSnapshot(data, st);
   for (const ev of events) hub.emit(ev);
@@ -500,7 +546,11 @@ async function startupBackfill(targets: string[], newest: Record<string, string>
 // ------------------------------------------------------------- hub -> adapter
 /** A command the manager sent with its traceparent is a span of its own, sent up when done (trace.ts). */
 function commandTraced(cmd: P.AdapterCommand): Promise<unknown> {
-  return traced(cmd.t, (cmd as { trace?: unknown }).trace, (r) => hub.log('info', 'trace', r), () => onCommand(cmd));
+  return traced(cmd.t, (cmd as { trace?: unknown }).trace, (r) => hub.log('info', 'trace', r), async () => {
+    const waited = await startup.wait();
+    if (waited) phase('waited for the client to start', { ms: waited, ready: snapshotReceived });
+    return onCommand(cmd);
+  });
 }
 
 async function onCommand(cmd: P.AdapterCommand): Promise<unknown> {
@@ -626,6 +676,13 @@ async function onCommand(cmd: P.AdapterCommand): Promise<unknown> {
       const r = await bridge.request<RawStickerPage>({ kind: 'stickers', channelId: cmd.conversation, offset, limit: STICKER_PAGE_PACKS }, 15_000);
       return stickerPageOf(r);
     }
+    case 'gifs': {
+      // The client's GIF picker's own calls (hook.js gifs); the page is the next limit (media.ts gifLimitOf).
+      const limit = gifLimitOf(cmd.cursor);
+      const query = cmd.query?.trim();
+      const r = await bridge.request<RawGifPage>({ kind: 'gifs', ...(query ? { query } : {}), limit }, 20_000);
+      return gifPageOf(r, limit);
+    }
     case 'reactionContext': {
       const r = await bridge.request<RawReactionContext>({ kind: 'reactionContext', channelId: cmd.conversation }, 10_000);
       return {
@@ -634,8 +691,8 @@ async function onCommand(cmd: P.AdapterCommand): Promise<unknown> {
         existingOnly: r.existingOnly,
         custom: r.custom.map((g) => ({ id: g.guild.id, name: g.guild.name, icon: guildIconUrl(g.guild), emoji: g.emoji.map((e) => customEmoji(e)!) })),
         super: r.nitro ? { available: true } : { available: false, reason: 'Super reactions need Discord Nitro.' },
-        // Manage Messages here: others' messages and reactions (moderation.ts).
-        ...((r as { manageMessages?: boolean }).manageMessages === true ? { moderation: { delete: true, reactions: true } } : {}),
+        // Manage Messages here: others' messages, their embeds and reactions (moderation.ts, sending.ts).
+        ...((r as { manageMessages?: boolean }).manageMessages === true ? { moderation: { delete: true, reactions: true, embeds: true } } : {}),
       } satisfies P.ReactionContext;
     }
     case 'about':

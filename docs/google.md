@@ -3,7 +3,8 @@
 Google accounts are signed in here, on the accounts page (https://accounts.example.net, your `--public-url`), not in the apps that use
 them. There are two ways in, two kinds of account, and both answer the `google.calendar` interface
 (packages/interfaces/src/google-calendar.ts) with Google's own JSON; the browser kind also reads Gmail, as `mail`
-(read, marked, filed and sent from: "Gmail mail" and "Writing to Gmail" below):
+(read, marked, filed and sent from, and people suggested as its To field does: "Gmail mail", "Writing to Gmail" and
+"Suggesting people" below):
 
 | kind | extractor | how it signs in |
 |---|---|---|
@@ -15,6 +16,24 @@ through the manager. No app sees a cookie or a token.
 
 dither-calendar picks the accounts it syncs by kind: `a.kind === 'google'` (its `server/google/index.ts`). It sees
 browser accounts; a `google-api` account is not picked up until it chooses by grant instead.
+
+## On the page: one Google account, several services
+
+The kinds above, Gmail over IMAP (`imap` with the gmail preset) and Google Messages (`gmessages`) are each their own
+account here, with their own sign-in. The page shows those that are the same Google account as one: a **Google**
+section on the overview, first, with a card per Google account, as plain as the other cards (picture, name, type),
+and on its type line an icon per service (Calendar, Gmail, Messages): plain when it works, with a dot when it is stuck,
+dim when nothing here gives it. An account's pane opens with the same, service
+by service: which way in gives it (this account, or a link to the other), the apps that use it, and where it stops.
+
+They are grouped by email (packages/manager/web/src/suites.ts): what the account says it is signed in as, or for
+Google Messages paired with a Google account, the address its `paired` layer names. An IMAP account joins when its
+address is a Gmail one or is one a Google account here has. An account whose email is not known yet (a browser
+not signed in, Messages paired by QR code) is a card of its own. Grouping is the page's only; nothing is stored.
+
+In the add sheet, Google Calendar, Gmail and Google Messages stay in their categories, and each form has the three
+as tabs and lists the Google accounts already here with what each gives. Gmail's first way is the browser (it gives
+Calendar too); the app password is the other.
 
 ## Signing in with a browser (kind `google`)
 
@@ -70,10 +89,15 @@ Google signs the browser out.
 Config (all optional): `authuser` (default 0: which signed-in Google account in that browser, as in
 `/calendar/u/<n>/r` and `/mail/u/<n>/`), `mail` (default true; `false`: no Gmail tab, and `mail` answers 501),
 `gmailPollSeconds` (default 60: how often the mail watch asks Gmail what changed, once a mail call was made; 0:
-never), `apiBase` (default
+never), `gmailCanaryHours` (default 24: how often the Gmail canary runs; 0: never; with `testMailOrigin`, 0 unless
+set), `apiBase` (default
 `https://clients6.google.com`), `gmailApiBase` (default `https://gmail.googleapis.com`), `noSandbox`. `testOrigin` and
 `testMailOrigin` are for tests: the start pages, the extension's matches and the hook's allowed origins then include
 them. With `testOrigin` and no `testMailOrigin` there is no Gmail tab, so a test never opens the real Gmail.
+`peopleApiBase` is for tests too: where the hook sends people suggestions ("Suggesting people"), taken only when it is
+one of the test origins; otherwise it is always Google's. `testFetchMs`, for tests with a `testMailOrigin` only: how
+long the hook gives a Gmail call before it cuts it off (20 s otherwise). The environment's `DITHER_GOOGLE_RELOAD_GAP_MS`
+(tests only) sets the first gap between reloads of a silent page (0: at once).
 
 ### Two tabs: Calendar and Gmail
 
@@ -100,24 +124,57 @@ inside its own signed-in page ("Gmail mail" below), and the diagnostic, the lear
 
 ### A page that stops answering
 
-Every request to a page is answered within **25 s** (under the manager's 30 s for an op, so the caller hears this
-account's own sentence first), its time in the lane included, or the call fails with 503 and the page's name: "the
-Calendar page did not answer in 25 s", "the Gmail page did not answer in 25 s".
+Every request to a page is answered within **25 s**, its time in the lane included, or the call fails with 503 and
+the page's name: "the Calendar page did not answer in 25 s", "the Gmail page did not answer in 25 s". Each op runs
+under its own time (the interface's `timeoutMs`, or the manager's 30 s where it names none, less 2 s:
+`src/deadline.ts`), and each page request it makes is cut to what is left of it, so an op that makes several (a write
+makes up to three; `mail.flag`, `mail.move` and `mail.trash` have 90 s, `mail.mailboxes` 60 s) still answers with
+this account's own sentence before the manager's timeout. A request that waited its whole time for a place in the
+page's lane (four Gmail requests ahead of it did not finish) was never sent, and says so: 503 `unavailable`, "the
+Gmail page is busy: 4 of its requests ahead of this one did not finish within 25 s, so this one was not sent".
 
-**Two unanswered requests in a row to one page reload that page's tab, and only it**: the service worker sends the tab
-back to its start page. If the page has still not answered since the last reload, the next one opens a new tab on the
+**Lost commands are sent again.** A command's id is the extractor's own (a random part per start, then a count), so a
+page that outlives an extractor restart never takes a new command for an old one. A command the page has not said it
+has (`got` at `page`) within 3 s is sent again, the same id, up to three times; the page passes each id to its hook
+once, so a copy that did arrive is dropped. A command lost between the extractor and the page costs about 3 s, not
+25. Only reads and label changes are sent again (`src/resend.ts`): a page's id memory ends with the page, so a copy
+that arrived just before a reload could run twice. Never a Calendar write (any gfetch but a GET), a draft, a send, an
+upload, a learn run's steering, or the worker's own `tab.*` (packages/browser `BridgeServer`'s `resend`).
+
+**Gmail's own calls are cut off in the page.** The hook gives each sync, write and download call to Gmail 20 s (a
+download 80 s in all) and then aborts it: a Gmail request that hangs fails as itself (`{ status: 0, error: 'timeout'
+}`: 503, or 504 for a write, which may have been made), before the extractor's 25 s, and is not counted as the page's
+silence.
+
+**At start, an op waits for its page** rather than refusing at once: up to 10 s (within the op's own time) for the
+browser to attach, the page to open and, for mail, the Gmail page to make its first sync call of its own (the hook says
+`synced` when it does). Then it is refused with **503, code `unavailable`** ("the sandbox browser is not attached yet",
+"Gmail is not open in the sandbox yet", "Google Calendar is not open in the sandbox", "the Gmail page has not made a
+sync call of its own yet…"): a page still coming up, worth trying again, told apart from a broken one. Signed out
+answers 401 at once, as before.
+
+**Two unanswered requests in a row to one page reload that page's tab, and only it** (`src/reload.ts` says when): the
+service worker sends the tab back to its start page. Not a tab still loading (as Chromium sees it): reloading would
+only start it over; one still loading through three silences in a row is stuck, and is reloaded. And backing off: after
+a reload, the next waits 1 min, then twice as long after each further one that brought no answer, up to 10 min between
+them; an answer from the page starts it over. (Seen live: a Calendar tab reloaded about 17 times, every 30 s, each
+reload setting it loading again.) A reload held back is logged once (`the Calendar page did not answer 2 requests in a
+row; not reloading its tab yet: its tab is still loading`). If the page has still not answered since the last reload, the next one opens a new tab on the
 start page and then closes the old one (new first: the last tab closing would end the browser). The other tab and
 the browser are left alone. It is logged (`the Gmail page did not answer 2 requests in a row; reloading its tab, and
 only that one`, then `the Gmail tab was sent back to its start page` or `… was reopened`) and counted in the details
 (`calendarReloads`, `gmailReloads`). Requests sent to a page before its reload do not count against the new page,
-nor does one cut short by its wait in the lane. After a Calendar reload, one `calendarList` call shows it answers
-again; Gmail makes no call of its own, so its hook coming back up is its answer. A dead Chromium still exits for a
+nor does one cut short by its wait in the lane or by its op's time (given less than 12.5 s), nor a download or
+upload the page said it has (it is working on it; the hook cuts Gmail off at 80 s, more than `mail.get`'s 60 s). After a Calendar reload, one `calendarList` call shows it answers
+again; Gmail makes no call of its own, so its hook coming back up is its answer. A request made while a page's tab is
+being reloaded waits (up to 15 s, within its own time) for the new page's hook, instead of reaching the old page, whose
+unload would cut its fetch ("Failed to fetch"); past that it is sent as before. A dead Chromium still exits for a
 supervised restart, as before.
 
 **Each unanswered request is told apart in the log, before any reload**, so the cause of a silence can be found from
 the log alone. The service worker reports each command it hands to a page's port (`got` at `worker`) and the hook
 reports it again when it arrives (`got` at `page`); after a silence the extractor asks the worker for the tab's state
-(`tab.state`: loading or complete, discarded, frozen, active, its origin and path) and the hook for its own, without
+(`tab.state`: loading or complete, discarded, frozen, active, its origin and path template) and the hook for its own, without
 the network (`page.state`: visibility, focus, lifecycle events seen, counts of uncaught errors and rejections, the
 commands it still has open and for how long), each within 5 s. One line says it all:
 `the Calendar page's silence: request received by the page, which never answered; the hook answers without the
@@ -126,7 +183,8 @@ it had it" at the page's port, a hook that does not answer either at a frozen or
 with the request still open at the call to Google. The hook also logs a command still open after 20 s
 (`[hook] gfetch GET <host><path template> still open after 20 s`) and the page's lifecycle (`[hook] page hidden`,
 `visible`, `frozen`, `resumed`). Only names of steps, path templates (ids taken out) and counts: no query, body or
-error text from the page. Every line of `adapter.log` starts with its time (ISO, UTC).
+error text from the page. Every line of `adapter.log` starts with its time (ISO, UTC). The code is shared with the
+other browser kinds ([page-silence.md](page-silence.md)); Google calls it by hand, per page, before it reloads a tab.
 
 In the layers: Calendar's **Calendar API** layer is `waiting` while its page is silent ("the Calendar page did not
 answer the last request in 25 s"), being reloaded, or reloaded and not yet answering, and `failed` when the tab could
@@ -291,7 +349,7 @@ address or content), `mail` (whether this account has a Gmail tab), `gmailTab` (
 
 `layers` are, outermost first, `display`, `browser`, `extension`, `signed in`, `API key` and `Calendar API` (what
 Calendar rests on; the last two say `interface: 'google.calendar'`, so an app reading mail is not told it stops at
-them), then **`Gmail page`**, which Calendar does not rest on (it and the two Gmail layers after it say
+them), then **`Gmail page`**, which Calendar does not rest on (it and the three Gmail layers after it say
 `interface: 'mail'`): `ok` when its hook is up and signed in;
 `waiting` while it opens or loads, while Google wants a sign-in, or while it does not answer or is being reloaded;
 `failed` with the reason when its tab could not be opened or reloaded, or is on another site after a sign-in; `off`
@@ -299,9 +357,10 @@ with `mail: false`; and **`Gmail protocol`**: `ok` when the last calls to Gmail'
 known, `failed` with the endpoint and where it differs (no value), `waiting` before any mail call ("Gmail mail"
 below); and **`Gmail background`**, the background lane ("The background lane" below): `ok` (`idle`, or `running`
 for 30 s after a background call), `waiting` while backed off (until when), `failed` while stopped (and why), `off`
-without a Gmail tab. For mail, the details also say `idPerMessage`, `summaryHeaders`, `raw`, `searchIds`,
-`backgroundLane`, `backgroundStopped`, `readsMarkRead`, `bvLayout`, `canSend`, `sendNote`, `gmailWatch`,
-`gmailSelfCheckAt` and `gmailSelfCheck`. The extractor's log (`adapter.log`) has ids and
+without a Gmail tab; and **`Gmail canary`** ("The Gmail canary" below): `ok` with its last run's line, `waiting`
+before the first run, `failed` while the last run found Gmail answering otherwise, `off` when it does not run. For mail, the details also say `idPerMessage`, `summaryHeaders`, `raw`, `searchIds`,
+`backgroundLane`, `backgroundStopped`, `readsMarkRead`, `bvLayout`, `canSend`, `sendNote`, `contacts`,
+`contactsNote` ("Suggesting people"), `gmailWatch`, `gmailSelfCheckAt` and `gmailSelfCheck`. The extractor's log (`adapter.log`) has ids and
 statuses: never cookies, keys, tokens, queries or anything from your calendars or your mail.
 
 ### What is verified, and what is not
@@ -319,7 +378,8 @@ details show both; `mail: false` opens none; the probe's answer has statuses, fi
 a stalled Gmail page holds up no Calendar call and a stalled Calendar page no Gmail call; a stalled Calendar page
 makes each call fail within 25 s with its name, and after two its tab alone is reloaded and answers again, with the
 Gmail tab not loaded again and the extractor not restarted; a stalled Gmail page is reloaded, then, still silent,
-opened anew in a new tab with the old one closed. The learn run (the stand-in Gmail page has a thread list with
+opened anew in a new tab with the old one closed; a Gmail list call that hangs is cut off in the page and fails as
+itself (503, "could not make the call (timeout)"), not counted as the page's silence. The learn run (the stand-in Gmail page has a thread list with
 Gmail's row markers, unread and uncertain rows first, and calls its own /sync endpoints on load, when a row is opened
 and when the hash comes back to a list, with positional JSON after an XSSI prefix full of a marker): a run goes to an
 operators-only search, opens the first and second read rows only, goes back, finds no read row 9, and collects
@@ -333,7 +393,12 @@ any of that; then through the hook's write path, read and unread, a star and off
 Spam answering 501, and a reply with a file sent (the bytes handed to the page in pieces, uploaded, the draft, the
 send, the original marked replied); a swapped layout refused with 502, the Gmail protocol layer failed, Calendar still online, and
 ok again after; the watch's `mail.arrived` and `mail.changed`; the self-check from its file, with no subject,
-address, name, label name or id in it and only one read message older than 30 days downloaded. The suite is skipped
+address, name, label name or id in it and only one read message older than 30 days downloaded. Suggesting people
+(the fake's people-stack endpoint on the Gmail side's origin, `peopleApiBase`, which checks the key, the hash, the
+headers and the body as Google did live, and answers in the recorded layout from invented people): the key Gmail's
+config names used first and no other tried, names, a repeated address and a group, the minute's cache, a mail list
+alongside, another layout 502 with `details.contacts` false and back, Google busy 503 and late 504, a signed-out page
+503 and `mail: false` 501, no query or person in the log. The suite is skipped
 when Xvfb, chromium or x11vnc cannot be found. `test/gmail-learn.test.ts` (no browser) covers the shapes (anchors kept, a marker in subjects,
 bodies, names, addresses and keys never surviving, random inputs giving only tags and anchors), the XSSI, chunk and
 form parsing, numbers, the depth cap, path templates, the nav check, the script's limits, and that hook.js holds the
@@ -402,7 +467,7 @@ self-check (next section) settles most of them on the live account without readi
   replayed, `?hl=…&c=<next>&rt=…&pt=…`, a JSON body, the page's cookies; the answer's JSON after its `)]}'` prefix. An
   `s` body that carries label changes (anything at element 1, or a list inside element 0: how the page's own writes
   look) is refused in the hook, whatever the extractor sent: writes go through `gmail.write` ("Writing to Gmail").
-  Until the page has made a sync call of its own: 503. The sync point the hook notes comes from the page's reading `s`
+  Until the page has made a sync call of its own: 503 `unavailable` (an op waits for it first, at start). The sync point the hook notes comes from the page's reading `s`
   calls only: in its writes, [3][4] holds another number (48 or 49 in every one seen).
 - **`gmail.raw`**: the page's own "Download message" route, `GET /mail/u/<n>/?ik=<ik>&view=att&th=<id in
   hex>&attid=0&disp=comp&safe=1&zw` (what "Show original" → "Download original" fetches; the hex id is Gmail's message
@@ -429,9 +494,38 @@ endpoint's **fingerprint** checks they are where the recorded shapes had them, w
 | call | request (as recorded) | answer: what is read | fingerprint |
 |---|---|---|---|
 | `bv` (a thread list for a Gmail search) | `[[reqId, 50, null, query, [… now, tz …], query, 1, n, …, [[[2, 50]]], …, [now, null, null, 18]], null, [0, 5, null, null, 1, 1, 1]]` | two layouts (below): rows at `json[2][n][0]` (**own**) or `json[19][0][1][n][0]` (**page**): [0] subject, [1] snippet, [2] date, [3] thread id, [4] messages, [19] thread id in hex; a message: [0] id, [1] `[1, address, name]` sender, [6] date, [9] snippet, [10] labels, [11] attachments; `json[4]` a 6 to 7 digit number of unknown meaning (not the estimate); `json[18][0]` a trailing number (read as the sync point, a guess); own layout only: `json[1]` the label list, `json[6][0]` the counts | `json[0]` is 0 and `json[18]` holds a number (so an empty answer is told from another kind of answer); thread rows only at `json[2][n][0]` or `json[19][0][1][n][0]`, all of them in one of the two, every entry there a row; every message passes its anchors; own layout: label entries' ids are label ids |
-| `fd` (whole threads) | `[[[thread-f:<n>, 1, null, null, 1], …], 2]` | `json[1][n]`: [0] thread id, [1][1] message summaries: [0] id, [1] sender, [2] date, [3] labels | `json[0]` is 0; each entry's [0] a thread id; each summary's id, date, labels |
-| `s` (what changed since a sync point) | `[[1, null, null, 0], null, [1, null, null, null, [null, 25], null, 1], [null, 1, now, 0, history], 2]` (element 1 always null: no changes) | `json[1][7]` the new sync point; `json[1][2]` the label list (`[[id, name, …, (17) type], n]`); `json[1][5][n][0][2][6][0]` changed threads, rows as bv's (their messages also carry [2] to and [5] cc); `json[2][0]` counts `[id, unread, total]` | `json[1][0]` is 0 and `json[1][7]` a number; thread rows only at `json[1][5][n][0][2][6][0]`; label entries an id and a name; `json[2][0]` a list |
+| `fd` (whole threads) | `[[[thread-f:<n>, 1, null, null, 1], …], 2]` | `json[1][n]`: [0] thread id, [1][1] message summaries: [0] id, [1] sender, [2] date, [3] labels | `json[0]` is 0; each entry's [0] a thread id; each summary's id, date, labels (or null labels: see below) |
+| `s` (what changed since a sync point) | `[[1, null, null, 0], null, [1, null, null, null, [null, 25], null, 1], [null, 1, now, 0, history], 2]` (element 1 always null: no changes) | `json[1][7]` the new sync point; `json[1][2]` the label list (`[[id, name, …, (17) type], n]`); `json[1][5][n][0][2][6][0]` changed threads, rows as bv's (their messages also carry [2] to and [5] cc); `json[2][0]` counts `[id, unread, total]` | `json[1][0]` is 0 and `json[1][7]` a number; thread rows only at `json[1][5][n][0][2][6][0]`; label entries an id and a name; `json[2][0]` a list; a message's labels a label list or null (below) |
 | download route | `GET /mail/u/<n>/?ik=…&view=att&th=<hex>…` | the RFC 822 bytes | not an HTML page; a header line first, a blank line after the header block, and a From, Date, Message-ID, Received, MIME-Version, Subject, Return-Path or Delivered-To header in it (with no header line first, the refusal says the start's shape, never its text: empty, a blank line, a space, a byte-order mark, an mbox "From " line, markup, or a plain first line and the size). A message Gmail keeps with no headers at all downloads as a blank line, then its body: taken (no sender, subject, date or Message-ID from it; its labels and date from the listing) only when Gmail's own listing, seen since the extractor started, has it with no sender, and never with markup after the blank line |
+
+A message whose labels are null (not a list) was seen live in `s`'s answers, on two accounts at once; what it means
+is not known yet (most likely a message deleted for good that its thread still names). Such a message is left out of
+every answer (not `added`, `changed` or `removed` either, as it is not proven gone) and forgotten, so a later read
+asks Gmail again; the rest of its thread is read as usual. The self-check counts them (`noLabels`, by endpoint).
+Anything else in a message's labels' place is a bad record (below).
+
+**One bad record costs that record.** The checks come in two kinds. The whole answer's anchors (`json[0]`, the closing
+number, `s`'s sync block and its sync point, `fd`'s list of threads, the label list and the counts) refuse the whole
+answer, as below. One record's anchors (a thread row in the rows' place, a message's id, date and labels, an `fd`
+entry's thread id and summaries) cost that record only: it is left out, the rest of the answer is read, and the
+answer's `skipped` names it (`mail.list`, `mail.search` and `mail.changes`: its message id, or `thread:<thread id>`
+when the message id is what broke; packages/interfaces/src/mail.ts). In `s`, whose answer moves the sync point past
+what it held, a record that can be named by neither refuses the whole answer: the sync point moves only past records
+that can be asked for again. Each one is logged once (`gmail bv: a message left
+out, at json[2][1][0][4][0][10]: expected the message's labels (^…), got a string`), counted in the self-check's
+`evidence.skipped`, and said in the Gmail protocol layer's note for 15 minutes ("records left out (bv 2), last bv: …"),
+which stays `ok`. A message left out is forgotten, so a later `mail.get` asks Gmail again. **It is asked for again
+on its own**, too, so no caller has to read `skipped`: each one left out is kept (`pending` in `gmail-reads.json`: its
+ids, when, and how many tries, nothing else) and its thread fetched (`fd`) on a later `mail.changes` or watch look, 1
+minute on, then 2, 4… up to 6 hours apart (a 5xx, 429 or the page not answering counts no try), three at a look,
+given up after 12 tries (logged). Once one reads cleanly it is reported through the normal path: `mail.changes` from a
+state handed out before then has it in `added`, and the watch's next look says its mailboxes changed. Unless most of an answer
+fails so: at least 3 records failing, and more of them than were read, is a changed layout, and the whole answer is
+refused (the sentence ends "…, and 50 of 50 records failed"). In `bv`, thread rows found by their anchors at a place
+no known layout has are counted (`evidence.strayRows`, a log line) and their messages named in `skipped`; they refuse
+the answer when no row is at a known place at all. In `s`, a thread row anywhere but its own place refuses the
+answer: the sync point would move past it. Before this (2026-11-16), one message listed with something unexpected where its labels go made
+`s` refuse every answer that carried it, so the watch's sync point never moved and every few seconds asked again.
 
 **bv's two layouts.** The extractor was built from the page's own `bv` answer (rows at `json[19][0][1][n][0]`); the
 live Gmail answers the extractor's own `bv` calls in another layout, recorded content-free (type tags and Gmail's
@@ -449,8 +543,10 @@ anchors) when the first one failed its fingerprint:
 | `json[19]` | | `[[2, rows, 1, …]]` |
 
 Both parse; which one answered is kept (`details.bvLayout`, the self-check's `evidence.bvLayout` and `bvLayouts`, the
-Gmail protocol layer's note "… (bv in its own layout)"). The fingerprint stays strict: rows found by their anchors
-anywhere else, or in both places at once, or an entry there that is not a row, is still a LayoutError (502). The type
+Gmail protocol layer's note "… (bv in its own layout)"). Rows in both places at once are read from the own layout's,
+the others counted as stray, and their messages the own layout's rows do not hold named in `skipped`; rows found only
+elsewhere are a LayoutError (502); an entry in the rows' place that is
+not a row is a bad record (above). The type
 in a label entry ([17], also at [27]) reads as: 5 system, 1 a category or smart label, 2 yours, 8 assistive, 10 one
 other kind.
 
@@ -458,7 +554,11 @@ other kind.
 (bv) answer is not laid out as this extractor knows it (at json[2][0][0][2]: expected the row's date in ms (13
 digits), got an id); nothing was returned rather than possibly wrong mail"), and the **Gmail protocol** layer goes
 `failed` with the endpoint and the same `where: expected, got`. The sentence names positions and kinds of things only
-(a list of 5, a number, a string, an id, a label id), never a value. A non-200 from Gmail is 502 too, and fails the
+(a list of 5, a number, a string, an id, a label id), never a value. **The same failure again** (the same endpoint,
+the same request: its query, threads or sync point, and the same place in the answer) twice in a row is answered from
+the extractor for 1 minute without asking Gmail, then 2, 4, 8 and at most 15 minutes after each further time (5 for
+the sync call `s`: it is how new mail is heard of), so the watch and every app's retries do not each ask Gmail for an
+answer known not to read; a call that reads, or the Gmail page reloaded, ends it. A non-200 from Gmail is 502 too, and fails the
 layer with its status. The next call that passes puts the layer back to `ok` ("bv, s, raw answered as expected").
 Before any mail call the layer is `waiting`; with `mail: false`, `off`.
 
@@ -535,7 +635,8 @@ needs no extra call for them.
   `label:`, `category:`, `has:attachment`, `after:`, `before:`, `newer_than:`, `older_than:`, negated too) match it,
   so a reply of yours in an inbox thread is not `in:inbox`; free words and other operators keep the thread's
   messages. Without a mailbox, Spam and Trash are left out unless the query names them (`in:spam`, `in:trash`,
-  `in:anywhere`); with one, the mailbox's query is added and its membership checked.
+  `in:anywhere`); with one, the mailbox's query is added and its membership checked. Both may answer `skipped` (bad
+  records, above); a message there may not even be in the mailbox asked for.
   **`idsOnly: true`** (`details.searchIds: true`): **operators only**, each word `op:value` with op one of `in`, `is`,
   `label`, `has`, `after`, `before`, `older_than`, `newer_than`, `category`, `larger`, `smaller`, at most 8, no free
   text, quotes or negation (else 400, and Gmail is not asked); `{ ids, next, estimate }`, up to 500 a page (`limit`),
@@ -559,13 +660,17 @@ self-check reports the counts as `evidence.hex55`.
   `removed` (they may never have been there: ignore ids you do not know). One answer is one batch (`more: false`). Not
   known yet: what `s` answers for a sync point Gmail no longer keeps (it is read as any answer; a layout it does not
   expect fails the fingerprint), and whether a message deleted for ever shows at all; a message older than the state
-  that gains the mailbox comes as `changed`.
+  that gains the mailbox comes as `changed`. A bad record is in `skipped` (not added, changed or removed), and the new
+  state goes past it all the same: the extractor asks for it again on its own, and once it reads, `mail.changes` from
+  a state before then has it in `added` (an app may also call `mail.get` on its id).
 - **The watch** (`mail.changed`, `mail.arrived`): once a mail call was made (an account nobody reads mail from makes
   no Gmail calls of its own), `s` every `gmailPollSeconds` (config, default 60; 0: never) from where it got to
   (`gmail-watch.json` in the account's directory: the sync point and when, so a restart announces what came
   meanwhile): `mail.changed { mailboxId, state }` for each mailbox the changed threads' messages are in (Inbox and All
   Mail when the sync point moved with nothing to show), `mail.arrived { message }` for messages in the inbox, not
-  sent by you, dated after the last look (less 5 minutes), each once, at most 20 a look. It waits while the Gmail page
+  sent by you, dated after the last look (less 5 minutes), each once, at most 20 a look. A look that left a record out
+  moves on past it too, and says Inbox and All Mail changed (the record's mailboxes are not known), so an app's
+  `mail.changes` names it. It waits while the Gmail page
   does not answer or is reloaded, and during a learn run, the probe or the self-check. The status's `gmailWatch` says
   when it last looked.
 
@@ -576,8 +681,9 @@ self-check reports the counts as `evidence.hex55`.
 cheap `bv` made for it when none was seen yet); a state from that last one ends in `.b`
 (`g1.<history>.<ms>.b`), and so does the watch's (`guess: true` in `gmail-watch.json`). That `json[18][0]` is a sync
 point is a **guess**, tested on the way: it is not taken when it goes down from one `bv` answer to the next, or is below
-a sync point Gmail's sync gave; and the first `s` from it must take it (an error or a layout it does not know is
-502 there) and answer a sync point no older than it and less than a million newer. Otherwise the list answers' number
+a sync point Gmail's sync gave; and the first `s` from it must not be turned down by Gmail (a 4xx other than 401, 403
+and 429; a layout it does not know, a challenge or a 5xx is a plain 502 and blames nothing) and must answer a sync
+point no older than it and less than a million newer. Otherwise the list answers' number
 is not used again (until a restart), the call answers the honest **503** ("Gmail's sync point is not known yet: the
 Gmail page has not synced since it loaded, and the number Gmail's list answers end with is not one; try again in a
 minute"), and the watch starts again from a sync point that is one. Once `s` answers, its own sync point is used.
@@ -624,8 +730,11 @@ read; that is checked, not assumed. When `mail.get` or `mail.raw` downloads a me
 (`^u` among its labels as last seen), its thread is fetched again afterwards (`fd`, the page's prefetch form, as
 `mail.get` already does). If `^u` is gone, Gmail marked it read: a warning is logged, **`unreadGuard: 'tripped'`** is
 kept in `gmail-reads.json`, `details.readsMarkRead` becomes true, and from then on `mail.get`, `mail.raw` and
-`mail.attachment` on a message known to be unread answer **409 with code `unread`** (nothing downloaded). Not
-tripped, nothing changes (but the one `fd` after reading an unread message). It stays tripped across restarts until
+`mail.attachment` read a message only when its labels are known and say it is read: as last seen within 2 minutes, else
+its thread fetched again (`fd`). A message known to be unread, or whose labels are not known at all (never listed since
+the extractor started, or its record left out of the answers), answers **409 with code `unread`** (nothing
+downloaded): it fails closed. A lookup that fails (the page not answering, 503; Gmail's 5xx, 502) is answered as it
+failed, not as `unread`: nothing is downloaded either way. Not tripped, nothing changes (but the one `fd` after reading an unread message). It stays tripped across restarts until
 that line is taken out of the file by hand.
 
 **Summaries** (`mail.list`, `mail.search`, `mail.changes`' `added`, `mail.arrived`): `id` and `emailId` Gmail's message
@@ -650,8 +759,9 @@ out.
 `searchIds: true`, `backgroundLane: true`, `backgroundStopped` (null, or why the background lane stopped),
 `readsMarkRead` (the unread guard tripped), `bvLayout` (`own` or `page`: the last `bv` answer's), `writes: ['seen',
 'flagged', 'move', 'trash']` (no `junk`), `canSend` (the Gmail page up, signed in, its address shown) and `sendNote`
-(why not, else null), `sendCap` (25 MB), `maxRecipients` (100), `gmailWatch`, `gmailSelfCheckAt` and
-`gmailSelfCheck`. No storage quota (none was found in the recorded answers). `self.addresses` is the one address the
+(why not, else null), `sendCap` (25 MB), `maxRecipients` (100), `contacts` and `contactsNote` (`mail.contacts` can
+answer now, or why not: "Suggesting people"), `gmailWatch`, `gmailSelfCheckAt` and `gmailSelfCheck`, `gmailCanaryAt` and
+`gmailCanary` (the canary's last run, in a line). No storage quota (none was found in the recorded answers). `self.addresses` is the one address the
 page is signed in as, with the name its account button shows.
 
 **Guesses, in one place** (each a position the shapes show but cannot explain): `bv` request element 0 (a request
@@ -735,8 +845,8 @@ change is a label added or taken off, so making it twice changes nothing more.
   and named in `unknown`; none placed is 404. One change per thread and kind of change, at most 100 a call.
 - **Answers**: `{}` when every change applied; otherwise the ids Gmail answered a non-zero status for are `refused`
   (and null in `mail.move`'s `ids`); 422 `refused` when nothing applied. `mail.move` answers the same ids (a message
-  keeps its id in Gmail). A call that fails is 503 when nothing can have reached Gmail (the browser not attached, the
-  page not synced yet), 504 when the page did not answer in time and 502 when Gmail's answer was not one known (both
+  keeps its id in Gmail). A call that fails is 503 `unavailable` when nothing can have reached Gmail (the browser not
+  attached, the page not synced yet, its lane busy), 504 when the page did not answer in time and 502 when Gmail's answer was not one known (both
   may have made the change; label changes are harmless to send again), and 500 when the page refused the body (an
   older extension, or a body not one of the known writes; trying again will not help).
 - **Not written**: Spam (`mail.move` to `^s` is 501: Gmail's "Report spam" may report the sender to Google, and its
@@ -763,7 +873,102 @@ the op's 120 s, nothing new starts late (`SEND_LIMITS`): no upload past 60 s, no
 no send past 90 s (502, the draft left in Drafts). A file is handed to the page in pieces; a piece for an upload the
 page no longer holds (it reloaded) is refused rather than started anew, and the upload checks the size it got.
 
+An `idempotencyKey` sends at most once (docs/mail.md, "Sending once"). GmailMail.send says a send that may have gone
+with 504 and nothing else, so only a 504 (or an error it did not explain) leaves the key as `unsure`; any other failure
+forgets it.
 
+## Suggesting people
+
+`mail.contacts { query, limit? }` answers what Gmail's own compose To field suggests while you type an address: the
+same call, made from the same page (`extractors/google/src/gmail/contacts.ts`, the hook's `gmail.contacts`). It was
+learned on the live page on 2026-11-14: a compose window opened in a test account's sandbox and one letter typed into
+To while the page's calls were recorded as shapes (type tags, no name or address), then the call made by hand from the
+page's console with a few queries, values looked at only for the owner's own addresses; the draft was discarded.
+
+### Gmail's call
+
+The To field does not ask mail.google.com. It asks Google's people stack, in JSON+protobuf (positional arrays):
+
+```
+POST https://peoplestack-pa.clients6.google.com/$rpc/peoplestack.PeopleStackAutocompleteService/Autocomplete
+Content-Type: application/json+protobuf
+X-Goog-Api-Key: <one of the Gmail page's keys>
+X-Goog-AuthUser: 0
+X-User-Agent: grpc-web-javascript/0.1
+Authorization: SAPISIDHASH <ts>_<hash> SAPISID1PHASH <ts>_<hash> SAPISID3PHASH <ts>_<hash>   (made with https://mail.google.com; no _u)
+(the page's cookies)
+
+[134, "ann", [1, 2], 8]
+```
+
+- Google's own 400s name the fields: `affinity_type` (134: Gmail's compose; another number is 400 INVALID_ARGUMENT),
+  the query, `client_information` (`[1, 2]`, as the page sends it) and the page size (8, what the To field asks; 3 and
+  20 are honoured alike).
+- When compose opens, the page also calls `…/Warmup` with `[134, [1, 2]]` (answered `[]`) and an experiments service.
+  Neither is needed: Autocomplete answers a page that never opened compose (tried on a freshly loaded one), in about
+  100 to 200 ms.
+- The key goes in `X-Goog-Api-Key`, not the address. It is one of the many keys in the page's HTML: the one Gmail's
+  config (`GLOBALS`) puts right after `"https://people-pa.googleapis.com"`. Another of the page's keys is refused, 403
+  `[7, "PeopleStack Backend Private API has not been used in project …", [[…, ["SERVICE_DISABLED", …]], …]]`; no key
+  at all is 403 "Method doesn't allow unregistered callers".
+- Errors are `[code, message, details]`, the code gRPC's (3 INVALID_ARGUMENT, 7 PERMISSION_DENIED, 16 UNAUTHENTICATED).
+
+The answer, with invented values (`[]` when nothing matches; the empty query, which `mail.contacts` never sends, gives
+the To field's top people, with a second element of timings):
+
+```
+[[
+  [[ [ [ [["https://lh3.example.com/photo", 1], ["Ann Lee", "Ann", "Lee", 1], ["<token>", 1731300000000], 1],
+         ["ann.lee@example.com", null, [1]],
+         null, null,
+         [["<account id>"], [null, "<contact id, 16 hex>"]],
+         null, null, 1 ] ],
+     ["<token>"] ]],
+  …
+]]
+```
+
+A suggestion is `json[0][i]`, its people `json[0][i][0][0]` (one person; a group would be several), the person's
+address `json[0][i][0][0][0][1][0]`, its display name `json[0][i][0][0][0][0][1][0]` (that name entry is null for
+someone known only by address; the account id is there only for Google accounts).
+
+### How it is made here
+
+- **What goes out.** The hook takes the body from the extractor and checks it again (`contactsRefusal`): exactly
+  `[134, query, [1, 2], n]`, the query trimmed and 1 to 300 characters, n 1 to 20; anything else is refused and nothing
+  is sent. The address and the headers are the hook's own, the hash is made in the page as for every other call, and
+  the cookies never leave it.
+- **The key**, in order: the one the page's own people-stack calls carried (noted from its requests, kept in the
+  page), the last one that answered, the one after `people-pa.googleapis.com` in the page's HTML, then the page's other
+  keys. A key Google refuses as a key (SERVICE_DISABLED, an unregistered caller, a key not valid) is not tried again;
+  at most three keys a call.
+- **Fast, and apart.** The hook gives Google 6 s (then it aborts: 504); the extractor waits 8 s, under the op's 10 s.
+  Suggestion calls have a lane of their own beside the Gmail page's (at most two in flight): keystrokes never wait
+  behind mail, the watch or the background lane, and those never wait behind keystrokes. A suggestion call the page
+  leaves unanswered counts toward reloading the Gmail tab, as any.
+- **Read strictly** (`readContacts`): every suggestion's people are read as persons (a group's too, so that another
+  nesting cannot pass for a group); an address not where it belongs (or not an address), a profile or a name of another
+  kind, or an answer in which no suggestion has an address is **502**: "Gmail's people suggestions answer is not laid
+  out as this extractor knows it (at json[0][0][0][0][0][1][0]: expected an address, got a list of 2); nothing was
+  returned rather than possibly wrong people".
+- **What it answers**: the people in Gmail's order, each address once (without regard to case; the first kept), `name`
+  the display name with its spaces made one, or null when there is none or it is only the address again; groups and
+  people without an address are left out. At most `limit` (8 by default, at most 20); Gmail is asked for 8, or for
+  the limit when it is more, so the first ones are always Gmail's own. A minute's cache per query (without regard to
+  case) and page size. An empty query is `{ contacts: [] }`, asking nothing.
+- **When it can**: `details.contacts` is true while the Gmail page is up and signed in (on mail.google.com, not being
+  reloaded, its last reload not failed, no verification page met by the background lane) and the call itself has not
+  failed in a way that does not mend by itself (no key taken, another layout, Google refusing it) in the last 15
+  minutes; `details.contactsNote` says why not, in a sentence. Mail does not rest on it: the Gmail protocol layer is
+  untouched.
+- **Errors**: 503 `unavailable` when the page cannot ask now (the reasons above), or Google answered 401, 429 or 5xx,
+  a sign-in or verification page, or could not be reached; 504 when Google did not answer in 6 s (or the page in 8 s);
+  502 for the failures above; 400 for a query over 300 characters or a limit that is not a whole number; 501 with
+  `mail: false`.
+- **Logs**: one line when the call breaks (`gmail contacts: …`, positions and kinds only) and one when it answers
+  again. Never a query or a person.
+
+## The Gmail self-check
 
 A content-free check of all of the above on the live account. Make an empty file **`gmail-selfcheck.request`** in the
 account's directory; within 3 s it is taken (deleted) and the check runs in the Gmail tab, then writes
@@ -793,7 +998,8 @@ mail 50, ids 37, message read; 9120 ms`); the details get `gmailSelfCheckAt` and
    `before:`), `pagingFallbacks`, `notYetGmail` (`msg-a` messages left out); `bvLayout` and `bvLayouts` (how many of
    each); and the sync point ("The sync point"): `bvTrailerEqualsPagePoint`, `bvTrailerVsPagePoint` (beside the page's
    sync point read again at the end), `bvTrailerMonotonic` (null with fewer than two `bv` answers), `bvTrailerPairs`,
-   `pointFrom`, `sFromBvPoint`, `bvPointRefused` (this extractor's sentence, or null);
+   `pointFrom`, `sFromBvPoint`, `bvPointRefused` (this extractor's sentence, or null); `skipped` and `strayRows` (bad
+   records left out, and thread rows at no known place, by endpoint, since the extractor started);
    and `lane`: `backgroundStopped`, `readsMarkRead`;
 7. `fingerprints` per endpoint (`bv`, `fd`, `s`, `raw`): `calls`, `ok`, `failed`, `firstMismatch` (where and what
    kind, never a value); and the time each step took (`ms`).
@@ -802,6 +1008,31 @@ mail 50, ids 37, message read; 9120 ms`); the details get `gmailSelfCheckAt` and
 and yes/no answers; an error keeps its status and this extractor's own sentence (anything like an address or a long
 number taken out). Nothing is written to Gmail: list, search, fetch and download are reads, and the download is of a
 message already read.
+
+## The Gmail canary
+
+The self-check (above) run on its own, so a change in how Gmail lays its answers out is seen before a call has to fail
+on it: once the Gmail page has been ready 2 minutes after a start, then every `gmailCanaryHours` (default 24; again
+in an hour when a run could not get through for a passing reason: the page busy, a 5xx). It **reads no message**: steps 1 to 4 and 6 to 7 only
+(mailboxes, the inbox and All Mail's first 50, the ids-only search), no download, nothing written to Gmail. It waits
+as the watch does, and the watch waits for it.
+
+Each read answer's **shape** is kept as it is read: per endpoint, every place in it (`json[2][*][0][4][*][10]`, a
+list whose elements are all of one kind written `[*]`), the kinds of thing seen there (a list, a number, a date in ms,
+a string, a label id, an id, a boolean) and how many times. Positions and kinds only, never a value. The run and the
+shapes go to **`gmail-canary.json`** in the account's directory (0600), and the next run is compared with it: a place
+is **stable** once it was well populated (seen at least 5 times, or in each of two or more answers of that endpoint) in
+2 runs in a row. A stable place this run did not see at all, or a new kind at one, is a change; places that come and
+go with the mail (a Cc, attachments, a label some messages have) do not become stable and are not counted. An
+endpoint is compared only when both runs reached it.
+
+A run that found an answer laid out otherwise than known (refused), records left out, or a change, puts the **Gmail
+canary** layer at `failed` ("Gmail changed how it answers (bv); mail reads what it still can, and gmail-canary.json in
+the account's directory says where") and its status says **`changed: true`**, which the manager's notices announce
+once ("<label>: a service it reads changed", docs/notifications.md). The account stays online: Calendar and mail go on
+as they were. The next clean run clears both. A line goes to `adapter.log` (`gmail canary: ok, shapes as last time; bv 412 places, s
+388 places`), and the details get `gmailCanaryAt` and `gmailCanary`. A self-check asked for by its request file
+(above) is not a canary run.
 
 ## OAuth with your own client (kind `google-api`)
 
@@ -891,7 +1122,17 @@ that used it lose it at once (dither-calendar drops its copies of those calendar
   kind), the category rule (a test per tier), the operators-only check, and `GmailMail` against the fake Gmail over
   HTTP as the hook reaches it: mailboxes, every mailbox listed to its end by the cursor, a cursor kept across a new
   arrival, `since`, get/attachment/raw, search and ids-only paging with the estimate, changes and the watch, the layer
-  failing and coming back, the 300 ms pacing, and the self-check's report holding nothing of the mailbox. And bv's two
+  failing and coming back, the 300 ms pacing, and the self-check's report holding nothing of the mailbox. One bad
+  message in an answer (the transport's `mutate` breaks it on the way) costs that message in list, search, changes and
+  the watch, named in `skipped`, the sync point moving past it and `mail.get` asking again; a whole-answer anchor
+  refused, and held 1 to 15 minutes when it fails alike (5 for `s`, ended by a page reload); a list answer's sync
+  point blamed only for a 4xx; an `s` answer with a row at an unknown place or a record named by nothing refused;
+  `bv` rows in the other layout's place named; a record left out asked for again with back-off, kept across a
+  restart, and reported as added once it reads, the watch flagging its mailboxes; the unread guard failing closed, and
+  a passing lookup failure staying 503; the canary (no message read, shapes kept 0600 and compared, a changed layout
+  and a record left out said, places that come and go not counted, a clean run clearing it). The pacing and the background lane run on a fake clock (`FakeClock`, `drive`): time moves only when
+  the test fires the lane's next timer, so the gaps, back-offs and "the foreground waits for nothing" are checked to the
+  ms, without sleeps. And bv's two
   layouts (the fake answers in the own one by default; `gmail.bvLayout('page' | 'third')`), mailboxes and a sync
   point from a list answer with no sync point known (and one that is not taken), `pageKind`, the background lane
   (its pace for lists and downloads, the foreground going first past a backlog, the budget kept across a restart
@@ -900,7 +1141,17 @@ that used it lose it at once (dither-calendar drops its copies of those calendar
   page's own as recorded, each write's labels in the fake, writes in part (`refused`, `unknown`, `threadIds`), 404 and
   422, Spam 501 and the folders mail is not moved into 400; a send with Cc, Bcc and a file (upload, draft, send) and a
   reply (its thread, In-Reply-To, the original answered, the reply's headers in `mail.changes`); `checkOutgoing`.
+- `test/gmail-shapes.test.ts` and `test/gmail-shapes/`: hand-made shapes of `bv` (both layouts), `fd` and `s` answers
+  (type tags and anchors, as the recorder keeps them; never saved from a real answer), filled with invented values,
+  then every place mutated every way (null, taken out, another type, an extra element, swapped): nothing but a
+  LayoutError comes out, a broken message costs only itself (read, or named in `skipped`), a broken row only its
+  messages, a whole-answer anchor refuses, and every message broken alike refuses the answer.
+- `test/gmail-contacts.test.ts`: suggesting people without a browser: the request as the To field sends it, the
+  answer read in the recorded layout (a person with no name, a name that is the address, a repeated address, a group,
+  a suggestion without an address) and refused in others (where and what kind, never a value), the cache, readiness,
+  and each kind of failure's status and code, the 15 minutes of `details.contacts` false, and the log.
 - `test/google-browser.test.ts`: the `google` extractor in its real sandbox against the same fake in its `web` mode
-  (config `testOrigin` and `apiBase` point at it, `testMailOrigin` and `gmailApiBase` at its Gmail side; `stall()`
+  (config `testOrigin` and `apiBase` point at it, `testMailOrigin`, `gmailApiBase` and `peopleApiBase` at its Gmail
+  side; `stall()`
   makes a page's API calls hang). The stall tests wait out the real 25 s, so the suite takes about three minutes. Skipped without Xvfb, chromium and x11vnc (found on PATH, through
   `XVFB_BIN` / `X11VNC_BIN` / `CHROMIUM_BIN`, or with `nix build`).

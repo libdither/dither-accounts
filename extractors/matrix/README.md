@@ -63,7 +63,8 @@ Messages: `m.text`, `m.notice`, `m.emote`, `m.image`/`m.file`/`m.video`/`m.audio
 used as typed, with the legacy reply fallback stripped. Edits re-emit the target with `editedTs`
 (fetching the target if it is older than anything seen), redactions emit `delete` (or a tombstone plus
 `delete` for messages first seen already redacted), reactions are indexed so a redacted reaction can be
-removed, and backfilled messages carry a reaction snapshot from that index.
+removed, and backfilled messages carry a reaction snapshot from that index, with when each person reacted. A
+`reaction` event carries its `origin_server_ts`, and one taken back the redaction's.
 
 Sync: lazy-loading filter, 50-event timeline window. The initial sync is backfill (`live=false`),
 incremental syncs are live, except a newly joined room's history before your join. A limited

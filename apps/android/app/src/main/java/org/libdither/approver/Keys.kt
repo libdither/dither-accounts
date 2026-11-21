@@ -34,6 +34,12 @@ object Keys {
             .setInvalidatedByBiometricEnrollment(false)
     }
 
+    /**
+     * The approval key for one paired manager (dither-chat's docs/approvals.md): made like a credential key, so every
+     * signature needs the fingerprint or the device's PIN, the phone unlocked, and a new fingerprint doesn't void it.
+     */
+    fun approval(c: Context, alias: String) = credential(c, alias)
+
     private fun generate(c: Context, alias: String, extra: (KeyGenParameterSpec.Builder) -> Unit) {
         fun make(strongBox: Boolean) {
             val b = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN)

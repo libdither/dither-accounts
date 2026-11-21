@@ -3,7 +3,7 @@ import { expect, test } from 'bun:test';
 import { Long } from '@mtcute/bun';
 import type { tl } from '../src/backend.ts';
 import { avatarUrl, convId, mediaUrl, msgId, parseAvatarUrl, parseConv, parseMediaUrl, parseMsg } from '../src/ids.ts';
-import { attachmentsOf, conversationOf, identityOfChat, identityOfUser, type MapCtx, messageFact, muteOf, reactionsOf, topicConversation } from '../src/mapping.ts';
+import { attachmentsOf, conversationOf, identityOfChat, identityOfUser, type MapCtx, messageFact, muteOf, reactionsOf, topicConversation, webPageEmbed } from '../src/mapping.ts';
 
 const SELF = 100;
 const FORUM = 9001;
@@ -94,6 +94,9 @@ test('media: photos, files, stickers, places and polls', () => {
   const doc = (mimeType: string, attributes: tl.TypeDocumentAttribute[]) => msg({ id: 5, peerId: pu(300), media: { _: 'messageMediaDocument', document: { _: 'document', id: Long.fromNumber(1), accessHash: Long.ZERO, fileReference: new Uint8Array(), date: 0, mimeType, size: 1234, dcId: 2, attributes } } });
   expect(attachmentsOf('x', doc('application/pdf', [{ _: 'documentAttributeFilename', fileName: 'a.pdf' }])).attachments[0]).toMatchObject({ kind: 'file', name: 'a.pdf', size: 1234, mime: 'application/pdf' });
   expect(attachmentsOf('x', doc('video/mp4', [{ _: 'documentAttributeVideo', duration: 3, w: 640, h: 480 }])).attachments[0]).toMatchObject({ kind: 'video', width: 640, height: 480 });
+  // An animation is Telegram's GIF: a video drawn looping and silent.
+  expect(attachmentsOf('x', doc('video/mp4', [{ _: 'documentAttributeVideo', duration: 3, w: 320, h: 240 }, { _: 'documentAttributeAnimated' }])).attachments[0]).toMatchObject({ kind: 'video', gif: true, width: 320, height: 240 });
+  expect(attachmentsOf('x', doc('video/mp4', [{ _: 'documentAttributeVideo', duration: 3, w: 640, h: 480 }])).attachments[0].gif).toBeUndefined();
   expect(attachmentsOf('x', doc('audio/ogg', [{ _: 'documentAttributeAudio', duration: 3, voice: true }])).attachments[0].kind).toBe('audio');
   expect(attachmentsOf('x', doc('image/webp', [{ _: 'documentAttributeSticker', alt: '😀', stickerset: { _: 'inputStickerSetEmpty' } }]))).toMatchObject({ kind: 'sticker', text: '😀' });
   const geo = msg({ peerId: pu(300), media: { _: 'messageMediaGeo', geo: { _: 'geoPoint', lat: 1.5, long: 2.5, accessHash: Long.ZERO } } });
@@ -102,7 +105,7 @@ test('media: photos, files, stickers, places and polls', () => {
   expect(messageFact(ctx, poll)!.body).toBe('📊 Lunch?\n- Yes');
 });
 
-test('reactions: named reactors, totals, your own, custom emoji', () => {
+test('reactions: named reactors with their dates, totals, your own, custom emoji', () => {
   const r: tl.TypeMessageReactions = {
     _: 'messageReactions',
     results: [
@@ -111,12 +114,13 @@ test('reactions: named reactors, totals, your own, custom emoji', () => {
       { _: 'reactionCount', reaction: { _: 'reactionCustomEmoji', documentId: Long.fromNumber(42) }, count: 1 },
     ],
     recentReactions: [
-      { _: 'messagePeerReaction', peerId: pu(200), date: 0, reaction: { _: 'reactionEmoji', emoticon: '❤' } },
+      { _: 'messagePeerReaction', peerId: pu(200), date: 1_700_000_000, reaction: { _: 'reactionEmoji', emoticon: '❤' } },
       { _: 'messagePeerReaction', peerId: pu(300), date: 0, reaction: { _: 'reactionCustomEmoji', documentId: Long.fromNumber(42) } },
     ],
   };
   expect(reactionsOf(ctx, r)).toEqual([
-    { key: '❤️', authors: ['200', '100'] },
+    // Telegram dates each named reaction; yours, named only by chosenOrder, has none.
+    { key: '❤️', authors: ['200', '100'], at: { '200': 1_700_000_000_000 } },
     { key: '🔥', authors: [], count: 5 },
     { key: 'custom:42', authors: ['300'], emoji: { key: 'custom:42', name: 'custom', url: 'tg://emoji/42' } },
   ]);
@@ -127,4 +131,17 @@ test('forwards say where from', () => {
   expect(f.forward).toEqual({ ts: 1_600_000_000_000, conversation: 'channel:77', message: 'channel:77#9', author: 'channel:77' });
   const hidden = messageFact(ctx, msg({ peerId: pu(200), message: 'x', fwdFrom: { _: 'messageFwdHeader', date: 1, fromName: 'Private Person' } }))!;
   expect(hidden.forward).toEqual({ ts: 1000, authorName: 'Private Person' });
+});
+
+test('a link preview as an embed: only once made, and only with something to show', () => {
+  const id = Long.fromNumber(7);
+  const img = 'tg://media/dm:1:2/5';
+  const page = { _: 'webPage', id, url: 'https://example.com/a', displayUrl: 'example.com/a', hash: 0 } as const;
+  expect(webPageEmbed({ _: 'webPagePending', id, url: 'https://example.com/a', date: 1 }, img)).toBeNull();
+  expect(webPageEmbed({ _: 'webPageEmpty', id }, img)).toBeNull();
+  // A bare link: nothing beyond it to show.
+  expect(webPageEmbed(page, img)).toBeNull();
+  expect(webPageEmbed({ ...page, title: 'A', description: 'B', author: 'Ann' }, img)).toEqual({ url: 'https://example.com/a', provider: 'example.com', title: 'A', description: 'B', author: 'Ann' });
+  const photo: tl.TypePhoto = { _: 'photo', id, accessHash: id, fileReference: new Uint8Array(), date: 1, sizes: [], dcId: 2 };
+  expect(webPageEmbed({ ...page, siteName: 'Example', photo }, img)).toEqual({ url: 'https://example.com/a', provider: 'Example', image: img });
 });

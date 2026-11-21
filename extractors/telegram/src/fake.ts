@@ -129,6 +129,16 @@ interface WMedia {
   h?: number;
   sticker?: string;
   video?: boolean;
+  /** An animation (documentAttributeAnimated): Telegram's GIF. */
+  animated?: boolean;
+}
+/** A link preview: Telegram makes one for the first link of a message (pending until `pageReady` says it is made). */
+interface WPage {
+  id: string;
+  url: string;
+  title: string;
+  site: string;
+  pending?: boolean;
 }
 interface WMsg {
   id: number;
@@ -140,7 +150,10 @@ interface WMsg {
   topic?: number;
   edit?: number;
   media?: WMedia;
+  page?: WPage;
   reactions?: Record<string, number[]>;
+  /** When each person last reacted (seconds), as Telegram dates a messagePeerReaction; the message's date when unset. */
+  reactedAt?: Record<number, number>;
   counts?: Record<string, number>;
   service?: { kind: 'chatCreate' | 'topicCreate' | 'topicEdit' | 'editTitle' | 'pin' | 'addUser'; title?: string; users?: number[] };
   fwd?: { fromName?: string; from?: number; date: number; channel?: number; post?: number };
@@ -437,6 +450,16 @@ export class FakeTelegram implements TgBackend {
         return {};
       case 'incoming':
         return this.incoming(c.peer, c.from, c.text, { topic: c.topic, replyTo: c.replyTo, entities: c.entities });
+      case 'pageReady': {
+        // Telegram made the preview it was making for a message: updateWebPage, and the message is not sent again.
+        const m = this.msg(c.peer, c.id);
+        if (!m.page) throw new Error('that message has no preview');
+        m.page.pending = false;
+        this.world.files[`${m.page.id}1`] = PIXEL.toString('base64');
+        this.save();
+        this.push(this.isChannel(c.peer) ? { _: 'updateChannelWebPage', channelId: idOf(c.peer), webpage: this.tlPage(m.page), pts: ++this.world.pts, ptsCount: 1 } : { _: 'updateWebPage', webpage: this.tlPage(m.page), pts: ++this.world.pts, ptsCount: 1 });
+        return {};
+      }
       case 'edit': {
         const m = this.msg(c.peer, c.id);
         m.text = c.text;
@@ -735,6 +758,9 @@ export class FakeTelegram implements TgBackend {
       if (!r[k].length) delete r[k];
     }
     for (const k of keys) (r[k] ??= []).push(who);
+    const at = (m.reactedAt ??= {});
+    if (keys.length) at[who] = now();
+    else delete at[who];
     this.save();
   }
 
@@ -835,6 +861,20 @@ export class FakeTelegram implements TgBackend {
     } as tl.TypeChat;
   }
 
+  private tlPage(p: WPage): tl.TypeWebPage {
+    const id = Long.fromString(p.id);
+    if (p.pending) return { _: 'webPagePending', id, url: p.url, date: now() };
+    const photo: tl.TypePhoto = { _: 'photo', id: Long.fromString(`${p.id}1`), accessHash: Long.fromNumber(7), fileReference: new Uint8Array([1]), date: now(), sizes: [{ _: 'photoSize', type: 'y', w: 1, h: 1, size: PIXEL.length }], dcId: DC };
+    return { _: 'webPage', id, url: p.url, displayUrl: p.url.replace(/^https?:\/\//, ''), hash: 0, siteName: p.site, title: p.title, photo };
+  }
+
+  /** The preview Telegram starts making for a message's first link (a fresh one: pending). */
+  private pageFor(text: string): WPage | undefined {
+    const url = /https?:\/\/[^\s]+/.exec(text)?.[0];
+    if (!url) return undefined;
+    return { id: String(9_000_000 + (this.world.pts + 1) * 10), url, title: `A page at ${new URL(url).hostname}`, site: new URL(url).hostname, pending: true };
+  }
+
   private tlMedia(media: WMedia, date: number): tl.TypeMessageMedia {
     const ref = new Uint8Array([1, 2, 3]);
     if (media.kind === 'photo')
@@ -842,6 +882,7 @@ export class FakeTelegram implements TgBackend {
     const attributes: tl.TypeDocumentAttribute[] = [];
     if (media.name) attributes.push({ _: 'documentAttributeFilename', fileName: media.name });
     if (media.video) attributes.push({ _: 'documentAttributeVideo', duration: 1, w: media.w ?? 1, h: media.h ?? 1 });
+    if (media.animated) attributes.push({ _: 'documentAttributeAnimated' });
     if (media.sticker) attributes.push({ _: 'documentAttributeSticker', alt: media.sticker, stickerset: { _: 'inputStickerSetEmpty' } });
     return { _: 'messageMediaDocument', document: { _: 'document', id: Long.fromString(media.id), accessHash: Long.fromNumber(7), fileReference: ref, date, mimeType: media.mime, size: media.size, dcId: DC, attributes } };
   }
@@ -857,7 +898,7 @@ export class FakeTelegram implements TgBackend {
       _: 'messageReactions',
       ...(broadcast ? {} : { canSeeList: true }),
       results: keys.map((k) => ({ _: 'reactionCount', reaction: { _: 'reactionEmoji', emoticon: k }, count: counts[k], ...(named[k]?.includes(this.world.self) ? { chosenOrder: 0 } : {}) })),
-      ...(broadcast ? {} : { recentReactions: Object.entries(named).flatMap(([k, who]) => who.map((u) => ({ _: 'messagePeerReaction', peerId: { _: 'peerUser', userId: u }, date: m.date, reaction: { _: 'reactionEmoji', emoticon: k } }))) }),
+      ...(broadcast ? {} : { recentReactions: Object.entries(named).flatMap(([k, who]) => who.map((u) => ({ _: 'messagePeerReaction', peerId: { _: 'peerUser', userId: u }, date: m.reactedAt?.[u] ?? m.date, reaction: { _: 'reactionEmoji', emoticon: k } }))) }),
     } as tl.TypeMessageReactions;
   }
 
@@ -895,7 +936,7 @@ export class FakeTelegram implements TgBackend {
       ...base,
       message: m.text,
       ...(m.entities?.length ? { entities: m.entities } : {}),
-      ...(m.media ? { media: this.tlMedia(m.media, m.date) } : {}),
+      ...(m.media ? { media: this.tlMedia(m.media, m.date) } : m.page ? { media: { _: 'messageMediaWebPage', webpage: this.tlPage(m.page) } } : {}),
       ...(m.edit ? { editDate: m.edit } : {}),
       ...(reactions ? { reactions } : {}),
       ...(m.fwd ? { fwdFrom: { _: 'messageFwdHeader', date: m.fwd.date, ...(m.fwd.fromName ? { fromName: m.fwd.fromName } : {}), ...(m.fwd.from ? { fromId: { _: 'peerUser', userId: m.fwd.from } } : {}), ...(m.fwd.channel ? { fromId: { _: 'peerChannel', channelId: m.fwd.channel }, channelPost: m.fwd.post } : {}) } } : {}),
@@ -1028,7 +1069,7 @@ export class FakeTelegram implements TgBackend {
       const f = this.fileOf(media.file);
       this.world.files[f.id] = f.bytes.toString('base64');
       const name = media.attributes.find((a): a is tl.RawDocumentAttributeFilename => a._ === 'documentAttributeFilename')?.fileName ?? f.name;
-      return { kind: 'document', id: f.id, mime: media.mimeType, size: f.bytes.length, name, ...(media.attributes.some((a) => a._ === 'documentAttributeVideo') ? { video: true } : {}) };
+      return { kind: 'document', id: f.id, mime: media.mimeType, size: f.bytes.length, name, ...(media.attributes.some((a) => a._ === 'documentAttributeVideo') ? { video: true } : {}), ...(media.attributes.some((a) => a._ === 'documentAttributeAnimated') ? { animated: true } : {}) };
     }
     if (media._ === 'inputMediaPhoto' && media.id._ === 'inputPhoto') {
       const id = media.id.id.toString();
@@ -1056,7 +1097,7 @@ export class FakeTelegram implements TgBackend {
     this.save();
     if (short && peer.startsWith('user:') && !msg.media) {
       this.botReply(peer, msg);
-      return { _: 'updateShortSentMessage', out: true, id: msg.id, pts: ++this.world.pts, ptsCount: 1, date: msg.date, ...(msg.entities?.length ? { entities: msg.entities } : {}) };
+      return { _: 'updateShortSentMessage', out: true, id: msg.id, pts: ++this.world.pts, ptsCount: 1, date: msg.date, ...(msg.entities?.length ? { entities: msg.entities } : {}), ...(msg.page ? { media: { _: 'messageMediaWebPage', webpage: this.tlPage(msg.page) } } : {}) };
     }
     this.botReply(peer, msg);
     return this.updatesResult([{ _: 'updateMessageID', id: msg.id, randomId }, this.newMessageUpdate(peer, msg)]);
@@ -1394,7 +1435,8 @@ export class FakeTelegram implements TgBackend {
       case 'messages.sendMessage': {
         const p = this.peerOf(req.peer);
         this.mayWrite(p);
-        return this.sent(p, { text: req.message, ...(req.entities?.length ? { entities: this.entities(req.entities) } : {}), ...this.topicOf(p, req.replyTo) }, req.randomId, true);
+        const page = req.noWebpage ? undefined : this.pageFor(req.message);
+        return this.sent(p, { text: req.message, ...(page ? { page } : {}), ...(req.entities?.length ? { entities: this.entities(req.entities) } : {}), ...this.topicOf(p, req.replyTo) }, req.randomId, true);
       }
       case 'messages.sendMedia': {
         const p = this.peerOf(req.peer);
@@ -1422,8 +1464,12 @@ export class FakeTelegram implements TgBackend {
         const p = this.peerOf(req.peer);
         const m = this.msg(p, req.id);
         if (m.from !== self) throw new FakeRpcError(403, 'MESSAGE_AUTHOR_REQUIRED');
+        // Telegram's own limit, outside a channel's posts and Saved Messages.
+        const anyTime = (this.isChannel(p) && !!this.chat(idOf(p)).broadcast) || p === `user:${self}`;
+        if (!anyTime && now() - m.date > 48 * 3600) throw new FakeRpcError(400, 'MESSAGE_EDIT_TIME_EXPIRED');
         m.text = req.message ?? m.text;
         m.entities = req.entities ? this.entities(req.entities) : undefined;
+        if (req.noWebpage) delete m.page;
         m.edit = now();
         this.save();
         const message = this.tlMessage(p, m);
@@ -1454,7 +1500,7 @@ export class FakeTelegram implements TgBackend {
         const m = this.msg(p, req.id);
         const key = req.reaction?._ === 'reactionEmoji' ? req.reaction.emoticon : null;
         const who = Object.entries(m.reactions ?? {}).flatMap(([k, us]) => (!key || k === key ? us.map((u) => ({ k, u })) : []));
-        return { _: 'messages.messageReactionsList', count: who.length, reactions: who.map(({ k, u }) => ({ _: 'messagePeerReaction', peerId: { _: 'peerUser', userId: u }, date: m.date, reaction: { _: 'reactionEmoji', emoticon: k } })), chats: [], users: who.map(({ u }) => this.tlUser(this.user(u))) };
+        return { _: 'messages.messageReactionsList', count: who.length, reactions: who.map(({ k, u }) => ({ _: 'messagePeerReaction', peerId: { _: 'peerUser', userId: u }, date: m.reactedAt?.[u] ?? m.date, reaction: { _: 'reactionEmoji', emoticon: k } })), chats: [], users: who.map(({ u }) => this.tlUser(this.user(u))) };
       }
       case 'messages.readHistory': {
         const p = this.peerOf(req.peer);

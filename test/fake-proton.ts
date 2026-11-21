@@ -27,7 +27,9 @@
  * uploaded; each address's Type and Signature flag, the package's Type and Flags. A send that fails a check is refused
  * (422) and the reason kept in `rejected`; one that passes is kept in `sent` (with its packages, for tests to open).
  * Recipients come from a table (`recipient()`): how GET core/v4/keys/all answers for them. Contacts (`contact()`) are
- * answered at contacts/v4/contacts/emails and contacts/v4/contacts/<id>, mail settings at mail/v4/settings.
+ * answered at contacts/v4/contacts/emails (by `Email`, or every one a page at a time) and contacts/v4/contacts/<id>,
+ * mail settings at mail/v4/settings. With `storeContacts` the page's store holds their contact emails as the composer
+ * reads them (those made before the page loaded), as Proton's does; otherwise it has none.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -103,6 +105,8 @@ export interface FakeProtonOpts {
   brokenSession?: 'clientKey' | 'blob';
   /** Three more addresses (no keys): one disabled, one that only receives, one more to send from. */
   moreAddresses?: boolean;
+  /** The page's store holds your contact emails (the composer's list), as loaded with the page; else it has none. */
+  storeContacts?: boolean;
 }
 
 /**
@@ -132,6 +136,12 @@ export interface FakeContact {
   cardType?: 0 | 2;
   /** contacts/v4/contacts/<id> fails. */
   unreadable?: boolean;
+  /** The contact email's Name (default: the address's local part), LastUsedTime (0) and Order (1). */
+  name?: string;
+  lastUsed?: number;
+  order?: number;
+  /** Another contact with the same address, kept beside the first rather than replacing it. */
+  second?: boolean;
 }
 /** One package as it was sent: its body (encrypted), its clear keys, each recipient's entry. */
 export interface SentPackage {
@@ -214,7 +224,11 @@ export async function startFakeProton(opts: FakeProtonOpts = {}) {
   let refreshNext = 0;
   const calls: { by: 'page' | 'hook'; method: string; path: string; search: string; headers: Record<string, string> }[] = [];
   const recipients = new Map<string, { kind: RecipientKind; key?: openpgp.PrivateKey; extra?: openpgp.PrivateKey }>();
-  const contacts = new Map<string, { ID: string; email: string; defaults: number; unreadable: boolean; cards: { Type: number; Data: string; Signature: string | null }[] }>();
+  const contacts = new Map<string, { ID: string; emailID: string; email: string; name: string; lastUsed: number; order: number; defaults: number; unreadable: boolean; cards: { Type: number; Data: string; Signature: string | null }[] }>();
+  /** A contact email as the API and the store give it. */
+  const contactEmail = (c: { ID: string; emailID: string; email: string; name: string; lastUsed: number; order: number; defaults: number }) => ({ ID: c.emailID, Email: c.email, Name: c.name, Type: [], Defaults: c.defaults, Order: c.order, ContactID: c.ID, LabelIDs: [], LastUsedTime: c.lastUsed });
+  /** Calls listing every contact email (contacts/v4/contacts/emails without Email): the store's list is read so. */
+  let contactLists = 0;
   let mailSettings: Record<string, unknown> = { AutoSaveContacts: 1, DelaySendSeconds: 0, Sign: 0, PGPScheme: 16, DraftMIMEType: 'text/html', AttachPublicKey: 0 };
   const sent: Sent[] = [];
   /** Sends the fake refused because a package was wrong: why. */
@@ -517,8 +531,17 @@ export async function startFakeProton(opts: FakeProtonOpts = {}) {
     if (path === 'core/v4/keys/all' && req.method === 'GET') return keysAll(url.searchParams.get('Email') ?? '');
     if (path === 'mail/v4/settings' && req.method === 'GET') return ok({ MailSettings: mailSettings });
     if (path === 'contacts/v4/contacts/emails' && req.method === 'GET') {
-      const want = (url.searchParams.get('Email') ?? '').toLowerCase();
-      const ContactEmails = [...contacts.values()].filter((c) => c.email.toLowerCase() === want).map((c) => ({ ID: rid(), Email: c.email, Name: c.email.split('@')[0], Type: [], Defaults: c.defaults, Order: 1, ContactID: c.ID, LabelIDs: [], LastUsedTime: 0 }));
+      const email = url.searchParams.get('Email');
+      if (email === null) {
+        // Every contact email, a page at a time, as the store fills itself (queryContactEmails with Page and PageSize).
+        contactLists++;
+        const all = [...contacts.values()].map(contactEmail);
+        const page = Number(url.searchParams.get('Page') ?? 0);
+        const size = Number(url.searchParams.get('PageSize') ?? 100);
+        return ok({ ContactEmails: all.slice(page * size, (page + 1) * size), Total: all.length });
+      }
+      const want = email.toLowerCase();
+      const ContactEmails = [...contacts.values()].filter((c) => c.email.toLowerCase() === want).map(contactEmail);
       return ok({ ContactEmails, Total: ContactEmails.length });
     }
     if ((m = path.match(/^contacts\/v4\/contacts\/([A-Za-z0-9_=-]+)$/)) && req.method === 'GET') {
@@ -650,7 +673,7 @@ export async function startFakeProton(opts: FakeProtonOpts = {}) {
   // ---- the page
   function mailPage(localID: number) {
     const mine = signedIn && localID === 0 && sessionValid;
-    const config = { UID, localID, keyPassword, appVersion: APP_VERSION, accept: ACCEPT, pagePollMs, withhold: opts.withhold ?? [] };
+    const config = { UID, localID, keyPassword, appVersion: APP_VERSION, accept: ACCEPT, pagePollMs, withhold: opts.withhold ?? [], contactEmails: opts.storeContacts ? [...contacts.values()].map(contactEmail) : null };
     const html = `<!doctype html><html><head><title>Inbox | Proton Mail</title></head><body><div class="app-root">${mine ? 'Inbox' : 'No session'}</div>
 <script>
 (() => {
@@ -777,7 +800,11 @@ export async function startFakeProton(opts: FakeProtonOpts = {}) {
         // The encrypted card (phone, notes): Proton never reads encryption settings from it, nor does the hook.
         { Type: 3, Data: '-----BEGIN PGP MESSAGE-----\n(fake)\n-----END PGP MESSAGE-----', Signature: '(fake)' },
       ];
-      contacts.set(address.toLowerCase(), { ID: rid(), email: address, defaults: c.defaults ?? 1, unreadable: !!c.unreadable, cards });
+      contacts.set(c.second ? `${address.toLowerCase()}#${rid(4)}` : address.toLowerCase(), { ID: rid(), emailID: rid(), email: address, name: c.name ?? address.split('@')[0]!, lastUsed: c.lastUsed ?? 0, order: c.order ?? 1, defaults: c.defaults ?? 1, unreadable: !!c.unreadable, cards });
+    },
+    /** How many times every contact email was listed through the API. */
+    get contactLists() {
+      return contactLists;
     },
     /** Change the account's mail settings (as the server has them; the page's store keeps what it loaded). */
     setMailSettings(patch: Record<string, unknown>) {

@@ -252,3 +252,43 @@ export function parseTextLines(lines: string[], fallback: number, lastAt: number
   }
   return { recs, lines: idx, at, openFrom };
 }
+
+// ------------------------------------------------------------------ how far back
+
+/** The time a line of a source of this kind says: a record's `at`, a span's start, a plain log's ISO time. */
+export function lineTime(kind: 'errors-ndjson' | 'trace-ndjson' | 'text-log', line: string): number | null {
+  if (kind === 'text-log') {
+    const m = ISO.exec(line);
+    const t = m ? Date.parse(m[1]!.replace(' ', 'T')) : NaN;
+    return Number.isFinite(t) ? t : null;
+  }
+  try {
+    const j = JSON.parse(line) as Record<string, unknown>;
+    const t = kind === 'errors-ndjson' ? j.at : j.startMs;
+    return typeof t === 'number' && Number.isFinite(t) ? t : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The oldest time a file and its rotated copies (`<file>.1` … `<file>.9`) still hold: the first dated line of the
+ * oldest copy that has one (only its first 64 kB are read). Null when none says a time.
+ */
+export function oldestTime(kind: 'errors-ndjson' | 'trace-ndjson' | 'text-log', path: string): number | null {
+  const copies = [path, ...Array.from({ length: 9 }, (_, i) => `${path}.${i + 1}`)].filter((p) => existsSync(p)).reverse();
+  for (const p of copies) {
+    let size = 0;
+    try {
+      size = statSync(p).size;
+    } catch {
+      continue;
+    }
+    const lines = readRange(p, 0, Math.min(size, 64 * 1024)).toString('utf8').split('\n').slice(0, 200);
+    for (const l of lines) {
+      const t = lineTime(kind, l);
+      if (t !== null) return t;
+    }
+  }
+  return null;
+}

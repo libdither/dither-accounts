@@ -29,7 +29,11 @@
  * HTML page, a 429) goes up only as what it reads as (pageKind: a sign-in or verification page, or neither). (i) For
  * writing (docs/google.md, "Writing to Gmail"): gmail.write, an s call that is one of the page's own kinds of write
  * (label changes from a fixed set, a draft and its send; writeRefusal says why any other is refused), and
- * gmail.upload, an attachment handed over in pieces (gmail.uploadChunk) and uploaded as the page uploads one.
+ * gmail.upload, an attachment handed over in pieces (gmail.uploadChunk) and uploaded as the page uploads one. (j) For
+ * suggesting people (docs/google.md, "Suggesting people"): gmail.contacts, the call Gmail's compose To field makes to
+ * Google's people-stack autocomplete while you type, with the body checked (contactsRefusal), the URL and headers fixed,
+ * and an API key of the page's (the one its own such calls carry, else the one Gmail's config puts beside Google's
+ * people API), cut off after 6 s.
  *
  * It never sees the extractor's token; it only talks to content.js, over the channel in main-world.js (put in below
  * when the extension is copied), which also keeps its fetch and XMLHttpRequest wrappers looking native to the page.
@@ -38,6 +42,7 @@
 (() => {
   'use strict';
   /*@include main-world@*/
+  /*@include command-watch@*/
   /* learn:begin (one text in two files, extension/hook.js and gmail-learn.js; test/gmail-learn.test.ts keeps them equal) */
   const learn = (() => {
     /** Header names, kept as they are (compared without case): what mail is made of, never a value. */
@@ -300,10 +305,14 @@
   const jsonStringify = JSON.stringify;
   const fromCharCode = String.fromCharCode;
   const btoaNative = window.btoa;
-  let settings = { authuser: '0', testOrigin: null, testMailOrigin: null };
+  const clearLater = window.clearTimeout;
+  const AbortC = window.AbortController;
+  let settings = { authuser: '0', testOrigin: null, testMailOrigin: null, peopleApiBase: null, fetchMs: null };
 
   const post = (payload) => cloak.send(payload);
   const log = (level, msg, data) => post({ t: 'log', level, msg, data });
+  // Each command's `got`, page.state, and a command still open after 20 s (see the end of this file).
+  const watch = commandWatch({ post, log, name: (c) => commandName(c) });
 
   const googleHost = (h) => h === 'google.com' || h.endsWith('.google.com') || h === 'googleapis.com' || h.endsWith('.googleapis.com');
   const testOrigin = (o) => (!!settings.testOrigin && o === settings.testOrigin) || (!!settings.testMailOrigin && o === settings.testMailOrigin);
@@ -592,6 +601,8 @@
       if (u.origin !== location.origin) return;
       const m = /^(\/sync\/u\/\d{1,2}\/i\/)([a-z]{1,8})$/.exec(u.pathname);
       if (m) {
+        // The first: mail calls can be made now (the extractor waits for this word before refusing one at start).
+        if (!sync.seen) post({ t: 'synced' });
         sync.seen = true;
         sync.base = m[1];
         sync.headers = headerPairs(h).filter((p) => HEADERS_NOT_REPLAYED.indexOf(p[0]) < 0);
@@ -622,6 +633,27 @@
     return head === null || head === undefined || (Array.isArray(head) && head.every((x) => x === null || typeof x !== 'object'));
   }
 
+  // Gmail's own calls made here are cut off at FETCH_MS, so one Gmail never answers fails as itself ({ status: 0,
+  // error: 'timeout' }), well before the extractor's 25 s, not as the page's silence. A download gets FETCH_MS for
+  // its headers and RAW_MS in all. Tests (with a test Gmail origin only) make FETCH_MS shorter (settings.fetchMs).
+  const FETCH_MS = 20000;
+  const RAW_MS = 80000;
+  const fetchMs = () => (settings.testMailOrigin && Number(settings.fetchMs) > 0 ? Number(settings.fetchMs) : FETCH_MS);
+  /** An abort after `ms`: its signal, `aborted()` (it fired), `extend(ms)` (from now) and `done()`. */
+  function cutoff(ms) {
+    const ctl = new AbortC();
+    let timer = cloak.apply(later, window, [() => ctl.abort(), ms]);
+    return {
+      signal: ctl.signal,
+      aborted: () => ctl.signal.aborted,
+      extend(more) {
+        cloak.apply(clearLater, window, [timer]);
+        timer = cloak.apply(later, window, [() => ctl.abort(), more]);
+      },
+      done: () => cloak.apply(clearLater, window, [timer]),
+    };
+  }
+
   /** gmail.sync: a POST to the page's own bv, fd or s, with its headers and its query (the next c), the answer's JSON. */
   async function syncCall(endpoint, body) {
     if (['bv', 'fd', 's'].indexOf(endpoint) < 0) throw new Error('gmail.sync: bv, fd or s only');
@@ -635,8 +667,18 @@
     const headers = {};
     for (const [n, v] of sync.headers || []) headers[n] = v;
     if (!headers['content-type']) headers['content-type'] = 'application/json';
-    const res = await cloak.apply(nativeFetch, window, [location.origin + sync.base + endpoint + '?' + q.toString(), { method: 'POST', headers, body: jsonStringify(body), credentials: 'include', cache: 'no-store' }]);
-    const text = await res.text();
+    const cut = cutoff(fetchMs());
+    let res;
+    let text;
+    try {
+      res = await cloak.apply(nativeFetch, window, [location.origin + sync.base + endpoint + '?' + q.toString(), { method: 'POST', headers, body: jsonStringify(body), credentials: 'include', cache: 'no-store', signal: cut.signal }]);
+      text = await res.text();
+    } catch (e) {
+      if (cut.aborted()) return { status: 0, error: 'timeout' };
+      throw e;
+    } finally {
+      cut.done();
+    }
     let json;
     try {
       json = jsonParse(text.replace(/^\s*\)\]\}'[^\n]*(?:\n|$)/, ''));
@@ -709,8 +751,19 @@
     const headers = {};
     for (const [n, v] of sync.headers || []) headers[n] = v;
     if (!headers['content-type']) headers['content-type'] = 'application/json';
-    const res = await cloak.apply(nativeFetch, window, [location.origin + sync.base + 's?' + q.toString(), { method: 'POST', headers, body: jsonStringify(body), credentials: 'include', cache: 'no-store' }]);
-    const text = await res.text();
+    const cut = cutoff(fetchMs());
+    let res;
+    let text;
+    try {
+      res = await cloak.apply(nativeFetch, window, [location.origin + sync.base + 's?' + q.toString(), { method: 'POST', headers, body: jsonStringify(body), credentials: 'include', cache: 'no-store', signal: cut.signal }]);
+      text = await res.text();
+    } catch (e) {
+      // Gmail may have made the change: the extractor says so (a 504).
+      if (cut.aborted()) return { status: 0, error: 'timeout' };
+      throw e;
+    } finally {
+      cut.done();
+    }
     let json;
     try {
       json = jsonParse(text.replace(/^\s*\)\]\}'[^\n]*(?:\n|$)/, ''));
@@ -810,36 +863,53 @@
     const cap = Number.isInteger(max) && max > 0 ? max : 50 * 1024 * 1024;
     const base = sync.mailBase || '/mail/u/' + encodeURIComponent(String(settings.authuser)) + '/';
     const url = location.origin + base + '?ik=' + encodeURIComponent(sync.ik) + '&view=att&th=' + hex + '&attid=0&disp=comp&safe=1&zw';
-    const res = await cloak.apply(nativeFetch, window, [url, { credentials: 'include', cache: 'no-store' }]);
+    const cut = cutoff(fetchMs());
+    let res;
+    try {
+      res = await cloak.apply(nativeFetch, window, [url, { credentials: 'include', cache: 'no-store', signal: cut.signal }]);
+    } catch (e) {
+      cut.done();
+      if (cut.aborted()) return { status: 0, error: 'timeout' };
+      throw e;
+    }
+    cut.extend(RAW_MS - fetchMs());
     const type = learn.mediaType(res.headers.get('content-type'));
-    // An HTML page (or a 429) is not a message: only what it reads as goes up, never its text or bytes.
-    if (type === 'text/html' || res.status === 429) return { status: res.status, type, page: learn.pageKind(res.status, type, await textUpTo(res, 512 * 1024), res.url) };
-    if (res.status !== 200 || !res.body) {
-      if (res.body) quiet(res.body.cancel());
-      return { status: res.status, type };
-    }
-    if (Number(res.headers.get('content-length')) > cap) {
-      quiet(res.body.cancel());
-      return { status: 200, tooBig: Number(res.headers.get('content-length')), type };
-    }
-    const reader = res.body.getReader();
-    const chunks = [];
+    let bytes;
     let n = 0;
-    for (;;) {
-      const r = await reader.read();
-      if (r.done) break;
-      n += r.value.byteLength;
-      if (n > cap) {
-        quiet(reader.cancel());
-        return { status: 200, tooBig: n, type };
+    try {
+      // An HTML page (or a 429) is not a message: only what it reads as goes up, never its text or bytes.
+      if (type === 'text/html' || res.status === 429) return { status: res.status, type, page: learn.pageKind(res.status, type, await textUpTo(res, 512 * 1024), res.url) };
+      if (res.status !== 200 || !res.body) {
+        if (res.body) quiet(res.body.cancel());
+        return { status: res.status, type };
       }
-      chunks.push(r.value);
-    }
-    const bytes = new Uint8Array(n);
-    let at = 0;
-    for (const c of chunks) {
-      bytes.set(c, at);
-      at += c.byteLength;
+      if (Number(res.headers.get('content-length')) > cap) {
+        quiet(res.body.cancel());
+        return { status: 200, tooBig: Number(res.headers.get('content-length')), type };
+      }
+      const reader = res.body.getReader();
+      const chunks = [];
+      for (;;) {
+        const r = await reader.read();
+        if (r.done) break;
+        n += r.value.byteLength;
+        if (n > cap) {
+          quiet(reader.cancel());
+          return { status: 200, tooBig: n, type };
+        }
+        chunks.push(r.value);
+      }
+      bytes = new Uint8Array(n);
+      let at = 0;
+      for (const c of chunks) {
+        bytes.set(c, at);
+        at += c.byteLength;
+      }
+    } catch (e) {
+      if (cut.aborted()) return { status: 0, error: 'timeout' };
+      throw e;
+    } finally {
+      cut.done();
     }
     for (const [k, v] of raws) if (Date.now() - v.at > 120000) raws.delete(k);
     while (raws.size >= 3) raws.delete(raws.keys().next().value);
@@ -860,6 +930,106 @@
     return { base64: toBase64(r.bytes.subarray(start, end)) };
   }
 
+  // gmail.contacts: the people Gmail's compose To field suggests, from Google's people-stack autocomplete, called as
+  // the page calls it (contacts.ts builds the body; this checks it, and makes the URL and headers itself).
+  const PEOPLE_BASE = 'https://peoplestack-pa.clients6.google.com';
+  const PEOPLE_PATH = '/$rpc/peoplestack.PeopleStackAutocompleteService/Autocomplete';
+  const PEOPLE_MS = 6000;
+  /** Gmail's config (GLOBALS) puts the key its people calls use right after Google's people API's address. */
+  const PEOPLE_KEY = /"https:\/\/people-pa\.googleapis\.com","(AIza[0-9A-Za-z_-]{35})"/;
+  const API_KEY = /^AIza[0-9A-Za-z_-]{35}$/;
+  /** Kept here only: the key the page's own suggestion calls carry, the one in its config, the last that worked, those refused. */
+  const people = { pageKey: null, htmlKey: null, htmlAt: 0, winner: null, refused: new Set() };
+  /** In tests, the fake's origin (only one of the test origins); otherwise always Google's. */
+  const peopleBase = () => (settings.peopleApiBase && testOrigin(settings.peopleApiBase) ? settings.peopleApiBase : PEOPLE_BASE);
+  const isPeopleCall = (u) => u.origin === peopleBase() && u.pathname.indexOf('/$rpc/peoplestack.') === 0;
+
+  /** A call of the page's own to the people stack: the key it carries (kept here, never sent up). */
+  function peopleNote(url, h) {
+    try {
+      const u = new URL(String(url), location.href);
+      if (!isPeopleCall(u)) return;
+      const k = headerOf(h, 'x-goog-api-key');
+      if (k && API_KEY.test(k)) people.pageKey = k;
+    } catch (e) {}
+  }
+
+  /** The key in Gmail's config, read from the page as served (once, and again at most a minute later while there is none). */
+  function peopleHtmlKey() {
+    if (people.htmlKey || Date.now() - people.htmlAt < 60000) return people.htmlKey;
+    people.htmlAt = Date.now();
+    try {
+      const m = PEOPLE_KEY.exec(document.documentElement.innerHTML);
+      if (m) people.htmlKey = m[1];
+    } catch (e) {}
+    return people.htmlKey;
+  }
+
+  /** Why a body is not the To field's suggestions request, or null: [134, query (trimmed, 1 to 300), [1, 2], 1 to 20]. */
+  function contactsRefusal(b) {
+    if (!Array.isArray(b) || b.length !== 4) return 'not a suggestions request';
+    if (b[0] !== 134) return "not Gmail compose's own kind of suggestion";
+    if (typeof b[1] !== 'string' || !b[1].length || b[1].length > 300 || b[1].trim() !== b[1]) return 'a query that is empty, too long or not trimmed';
+    if (!Array.isArray(b[2]) || b[2].length !== 2 || b[2][0] !== 1 || b[2][1] !== 2) return 'client information not as the page sends it';
+    if (!Number.isInteger(b[3]) || b[3] < 1 || b[3] > 20) return 'a page size that is not 1 to 20';
+    return null;
+  }
+
+  /** Google refusing the key (not the call): the API not enabled for its project, an unregistered caller, a bad key. */
+  const keyRefused = (status, text) => (status === 400 || status === 403) && /SERVICE_DISABLED|API_KEY_|API key not valid|unregistered callers|referer.{0,40}blocked/i.test(text);
+
+  /** One call with one key, answered within PEOPLE_MS: Google's status and JSON, or why not. */
+  async function peopleFetch(key, body) {
+    const ctl = new AbortC();
+    const timer = cloak.apply(later, window, [() => ctl.abort(), PEOPLE_MS]);
+    try {
+      const headers = { 'Content-Type': 'application/json+protobuf', 'X-Goog-Api-Key': key, 'X-Goog-AuthUser': String(settings.authuser), 'X-User-Agent': 'grpc-web-javascript/0.1' };
+      const auth = await authorization(false);
+      if (auth) headers.Authorization = auth;
+      const res = await cloak.apply(nativeFetch, window, [peopleBase() + PEOPLE_PATH, { method: 'POST', headers, body: jsonStringify(body), credentials: 'include', cache: 'no-store', signal: ctl.signal }]);
+      const text = await textUpTo(res, 2 * 1024 * 1024);
+      let json;
+      try {
+        json = jsonParse(text);
+      } catch (e) {}
+      if (json === undefined) return { status: res.status, error: 'not-json', page: learn.pageKind(res.status, res.headers.get('content-type'), text, res.url) };
+      if (res.status !== 200) return { status: res.status, code: Array.isArray(json) && Number.isInteger(json[0]) ? json[0] : null, keyRefused: keyRefused(res.status, text) };
+      return { status: 200, json };
+    } catch (e) {
+      return { status: 0, error: ctl.signal.aborted ? 'timeout' : 'network' };
+    } finally {
+      cloak.apply(clearLater, window, [timer]);
+    }
+  }
+
+  /** gmail.contacts: the body checked, then the keys in turn (at most three a call) until one is taken. */
+  async function contactsCall(body) {
+    const no = contactsRefusal(body);
+    if (no) throw new Error('gmail.contacts: refused, ' + no);
+    const tries = [];
+    const add = (k) => k && API_KEY.test(k) && tries.indexOf(k) < 0 && !people.refused.has(k) && tries.push(k);
+    add(people.pageKey);
+    add(people.winner);
+    add(peopleHtmlKey());
+    // Then the page's other keys (its requests' and its HTML's), in case Gmail's config moves the one it names.
+    keys.forEach((_source, k) => add(k));
+    let last = null;
+    for (let i = 0; i < tries.length && i < 3; i++) {
+      const r = await peopleFetch(tries[i], body);
+      if (r.keyRefused) {
+        people.refused.add(tries[i]);
+        if (people.winner === tries[i]) people.winner = null;
+        last = r;
+        continue;
+      }
+      delete r.keyRefused;
+      if (r.status === 200) people.winner = tries[i];
+      return r;
+    }
+    // Every key tried was refused (the next call tries the next ones), or the page has none.
+    return { status: last ? last.status : 0, code: last ? last.code : null, error: 'no-key' };
+  }
+
   // The wrappers are methods (no prototype) and cloak.replace makes each read like the native it stands in for.
   const fetchWrapper = {
     fetch(input, init) {
@@ -869,6 +1039,7 @@
         const auth = headerOf(init && init.headers, 'authorization') || (input instanceof Request ? input.headers.get('authorization') : null);
         note(url, auth);
         syncNote(url, (init && init.headers) || (input instanceof Request ? input.headers : null), init && typeof init.body === 'string' ? init.body : null);
+        peopleNote(url, (init && init.headers) || (input instanceof Request ? input.headers : null));
         ctx = learnFetchStart(input, init, url);
       } catch (e) {}
       const p = cloak.apply(nativeFetch, this, arguments);
@@ -924,6 +1095,7 @@
           if (x) {
             note(x.url, x.auth);
             syncNote(x.url, x.headers, typeof body === 'string' ? body : null);
+            peopleNote(x.url, x.headers);
             const ctx = recording() ? learnNote(x.method, x.url, x.type, body === undefined ? null : body) : null;
             if (ctx) cloak.apply(addListener, this, ['loadend', () => learnXhrEnd(ctx, this)]);
           }
@@ -1045,6 +1217,8 @@
         return uploadChunk(c);
       case 'gmail.upload':
         return uploadSend(c);
+      case 'gmail.contacts':
+        return contactsCall(c.body);
     }
     throw new Error(`no command ${c.kind}`);
   }
@@ -1149,17 +1323,15 @@
       announce();
       session(true);
       sendSeen();
+      if (sync.seen) post({ t: 'synced' });
       return;
     }
     if (p.t !== 'cmd' || !p.cmd) return;
-    // Received: the extractor can tell a command lost on the way from one this page is still working on.
-    post({ t: 'got', id: p.id, at: 'page' });
+    // Received (the extractor can tell a command lost on the way from one this page is still working on); page.state
+    // answers here, without the network.
+    const done = watch.take(p);
+    if (!done) return;
     const kind = String(p.cmd.kind);
-    if (kind === 'page.state') return post({ t: 'reply', id: p.id, ok: true, result: pageState() });
-    const what = commandName(p.cmd);
-    const work = { what, since: Date.now(), timer: 0 };
-    work.timer = later.call(window, () => log('warn', `${what} still open after ${SLOW_MS / 1000} s`, { visibility: document.visibilityState }), SLOW_MS);
-    open.set(p.id, work);
     try {
       let result;
       if (kind === 'gfetch') result = await gfetch(p.cmd);
@@ -1169,16 +1341,13 @@
     } catch (err) {
       post({ t: 'reply', id: p.id, ok: false, error: String((err && err.message) || err) });
     } finally {
-      clearTimeout(work.timer);
-      open.delete(p.id);
+      done();
     }
   });
 
   // ------------------------------------------------------------ what the extractor asks when the page goes quiet
-  // Counts and names of steps only: never an address's query, a body, or an error's text.
-  const SLOW_MS = 20000;
-  const open = new Map(); // command id -> { what, since, timer }
-  const life = { events: [], errors: 0, rejections: 0, startedAt: Date.now() };
+  // packages/browser/src/page/command-watch.js. Counts and names of steps only: never an address's query, a body, or
+  // an error's text.
   /** A command as a log may name it: its kind, and for a gfetch its method, host and path template. */
   function commandName(c) {
     if (c.kind !== 'gfetch') return String(c.kind);
@@ -1188,30 +1357,6 @@
     } catch (e) {
       return 'gfetch';
     }
-  }
-  function lifeEvent(name) {
-    life.events.push({ name, at: Date.now() });
-    if (life.events.length > 20) life.events.shift();
-    log('info', `page ${name}`, { visibility: document.visibilityState });
-  }
-  addListener.call(document, 'visibilitychange', () => lifeEvent(document.visibilityState === 'hidden' ? 'hidden' : 'visible'));
-  addListener.call(document, 'freeze', () => lifeEvent('frozen'));
-  addListener.call(document, 'resume', () => lifeEvent('resumed'));
-  addListener.call(window, 'pagehide', (e) => lifeEvent(e.persisted ? 'hidden into the back-forward cache' : 'unloading'));
-  addListener.call(window, 'error', () => life.errors++);
-  addListener.call(window, 'unhandledrejection', () => life.rejections++);
-  function pageState() {
-    const now = Date.now();
-    return {
-      visibility: document.visibilityState,
-      focused: document.hasFocus(),
-      wasDiscarded: !!document.wasDiscarded,
-      upMs: now - life.startedAt,
-      errors: life.errors,
-      rejections: life.rejections,
-      open: Array.from(open.values(), (w) => ({ what: w.what, ms: now - w.since })),
-      events: life.events.map((e) => ({ name: e.name, agoMs: now - e.at })),
-    };
   }
 
   announce();

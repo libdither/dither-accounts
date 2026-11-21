@@ -368,6 +368,8 @@ export class Supervisor {
       restartOnlineMs?: number;
       /** How long an adopted extractor has to connect (default 60 s). */
       adoptConnectMs?: number;
+      /** How often adopted extractors are looked at in /proc (default 1 s). */
+      watchMs?: number;
       /** Seconds an extractor that outlives the manager waits for one before it ends itself (default 1800). */
       managerGoneExitS?: number;
       /** Events (not replies or logs) from an account's extractor. */
@@ -789,7 +791,7 @@ export class Supervisor {
           void this.restart(id);
         }
       }
-    }, WATCH_MS);
+    }, this.opts.watchMs ?? WATCH_MS);
   }
 
   private ended(id: string, r: Running, code: number | null, sig: string | null) {

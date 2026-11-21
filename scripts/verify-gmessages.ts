@@ -80,6 +80,8 @@ const ctl = Bun.listen<{ buf: string }>({
         const m = JSON.parse(s.data.buf.slice(0, nl));
         s.data.buf = s.data.buf.slice(nl + 1);
         if (m.cmd) cmds.push(m.cmd);
+        // The fake bridge handles a command once its copy is acknowledged (fake-bridge.ts).
+        if (m.seq !== undefined) s.write(JSON.stringify({ ack: m.seq }) + '\n');
       }
     },
     close: (s) => {

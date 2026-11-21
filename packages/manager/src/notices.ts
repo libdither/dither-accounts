@@ -8,7 +8,9 @@
  * - an account whose status keeps an `attention` for 2 minutes (`high`), read again when the attention goes;
  * - an enabled account that is not running, with an error, for 5 minutes (`high`), read again when it runs;
  * - a passkey approval asked of a device that is not paired here (`high`);
- * - an extractor that crashed 3 times in 10 minutes (`normal`), read again after 10 quiet minutes.
+ * - an extractor that crashed 3 times in 10 minutes (`normal`), read again after 10 quiet minutes;
+ * - an account whose status says `changed: true` (a service it reads changed its layout and it reads around it: the
+ *   Gmail canary), at once (`normal`), read again when its status no longer says so.
  * One id is announced at most once per 30 minutes (a flapping account), and not while its account is muted (24 h).
  *
  * A service on this machine can say something too (`local`, POST /api/notices/local with the CLI token): the deployer
@@ -63,7 +65,7 @@ export function noticesKind(): Kind {
   return { ...kindOf({ kind: NOTICES_KIND, name: NOTICES_LABEL, interfaces: [notifications.name], entry: '' }, ''), builtin: true };
 }
 
-type Cond = 'attention' | 'stopped' | 'crashing' | 'no-device';
+type Cond = 'attention' | 'stopped' | 'crashing' | 'changed' | 'no-device';
 
 /** What a service on this machine says (local). */
 export interface LocalNotice {
@@ -251,7 +253,7 @@ export class Notices {
     const seen = new Set<string>();
     for (const a of this.store.accounts()) {
       if (a.id === NOTICES_ID) continue;
-      for (const cond of ['attention', 'stopped', 'crashing'] as const) {
+      for (const cond of ['attention', 'stopped', 'crashing', 'changed'] as const) {
         const id = `${cond}:${a.id}`;
         seen.add(id);
         const v = this.condition(cond, a, now);
@@ -294,6 +296,11 @@ export class Notices {
     if (cond === 'stopped') {
       if (!st.running && st.error) return { holdMs: this.times.stoppedMs, urgency: 'high', title: `${named(a)} stopped`, body: 'It is not running: its page on the manager says why.' };
       return st.running ? false : null;
+    }
+    if (cond === 'changed') {
+      const status = this.router.lastEvent(a.id, 'status');
+      if (status?.changed === true) return { holdMs: 0, urgency: 'normal', title: `${named(a)}: a service it reads changed`, body: 'It goes on reading what it can; its page on the manager says what changed.' };
+      return st.online && status ? false : null;
     }
     const n = (this.crashes.get(a.id) ?? []).filter((t) => now - t < this.times.crashWindowMs).length;
     if (n >= this.times.crashes) return { holdMs: 0, urgency: 'normal', title: `${named(a)} keeps restarting`, body: `Its extractor ended and was started again ${n} times in ${Math.round(this.times.crashWindowMs / 60_000)} minutes; its log on the manager says why.` };

@@ -210,7 +210,8 @@ export function ownNameOf(c: SigContact): string | undefined {
 /** Their number, else their username. */
 const handleOf = (c: SigContact) => c.number || (c.username ? `@${c.username}` : undefined);
 
-export function contactIdentity(c: SigContact, opts: { contact: boolean; avatarUrl?: string; self?: string }): IdentityFact | null {
+/** `avatarUrl` null: the extractor looked and has no picture, sent as '' so the hub forgets one it was given before. */
+export function contactIdentity(c: SigContact, opts: { contact: boolean; avatarUrl?: string | null; self?: string }): IdentityFact | null {
   const id = lc(c.uuid);
   if (!id) return null;
   const f: IdentityFact = { nativeId: id };
@@ -220,7 +221,7 @@ export function contactIdentity(c: SigContact, opts: { contact: boolean; avatarU
   const self = !!opts.self && id === opts.self;
   const name = self ? displayNameOf(c) : (ownNameOf(c) ?? displayNameOf(c));
   if (name) f.displayName = name;
-  if (opts.avatarUrl) f.avatarUrl = opts.avatarUrl;
+  if (opts.avatarUrl !== undefined) f.avatarUrl = opts.avatarUrl ?? '';
   if (self) f.isSelf = true;
   else {
     if (opts.contact) f.contact = true;
@@ -269,11 +270,11 @@ export function personAbout(c: SigContact, opts: { inContacts?: boolean; avatarU
   return p;
 }
 
-export function groupConversation(g: SigGroup, opts: { avatarUrl?: string } = {}): ConversationFact {
+export function groupConversation(g: SigGroup, opts: { avatarUrl?: string | null } = {}): ConversationFact {
   const f: ConversationFact = { nativeId: groupConvId(g.id), shape: 'group', encrypted: true };
   if (g.name) f.name = g.name;
   if (g.description) f.topic = g.description;
-  if (opts.avatarUrl) f.avatarUrl = opts.avatarUrl;
+  if (opts.avatarUrl !== undefined) f.avatarUrl = opts.avatarUrl ?? '';
   const members = (g.members ?? []).map((m) => lc(m.uuid)).filter((x): x is string => !!x);
   f.participants = [...new Set(members)];
   if (g.permissionSendMessage === 'ONLY_ADMINS') f.variant = 'announcement';

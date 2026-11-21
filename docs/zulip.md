@@ -75,12 +75,27 @@ is Zulip's stand-in (`user8@chat.example.org`, where the organization keeps addr
   `#name` (`resolve`, `add`), leave, mute, invite people, and an admin's settings (`configure`).
 - **People**: profiles with custom profile fields, pronouns, time zone, status; your own name, avatar, status and
   fields (`setProfile`); invisible mode (`setPresence`); muting a person (`ignore`).
+- **Presence**: everyone's at start (offline too, so nobody stays online in the hub from before), then as it changes.
+  Zulip's event says only when someone comes online; its apps read everyone's times again each ping interval and
+  work out idle and offline from them, after the server's `server_presence_offline_threshold_seconds`. The extractor
+  does the same: `GET /realm/presence` each `server_presence_ping_interval_seconds` (one request a minute; reading
+  it does not change your own presence), and a look every 15 s for whoever aged past the threshold.
+- **Roles**: a new role in the organization (member → administrator) is a role lost and one given (`role`); joining or
+  leaving a user group is that group's role given or lost, as Discord's roles are.
+- **Read receipts** for your own messages in DMs and group DMs, where the organization has them on (Zulip 6.0+). Zulip
+  sends no event for them, so the extractor asks (`GET /messages/{id}/read_receipts`) about your newest message in each
+  DM 30 s, 2 min, 10 min and 1 h after you sent it, and again a few seconds after someone there writes or starts
+  typing; each person is said once (`receipt`, `read`), at the time it was learned, and the DM is let go once everyone
+  read it. At start, your newest message in each DM from the last day is asked about once. At most 20 asks a minute.
+  Not in channels (a topic's readers can be hundreds). "Read" is Zulip's: marking a conversation read counts, and
+  someone who turned off "Let others see when I've read messages" is never said.
+- **@all and @topic** are offered in the @ picker (the hub's @everyone and @here) in a channel of up to 15 subscribers,
+  or a bigger one if you are in the organization's `can_mention_many_users_group`, as Zulip itself allows.
 - **Starred messages** are saved messages. **Scheduled messages** and **reminders** are the hub's native scheduled
   sends. Group DMs are made by sending to several people (`createGroup`; they have no name).
 - **Search**: Zulip's own full-text search, by narrow.
 
-Not done: calls (Zulip hands them to Jitsi or Zoom), read receipts (Zulip's are per message and opt-in, not pushed
-on the event queue), drafts, saved snippets, channel creation and organization settings beyond name and description.
+Not done: calls (Zulip hands them to Jitsi or Zoom), read receipts in channels, drafts, saved snippets, channel creation and organization settings beyond name and description.
 
 ## Rate limits and the event queue
 

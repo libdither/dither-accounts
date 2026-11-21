@@ -41,6 +41,26 @@ function groupName(a: ZulipAdapter, setting: unknown): string | null {
   return null;
 }
 
+/**
+ * Zulip's "a large number" of subscribers for @all (its WILDCARD_MENTION_THRESHOLD): above it only
+ * `can_mention_many_users_group` may write one.
+ */
+const WILDCARD_THRESHOLD = 15;
+
+/** Whether someone is in a group-setting value: a group (and the groups nested in it), or a list of members and groups. */
+export function inGroupSetting(a: ZulipAdapter, setting: ZulipAdapter['st']['canMentionMany'], uid: number): boolean {
+  if (setting === null || setting === undefined) return true;
+  const seen = new Set<number>();
+  const inGroup = (id: number): boolean => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    const g = a.st.groups.get(id);
+    return !!g && (g.members.includes(uid) || (g.direct_subgroup_ids ?? []).some(inGroup));
+  };
+  if (typeof setting === 'number') return inGroup(setting);
+  return (setting.direct_members ?? []).includes(uid) || (setting.direct_subgroups ?? []).some(inGroup);
+}
+
 function systemGroup(a: ZulipAdapter, name: string): number | null {
   for (const g of a.st.groups.values()) if (g.is_system_group && g.name === name) return g.id;
   return null;
@@ -376,7 +396,9 @@ export async function mentionables(a: ZulipAdapter, conv: string, query: string,
     .filter((g) => !g.is_system_group && !g.deactivated && (!q || g.name.toLowerCase().startsWith(q)))
     .slice(0, 10)
     .map((g) => ({ id: `${a.ids.host}/g/${g.id}`, name: g.name, count: g.members.length }));
-  return { people, roles, everyone: p.kind !== 'dm' };
+  // @all and @topic: in a channel, where it is small or you may use them in big ones (Zulip refuses them otherwise).
+  const everyone = p.kind !== 'dm' && (pool.length <= WILDCARD_THRESHOLD || inGroupSetting(a, a.st.canMentionMany, a.st.self));
+  return { people, roles, everyone };
 }
 
 // ---------------------------------------------------------------- joining

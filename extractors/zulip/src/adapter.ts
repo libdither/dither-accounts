@@ -23,6 +23,7 @@ import { editedContent, fromZulip, mediaUrl, plainText, replyQuote, toZulip, typ
 import { State, type TopicInfo, type ZMessage, type ZStream, type ZSub, type ZUser } from './state.ts';
 import { apply, fold, pollCommand, pollFact, todoBody, voteChanges, type Submessage } from './widgets.ts';
 import * as about from './about.ts';
+import { Receipts, START_WINDOW_MS } from './receipts.ts';
 
 const num = (k: string, d: number) => {
   const v = Number(process.env[k]);
@@ -39,6 +40,25 @@ const BACKOFF_MS = num('DITHER_ZULIP_BACKOFF_MS', 2_000);
 /** A message heard less than this old counts as live (it may alert). */
 const LIVE_MS = 15 * 60_000;
 const TYPING_TTL = 15_000;
+/** How often others' presence is looked at again, to say who went idle or offline. */
+const PRESENCE_SWEEP_MS = num('DITHER_ZULIP_PRESENCE_SWEEP_MS', 15_000);
+/** Room for one second's messages after a moment, when history is asked for from a time. */
+const SAME_SECOND = 50;
+
+/** A presence as Zulip gives it (slim, or the older per-client form), as times in ms. */
+function presenceTimes(p: any): { active: number; idle: number } {
+  let active: number;
+  let idle: number;
+  if (p?.active_timestamp !== undefined || p?.idle_timestamp !== undefined) {
+    active = Number(p.active_timestamp ?? 0) * 1000;
+    idle = Number(p.idle_timestamp ?? 0) * 1000;
+  } else {
+    const t = Number(p?.aggregated?.timestamp ?? 0) * 1000;
+    active = p?.aggregated?.status === 'active' ? t : 0;
+    idle = t;
+  }
+  return { active, idle: Math.max(idle, active) };
+}
 
 export const CAPABILITIES: P.Capability[] = [
   'send', 'history', 'react', 'edit', 'redact', 'markRead', 'typing', 'threads', 'media', 'sendMedia', 'openDirect',
@@ -76,6 +96,21 @@ export class ZulipAdapter {
   private emitted = new Set<string>();
   private convSigs = new Map<string, string>();
   private registeredAt = 0;
+  /** Read receipts for your newest message in each DM (receipts.ts). */
+  receipts = new Receipts({
+    enabled: () => this.st.readReceipts && this.st.featureLevel >= 137,
+    ask: async (id) => ((await this.api.get(`/messages/${id}/read_receipts`)) as { user_ids?: number[] }).user_ids ?? [],
+    read: (conv, id, who, ts) => {
+      this.ensureIdentity(who);
+      this.link.emit({ t: 'receipt', conversation: conv, messages: [this.ids.message(id)], who: this.ids.user(who), state: 'read', ts });
+    },
+    log: (msg) => this.link.log('warn', msg),
+  });
+  /** Each person's presence as last said to the hub, so a timer can say when they go idle or offline. */
+  private presenceShown = new Map<number, 'online' | 'idle' | 'offline'>();
+  private presenceTimer: ReturnType<typeof setInterval> | null = null;
+  private presencePolledAt = 0;
+  private presencePolling = false;
   private eventsHeard = 0;
   private searches = new Map<string, number[]>();
 
@@ -114,6 +149,9 @@ export class ZulipAdapter {
 
   async shutdown() {
     this.stopped = true;
+    this.receipts.stop();
+    if (this.presenceTimer) clearInterval(this.presenceTimer);
+    this.presenceTimer = null;
     if (this.queue) await this.api.del('/events', { queue_id: this.queue.id }).catch(() => {});
   }
 
@@ -271,9 +309,12 @@ export class ZulipAdapter {
     const active = new Set([...this.st.topics.values()].filter((t) => t.maxId > 0).map((t) => t.stream));
     await this.topicsAtStart([...active]);
     this.laterTopics = [...this.st.subs.keys()].filter((id) => !active.has(id));
+    await this.learnReminderTargets();
     this.link.emit({ t: 'saved', saved: this.savedFacts(), complete: true });
     this.link.emit({ t: 'ignored', identities: [...this.st.mutedUsers].map((u) => this.ids.user(u)) });
     this.emitSelfState();
+    this.presenceSweep(true);
+    this.watchOwnAtStart();
   }
 
   private load(r: any) {
@@ -307,6 +348,14 @@ export class ZulipAdapter {
     st.recentDms.clear();
     for (const c of r.recent_private_conversations ?? []) st.recentDms.set([...c.user_ids].sort((a: number, b: number) => a - b).join(','), c.max_message_id);
     st.presenceEnabled = r.user_settings?.presence_enabled ?? r.presence_enabled ?? true;
+    st.offlineMs = Number(r.server_presence_offline_threshold_seconds ?? 140) * 1000;
+    st.pingMs = Number(r.server_presence_ping_interval_seconds ?? 60) * 1000;
+    this.presencePolledAt = Date.now();
+    st.readReceipts = !!r.realm_enable_read_receipts;
+    st.canMentionMany = r.realm_can_mention_many_users_group ?? null;
+    st.presence.clear();
+    for (const [id, p] of Object.entries<any>(r.presences ?? {})) st.presence.set(Number(id), presenceTimes(p));
+    this.presenceShown.clear();
     st.mutedUsers = new Set((r.muted_users ?? []).map((m: any) => m.id));
     st.starred = new Set(r.starred_messages ?? []);
     st.scheduled.clear();
@@ -387,6 +436,7 @@ export class ZulipAdapter {
       case 'message': {
         const m: ZMessage = { ...ev.message, flags: ev.flags ?? [] };
         this.emitMessage(m, { live: true });
+        this.watchReceipts(m);
         if (!(m.flags ?? []).includes('read')) {
           st.unread.set(m.id, this.convOf(m));
           if ((m.flags ?? []).some((f) => f === 'mentioned' || f.endsWith('wildcard_mentioned'))) st.unreadMentions.add(m.id);
@@ -404,6 +454,7 @@ export class ZulipAdapter {
           const conv = m ? this.convOf(m) : ev.message_type === 'stream' ? this.ids.topic(ev.stream_id, ev.topic ?? '') : null;
           if (!conv) continue;
           this.link.emit({ t: 'delete', conversation: conv, nativeId: this.ids.message(id) });
+          this.receipts.forget(conv, id);
           st.forget(id);
           st.unread.delete(id);
           st.unreadMentions.delete(id);
@@ -471,6 +522,7 @@ export class ZulipAdapter {
         const conv = ev.message_type === 'stream' ? this.ids.topic(ev.stream_id, ev.topic ?? '') : this.ids.dm((ev.recipients ?? []).map((r: any) => r.user_id));
         this.ensureIdentity(who);
         this.link.emit({ t: 'typing', conversation: conv, author: this.ids.user(who), ...(ev.op === 'stop' ? { stop: true } : { ttl: TYPING_TTL }) });
+        if (ev.op !== 'stop' && ev.message_type !== 'stream') this.receipts.nudge(conv, who);
         return;
       }
       case 'subscription':
@@ -502,6 +554,13 @@ export class ZulipAdapter {
           }
           st.putUser({ ...(old ?? { user_id: id, email: '', full_name: '' }), ...p });
           if (id === st.self && typeof p.role === 'number') st.role = p.role;
+          // A new role in the organization (member → administrator): the hub logs it as one role lost, one given.
+          if (ev.op === 'update' && typeof p.role === 'number' && old && old.role !== p.role) {
+            this.ensureIdentity(id);
+            const target = { kind: 'space' as const, nativeId: this.ids.space };
+            this.link.emit({ t: 'role', target, member: this.ids.user(id), role: about.roleName(old.role), given: false, ts: Date.now() });
+            this.link.emit({ t: 'role', target, member: this.ids.user(id), role: about.roleName(p.role), given: true, ts: Date.now() });
+          }
           if (this.emitted.has(this.ids.user(id)) || ev.op === 'update') {
             this.emitted.delete(this.ids.user(id));
             this.ensureIdentity(id);
@@ -517,6 +576,11 @@ export class ZulipAdapter {
       case 'realm':
         if (ev.op === 'update' && ev.property === 'name') st.realm.name = ev.value;
         if (ev.op === 'update' && ev.property === 'description') st.realm.description = ev.value;
+        if (ev.op === 'update' && ev.property === 'enable_read_receipts') st.readReceipts = !!ev.value;
+        if (ev.op === 'update_dict' && ev.data?.enable_read_receipts !== undefined) st.readReceipts = !!ev.data.enable_read_receipts;
+        if (ev.op === 'update_dict' && ev.data?.can_mention_many_users_group !== undefined) st.canMentionMany = ev.data.can_mention_many_users_group;
+        if (ev.op === 'update_dict' && ev.data?.server_presence_offline_threshold_seconds) st.offlineMs = ev.data.server_presence_offline_threshold_seconds * 1000;
+        if (ev.op === 'update' && /^(enable_read_receipts|can_mention_many_users_group)$/.test(ev.property)) return;
         if (ev.op === 'update_dict') {
           // Zulip 13 says name and description changes this way too ("default" property).
           if (typeof ev.data?.name === 'string') st.realm.name = ev.data.name;
@@ -533,8 +597,23 @@ export class ZulipAdapter {
         if (ev.op === 'add' && ev.group) st.groups.set(ev.group.id, ev.group);
         else if (ev.op === 'remove') st.groups.delete(ev.group_id);
         else if (ev.op === 'update' && st.groups.has(ev.group_id)) Object.assign(st.groups.get(ev.group_id)!, ev.data ?? {});
-        else if (ev.op === 'add_members' && st.groups.has(ev.group_id)) st.groups.get(ev.group_id)!.members.push(...(ev.user_ids ?? []));
-        else if (ev.op === 'remove_members' && st.groups.has(ev.group_id)) st.groups.get(ev.group_id)!.members = st.groups.get(ev.group_id)!.members.filter((u) => !(ev.user_ids ?? []).includes(u));
+        else if (ev.op === 'add_members' && st.groups.has(ev.group_id)) {
+          const g = st.groups.get(ev.group_id)!;
+          const added = (ev.user_ids ?? []).filter((u: number) => !g.members.includes(u));
+          g.members.push(...added);
+          this.groupChanged(g, added, true);
+        } else if (ev.op === 'remove_members' && st.groups.has(ev.group_id)) {
+          const g = st.groups.get(ev.group_id)!;
+          const gone = (ev.user_ids ?? []).filter((u: number) => g.members.includes(u));
+          g.members = g.members.filter((u) => !gone.includes(u));
+          this.groupChanged(g, gone, false);
+        } else if (ev.op === 'add_subgroups' && st.groups.has(ev.group_id)) {
+          const g = st.groups.get(ev.group_id)!;
+          g.direct_subgroup_ids = [...new Set([...(g.direct_subgroup_ids ?? []), ...(ev.direct_subgroup_ids ?? [])])];
+        } else if (ev.op === 'remove_subgroups' && st.groups.has(ev.group_id)) {
+          const g = st.groups.get(ev.group_id)!;
+          g.direct_subgroup_ids = (g.direct_subgroup_ids ?? []).filter((x) => !(ev.direct_subgroup_ids ?? []).includes(x));
+        }
         return;
       case 'user_topic': {
         const t = { stream_id: ev.stream_id, topic_name: ev.topic_name, visibility_policy: ev.visibility_policy, last_updated: ev.last_updated };
@@ -551,12 +630,11 @@ export class ZulipAdapter {
       case 'presence': {
         for (const [id, p] of Object.entries<any>(ev.presences ?? (ev.user_id ? { [ev.user_id]: ev.presence } : {}))) {
           const uid = Number(id);
-          if (!this.emitted.has(this.ids.user(uid))) continue;
-          const active = Number(p.active_timestamp ?? p.aggregated?.timestamp ?? 0) * 1000;
-          const idle = Number(p.idle_timestamp ?? 0) * 1000;
-          const now = Date.now();
-          const state = now - active < 140_000 ? 'online' : now - idle < 140_000 ? 'idle' : 'offline';
-          this.link.emit({ t: 'presence', who: this.ids.user(uid), state, ts: now });
+          const cur = st.presence.get(uid);
+          const next = presenceTimes(p);
+          // A legacy event says only the client that changed: keep the later of each time.
+          st.presence.set(uid, { active: Math.max(next.active, cur?.active ?? 0), idle: Math.max(next.idle, cur?.idle ?? 0) });
+          this.presenceOf(uid);
         }
         return;
       }
@@ -599,6 +677,7 @@ export class ZulipAdapter {
       case 'reminders': {
         if (ev.op === 'add') for (const s of ev.reminders ?? []) st.reminders.set(s.reminder_id, s);
         else if (ev.op === 'remove') st.reminders.delete(ev.reminder_id);
+        await this.learnReminderTargets();
         this.link.emit({ t: 'saved', saved: this.savedFacts(), complete: true });
         return;
       }
@@ -781,6 +860,92 @@ export class ZulipAdapter {
     };
   }
 
+  // ---------------------------------------------------------------- presence, receipts, groups
+
+  /**
+   * Others' presence. Zulip says when someone becomes active, never when they go idle or offline: its clients work
+   * that out from the times, after `offlineMs`. So a timer looks every PRESENCE_SWEEP_MS and says each change.
+   * At start (`all`), everyone Zulip has a presence for and the hub knows is said once, offline too, so nobody stays
+   * online in the hub from before.
+   */
+  private presenceSweep(all = false) {
+    if (!all && !this.presencePolling && Date.now() - this.presencePolledAt >= this.st.pingMs) void this.refreshPresence();
+    for (const uid of this.st.presence.keys()) this.presenceOf(uid, all);
+    if (!this.presenceTimer && !this.stopped) {
+      this.presenceTimer = setInterval(() => this.presenceSweep(), PRESENCE_SWEEP_MS);
+      (this.presenceTimer as { unref?: () => void }).unref?.();
+    }
+  }
+
+  /**
+   * Everyone's presence times as the server has them now (`GET /realm/presence`), as Zulip's own apps read them once
+   * a ping interval: its event says only who came online, so without this someone active for a while would age to
+   * idle here. Reading them does not change your own presence. One request a ping interval (60 s).
+   */
+  async refreshPresence() {
+    this.presencePolling = true;
+    this.presencePolledAt = Date.now();
+    try {
+      const r = await this.api.get('/realm/presence');
+      const byEmail = new Map<string, number>();
+      for (const u of this.st.users.values()) if (u.email) byEmail.set(u.email.toLowerCase(), u.user_id);
+      for (const [key, p] of Object.entries<any>(r.presences ?? {})) {
+        const uid = /^\d+$/.test(key) ? Number(key) : byEmail.get(key.toLowerCase());
+        if (uid === undefined) continue;
+        const cur = this.st.presence.get(uid);
+        const next = presenceTimes(p);
+        this.st.presence.set(uid, { active: Math.max(next.active, cur?.active ?? 0), idle: Math.max(next.idle, cur?.idle ?? 0) });
+        this.presenceOf(uid);
+      }
+    } catch (e) {
+      this.link.log('warn', `zulip: presence: ${(e as Error).message}`);
+    } finally {
+      this.presencePolling = false;
+    }
+  }
+
+  private presenceOf(uid: number, force = false) {
+    if (uid === this.st.self || !this.emitted.has(this.ids.user(uid))) return;
+    const p = this.st.presence.get(uid);
+    if (!p) return;
+    const now = Date.now();
+    const state = now - p.active < this.st.offlineMs ? 'online' : now - p.idle < this.st.offlineMs ? 'idle' : 'offline';
+    if (!force && this.presenceShown.get(uid) === state) return;
+    this.presenceShown.set(uid, state);
+    this.link.emit({ t: 'presence', who: this.ids.user(uid), state, ts: now });
+  }
+
+  /** A message in a DM: yours is watched for who reads it, and someone else's there asks about yours soon. */
+  private watchReceipts(m: ZMessage) {
+    if (m.type === 'stream' || !Array.isArray(m.display_recipient)) return;
+    const conv = this.convOf(m);
+    if (m.sender_id === this.st.self) {
+      const others = m.display_recipient.map((r) => r.id).filter((u) => u !== this.st.self);
+      this.receipts.sent(conv, m.id, others, msOf(m));
+    } else this.receipts.nudge(conv, m.sender_id);
+  }
+
+  /** At start: your newest message in each DM, if it is the newest there and recent, is asked about once now. */
+  private watchOwnAtStart() {
+    const now = Date.now();
+    for (const [conv, n] of this.st.newest) {
+      const m = this.st.message(n.id);
+      if (!m || m.type === 'stream' || m.sender_id !== this.st.self || !Array.isArray(m.display_recipient)) continue;
+      if (now - msOf(m) > START_WINDOW_MS) continue;
+      this.receipts.sent(conv, m.id, m.display_recipient.map((r) => r.id).filter((u) => u !== this.st.self), msOf(m), true);
+    }
+  }
+
+  /** People added to or taken out of a user group: the hub logs it as a role given or lost (Discord's roles). */
+  private groupChanged(g: { id: number; name: string; is_system_group?: boolean; deactivated?: boolean }, users: number[], given: boolean) {
+    // A system group (role:administrators...) changes with a role, which realm_user says.
+    if (g.is_system_group || g.deactivated) return;
+    for (const u of users) {
+      this.ensureIdentity(u);
+      this.link.emit({ t: 'role', target: { kind: 'space', nativeId: this.ids.space }, member: this.ids.user(u), role: g.name, given, ts: Date.now() });
+    }
+  }
+
   ensureIdentity(id: number | undefined, fallback?: { full_name?: string; email?: string }) {
     if (id === undefined || id === null) return;
     const nid = this.ids.user(id);
@@ -871,11 +1036,13 @@ export class ZulipAdapter {
   noteTopic(stream: number, topic: string, id: number, ts: number) {
     const cid = this.ids.topic(stream, topic);
     const cur = this.st.topics.get(cid);
-    if (!cur) this.st.topics.set(cid, { stream, name: topic, maxId: id, lastTs: ts * 1000 });
+    // In ms as the message's own (msOf), so the topic's last message time is its newest message's.
+    const ms = ts ? msOf({ id, timestamp: ts }) : 0;
+    if (!cur) this.st.topics.set(cid, { stream, name: topic, maxId: id, lastTs: ms });
     else if (id >= cur.maxId) {
       cur.maxId = id;
       cur.name = id ? topic : cur.name;
-      if (ts) cur.lastTs = ts * 1000;
+      if (ts) cur.lastTs = ms;
     }
   }
 
@@ -1072,6 +1239,22 @@ export class ZulipAdapter {
   }
 
   // ---------------------------------------------------------------- places
+
+  /**
+   * The messages reminders are on, where they are older than what was read: a reminder always names its conversation
+   * (SavedFact), and only the message says which that is.
+   */
+  private async learnReminderTargets() {
+    const st = this.st;
+    const missing = [...new Set([...st.reminders.values()].map((r) => Number(r.reminder_target_message_id)).filter((id) => id && !st.message(id)))].slice(0, 100);
+    if (!missing.length) return;
+    try {
+      const r = await this.api.get('/messages', { message_ids: missing, apply_markdown: false, allow_empty_topic_name: true });
+      for (const m of (r.messages ?? []) as ZMessage[]) st.remember(m);
+    } catch (e) {
+      this.link.log('warn', `zulip: the messages of ${missing.length} reminders: ${(e as Error).message}`);
+    }
+  }
 
   /** The place a conversation id names, checked: a channel this account is in, a topic of one, or a DM. */
   place(conv: string): Place {
@@ -1530,14 +1713,20 @@ export class ZulipAdapter {
     const q: Record<string, unknown> = { num_before: limit, num_after: 0, narrow: this.narrowOf(p), apply_markdown: false, allow_empty_topic_name: true };
     const cursor = cmd.cursor && /^\d+$/.test(cmd.cursor) ? Number(cmd.cursor) : null;
     if (cursor !== null) Object.assign(q, { anchor: cursor, include_anchor: false });
-    else if (cmd.beforeTs && this.st.featureLevel >= 445) Object.assign(q, { anchor: 'date', anchor_date: new Date(cmd.beforeTs).toISOString(), include_anchor: false });
-    else Object.assign(q, { anchor: 'newest' });
+    else if (cmd.beforeTs && this.st.featureLevel >= 445) {
+      // Zulip's times are whole seconds and a message's here has its id's last digits as ms (msOf): ask up to the next
+      // whole second, with room for that second's messages, and keep those before the moment.
+      const next = Math.ceil(cmd.beforeTs / 1000) * 1000;
+      Object.assign(q, { anchor: 'date', anchor_date: new Date(next).toISOString(), include_anchor: false, num_before: limit + SAME_SECOND });
+    } else Object.assign(q, { anchor: 'newest' });
     const r = await this.api.get('/messages', q);
     let msgs: ZMessage[] = r.messages ?? [];
-    if (cursor === null && cmd.beforeTs) msgs = msgs.filter((m) => m.timestamp * 1000 < cmd.beforeTs!);
+    if (cursor === null && cmd.beforeTs) msgs = msgs.filter((m) => msOf(m) < cmd.beforeTs!);
+    const cut = msgs.length > limit;
+    if (cut) msgs = msgs.slice(-limit);
     for (const m of msgs) this.emitMessage(m, { live: false });
     const oldest = msgs[0];
-    return { count: msgs.length, done: !!r.found_oldest, ...(oldest ? { oldest: msOf(oldest), next: String(oldest.id) } : {}) };
+    return { count: msgs.length, done: !!r.found_oldest && !cut, ...(oldest ? { oldest: msOf(oldest), next: String(oldest.id) } : {}) };
   }
 
   private async search(cmd: Extract<P.AdapterCommand, { t: 'search' }>): Promise<P.NetworkSearchResult> {

@@ -76,6 +76,8 @@ export interface ZGroup {
   name: string;
   description?: string;
   members: number[];
+  /** Groups whose members are members of this one too (Zulip 6.0+; system groups nest this way). */
+  direct_subgroup_ids?: number[];
   is_system_group?: boolean;
   deactivated?: boolean;
 }
@@ -136,6 +138,16 @@ export class State {
   widgets = new Map<number, WidgetState>();
   /** Whether others see this account online (Zulip's "invisible mode" is presence_enabled false). */
   presenceEnabled = true;
+  /** Others' presence as Zulip last said it: the times, in ms, they were last active and last there at all. */
+  presence = new Map<number, { active: number; idle: number }>();
+  /** How long after those times someone is shown idle, then offline (`server_presence_offline_threshold_seconds`). */
+  offlineMs = 140_000;
+  /** How often Zulip's apps read everyone's presence again (`server_presence_ping_interval_seconds`). */
+  pingMs = 60_000;
+  /** Whether the organization has read receipts on (`realm_enable_read_receipts`). */
+  readReceipts = false;
+  /** Who may use @all and @topic in a big channel (`realm_can_mention_many_users_group`, a group-setting value). */
+  canMentionMany: number | { direct_members?: number[]; direct_subgroups?: number[] } | null = null;
   status = new Map<number, { status_text?: string; emoji_name?: string; emoji_code?: string; reaction_type?: string; away?: boolean }>();
   private messages = new Map<number, ZMessage>();
   /** People by full name, for mentions written without an id. */

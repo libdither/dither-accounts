@@ -137,6 +137,8 @@ const ADOPT_CONNECT_MS = 60_000;
 const RESTART_ONLINE_MS = 60_000;
 /** Between two restarts for changed code, and before the first. */
 const RESTART_PAUSE_MS = 20_000;
+/** How long a restart for changed code waits for the calls already sent to the extractor to be answered. */
+const RESTART_DRAIN_MS = 30_000;
 /** An extractor that outlives its manager ends itself after this long without one (its link, DITHER_MANAGER_GONE_EXIT_S). */
 const MANAGER_GONE_EXIT_S = 1800;
 /** How long a going manager waits for its extractors to say they hold their events. */
@@ -318,6 +320,8 @@ export class Supervisor {
   /** What a stop forgets but the account pane still shows: how often it started, how it last ended. */
   private history = new Map<string, Pick<Running, 'starts' | 'lastExit'>>();
   private pending = new Map<string, Pending>();
+  /** Accounts waiting for their last call to be answered (a restart for changed code), told when it is. */
+  private drained = new Map<string, () => void>();
   /** Accounts the manager answers itself (the built-in `notices`): never started, always online. */
   readonly inProcess = new Set<string>();
   readonly launch: Launch;
@@ -880,6 +884,7 @@ export class Supervisor {
       p.done();
     }
     this.pauses.clear();
+    for (const done of [...this.drained.values()]) done();
     const ids = [...this.running.keys()];
     for (const id of ids) clearTimeout(this.running.get(id)!.retry);
     const left = ids.filter((id) => o.leave && this.running.get(id)?.survives && this.running.get(id)?.pid);
@@ -965,6 +970,9 @@ export class Supervisor {
           const by = Date.now() + (this.opts.adoptConnectMs ?? ADOPT_CONNECT_MS);
           while (!this.closing && !r.ws && r.pid && Date.now() < by) await Bun.sleep(250);
           if (this.closing || !r.pid || this.running.get(id) !== r || this.halted.has(id)) continue;
+          // The calls it is answering now get their answers first: a deploy should not fail an app's call.
+          await this.drain(id, RESTART_DRAIN_MS);
+          if (this.closing || !r.pid || this.running.get(id) !== r || this.halted.has(id)) continue;
           appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} its code changed since it started: restarting it\n`);
           await this.stopProcess(id);
           // Stopped on purpose meanwhile (the page, an app): it stays stopped.
@@ -988,6 +996,33 @@ export class Supervisor {
     } finally {
       this.rollingKinds.delete(kind);
     }
+  }
+
+  private inFlight(accountId: string) {
+    for (const p of this.pending.values()) if (p.ws.data.accountId === accountId) return true;
+    return false;
+  }
+
+  /** Until no call to the account waits for its answer (or `ms`, or the manager closes). */
+  private drain(accountId: string, ms: number) {
+    if (!this.inFlight(accountId)) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        if (this.drained.get(accountId) === done) this.drained.delete(accountId);
+        resolve();
+      };
+      const timer = setTimeout(done, ms);
+      this.drained.set(accountId, done);
+    });
+  }
+
+  /** A call answered, failed or timed out: forget it, and tell a drain waiting on its account when it was the last. */
+  private settle(rid: string, p: Pending) {
+    this.pending.delete(rid);
+    clearTimeout(p.timer);
+    const accountId = p.ws.data.accountId;
+    if (this.drained.has(accountId) && !this.inFlight(accountId)) this.drained.get(accountId)!();
   }
 
   // ---------------------------------------------------------- socket
@@ -1038,8 +1073,7 @@ export class Supervisor {
     // What was asked of it on that socket gets no answer now: said at once, not after the call's timeout.
     for (const [id, p] of this.pending) {
       if (p.ws !== ws) continue;
-      this.pending.delete(id);
-      clearTimeout(p.timer);
+      this.settle(id, p);
       p.reject(new ExtractorError('the account went offline', 'offline'));
     }
     this.opts.onChange(ws.data.accountId);
@@ -1070,8 +1104,7 @@ export class Supervisor {
       const rid = (ev.rid ?? ev.id) as string;
       const p = this.pending.get(rid);
       if (!p) return;
-      this.pending.delete(rid);
-      clearTimeout(p.timer);
+      this.settle(rid, p);
       if (ev.ok) p.resolve(ev.result);
       // The extractor's own code passes only when it is not one of the manager's (it cannot say 'denied' for us).
       else p.reject(new ExtractorError(String(ev.error), isExtractorCode(ev.code) ? ev.code : 'failed', typeof ev.status === 'number' ? ev.status : undefined));
@@ -1120,7 +1153,8 @@ export class Supervisor {
       // Not connected, or being stopped (it heard `shutdown`): it would never answer.
       if (!r?.ws || r.stopping) return reject(new ExtractorError('the account is not connected', 'offline'));
       const timer = setTimeout(() => {
-        this.pending.delete(id);
+        const p = this.pending.get(id);
+        if (p) this.settle(id, p);
         reject(new ExtractorError(`no answer to ${cmd.t} in ${Math.round(timeoutMs / 1000)} s`, 'timeout'));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer, ws: r.ws });

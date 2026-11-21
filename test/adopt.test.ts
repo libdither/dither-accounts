@@ -151,6 +151,25 @@ test('an adopted extractor whose code changed restarts; one at a time', async ()
   expect(procAlive(n1)).toBe(false);
 });
 
+test('a restart for changed code waits for the calls the extractor is answering', async () => {
+  const { dir, m1, id, pid, port } = await world('drain', { code: 'v1' });
+  await m1.stop({ leaveExtractors: true });
+
+  const pause = 3000;
+  const t0 = Date.now();
+  const m2 = await manager(dir, { port, code: 'v2', pause });
+  await until(() => online(m2, id), 15_000, 'the adopted extractor to reconnect');
+  // Sent before the restart's turn comes (its pause still running) and answered well after it: the restart waits.
+  expect(Date.now() - t0).toBeLessThan(pause);
+  const slow = m2.sup.command(id, { t: 'slow', ms: pause + 1000 });
+  expect(await slow).toEqual({ slept: pause + 1000 });
+  await until(async () => online(m2, id) && !m2.sup.details(id).adopted, 30_000, 'the restart');
+  const n = await pidOf(m2, id);
+  pids.push(n);
+  expect(n).not.toBe(pid);
+  await m2.stop();
+}, 30_000);
+
 test("strays of an account disabled or removed while no manager ran are stopped; the enabled one's is adopted", async () => {
   const { dir, m1, id, pid, port } = await world('stray');
   const gone = 'acc-stray-2';

@@ -130,7 +130,8 @@ The same computation over the new release gives the new manager's fingerprint. A
 counts as changed. An adopted extractor whose fingerprint differs is restarted, gracefully and **one at a time per
 kind**: 20 s after the manager starts, then the next of that kind 20 s after the previous one is online again (or a
 minute; one not online by then stops its kind's restarts, so the rest of that kind keep their old code, and the
-deployer rolls the deploy back). Different kinds restart side by side: a Discord and a Telegram account at once is not what looks like a bot
+deployer rolls the deploy back). Before it stops one, it waits until the calls that extractor is answering have their
+answers (up to 30 s), so a deploy does not fail an app's call midway. Different kinds restart side by side: a Discord and a Telegram account at once is not what looks like a bot
 to either network; every account at once, or two of one network together, is. One stopped on purpose meanwhile stays
 stopped (so does one stopped while a Restart waits for its stop). One whose code did not change keeps running, across
 any number of deploys.

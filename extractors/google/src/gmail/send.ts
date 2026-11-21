@@ -88,6 +88,8 @@ export function checkOutgoing(m: OutgoingMail, accountDir: string): OutgoingChec
 function outgoingFile(a: OutgoingFile, i: number, accountDir: string) {
   const bad = (msg: string, status = 400) => new StatusError(`attachment ${i + 1}: ${msg}`, status);
   if (!a || typeof a !== 'object' || typeof a.filename !== 'string' || !a.filename.trim() || typeof a.mime !== 'string' || !/^[\w.+-]+\/[\w.+-]+$/.test(a.mime)) throw bad('needs filename and mime');
+  // Inline parts (cid:) are not made here: the Gmail page takes files as attachments only (details.inlineParts is not set).
+  if (a.contentId !== undefined) throw bad('this account sends no inline parts (contentId): send the picture another way');
   let bytes: Buffer;
   if (typeof a.base64 === 'string' && a.path === undefined) {
     if (a.base64.length > Math.ceil((SEND_CAP * 4) / 3) + 4) throw bad('over 25 MB', 413);

@@ -858,7 +858,9 @@ change is a label added or taken off, so making it twice changes nothing more.
 
 `mail.send` checks the message first (`gmail/send.ts`: addresses, a text or HTML body, files of at most 25 MB
 together, at most 100 recipients, a path not one of the account's own files), then: each file uploaded, a draft
-saved, the send. `from` must be the address the page is signed in as (else 422 `from`). Text becomes the page's own
+saved, the send. A file with a `contentId` (an inline part, shown in the HTML as `cid:`) is refused (400): the page
+takes files as attachments only (how its composer embeds a picture was not learned), and `details.inlineParts` is not
+set. `from` must be the address the page is signed in as (else 422 `from`). Text becomes the page's own
 HTML (`<div dir="ltr">`, a `<br>` per line); Gmail makes the plain-text part itself. A reply (`replyTo`, Gmail's id
 of the message answered) goes in that message's thread with In-Reply-To its Message-ID (from what this extractor
 saw, else from the message's original); Gmail adds References. The answer is `{ messageId, sentId }`: the sent

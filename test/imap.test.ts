@@ -87,7 +87,7 @@ describe('adding and signing in', () => {
     expect(d.layers.map((l: any) => l.name)).toEqual(['server', 'TLS', 'signed in', 'inbox', 'IDLE', 'SMTP']);
     expect(d.layers.every((l: any) => l.state === 'ok')).toBe(true);
     expect(d.account.self).toMatchObject({ name: 'Alice Test', detail: alice.email });
-    expect(d.status.details).toMatchObject({ email: alice.email, sync: 'QRESYNC', certificate: `pinned SHA-256 ${dv.cert.fingerprint}` });
+    expect(d.status.details).toMatchObject({ email: alice.email, sync: 'QRESYNC', certificate: `pinned SHA-256 ${dv.cert.fingerprint}`, inlineParts: true });
     // What an app needs to send: whether it can, and as whom.
     await until(async () => (await h.detail(acc)).status.details.canSend === true, 5000, 'canSend');
     expect((await h.detail(acc)).status.details.sendNote).toBeNull();
@@ -404,11 +404,13 @@ describe('writing', () => {
       bcc: [{ name: null, email: 'dave@example.test' }],
       subject: 'Re: Quarterly report',
       text: 'Thanks, figures look good.',
-      html: '<p>Thanks, figures look <i>good</i>.</p>',
+      html: '<p>Thanks, figures look <i>good</i>. <img src="cid:dot.1@example.test"></p>',
       replyTo: original.id,
       attachments: [
         { filename: 'tiny.bin', mime: 'application/octet-stream', base64: Buffer.from([1, 2, 3, 4]).toString('base64') },
         { filename: 'notes.txt', mime: 'text/plain', path: file },
+        // Shown in the HTML (cid:), so an inline part beside it.
+        { filename: 'dot.png', mime: 'image/png', base64: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64'), contentId: 'dot.1@example.test' },
       ],
     });
     expect(r.messageId).toMatch(/^<[\w-]+@example\.test>$/);
@@ -422,10 +424,13 @@ describe('writing', () => {
     expect(p.references).toEqual(['<earlier@example.test>', '<report@example.test>']);
     expect(p.headers.has('bcc')).toBe(false);
     expect(p.from?.value[0]).toMatchObject({ name: 'Alice Test', address: alice.email });
-    expect(p.attachments.map((a) => [a.filename, a.content.toString('base64')])).toEqual([
-      ['tiny.bin', 'AQIDBA=='],
-      ['notes.txt', Buffer.from('attached from a path\n').toString('base64')],
+    expect(p.attachments.map((a) => [a.filename, a.contentDisposition, a.cid ?? null, a.content.toString('base64')])).toEqual([
+      // The inline part first: it is in the multipart/related with the HTML, before the attachments around it.
+      ['dot.png', 'inline', 'dot.1@example.test', 'iVBORw=='],
+      ['tiny.bin', 'attachment', null, 'AQIDBA=='],
+      ['notes.txt', 'attachment', null, Buffer.from('attached from a path\n').toString('base64')],
     ]);
+    expect(got.raw.toString()).toMatch(/^Content-Type: multipart\/related; type="text\/html";/m);
     // In Sent with its Bcc, and in bob's inbox without.
     const sent = await h.call(acc, 'mail.get', { id: r.sentId });
     expect(sent).toMatchObject({ messageId: r.messageId, subject: 'Re: Quarterly report', inReplyTo: '<report@example.test>', flags: { seen: true } });
@@ -451,6 +456,11 @@ describe('writing', () => {
     const secret = join(h.accountDir(acc), 'secret.json');
     expect(await h.fails(acc, 'mail.send', { to: [{ name: null, email: bob.email }], subject: 'x', text: 'y', attachments: [{ filename: 's', mime: 'text/plain', path: secret }] })).toMatchObject({ status: 403 });
     expect(await h.fails(acc, 'mail.send', { to: [{ name: null, email: bob.email }], subject: 'x', text: 'y', attachments: [{ filename: 's', mime: 'text/plain', path: 'relative.txt' }] })).toMatchObject({ status: 400 });
+    // A contentId with angle brackets, and two files with the same one.
+    const pic = (contentId: string) => ({ filename: 'p.png', mime: 'image/png', base64: 'AQID', contentId });
+    expect(await h.fails(acc, 'mail.send', { to: [{ name: null, email: bob.email }], subject: 'x', html: '<img src="cid:p1">', attachments: [pic('<p1>')] })).toMatchObject({ status: 400 });
+    expect(await h.fails(acc, 'mail.send', { to: [{ name: null, email: bob.email }], subject: 'x', html: '<img src="cid:p1">', attachments: [pic('p1'), pic('P1')] })).toMatchObject({ status: 400 });
+    expect(sink.received.length).toBe(before);
   });
 
   it('mail.send with an idempotencyKey: sent once however often it is asked, at once or after; a refused key may try again; a key whose send may have gone is refused unsure', async () => {

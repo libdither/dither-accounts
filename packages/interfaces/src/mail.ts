@@ -45,6 +45,10 @@
  *   server's estimate of how many match (the google kind: Gmail's own search, operators only). Absent: it does not.
  * - `details.sendCap: number`: the most bytes of attachments one message may carry (Proton: 25 MB); larger is 413.
  * - `details.maxRecipients: number`: the most recipients (to, cc and bcc together) one message may have (Proton: 100).
+ * - `details.inlineParts: boolean`: the account sends a file with a `contentId` (OutgoingFile) as an inline part: in a
+ *   multipart/related with the HTML, `Content-ID: <contentId>` and `Content-Disposition: inline`, so the HTML shows it
+ *   as `<img src="cid:contentId">`; files without one stay ordinary attachments (the imap kind). Absent or false: a
+ *   file with a `contentId` is refused (400) and nothing is sent; send the picture another way (a data: URL).
  * - `details.backgroundLane: boolean`: `mail.list`, `mail.search`, `mail.get`, `mail.attachment` and `mail.raw` take
  *   an extra input, `background?: true` (not in their schemas, which let unknown keys through), for reading in the
  *   background (an archive): such a call waits behind every other call of the account and is paced and budgeted on
@@ -233,6 +237,8 @@ export interface OutgoingFile {
   /** A file on this machine, or the bytes. One of the two. */
   path?: string;
   base64?: string;
+  /** Shown in the HTML as cid:<contentId> (without angle brackets): sent as an inline part. */
+  contentId?: string;
 }
 
 export interface OutgoingMail {

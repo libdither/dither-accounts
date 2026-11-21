@@ -194,8 +194,12 @@ never \Seen). From those:
   (`status.self.addresses`: today only the configured email address, matched without regard to case), else **422**
   before anything is sent; it sets From (with the configured name) and the SMTP envelope sender. `replyTo` sets In-Reply-To and References from the original
   and marks it answered. Attachments: `base64`, or `path`, an absolute path to a regular file of at most 25 MB that is
-  not one of the account's own files (its secret.json above all); 35 MB together. The copy to Sent per "Copy to Sent"
-  above; `sentId` is its id, or null. With `idempotencyKey`, see "Sending once" below.
+  not one of the account's own files (its secret.json above all); 35 MB together. A file with a `contentId` (1 to 200
+  letters, digits and `. _ @ -`, no angle brackets; else 400, as are two files with the same one) is an inline part:
+  it goes in a multipart/related with the HTML, with `Content-ID: <contentId>` and `Content-Disposition: inline`, so
+  the HTML shows it as `<img src="cid:contentId">`; the other files stay ordinary attachments around it. The status
+  says so with `details.inlineParts: true`. The copy to Sent per "Copy to Sent" above; `sentId` is its id, or null.
+  With `idempotencyKey`, see "Sending once" below.
 
 ### Sending once
 
@@ -221,7 +225,8 @@ IDLE) and for every mailbox this account itself changed (flag, move, trash, Sent
 `aliases` config key would add more; there is none yet). `details.canSend` is true when the SMTP layer is ok (its last
 sign-in or send worked), and `details.sendNote` says why not in a sentence for a person ("Sending is not checked yet:
 …", "Mail cannot be sent: the SMTP server refused the password. …", "Mail cannot be sent now (SMTP host:port: …). It
-tries the SMTP server again by itself."); null when it can.
+tries the SMTP server again by itself."); null when it can. `details.inlineParts` is true: `mail.send` makes a file
+with a `contentId` an inline part (above).
 
 ## What it keeps
 

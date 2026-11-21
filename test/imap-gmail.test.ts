@@ -8,15 +8,14 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 
 import { copiesInstead, roleOf } from '../extractors/imap/src/imap.ts';
 import { Harness } from '../extractors/imap/test/harness.ts';
-import { Dovecot, rfc822, type User } from '../extractors/imap/test/servers.ts';
+import { Dovecot, freePorts, rfc822, type User } from '../extractors/imap/test/servers.ts';
 import { dovecot, why } from './needs.ts';
 
 const ok = why('Dovecot (from nixpkgs, or DOVECOT_BIN)', dovecot);
 const it = test.skipIf(!ok);
 
 const gina: User = { email: 'gina@example.test', password: 'gina-pw-1' };
-const IMAP = 18567;
-const NO_SMTP = 18568;
+const [IMAP, NO_SMTP] = (await freePorts(2)) as [number, number];
 
 describe('roles and the move rule', () => {
   test('\\Important is a role even without a special-use; INBOX and special-uses as before', () => {

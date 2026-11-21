@@ -1020,8 +1020,16 @@ test('the self-check: counts, booleans and types only, nothing the mailbox holds
 test('a message Gmail keeps with no headers: its blank-line-first original is read when Gmail lists it with no sender, refused otherwise', async () => {
   const bare = fake.gmail.arrive({ subject: '', body: `Bare ${MARK}`, headerless: true, from: { email: '' }, labels: ['^all', '^i'] });
   const posing = fake.gmail.arrive({ subject: '', body: `Posing ${MARK}`, headerless: true, labels: ['^all', '^i'] });
-  // Not seen in a listing yet: refused, as any download that starts with a blank line.
-  await expect(mailOf().get({ id: bare.id })).rejects.toMatchObject({ status: 502, message: expect.stringContaining('(a blank line first)') });
+  // Asked for by id before any listing (an app's kept id, after a restart): the thread its id names is fetched, and
+  // Gmail's answer has it with no sender, so it is read.
+  const fresh = mailOf();
+  expect(await fresh.get({ id: bare.id })).toMatchObject({ id: bare.id, from: [], subject: '', text: `Bare ${MARK}\n` });
+  // The same with a sender: refused, as any download that starts with a blank line.
+  await expect(mailOf().get({ id: posing.id })).rejects.toMatchObject({ status: 502, message: expect.stringContaining('(a blank line first)') });
+  // A message not first in its thread: the thread its id names does not hold it (no such thread), so it is refused.
+  const later = fake.gmail.arrive({ subject: '', body: `Later ${MARK}`, headerless: true, from: { email: '' }, labels: ['^all', '^i'] });
+  later.thread = bare.id;
+  await expect(mailOf().get({ id: later.id })).rejects.toMatchObject({ status: 502, message: expect.stringContaining('(a blank line first)') });
   const mail = mailOf();
   await mail.list({ mailboxId: '^i', limit: 5 });
   const g = await mail.get({ id: bare.id });

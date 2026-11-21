@@ -9,11 +9,12 @@
  *                    session string.
  *
  * FLOOD_WAIT: mtcute sleeps through waits up to `floodSleepMs` (10 s here) and retries; longer ones reach the adapter's
- * pacer (pacer.ts) as errors.
+ * pacer (pacer.ts) as errors. Downloads are the exception: mtcute sleeps through every wait on a file's parts, so the
+ * backend ends a download that goes DOWNLOAD_STALL_MS without one.
  */
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { MemoryAuthKeysRepository, MemoryStorage, MemoryStorageDriver, SqliteStorage, TelegramClient, type tl } from '@mtcute/bun';
+import { MemoryAuthKeysRepository, MemoryStorage, MemoryStorageDriver, MtTimeoutError, SqliteStorage, TelegramClient, type tl } from '@mtcute/bun';
 import type { InitConnection } from './profile.ts';
 import type { BackendInfo, ConnState, DeskClient, DesktopKey, QrHandlers, SentCode, TgBackend, UpdateInfo, UploadSpec } from './backend.ts';
 
@@ -29,7 +30,17 @@ export interface MtcuteOptions {
   log: Log;
   /** mtcute's own log level: 1 error, 2 warn, 3 info, 4 debug. */
   logLevel?: number;
+  /** How long a download may go without a part arriving before it fails (DOWNLOAD_STALL_MS). */
+  downloadStallMs?: number;
 }
+
+/**
+ * mtcute asks for a file's parts with no retry limit and sleeps through any FLOOD_WAIT, so a file Telegram keeps
+ * answering FLOOD_WAIT or -503 for (or a DC that never answers) holds a download forever: fetchMedia then answered
+ * nothing, and the manager gave up on it after 120 s. With stallTimeout mtcute ends it after this long without a part,
+ * well inside the 30 s an app waits for fetchMedia.
+ */
+export const DOWNLOAD_STALL_MS = 20_000;
 
 const UPDATES_TYPES = new Set(['updates', 'updatesCombined', 'updateShort', 'updateShortMessage', 'updateShortChatMessage', 'updatesTooLong']);
 
@@ -171,8 +182,14 @@ export class MtcuteBackend implements TgBackend {
     return up.inputFile;
   }
 
-  download(location: tl.TypeInputFileLocation, opts: { dcId?: number; size?: number }): Promise<Uint8Array> {
-    return this.client.downloadAsBuffer(location, { ...(opts.dcId ? { dcId: opts.dcId } : {}), ...(opts.size ? { fileSize: opts.size } : {}) });
+  async download(location: tl.TypeInputFileLocation, opts: { dcId?: number; size?: number }): Promise<Uint8Array> {
+    const stallMs = this.o.downloadStallMs ?? DOWNLOAD_STALL_MS;
+    try {
+      return await this.client.downloadAsBuffer(location, { ...(opts.dcId ? { dcId: opts.dcId } : {}), ...(opts.size ? { fileSize: opts.size } : {}), stallTimeout: stallMs });
+    } catch (e) {
+      if (e instanceof MtTimeoutError) throw new Error(`Telegram sent no more of the file for ${Math.round(stallMs / 1000)} s${opts.dcId ? ` (from DC ${opts.dcId})` : ''}`);
+      throw e;
+    }
   }
 
   async logOut(): Promise<void> {

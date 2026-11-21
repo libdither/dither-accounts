@@ -35,12 +35,12 @@ always with the page's cookies (`credentials: 'same-origin'`):
 | what | request | when |
 |---|---|---|
 | the inbox | `GET /message/inbox.json?mark=false&raw_json=1&limit=25` | 30-60 s after online, then every 4-8 minutes |
-| the front page | `GET /new.json` (Following; `/hot.json` when New is refused outright) or `/best.json` (For you), `raw_json=1&limit=<n>[&after=<t3_…>]` | `home`, when asked |
-| your subscriptions | `GET /subreddits/mine/subscriber.json?raw_json=1&limit=100[&after=<t5_…>]`, up to 1,000 | Following, when `/new.json` is refused; kept 30 minutes |
-| a group of them, newest first | `GET /r/<a>+<b>+…/new.json?raw_json=1&limit=<n>[&after=<t3_…>]`, 100 names a group | the same |
+| the front page | `GET /new.json` (Following) or `/best.json` (For you), `raw_json=1&limit=<n>[&after=<t3_…>]` | `home`, when asked |
+| the front page, as a page | `GET /new/` or `/best/`, then the page's own "next" link (`?count=25&after=<t3_…>`) | `home`, when its `.json` is refused |
 | your picture | `GET /user/<you>/about.json?raw_json=1` | once after online; 10 minutes after a failed read |
 | a post's thread | `GET /comments/<id>.json?raw_json=1&sort=confidence` | `post`, when asked |
 | a comment's thread | `GET /comments/<post>/_/<comment>.json?raw_json=1&sort=confidence&context=8` | `post` with a `t1_` id |
+| a thread, as a page | `GET /comments/<post>/?sort=confidence`, `/comments/<post>/_/<comment>/?sort=confidence&context=8` | `post`, when the `.json` is refused |
 | which post a comment is under | `GET /api/info.json?id=t1_…` | only for a comment not seen since the start |
 | more comments | `POST /api/morechildren` (`link_id`, `children` up to 100, `sort`, `limit_children=false`, `api_type=json`) | `post` with a cursor ("load more comments") |
 | a profile | `GET /user/<name>/about.json`, then `/user/<name>/overview.json?limit=25` | `profile`, when asked |
@@ -49,22 +49,31 @@ always with the page's cookies (`credentials: 'same-origin'`):
 | new text post | `POST /api/submit` (`kind=self`, `sr`, `title`, `text`, `sendreplies=true`, `api_type=json`), then `GET /api/info.json?id=t3_…` to read it back | `publish` with `title` and `place` |
 | delete | `POST /api/del` (`id`) | `unpublish` |
 
-**Following when New is refused.** Some signed-in accounts get a bare 403 for the front page sorted New
-(`/new.json`), while Best (`/best.json`) and the inbox answer. Then Following is built the way it is defined, from
-your subscriptions: their names, then each group of up to 100 as a multireddit (`/r/a+b+c/new.json`, Reddit's
-documented `[/r/subreddit]/new` listing, which takes `+`-joined names), merged newest first. The cursor
-(`subs~<place>.<place>…`) says where each group is up to (`0` from the top, a `t3_` after that post, `x` done), so it
-pages with nothing kept. `/new.json` is not asked again for six hours. A followed person counts as their `u_name`
-subscription.
+**When Reddit refuses the `.json`.** Since autumn 2026 Reddit's network security answers some signed-in `.json`
+reads with an HTML 403 ("You've been blocked by network security"): live, the front page sorted New (and Hot, and any
+subreddit's New), while Best, the inbox and profiles answer. Other projects see the same for listings and search
+([OpenCLI #2771](https://github.com/jackwener/OpenCLI/issues/2771)); the pages a person opens still load. So when a
+`.json` read answers 403, the same thing is read from its page, from inside the signed-in tab: the hook fetches the
+page, parses it there (`DOMParser`), and gives back the `.json`'s shape, so the extractor maps it as before. For six
+hours after a refusal (per front page, and for comments) only the page is read.
 
-Reddit refuses a whole multireddit with the same bare 403 when it refuses any one subreddit in it (a private one you
-are not approved for, say). So a refused group is halved, each half asked for its newest post (`limit=1`), and the
-refused halves halved again until the refused subreddits are found; they are logged by name, left out for six hours,
-and Following starts again from the top without them. After 32 such reads it stops and says Reddit refuses New in
-every subscription tried. Before halving, the group's first and last subreddit are asked on their own: when Reddit
-refuses both, it refuses New itself (seen live: an HTML 403 for any `new.json`, while Best and the inbox answer),
-nothing is left out, and for six hours Following is the front page's Hot (`/hot.json`, which signed in holds only your
-subscriptions), each page sorted newest first and paged by Reddit's `after`. A refusal with no message in its body is described by its content type, its page
+What a page gives is what old reddit draws: each post row (`.thing.link`) carries its facts in data- attributes
+(`data-fullname`, `data-author`, `data-subreddit`, `data-subreddit-fullname`, `data-timestamp`, `data-permalink`,
+`data-url`, `data-score`, `data-comments-count`, `data-nsfw`, `data-spoiler`, `data-promoted`), its title is
+`a.title`, your vote the arrows' column (`likes`, `dislikes`, `unvoted`), and its picture the link itself on Reddit's
+picture host or else the row's thumbnail. On a comments page the post's text is its expando, and each comment
+(`.thing.comment`) gives `data-fullname`, `data-author`, `data-permalink`, its time (`time[datetime]`), the score that
+matches your vote, and its text, turned back into plain Markdown (paragraphs, quotes, lists, code, links); answers are
+the comment's `.child .sitetable`, "load more comments" the ids in its `morechildren(...)` link, and "continue this
+thread" a `more` with id `_`, as in the `.json`. Lost against the `.json`: text formatting beyond that, galleries,
+videos' frames and crossposts.
+
+Not made up here: the next page is the page's own "next" link (kept by its `after`; only when that is not known, as
+after a restart, is `?count=25&after=` asked), and only pages a person opens are read (`/new/`, `/best/`,
+`/comments/…`). A page that loads but is not drawn as above fails with what was missing ("not laid out as known: no
+list of posts on the page"), so the status says which read broke.
+
+A refusal with no message in its body is described by its content type, its page
 title, where it was redirected, its first visible words and its size, so the log tells a block page from a sign-in
 redirect, and says what a page with no title gives as its reason.
 
@@ -167,9 +176,11 @@ you set (`snoovatar_img`, else `icon_img`, `&amp;` unescaped as for everyone). R
   - signed out: sign-in attention, nothing read;
   - after signing in: online, and the inbox as the feed, read with `mark=false`;
   - the front pages and their cursor;
-  - Following from the subscriptions when `/new.json` answers 403, merged and paged;
+  - Following and For you from their pages when their `.json` answers Reddit's block page, with the page's own "next"
+    link, and the block page's words when the page is refused too (`extractors/reddit/test/old-pages.ts` draws the
+    pages as old reddit does, from the same data);
   - your picture on your identity;
-  - a thread, more comments, a comment's context;
+  - a thread, more comments, a comment's context; and the same from the comments pages when their `.json` is refused;
   - votes, a comment, a post and a delete, each once with the modhash;
   - a profile.
 

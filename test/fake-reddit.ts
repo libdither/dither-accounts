@@ -5,9 +5,11 @@
  * `r.config` (`logged`, `modhash`), and the JSON endpoints answer: the front page (New, Best), the inbox, threads,
  * /api/info, profiles; and the writes (/api/vote, /api/comment, /api/del, /api/submit, /api/morechildren), which check
  * the modhash. Every request is recorded, so a test can tell what the page asked for, and that nothing marked the inbox
- * read. With `newForbidden`, the front page sorted New answers 403 as Reddit does for some accounts, and Following is
- * read from the subscriptions (`/subreddits/mine/subscriber.json`, two pages) and `/r/a+b/new.json`.
+ * read. A path in `refused` (`/new.json`, `/comments/g1.json`, ...) answers Reddit's network-security 403 instead, as
+ * Reddit does live; the pages a person opens (`/new/`, `/best/`, `/comments/g1/`, `/comments/g1/_/c2/`) are drawn as
+ * old reddit draws them (extractors/reddit/test/old-pages.ts) from the same data.
  */
+import { oldCommentsPage, oldListingPage } from '../extractors/reddit/test/old-pages.ts';
 import { commentPage, gardenThread, inbox, listing, ME, moreChildren, overview, post, SUB, SUB2, t1, t3, user } from '../extractors/reddit/test/fixtures.ts';
 
 export const MODHASH = 'mh0123456789abcdef';
@@ -23,12 +25,8 @@ export interface FakeReddit {
   url: string;
   calls: FakeRedditCall[];
   signedIn: boolean;
-  /** /new.json answers 403. */
-  newForbidden: boolean;
-  /** Subreddits whose New answers 403, also in a group with others (as Reddit does for a private one). */
+  /** `.json` paths that answer Reddit's network-security block page (403, HTML with no title), as live. */
   refused: Set<string>;
-  /** /hot.json answers 403 with a block page that has no title, as Reddit's refusals of New do live. */
-  hotForbidden: boolean;
   signIn(): void;
   stop(): void;
 }
@@ -38,16 +36,12 @@ const json = (v: unknown, status = 200) => Response.json(v, { status });
 
 export function startFakeReddit(): FakeReddit {
   const calls: FakeRedditCall[] = [];
-  const state = { signedIn: false, newForbidden: false, hotForbidden: false, refused: new Set<string>() };
-  // The subscriptions: two subreddits and a followed person; their posts, an hour apart, newest first by number.
-  const SUBS = [SUB.name, SUB2.name, 'u_ann_lee'];
-  const subPosts = [
-    t3({ id: 's1', sub: SUB, agoS: 3600 }),
-    t3({ id: 's2', sub: SUB2, agoS: 2 * 3600 }),
-    t3({ id: 's3', sub: { name: 'u_ann_lee', id: 't5_2qh1c' }, agoS: 3 * 3600 }),
-    t3({ id: 's4', sub: SUB, agoS: 4 * 3600 }),
-    t3({ id: 's5', sub: SUB2, agoS: 5 * 3600 }),
-  ];
+  const state = { signedIn: false, refused: new Set<string>() };
+  const BLOCK = `<!doctype html><html><head><style>p{margin:0}</style></head><body><p>You've been blocked by network security.</p><p>If you think you've been blocked by mistake, file a ticket below.</p><script>void 0</script></body></html>`;
+  const html = (body: string) => new Response(body, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+  // The front page sorted New: two pages, the second after t3_n2.
+  const newPage = (after?: string) => listing(after ? [t3({ id: 'n3', title: 'Newest', agoS: 3 * 3600 })] : [t3({ id: 'n1', title: 'Newest', score: 7, likes: true }), t3({ id: 'n2', link: 'https://example.com/b', sub: SUB2, agoS: 2 * 3600, comments: 4 })], after ? null : 't3_n2');
+  const bestPage = (origin: string) => listing([t3({ id: 'b1', title: 'Best one', score: 900, image: `${origin}/pic.jpg` })], null);
   let made = 0;
   const server = Bun.serve({
     port: 0,
@@ -58,7 +52,8 @@ export function startFakeReddit(): FakeReddit {
       const query = Object.fromEntries(url.searchParams);
       let form: Record<string, string> | undefined;
       if (req.method === 'POST') form = Object.fromEntries(new URLSearchParams(await req.text()));
-      if (path.endsWith('.json') || path.startsWith('/api/')) calls.push({ method: req.method, path, query, ...(form ? { form } : {}) });
+      // The data reads and writes, and the pages read in their place (never opened as the tab's page here).
+      if (path.endsWith('.json') || path.startsWith('/api/') || /^\/(new|best)\/$|^\/comments\//.test(path)) calls.push({ method: req.method, path, query, ...(form ? { form } : {}) });
 
       if (path === '/login/status') return json({ signedIn: state.signedIn });
       if (path === '/login/' || path === '/login') {
@@ -69,33 +64,18 @@ export function startFakeReddit(): FakeReddit {
         if (path.endsWith('.json') || path.startsWith('/api/')) return json({ message: 'Forbidden', error: 403 }, 403);
         return Response.redirect(`${url.origin}/login/?dest=${encodeURIComponent(url.href)}`, 302);
       }
+      if (req.method === 'GET' && state.refused.has(path)) return new Response(BLOCK, { status: 403, headers: { 'content-type': 'text/html; charset=utf-8', server: 'snooserv' } });
+      if (req.method === 'GET' && path === '/new/') return html(oldListingPage(newPage(query.after) as any, query.after ? null : `${url.origin}/new/?count=25&after=t3_n2`));
+      if (req.method === 'GET' && path === '/best/') return html(oldListingPage(bestPage(url.origin) as any, null));
+      if (req.method === 'GET' && path === '/comments/g1/') return html(oldCommentsPage(gardenThread() as any));
+      if (req.method === 'GET' && path === '/comments/g1/_/c2/') return html(oldCommentsPage(commentPage() as any));
       if (req.method === 'GET' && !path.endsWith('.json') && !path.startsWith('/api/')) {
         return page('<div id="siteTable">front page</div>', `<script>var r = { config: { logged: ${JSON.stringify(ME)}, modhash: ${JSON.stringify(MODHASH)}, renderstyle: 'html' } };</script>`);
       }
       // ------------------------------------------------------------ reads
       if (req.method === 'GET') {
-        if (path === '/new.json' && state.newForbidden) return json({}, 403);
-        if (path === '/subreddits/mine/subscriber.json') {
-          const t5 = (name: string, i: number) => ({ kind: 't5', data: { display_name: name, name: `t5_s${i}`, subreddit_type: name.startsWith('u_') ? 'user' : 'public' } });
-          return json(query.after ? listing([t5(SUBS[2]!, 2)], null) : listing([t5(SUBS[0]!, 0), t5(SUBS[1]!, 1)], 't5_s1'));
-        }
-        const multi = /^\/r\/([\w+-]+)\/new\.json$/.exec(path);
-        if (multi) {
-          const names = new Set(multi[1]!.split('+'));
-          if ([...names].some((n) => state.refused.has(n))) return json({}, 403);
-          const all = subPosts.filter((p) => names.has(String(p.data.subreddit)));
-          const from = query.after ? all.findIndex((p) => p.data.name === query.after) + 1 : 0;
-          const limit = Number(query.limit ?? 25);
-          const page = all.slice(from, from + limit);
-          return json(listing(page, from + limit < all.length ? String(page.at(-1)!.data.name) : null));
-        }
-        if (path === '/new.json') return json(listing([t3({ id: query.after ? 'n3' : 'n1', title: 'Newest' }), t3({ id: 'n2', link: 'https://example.com/b' })], query.after ? null : 't3_n2'));
-        if (path === '/hot.json' && state.hotForbidden) {
-          const block = '<!doctype html><html><head><style>p{margin:0}</style></head><body><p>You have been &amp; blocked.</p><script>void 0</script></body></html>';
-          return new Response(block, { status: 403, headers: { 'content-type': 'text/html; charset=utf-8' } });
-        }
-        if (path === '/hot.json') return json(listing([t3({ id: 'h1', title: 'Older hot', agoS: 7200 }), t3({ id: 'h2', title: 'Newer hot', agoS: 60 })], query.after ? null : 't3_h1'));
-        if (path === '/best.json') return json(listing([t3({ id: 'b1', title: 'Best one', score: 900, image: `${url.origin}/pic.jpg` })], null));
+        if (path === '/new.json') return json(newPage(query.after));
+        if (path === '/best.json') return json(bestPage(url.origin));
         if (path === '/message/inbox.json') return json(inbox());
         if (path === '/comments/g1.json') return json(gardenThread());
         if (path === '/comments/g1/_/c2.json') return json(commentPage());
@@ -135,19 +115,7 @@ export function startFakeReddit(): FakeReddit {
     set signedIn(v: boolean) {
       state.signedIn = v;
     },
-    get newForbidden() {
-      return state.newForbidden;
-    },
-    set newForbidden(v: boolean) {
-      state.newForbidden = v;
-    },
     refused: state.refused,
-    get hotForbidden() {
-      return state.hotForbidden;
-    },
-    set hotForbidden(v: boolean) {
-      state.hotForbidden = v;
-    },
     signIn() {
       state.signedIn = true;
     },

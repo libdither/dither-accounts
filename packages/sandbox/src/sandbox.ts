@@ -75,8 +75,34 @@ export interface AppSandboxOptions {
   fitWindow?: string;
   /** A download is announced once it has not changed for this long. */
   settleMs?: number;
+  /**
+   * Audio devices of the sandbox's own: a private PulseAudio server (outside the sandbox, like Xvfb) with only these
+   * null sinks and the sources made from their monitors, its socket shown to the app as its session's PulseAudio.
+   * Nothing reaches the machine's own sound. Without it the app has no audio server at all.
+   */
+  audio?: AudioDevices;
   log: Log;
   onEvent: (ev: SandboxEvent) => void;
+}
+
+/** A null sink (what an app plays into it goes nowhere but its monitor) and sources made from sinks' monitors. */
+export interface AudioDevices {
+  sinks: { name: string; description: string }[];
+  /** Each a remap of `from`'s monitor, so apps see an ordinary microphone rather than a monitor. */
+  sources: { name: string; from: string; description: string }[];
+  defaultSink?: string;
+  defaultSource?: string;
+}
+
+/** The PulseAudio script for a sandbox's audio devices (no default.pa: nothing of the machine's own sound). */
+export function pulseScript(a: AudioDevices, socket: string): string {
+  const q = (s: string) => s.replace(/[^A-Za-z0-9_.-]/g, '_');
+  const lines = [`load-module module-native-protocol-unix socket=${socket} auth-anonymous=1`];
+  for (const k of a.sinks) lines.push(`load-module module-null-sink sink_name=${q(k.name)} rate=48000 sink_properties=device.description=${q(k.description)}`);
+  for (const s of a.sources) lines.push(`load-module module-remap-source source_name=${q(s.name)} master=${q(s.from)}.monitor source_properties=device.description=${q(s.description)}`);
+  if (a.defaultSink) lines.push(`set-default-sink ${q(a.defaultSink)}`);
+  if (a.defaultSource) lines.push(`set-default-source ${q(a.defaultSource)}`);
+  return `${lines.join('\n')}\n`;
 }
 
 const HOME = '/home/user';
@@ -138,7 +164,7 @@ export class AppSandbox {
 
   async start() {
     this.killStale();
-    this.bins = sandboxBins(this.o.log, { pasta: this.network === 'pasta', xdotool: !!this.o.fitWindow });
+    this.bins = sandboxBins(this.o.log, { pasta: this.network === 'pasta', xdotool: !!this.o.fitWindow, pulseaudio: !!this.o.audio });
     if (this.network === 'pasta' && !this.bins.pasta) {
       this.network = 'host';
       this.o.log('warn', 'pasta is not available: the app shares the host network (and its abstract sockets)');
@@ -178,11 +204,36 @@ export class AppSandbox {
       if (!this.stopped) this.o.log('warn', 'the sandbox bus closed');
     });
 
+    if (this.o.audio) await this.startAudio(this.o.audio);
+
     this.scanDownloads(true);
     this.timers.push(setInterval(() => this.scanDownloads(false), 1000));
     if (this.o.fitWindow && this.bins.xdotool) this.timers.push(setInterval(() => void this.fit(), 3000));
     this.o.log('info', `sandbox up: display ${d}, vnc on ${this.vncSocket}, network ${this.network}`);
     this.startApp();
+  }
+
+  /** The audio server's socket, outside the sandbox (shown inside as the session's PulseAudio). */
+  get pulseSocket() {
+    return join(this.run, 'pulse.sock');
+  }
+
+  private async startAudio(a: AudioDevices) {
+    const dir = join(this.run, 'pulse');
+    mkdirSync(join(dir, 'home'), { recursive: true, mode: 0o700 });
+    mkdirSync(join(dir, 'rt'), { recursive: true, mode: 0o700 });
+    const script = join(dir, 'devices.pa');
+    writeFileSync(script, pulseScript(a, this.pulseSocket));
+    rmSync(this.pulseSocket, { force: true });
+    const pa = this.spawn(
+      'pulseaudio',
+      [this.bins.pulseaudio!, '-n', '--daemonize=no', '--system=no', '--use-pid-file=no', '--exit-idle-time=-1', '--disallow-module-loading', '--log-target=stderr', '--log-level=1', '-F', script],
+      script,
+      undefined,
+      // Its own home and runtime dir: no cookie, config or socket of the machine's own sound server.
+      { HOME: join(dir, 'home'), XDG_RUNTIME_DIR: join(dir, 'rt'), XDG_CONFIG_HOME: join(dir, 'home') },
+    );
+    await this.waitFor(this.pulseSocket, pa, 8000, 'pulseaudio');
   }
 
   /** Start (or start again) the app; its exits arrive as `app` events and it is not restarted here. */
@@ -232,7 +283,7 @@ export class AppSandbox {
     this.stopped = true;
     for (const t of this.timers) clearInterval(t);
     this.bus?.close();
-    for (const name of ['app', 'x11vnc', 'dbus-daemon', 'Xvfb']) {
+    for (const name of ['app', 'x11vnc', 'dbus-daemon', 'pulseaudio', 'Xvfb']) {
       for (const p of this.procs.filter((x) => x.name === name)) {
         try {
           p.proc.kill('SIGTERM');
@@ -336,6 +387,7 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
     a.push('--ro-bind', join(etc, 'passwd'), '/etc/passwd', '--ro-bind', join(etc, 'group'), '/etc/group', '--ro-bind', join(etc, 'machine-id'), '/etc/machine-id');
     a.push('--dir', '/tmp/.X11-unix', '--bind', `/tmp/.X11-unix/X${d}`, `/tmp/.X11-unix/X${d}`);
     a.push('--dir', run, '--chmod', '0700', run, '--bind', join(this.run, 'bus'), `${run}/bus`);
+    if (this.o.audio) a.push('--dir', `${run}/pulse`, '--bind', this.pulseSocket, `${run}/pulse/native`);
     a.push('--bind', this.home, HOME, '--ro-bind', join(this.o.dir, 'bin'), BIN);
     a.push('--symlink', this.bins.sh, '/bin/sh', '--symlink', join(this.bins.coreutils, 'env'), '/usr/bin/env');
     for (const p of this.o.roBinds ?? []) a.push('--ro-bind', p, p);
@@ -363,6 +415,7 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
       GIO_USE_PORTALS: '1',
       // No accessibility bus here (an AT-SPI tap would be ours to add: docs/native-sandbox.md).
       NO_AT_BRIDGE: '1',
+      ...(this.o.audio ? { PULSE_SERVER: `unix:${run}/pulse/native` } : {}),
       ...(process.env.TZ ? { TZ: process.env.TZ } : {}),
       ...(process.env.LOCALE_ARCHIVE?.startsWith('/nix/store/') ? { LOCALE_ARCHIVE: process.env.LOCALE_ARCHIVE } : {}),
       ...this.o.env,
@@ -494,13 +547,14 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
 
   // ---------------------------------------------------------------- processes
 
-  private spawn(name: string, cmd: string[], match: string, onExit?: (code: number | null, signal: string | null) => void): Subprocess {
+  private spawn(name: string, cmd: string[], match: string, onExit?: (code: number | null, signal: string | null) => void, extraEnv?: Record<string, string>): Subprocess {
     this.o.log('debug', `spawn ${name}`, cmd.slice(0, 3).join(' '));
     // A small environment: the extractor's own (its manager token among it) stays out of every child, so not even
     // bubblewrap's init inside the sandbox carries it.
     const keep = ['PATH', 'HOME', 'LANG', 'TZ', 'XDG_RUNTIME_DIR', 'LOCALE_ARCHIVE'];
     const env: Record<string, string> = { DISPLAY: `:${this.o.display}` };
     for (const k of keep) if (process.env[k]) env[k] = process.env[k]!;
+    Object.assign(env, extraEnv);
     const proc = Bun.spawn(cmd, {
       env,
       stdout: 'pipe',

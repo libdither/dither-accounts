@@ -6,6 +6,8 @@
  * servers without QRESYNC). It logs ids, counts and server answers, never message contents or the password.
  */
 import { linkManager, StatusError, type Command } from '@dither-accounts/link';
+import { SendOnce } from '@dither-accounts/link/once';
+import { join } from 'node:path';
 import { PRESETS, type Settings, settingsFrom, where } from './config.ts';
 import { Imap } from './imap.ts';
 import { sendingAddresses, Smtp } from './smtp.ts';
@@ -28,6 +30,8 @@ const link = linkManager({
 });
 
 const password = () => String(link.secret<{ password?: unknown }>().password ?? '');
+/** mail.send's idempotencyKey (packages/link once.ts): a key sent before never sends again. */
+const sendOnce = new SendOnce(join(link.accountDir, 'send-keys.json'));
 
 settings = settingsFrom(link.config);
 boot();
@@ -169,8 +173,9 @@ async function run(cmd: Command): Promise<unknown> {
     case 'mail.trash':
       return imap.trash(cmd as any);
     case 'mail.send': {
-      const { t: _t, id: _id, ...mail } = cmd;
-      return smtp.send(mail as any, link.accountDir);
+      const { t: _t, id: _id, idempotencyKey, ...mail } = cmd;
+      const out = smtp;
+      return sendOnce.run(idempotencyKey, (sending) => out.send(mail as any, link.accountDir, sending));
     }
     default:
       throw new StatusError(`imap has no operation "${cmd.t}"`, 400);

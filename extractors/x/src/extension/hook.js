@@ -35,11 +35,14 @@
 (() => {
   'use strict';
   /*@include main-world@*/
+  /*@include command-watch@*/
   const HOOK_VERSION = 1;
   const settings = { testOrigin: null };
 
   const post = (payload) => cloak.send(payload); // a value that does not clone is dropped on the way
   const log = (level, msg) => post({ t: 'log', level, msg: String(msg).slice(0, 300) });
+  // Each command's `got`, page.state and a command still open after 20 s (packages/browser's command-watch.js).
+  const watch = commandWatch({ post, log });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const human = (lo, hi) => lo + Math.floor(Math.random() * (hi - lo));
 
@@ -2257,15 +2260,25 @@
   //     chunk is lazy (the TweetActivity route's, shared with QuoteTweetActivity; also TweetEditHistory's): loaded at
   //     the first `reactors` command by the route's own loader, as opening a post's likes would (`loader`), or found
   //     already loaded (`module`). `pending` until then.
+  //   - home: the factory with `fetchHomeLatest(` and `home_timeline_urt` (HomeTimeline: For you; HomeLatestTimeline:
+  //     Following). Its chunk is lazy (`shared~bundle.Compose~bundle.HomeTimeline~bundle.LoggedInMain`, also in
+  //     `loader.WideLayout` and others): found loaded (`module`), else loaded at the first `home` read by the route's
+  //     loader with a chunk named `bundle.HomeTimeline`, as opening Home would (`loader`). `pending` until then.
+  //   - upload: the composer's media uploader, the export whose source has `imageCategory` and `withMediaUploadMetrics`
+  //     (`upload(file, options)` → `{ mediaId, mediaKey }`: INIT, APPEND, FINALIZE and STATUS until processed), in a
+  //     module found by `imageCategory`. Lazy (the reply composer's chunk): found loaded (`module`), else loaded at the
+  //     first post with media by the composer's own lazy-component loader (`loader`). `pending` until then.
   //
   // What comes back is forwarded as a whitelisted copy (FEED_KEYS: the fields feed.ts reads), the rest dropped.
   const CHUNKS = 'webpackChunk_twitter_responsive_web';
-  const FEED_HOOKS = ['webpack', 'store', 'endpoints', 'notifications', 'profiles', 'posts', 'actions', 'reactors'];
+  const FEED_HOOKS = ['webpack', 'store', 'endpoints', 'notifications', 'profiles', 'posts', 'actions', 'reactors', 'home', 'upload'];
   for (const n of FEED_HOOKS) hooks[n] = { ok: false, via: null };
   // Found at the first read (its chunk loads then), not before.
   hooks.notifications.via = 'pending';
   hooks.reactors.via = 'pending';
-  const feed = { req: null, store: null, api: null, apiVia: null, notif: null, users: null, tweets: null, detail: null, actions: null, reactors: null, lastNotifications: null, lastUser: null, lastTweets: null, lastDetail: null, lastAct: null, lastCreated: null, lastReactors: null, loaderChunk: null, notifChunks: null, reactorsChunk: null, reactorsChunks: null };
+  hooks.home.via = 'pending';
+  hooks.upload.via = 'pending';
+  const feed = { req: null, store: null, api: null, apiVia: null, notif: null, users: null, tweets: null, detail: null, actions: null, reactors: null, home: null, upload: null, lastNotifications: null, lastUser: null, lastTweets: null, lastDetail: null, lastAct: null, lastCreated: null, lastReactors: null, lastHome: null, lastDeleted: null, lastUpload: null, loaderChunk: null, notifChunks: null, reactorsChunk: null, reactorsChunks: null, homeChunk: null, homeChunks: null, uploadChunk: null, uploadLoaders: null, uploadChunks: null, uploadTried: null, uploadWords: null, media: null, mediaItems: null, lastMediaAdd: null, lastMediaUpload: null, uploadKey: null, uploadKeys: null };
   const srcOf = (f) => {
     try {
       return cloak.textOf(f) || '';
@@ -2343,7 +2356,7 @@
   }
 
   // Module sources are read once each (a set of the ids looked at), for the words below.
-  const MARKS = { users: 'fetchOneUser:(', tweets: 'fetchUserTweets:(', detail: 'fetchTweetDetail:(', actions: 'sendTweet:function(', reactors: 'fetchLikedBy:(', notifications: 'fetchNotifications:(' };
+  const MARKS = { users: 'fetchOneUser:(', tweets: 'fetchUserTweets:(', detail: 'fetchTweetDetail:(', actions: 'sendTweet:function(', reactors: 'fetchLikedBy:(', notifications: 'fetchNotifications:(', home: 'fetchHomeLatest(', upload: 'imageCategory', media: 'Media has no uploader', mediaKinds: 'TweetImage:"tweet_image"' };
   const marked = {};
   const looked = new Set();
   const loaders = [];
@@ -2367,13 +2380,15 @@
       if (!s) continue;
       for (const k of Object.keys(MARKS)) if (s.indexOf(MARKS[k]) >= 0 && (marked[k] = marked[k] || []).length < 5) marked[k].push(id);
       // A route's loader: Promise.all over the chunks it needs (require.e), then the module. One module may hold many
-      // (x.com's route table does), so each is kept on its own: its chunks and the module it then requires.
+      // (x.com's route table does), so each is kept on its own: its chunks and the module it then requires. A lazy
+      // component's loader is followed by the component's name (`…then(()=>n(12745)),"TweetReplyInlineComposer"`).
       if (s.indexOf('Promise.all([') >= 0) {
         for (const lm of s.matchAll(/Promise\.all\(\[((?:\w+\.e\(\d+\),?)+)\]\)\.then\(\(\)=>\w+\((\d+)\)\)/g)) {
           const key = lm[1] + '>' + lm[2];
           if (loaderKeys.has(key)) continue;
           loaderKeys.add(key);
-          loaders.push({ chunks: [...lm[1].matchAll(/\.e\((\d+)\)/g)].map((c) => Number(c[1])), module: lm[2] });
+          const after = /^,\s*"(\w{1,60})"/.exec(s.slice(lm.index + lm[0].length, lm.index + lm[0].length + 80));
+          loaders.push({ chunks: [...lm[1].matchAll(/\.e\((\d+)\)/g)].map((c) => Number(c[1])), module: lm[2], name: after ? after[1] : null });
         }
       }
     }
@@ -2469,7 +2484,7 @@
   let probedAt = 0;
   /** Looks for what the feed needs (not the notifications, found at the first read), at most once a minute until found. */
   function feedProbe() {
-    if (feed.req && feed.api && feed.users && feed.tweets && feed.detail && feed.actions && feed.reactors) return;
+    if (feed.req && feed.api && feed.users && feed.tweets && feed.detail && feed.actions && feed.reactors && feed.home && feed.upload) return;
     if (Date.now() - probedAt < 60_000) return;
     probedAt = Date.now();
     wpRequire();
@@ -2488,6 +2503,9 @@
     mark('actions', !!feed.actions, 'module');
     // Loaded already (someone opened a post's likes): there. Else pending until the first `reactors` loads it.
     if (!feed.reactors && (feed.reactors = exportIn(marked.reactors, MARKS.reactors))) mark('reactors', true, 'module');
+    // The same for Home (often loaded with the wide layout) and the composer's uploader.
+    if (!feed.home && (feed.home = homeIn())) mark('home', true, 'module');
+    if (!feed.upload && !feed.media && uploaderIn()) mark('upload', true, 'module');
     // The tab was opened already: its module is there.
     if (!feed.notif && notifIn(marked.notifications)) mark('notifications', true, 'module');
   }
@@ -2694,9 +2712,13 @@
    */
   async function publish(cmd) {
     const text = cmd.text;
-    if (typeof text !== 'string' || !text.trim() || text.length > 25_000) throw new Error('nothing to post');
+    const files = Array.isArray(cmd.files) ? cmd.files : [];
+    if (typeof text !== 'string' || (!text.trim() && !files.length) || text.length > 25_000) throw new Error('nothing to post');
     if (cmd.replyTo !== undefined && !POST_ID.test(String(cmd.replyTo))) throw new Error('not a post id to reply to');
     if (cmd.quote !== undefined && !POST_ID.test(String(cmd.quote))) throw new Error('not a post id to quote');
+    if (cmd.replies !== undefined && !REPLY_CONTROLS.includes(cmd.replies)) throw new Error('not a choice of who can reply');
+    if (cmd.replies && cmd.replyTo) throw new Error('who can reply is chosen on a new post only');
+    if (files.length > 4) throw new Error('at most 4 files on a post');
     const a = actionsApi();
     if (!fn(get(a, 'sendTweet'))) throw new Error('X changed: sendTweet was not found');
     const options = { status: text };
@@ -2704,6 +2726,8 @@
       options.in_reply_to_status_id = String(cmd.replyTo);
       options.exclude_reply_user_ids = '';
     }
+    // Who can reply, as the composer's menu sets it: its variable builder makes { mode: MyNetwork | ByInvitation | Verified }.
+    if (cmd.replies) options.conversation_control = cmd.replies;
     if (cmd.quote) {
       // The quoted post's link names its author, as the composer's does: read the post first (it may be gone).
       let q = null;
@@ -2717,11 +2741,17 @@
       options.attachment_url = `https://x.com/${handle}/status/${cmd.quote}`;
       await sleep(human(300, 900));
     }
+    // Pictures, a GIF or a video: uploaded first by the composer's own uploader, then named on the post as the
+    // composer names them (its builder turns media_ids into media.media_entities).
+    const media = files.length ? await uploadFiles(files) : [];
+    if (media.length) options.media_ids = media.join(',');
     let res;
     try {
       res = await a.sendTweet(options);
     } catch (e) {
       throw new Error(xError(e).message);
+    } finally {
+      dropMedia();
     }
     feed.lastCreated = res;
     const tweets = get(get(res, 'entities'), 'tweets');
@@ -2732,7 +2762,7 @@
         id = Object.keys(tweets || {}).find((k) => POST_ID.test(k)) || null;
       } catch (e) {}
     }
-    if (!id) return { id: null, created: copyFeed(res, 'created') };
+    if (!id) return { id: null, created: copyFeed(res, 'created'), media };
     const created = copyFeed({ entities: { tweets: { [id]: get(tweets, id) } }, result: id }, 'created');
     let tweet = null;
     try {
@@ -2741,7 +2771,7 @@
     } catch (e) {
       log('warn', 'the new post could not be read back; answering with what sendTweet gave');
     }
-    return { id, created, tweet };
+    return { id, created, tweet, media };
   }
 
   /** The Favoriters/Retweeters factory, loading its chunk the way opening a post's likes does. */
@@ -2805,6 +2835,335 @@
     return { timeline: copyFeed(res, 'reactors') };
   }
 
+  // ------------------------------------------------------- home timelines
+  /** The home timelines' factory among the loaded modules: `fetchHomeLatest(` with `home_timeline_urt` in its source. */
+  function homeIn() {
+    return exportIn(marked.home, MARKS.home, 'home_timeline_urt');
+  }
+  /** The home timelines' factory (fetchHome: For you; fetchHomeLatest: Following), loading its chunk as opening Home does. */
+  async function homeFactory() {
+    if (feed.home) return feed.home;
+    const req = feed.req;
+    if (!req) throw new Error('X changed: webpack was not found, so the home timeline cannot be read');
+    readModules();
+    if ((feed.home = homeIn())) {
+      mark('home', true, 'module');
+      return feed.home;
+    }
+    const name = (cid) => {
+      try {
+        return String(req.u(cid));
+      } catch (e) {
+        return '';
+      }
+    };
+    // Home's own route first (a chunk named bundle.HomeTimeline), then one sharing a chunk with it.
+    const ROUTES = [/^bundle\.HomeTimeline\./, /(^|~)bundle\.HomeTimeline[.~]/];
+    const tried = new Set();
+    for (const re of ROUTES) {
+      for (const l of loaders) {
+        const hit = l.chunks.find((c) => re.test(name(c)));
+        if (hit === undefined || tried.has(l)) continue;
+        tried.add(l);
+        try {
+          await Promise.all(l.chunks.map((c) => req.e(c)));
+          req(l.module);
+        } catch (e) {
+          log('warn', 'the home timeline chunk would not load');
+          continue;
+        }
+        readModules();
+        if ((feed.home = homeIn())) {
+          feed.homeChunk = name(hit).replace(/\.\w+\.js$/, '');
+          mark('home', true, 'loader');
+          return feed.home;
+        }
+      }
+    }
+    mark('home', false, null);
+    feed.homeChunks = [...new Set(loaders.flatMap((l) => l.chunks.map(name)).filter((n) => /Home/.test(n)))].slice(0, 20);
+    throw new Error('X changed: the home timeline endpoint (fetchHome) was not found');
+  }
+  /**
+   * One page of a home timeline as Home asks for it: Following is `fetchHomeLatest({ count, cursor, enableRanking:
+   * false })` (its "Recent" sort), For you `fetchHome({ count, cursor })`. No `userId` (which would send the page's own
+   * list of posts seen, seenTweetIds) and no `requestContext`. Nothing is drawn, so nothing is logged as seen.
+   */
+  async function homeRead(cmd) {
+    const api = feedApi();
+    if (cmd.feed !== 'following' && cmd.feed !== 'foryou') throw new Error('not a home timeline');
+    if (cmd.cursor !== undefined && (typeof cmd.cursor !== 'string' || !cmd.cursor || cmd.cursor.length > 2000)) throw new Error('not a cursor');
+    const count = Math.min(Math.max(Math.floor(Number(cmd.count)) || 20, 1), 40);
+    const f = await homeFactory();
+    const e = api.withEndpoint(f);
+    const call = cmd.feed === 'following' ? 'fetchHomeLatest' : 'fetchHome';
+    if (!fn(get(e, call))) throw new Error(`X changed: the home timeline's ${call} was not found`);
+    const cursor = cmd.cursor || undefined;
+    let res;
+    try {
+      res = await (cmd.feed === 'following' ? e.fetchHomeLatest({ count, cursor, enableRanking: false }) : e.fetchHome({ count, cursor }));
+    } catch (err) {
+      throw new Error(xError(err).message);
+    }
+    feed.lastHome = res;
+    return { timeline: copyFeed(res, 'home', DETAIL_MAX_NODES) };
+  }
+
+  // ------------------------------------------------------- deleting a post
+  // X's "No status found with that ID.": the post is gone already, which is what deleting it asks for.
+  const GONE = 144;
+  /**
+   * A post of yours deleted as its menu's Delete does: the post actions' destroy({ id }) (DeleteTweet), once. X answers
+   * `{ delete_tweet: { tweet_results: {} } }`; destroy has no check of its own, so an answer without it is not taken
+   * for a deletion.
+   */
+  async function unpublish(cmd) {
+    if (!POST_ID.test(String(cmd.post))) throw new Error('not a post id');
+    const a = actionsApi();
+    if (!fn(get(a, 'destroy'))) throw new Error('X changed: deleting a post (destroy) was not found');
+    let res;
+    try {
+      res = feed.lastDeleted = await a.destroy({ id: String(cmd.post) });
+    } catch (e) {
+      const x = xError(e);
+      if (x.code === GONE) return { deleted: true, gone: true };
+      throw new Error(x.message);
+    }
+    const done = get(res, 'delete_tweet');
+    if (!done || typeof done !== 'object') throw new Error('X did not say the post was deleted: look on X');
+    return { deleted: true };
+  }
+
+  // ------------------------------------------------------- media on a post
+  // Who may reply, as the composer's menu names it (conversation_control).
+  const REPLY_CONTROLS = ['my_network', 'by_invitation', 'verified'];
+  // What the composer gives the uploader for a video: its account's limits (X's ordinary ones; X checks again).
+  const VIDEO_LIMITS = { maxDurationSeconds: 140, maxFileSizeBytes: 512 * 1024 * 1024 };
+  /** At most this many composer loaders are loaded looking for the uploader. */
+  const UPLOAD_LOADERS_MAX = 8;
+  /**
+   * The composer's uploader among the loaded modules: a module with `imageCategory` exporting a function whose
+   * source has `imageCategory` and `withMediaUploadMetrics` (x.com's `upload(file, options)`). Keeps which export it was.
+   */
+  function uploaderIn() {
+    for (const id of marked.upload || []) {
+      let ex;
+      try {
+        ex = feed.req(id);
+      } catch (e) {
+        continue;
+      }
+      let keys = [];
+      try {
+        keys = Object.keys(ex);
+      } catch (e) {}
+      for (const k of keys) {
+        const c = get(ex, k);
+        if (!fn(c)) continue;
+        const src = srcOf(c);
+        if (src.indexOf('imageCategory') < 0 || src.indexOf('withMediaUploadMetrics') < 0) continue;
+        feed.upload = c;
+        feed.uploadKey = k;
+        feed.uploadKeys = keys.slice(0, 40).sort();
+        return c;
+      }
+    }
+    return composerMediaIn();
+  }
+  /**
+   * x.com's composer since 2026-11 uploads through its store, with no `upload(file)` of its own: one thunk adds files as
+   * media items (`(files, { location })`, x.com's addMedia), one uploads items by id (it answers each upload, with its
+   * `mediaId`), one drops items (aborting and disposing). All three are in the module that says "Media has no uploader".
+   * Each is told apart by its words and arity. Keeps them, and the location "Tweet" from the media kinds' module.
+   */
+  function composerMediaIn() {
+    for (const id of marked.media || []) {
+      let ex;
+      try {
+        ex = feed.req(id);
+      } catch (e) {
+        continue;
+      }
+      let keys = [];
+      try {
+        keys = Object.keys(ex);
+      } catch (e) {}
+      let add = null;
+      let upload = null;
+      let drop = null;
+      for (const k of keys) {
+        const c = get(ex, k);
+        if (!fn(c)) continue;
+        const src = srcOf(c);
+        if (!add && c.length === 2 && src.indexOf('withDimensionsAndOrientation') >= 0 && src.indexOf('Promise.all') >= 0) add = c;
+        else if (!upload && src.indexOf('Media has no uploader') >= 0) upload = c;
+        else if (!drop && c.length === 1 && src.length < 600 && src.indexOf('.dispose()') >= 0 && src.indexOf('abort()') >= 0) drop = c;
+      }
+      if (!add || !upload) continue;
+      let where;
+      for (const kid of marked.mediaKinds || []) {
+        try {
+          const kx = feed.req(kid);
+          for (const k of Object.keys(kx)) {
+            const o = get(kx, k);
+            if (o && typeof o === 'object' && 'Tweet' in o && 'Dm' in o) where = get(o, 'Tweet');
+          }
+        } catch (e) {}
+      }
+      feed.media = { add, upload, drop, where };
+      feed.uploadKeys = keys.slice(0, 40).sort();
+      return feed.media;
+    }
+    return null;
+  }
+  /** The uploader, loading its chunk as the composer does (its lazy component's loader) when it is not loaded yet. */
+  async function uploaderFactory() {
+    if (feed.upload || feed.media) return feed.upload || feed.media;
+    const req = feed.req;
+    if (!req) throw new Error('X changed: webpack was not found, so pictures cannot be posted');
+    readModules();
+    if (uploaderIn()) {
+      mark('upload', true, 'module');
+      return feed.upload || feed.media;
+    }
+    const name = (cid) => {
+      try {
+        return String(req.u(cid));
+      } catch (e) {
+        return '';
+      }
+    };
+    // The reply composer's lazy component first (x.com named it TweetReplyInlineComposer), then any other composer's.
+    // x.com's lazy components mostly lost their names (2026-11: one named of some 600 loaders), so then the composer's
+    // own chunks by their file names (bundle.Compose, bundle.ComposeMedia), as Home is found by its chunk's, then any
+    // chunk of its own named for composing. Chunks shared with other routes (shared~…~bundle.Compose~…) are not looked
+    // at: dozens are, and each loader loads its shared chunks with it.
+    const named = loaders.filter((l) => l.name && /Compos/.test(l.name));
+    named.sort((x, y) => (y.name === 'TweetReplyInlineComposer') - (x.name === 'TweetReplyInlineComposer'));
+    const own = (re) => loaders.filter((l) => l.chunks.some((c) => re.test(name(c))));
+    const tries = [...new Set([...named, ...own(/^bundle\.Compose\./), ...own(/^bundle\.ComposeMedia\./), ...own(/^(bundle|ondemand|loader)\.\w*Compos/)])].slice(0, UPLOAD_LOADERS_MAX);
+    feed.uploadTried = [];
+    for (const l of tries) {
+      feed.uploadTried.push(l.name || name(l.chunks.find((c) => /Compos/.test(name(c))) ?? l.chunks[0]).replace(/\.\w+\.js$/, ''));
+      try {
+        await Promise.all(l.chunks.map((c) => req.e(c)));
+        req(l.module);
+      } catch (e) {
+        log('warn', 'the composer chunk would not load');
+        continue;
+      }
+      readModules();
+      if (uploaderIn()) {
+        feed.uploadChunk = `${l.name || '-'}: ${l.chunks.map((c) => name(c).replace(/\.\w+\.js$/, '')).join(', ')}`.slice(0, 300);
+        mark('upload', true, 'loader');
+        return feed.upload || feed.media;
+      }
+    }
+    mark('upload', false, null);
+    // For diagnostics: the lazy components' names seen, the chunks named for composing or media, and how many loaded
+    // modules hold the uploader's words (public code names and counts, nothing personal).
+    feed.uploadLoaders = [...new Set(loaders.map((l) => l.name).filter(Boolean))].slice(0, 40);
+    feed.uploadChunks = [...new Set(loaders.flatMap((l) => l.chunks.map(name)).filter((n) => /Compos|Media|Upload/i.test(n)).map((n) => n.replace(/\.\w+\.js$/, '')))].slice(0, 40);
+    feed.uploadWords = {};
+    for (const w of ['imageCategory', 'withMediaUploadMetrics', 'mediaCategory', 'media_category', 'tweet_image']) {
+      let n = 0;
+      for (const id of Object.keys(req.m || {})) if (srcOf(get(req.m, id)).indexOf(w) >= 0) n++;
+      feed.uploadWords[w] = n;
+    }
+    throw new Error('X changed: the media uploader was not found, so pictures and video cannot be posted');
+  }
+  /** X's words for an upload that failed: its processing error's detail, its API error's message, or the error's own. */
+  function uploadError(e) {
+    const detail = get(e, 'detailMessage');
+    if (typeof detail === 'string' && detail) return detail.slice(0, 280);
+    return xError(e).message;
+  }
+  /** Each file uploaded as the composer uploads it (its kind and media_category chosen by the uploader); their media ids. */
+  async function uploadFiles(files) {
+    const up = await uploaderFactory();
+    const asFile = (f) => {
+      if (!f || typeof f.base64 !== 'string' || typeof f.mime !== 'string') throw new Error('not a file');
+      const raw = atob(f.base64);
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      return new File([bytes], String(f.name || 'file'), { type: f.mime });
+    };
+    if (!fn(up)) return uploadThroughStore(up, files.map(asFile));
+    const ids = [];
+    for (const f of files) {
+      const file = asFile(f);
+      let r;
+      try {
+        r = await up(file, { signal: new AbortController().signal, ...(/^video\//.test(f.mime) ? { videoLimits: VIDEO_LIMITS } : {}) });
+      } catch (e) {
+        throw new Error(`X did not take ${files.length > 1 ? `file ${ids.length + 1}` : 'the file'}: ${uploadError(e)}`);
+      }
+      feed.lastUpload = r;
+      const id = first(r, ['mediaId', 'media_id_string']);
+      if (typeof id !== 'string' || !POST_ID.test(id)) throw new Error('X changed: the uploader gave no media id');
+      ids.push(id);
+      if (ids.length < files.length) await sleep(human(200, 600));
+    }
+    return ids;
+  }
+  /**
+   * Files uploaded as x.com's composer uploads them now (`composerMediaIn`): added to its store as media items for a
+   * post, then those items uploaded; each upload's media id. The items stay until the post is made (`dropMedia`).
+   */
+  async function uploadThroughStore(m, list) {
+    const store = feed.store;
+    if (!store) throw new Error('X changed: the Redux store was not found, so pictures cannot be posted');
+    let added;
+    try {
+      added = await store.dispatch(m.add(list, { location: m.where, isAmplify: false }));
+    } catch (e) {
+      throw new Error(`X did not take ${list.length > 1 ? 'the files' : 'the file'}: ${uploadError(e)}`);
+    }
+    feed.lastMediaAdd = { type: typeTag(added), keys: added && typeof added === 'object' ? keysOf(added).slice(0, 20) : null, first: Array.isArray(added) && added[0] ? keysOf(added[0]).slice(0, 30) : null };
+    const items = (Array.isArray(added) ? added : (Array.isArray(get(added, 'payload')) ? get(added, 'payload') : [])).filter((x) => x && get(x, 'id') != null);
+    if (items.length !== list.length) throw new Error('X changed: adding the files to a post gave no media items');
+    const itemIds = items.map((x) => get(x, 'id'));
+    feed.mediaItems = itemIds;
+    let r;
+    try {
+      r = await store.dispatch(m.upload(itemIds));
+    } catch (e) {
+      dropMedia();
+      throw new Error(`X did not take ${list.length > 1 ? 'the files' : 'the file'}: ${uploadError(e)}`);
+    }
+    // It answers the items as they are while uploading: each one's upload is its `uploadPromise`, which ends in the
+    // media id (as `mediaId`; the item keeps it as `uploadId`).
+    const ups = [];
+    try {
+      for (const x of Array.isArray(r) ? r : [r]) {
+        const p = get(x, 'uploadPromise');
+        ups.push(p && fn(get(p, 'then')) ? await p : x);
+      }
+    } catch (e) {
+      dropMedia();
+      throw new Error(`X did not take ${list.length > 1 ? 'the files' : 'the file'}: ${uploadError(e)}`);
+    }
+    feed.lastUpload = ups;
+    feed.lastMediaUpload = { type: typeTag(r), keys: ups[0] && typeof ups[0] === 'object' ? keysOf(ups[0]).slice(0, 30) : typeTag(ups[0]) };
+    const ids = ups.map((x) => first(x, ['mediaId', 'media_id_string', 'uploadId']));
+    if (ids.length !== list.length || ids.some((id) => typeof id !== 'string' || !POST_ID.test(id))) {
+      dropMedia();
+      throw new Error('X changed: the uploader gave no media id');
+    }
+    return ids;
+  }
+  /** The media items a post was made with, out of the composer's store again. */
+  function dropMedia() {
+    const ids = feed.mediaItems;
+    feed.mediaItems = null;
+    if (!ids || !feed.media || !feed.media.drop || !feed.store) return;
+    try {
+      feed.store.dispatch(feed.media.drop(ids));
+    } catch (e) {
+      log('warn', 'the post\'s media items would not drop');
+    }
+  }
+
   // The fields feed.ts reads (timelines, notifications, users, posts), and nothing else. Keys of digits are ids (the
   // user lookup's normalized `entities.users`).
   const FEED_KEYS = new Set(
@@ -2826,12 +3185,15 @@
       // reposted (Favoriters, Retweeters: user entries).
       'favorited retweeted tweets tweetResult user_id_str userDisplayType verification ' +
       // The language X says a post is in (translation: docs/x.md "Translating a post").
-      'lang'
+      'lang ' +
+      // A home timeline (HomeTimeline, HomeLatestTimeline): where it sits, and a post's social-context line.
+      'home home_timeline_urt socialContext contextType landingUrl functionalType topic'
     ).split(' '),
   );
   const FEED_MAX_NODES = 60_000;
-  // A long thread's page is bigger than a notifications page; and its cursors, which come last, are copied first (an
-  // entry's order among the others is kept), so a page cut short still says where more replies are.
+  // A long thread's page (and a home page, its posts' authors and conversations) is bigger than a notifications page;
+  // and its cursors, which come last, are copied first (an entry's order among the others is kept), so a page cut short
+  // still says where more is.
   const DETAIL_MAX_NODES = 200_000;
   const isCursorEntry = (e) => {
     const id = get(e, 'entryId');
@@ -2854,7 +3216,7 @@
       }
       if (Array.isArray(x)) {
         const xs = x.slice(0, 500);
-        if (kind === 'detail') xs.sort((a, b) => isCursorEntry(b) - isCursorEntry(a));
+        if (kind === 'detail' || kind === 'home') xs.sort((a, b) => isCursorEntry(b) - isCursorEntry(a));
         return xs.map((y) => walk(y, depth + 1));
       }
       const out = {};
@@ -2898,7 +3260,12 @@
       notifications: feed.notif ? { keys: keysOf(feed.notif), options: jsonShape(feed.notif.getCreationOptions(), 2), chunk: feed.loaderChunk } : { loaders: loaders.length, chunks: feed.notifChunks || null, marked: (marked.notifications || []).length },
       reactors: feed.reactors ? { chunk: feed.reactorsChunk } : { chunks: feed.reactorsChunks || null, marked: (marked.reactors || []).length },
       actions: feed.actions ? { keys: (() => { try { return Object.keys(feed.api.withEndpoint(feed.actions)).slice(0, 80).sort(); } catch (e) { return null; } })() } : { marked: (marked.actions || []).length },
-      responses: { notifications: jsonShape(feed.lastNotifications, 12), user: jsonShape(feed.lastUser, 6), tweets: jsonShape(feed.lastTweets, 12), detail: jsonShape(feed.lastDetail, 12), act: jsonShape(feed.lastAct, 8), created: jsonShape(feed.lastCreated, 6), reactors: jsonShape(feed.lastReactors, 12) },
+      // Home: the factory's method names (fetchHome, fetchHomeLatest) and the chunk loaded, or the loaders' home chunks.
+      home: feed.home ? { keys: (() => { try { return Object.keys(feed.api.withEndpoint(feed.home)).slice(0, 40).sort(); } catch (e) { return null; } })(), chunk: feed.homeChunk } : { chunks: feed.homeChunks || null, marked: (marked.home || []).length },
+      // The uploader: the module's export names, the one used and how many arguments it takes, the chunk loaded; else
+      // the lazy components' names seen and how many modules had the upload words.
+      upload: feed.upload ? { keys: feed.uploadKeys, key: feed.uploadKey, arity: feed.upload.length, chunk: feed.uploadChunk } : feed.media ? { via: 'store', keys: feed.uploadKeys, drop: !!feed.media.drop, where: typeTag(feed.media.where), chunk: feed.uploadChunk, add: feed.lastMediaAdd, up: feed.lastMediaUpload } : { loaders: feed.uploadLoaders || null, chunks: feed.uploadChunks || null, tried: feed.uploadTried || null, words: feed.uploadWords || null, named: loaders.filter((l) => l.name).length, marked: (marked.upload || []).length },
+      responses: { notifications: jsonShape(feed.lastNotifications, 12), user: jsonShape(feed.lastUser, 6), tweets: jsonShape(feed.lastTweets, 12), detail: jsonShape(feed.lastDetail, 12), act: jsonShape(feed.lastAct, 8), created: jsonShape(feed.lastCreated, 6), reactors: jsonShape(feed.lastReactors, 12), home: jsonShape(feed.lastHome, 12), deleted: jsonShape(feed.lastDeleted, 6), upload: jsonShape(feed.lastUpload, 3) },
     };
   }
 
@@ -2943,6 +3310,10 @@
         return publish(cmd);
       case 'reactors':
         return reactorsRead(cmd);
+      case 'home':
+        return homeRead(cmd);
+      case 'unpublish':
+        return unpublish(cmd);
       case 'requests':
         await lookAtRequests();
         return emitRequests(true) || { requests: [], loading: false, more: false };
@@ -2972,10 +3343,13 @@
       return;
     }
     if (payload.t !== 'cmd') return;
+    const done = watch.take(payload);
+    if (!done) return;
     Promise.resolve()
       .then(() => runCommand(payload.cmd || {}))
       .then((result) => post({ t: 'reply', id: payload.id, ok: true, result }))
-      .catch((err) => post({ t: 'reply', id: payload.id, ok: false, error: String((err && err.message) || err).slice(0, 300) }));
+      .catch((err) => post({ t: 'reply', id: payload.id, ok: false, error: String((err && err.message) || err).slice(0, 300) }))
+      .finally(done);
   });
 
   installDevtools();

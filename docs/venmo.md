@@ -2,7 +2,8 @@
 
 `extractors/venmo` hands over your Venmo statement CSVs as `statements` files ([statements.md](statements.md)), under
 the names dither-finance's parser expects in `data/raw/venmo`. It is a port of an earlier Python puller (`venmo.py`)
-and writes the same bytes it wrote. **Read only**: nothing here pays, requests, transfers or changes a setting.
+and writes the same bytes it wrote. **Read only**: nothing here pays, requests, transfers or changes a setting. Its browser is also lent through the
+`browser` interface ([browser.md](browser.md)), which presses Pay, Send or Transfer only at `manage`.
 
 ## How it runs
 

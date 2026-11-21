@@ -58,7 +58,7 @@ test('status: a held pull is the attention; signed out is fine with a password',
 
 test('the manifest: statements only; email, password and authenticator secret are secret fields', async () => {
   const m = (await import('../manifest.ts')).default;
-  expect(m).toMatchObject({ kind: 'amazon', interfaces: ['statements'], entry: 'src/main.ts' });
+  expect(m).toMatchObject({ kind: 'amazon', interfaces: ['statements', 'browser'], entry: 'src/main.ts' });
   expect(m.add.fields!.map((f) => [f.key, !!f.secret, !!f.optional])).toEqual([
     ['email', true, false],
     ['password', true, false],

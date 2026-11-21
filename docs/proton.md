@@ -52,7 +52,8 @@ your keys open.
   calls' statuses. It reads the app's persisted session for the page (`ps-<localID>`, the localID being the `/u/<n>/`
   in the address). It also hooks the app's modules (next section). It answers: `api` (one call to Proton's API, below),
   `storage` (the persisted session's sealed blob, its payload version and UserID; never the UID), `pagekeys` and
-  `decrypt` (the keys opened in the page, when the saved session will not open), and `send` ("Sending").
+  `decrypt` (the keys opened in the page, when the saved session will not open), `send` ("Sending") and
+  `contactEmails` ("Suggesting people").
 - **Calls** go to `https://mail.proton.me/api/<path>` from inside the page, as the app's own: `credentials: 'include'`
   (the `AUTH-<UID>` cookie on `/api`), `mode: 'cors'`, `redirect: 'follow'`, and the headers copied from the app's own
   latest call (`accept: application/vnd.protonmail.v1+json`, `x-pm-appversion: web-mail@<version>`, `x-pm-locale`)
@@ -292,7 +293,8 @@ Ids (`src/mail.ts`), opaque to apps:
   message id of this account, attachments `{ filename, mime, base64 | path }` (a path absolute, a regular file, not one
   of the account's own files), at most 25 MB together (Proton's limit): 400, 404, 403 or 413. Answers `{ messageId:
   <the Message-ID Proton gave>, sentId: <its id> }`; the sent message is the copy in Sent. A message it will not send as
-  it stands is **422** with code `recipients` or `settings` and a sentence for a person ("Sending").
+  it stands is **422** with code `recipients` or `settings` and a sentence for a person ("Sending"). An
+  `idempotencyKey` sends at most once (docs/mail.md, "Sending once"); `details.sent` counts what went, not repeats.
 
 ### Threading and bulk headers: which calls carry them
 
@@ -361,7 +363,7 @@ be sent: Proton is not signed in. …", "Sending is not checked yet: …" while 
 from this account: parts of Proton's Mail page that sending uses were not found (CryptoProxy), so sending is refused.
 Reading, marking, moving and trash still work." when one is missing; null when it can. `details` (none of it secret): `email`, `display`,
 `page`, `extensionAttached`, `mailPage`, `signedIn`, `localID`, `keptSignedIn`, `sessionPayload`,
-`sessionsInBrowser`, `canSend`, `sendNote`, `appVersion` (as the page sends it), `pageHeaders` (the names of the headers the app's calls
+`sessionsInBrowser`, `canSend`, `sendNote`, `contacts`, `contactsNote` and `contactsFrom` ("Suggesting people"), `appVersion` (as the page sends it), `pageHeaders` (the names of the headers the app's calls
 carry), `pageCalls`, `pageLastStatus`, `pageRefreshes`, `uidMatchesPage`, `userKeys`, `addresses`, `addressKeys`
 (opened of all), `unlockPath`, `sessionUnlockError`, `pageKeys`, `modules`, `modulesMissing`, `webpack`, `sendPath`,
 `sent`, `lastCallAt`, `lastCallStatus`, `lastError`, `calls`, `events`, `pollSeconds`.
@@ -452,6 +454,43 @@ package type; a refusal's sentence (no addresses in it).
 the fake checks each send as a server holding every recipient's key would ("Tests"). Nothing has been sent from a real
 account yet: your first send is the checklist's step 9.
 
+## Suggesting people
+
+`mail.contacts { query, limit? }` (`src/contacts.ts`) answers what Proton's composer suggests while you type an
+address, from the addresses in your Proton contacts, as WebClients does it (read at a98022b, 2026-11-14):
+
+| step | Proton's | source |
+|---|---|---|
+| the list | the store's contact emails, `contactEmails.value`, kept sorted by `Order` (filled from `contacts/v4/contacts/emails`, pages of 1000) | `packages/account/contactEmails/index.ts`, `packages/shared/lib/api/contacts.ts` (`queryContactEmails`), `constants.ts` (`CONTACT_EMAILS_LIMIT`) |
+| each one's label | `Name <Email>`; the address alone when the name is the address; `Name Email` otherwise (an empty name: ` Email`) | `packages/shared/lib/mail/recipient.ts` (`recipientToInput`, `contactToInput`) |
+| the order | `LastUsedTime`, most recent first, then the label as JavaScript compares strings | `packages/components/components/addressesAutocomplete/helper.tsx` (`getContactsAutocompleteItems`, `compare`) |
+| the match | the typed text, lower-cased, trimmed and without accents, anywhere in the label treated the same; from the first character on; at most 20 | `packages/components/components/autocomplete/useAutocomplete.ts` (`useAutocompleteFilter`), `packages/shared/lib/helpers/string.ts` (`normalize`), `addressesAutocomplete/AddressesAutocomplete.tsx` (`limit = 20`, `searchMinLength` 1) |
+
+The composer also offers your contact groups; `mail.contacts` does not (people only). Each address is answered once
+(without regard to case: two contacts with one address give its first), `name` is the contact's name with its spaces
+made one, or null when it is empty or only the address again. At most `limit` (8 by default, 20 at most).
+
+- **The list** comes from the page: the hook's `contactEmails` hands over the store's list with only `Email`, `Name`,
+  `LastUsedTime` and `Order` from each entry. When the store has none (not found, or not loaded yet), the extractor
+  reads the same list from `contacts/v4/contacts/emails` (Page, PageSize 1000) through the page's API caller, as the
+  store fills itself. Either way it is kept 30 s, so a word typed letter by letter is matched here without asking the
+  page each time. `details.contactsFrom` says where the last list came from and how long it is (`store, 25`).
+- **Seen live** (2026-11-14, counts and field names only): the store's `contactEmails` is `{ value, meta, error }`, and
+  every entry has `ID`, `Name`, `Email`, `IsProton`, `Type`, `Defaults`, `Order`, `LastUsedTime`, `ContactID`,
+  `LabelIDs` and `CanonicalEmail`, sorted by `Order`; most have a `LastUsedTime`, and many a `Name` that is the address.
+- **When it can**: `details.contacts` is true while the page is attached and signed in; `details.contactsNote` says why
+  not. Errors: 503 `unavailable` when the page cannot answer now (not attached, still loading, signed out; or Proton
+  answering 401, a human check, 429 or 5xx to the API's list), 504 when the page or the list did not come within 8 s,
+  502 when the store's list or the API's is not laid out as known (no entry with an address), 400 for a query over 300
+  characters. An empty query is `{ contacts: [] }`, asking nothing, signed in or not.
+- Nothing of it is logged: no query, no address, no name.
+
+## A command the page does not answer
+
+Each command that times out is told apart in the log at once, in one line: `the Mail page's silence: request …`, with
+how far the request got, how Chromium sees the tab, and what the hook says of itself without the network (`page.state`: visibility, lifecycle events, error counts, the commands still open; an `api` call is named by its method and path template). The hook also logs a command still open after 20 s. See [page-silence.md](page-silence.md); command names
+and path templates only, never a body or an id.
+
 ## Tests
 
 - `test/proton.test.ts`: no browser. The blob in all three versions (and a wrong key, version or a damaged blob), the
@@ -467,7 +506,11 @@ account yet: your first send is the checklist's step 9.
   headers from `ParsedHeaders` on `mail.get` (all references, a folded List-Id, the first of two List-Unsubscribe) and
   on a summary made from a whole message (20 references), none on `mail.list`; the sending addresses of a fake with
   five (one disabled, one that only receives, out of order); `from` picked without regard to case, sent to the page as
-  its id over a reply's, refused (422 `from`, the page never asked) when not one of them.
+  its id over a reply's, refused (422 `from`, the page never asked) when not one of them. And `mail.contacts`
+  ("Suggesting people"): the label and `normalize` as Proton's, the order (when last used, then the label), the match
+  (anywhere in the label, without regard to case or accents), each address once, 20 at most, the list as the store
+  keeps it, the store's list kept 30 s, a page not ready 503 `unavailable`, bad input 400, and the API's pages from the
+  fake.
 - `test/proton-browser.test.ts`: a real manager runs the extractor in its real sandbox against the fake (four that
   stay: signed in; signed out; the saved session broken; the ClientKey call refused, as live; and two that come and
   go, whose page hides the CryptoProxy or the keys-by-usage thunk). Online with every layer ok, self, details (the four
@@ -493,7 +536,10 @@ account yet: your first send is the checklist's step 9.
   from it (both page-key accounts); an access token that runs out (the page refreshes it, never the hook); every call
   of ours carrying exactly the app's headers; a signed-out browser asking for the sign-in; Proton signing the browser
   out; nothing secret, and no recipient address, in logs or statuses; every process gone when the manager stops.
-  Skipped without Xvfb, chromium and x11vnc.
+  `mail.contacts` through the manager, from the API's list (the fake's store has none by default) and from the page's
+  store (a fake with `storeContacts`; the API's list never asked), ranked and each address once; a signed-out page
+  503 `unavailable` and an empty query answered; no query or person in the log. Skipped without Xvfb, chromium and
+  x11vnc.
 - `test/fake-proton.ts`: the fake. Its page keeps what the real app keeps (`ps-0` with a blob sealed under a ClientKey,
   the `AUTH-<UID>` and `REFRESH-<UID>` cookies), calls the API itself with the app's headers (and a marker header, so
   the fake can tell its calls from the hook's), polls events and refreshes on 401. The API checks the cookie for the

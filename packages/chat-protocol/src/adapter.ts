@@ -32,7 +32,7 @@ import type { CallEffect, CallFact, CallInput, CallMode, CallState, StageAction,
 import type { GateAnswer, ScheduledEventFact, SpaceGate } from './servers.ts';
 import type { MessageModeration, ModAction, ReactionClear } from './moderation.ts';
 import type { LinkPreviewOut } from './extra.ts';
-import type { PostAct } from './feed.ts';
+import type { HomeFeed, PostAct, ReplyGate } from './feed.ts';
 import type { AccountStatus, AttachmentKind, Attention, MessageKind, Network, ReactionStyle, Shape, SpaceKind, Variant } from './ontology.ts';
 import type { SelfCapability, SelfCommand, SelfEvent } from './self.ts';
 import type { VoiceFact } from './rich.ts';
@@ -81,6 +81,13 @@ export type Capability =
   | 'stage'
   /** In a call: the sounds this account may play (the call's `sounds` and `sound` ops), and effects others send (the call event's `effect`). */
   | 'soundboard'
+  /**
+   * In a bridge call: this device's camera and screen go to the account's client, which sends them as its own camera and
+   * Go Live (the call's `video` op), and others' cameras come back on the bridge's video slots (CallState.video).
+   */
+  | 'callVideo'
+  /** In a bridge call: watching someone's Go Live (the call's `watch` op); their screen comes back on a video slot. */
+  | 'watchStreams'
   /** Forwarding a message it can read into another conversation, the network's own way (the `forward` command). */
   | 'forward'
   /** Reads a conversation's or space's settings, members and permissions (the `about` command, about.ts). */
@@ -97,6 +104,12 @@ export type Capability =
   | 'publish'
   /** Says who liked or reposted a post (the `postReactors` command, feed.ts ReactorsPage). */
   | 'postReactors'
+  /** Reads the account's home timelines, Following and For you, a page at a time (the `home` command, feed.ts HomePage). */
+  | 'home'
+  /** Deletes a post of the account's own (the `unpublish` command). */
+  | 'unpublish'
+  /** Puts pictures, a GIF or a video on a post it writes (`publish`'s `media`, the network's own limits). */
+  | 'postMedia'
   /** Translates a post of its network, as the network's own "Translate post" does (the `translate` command). */
   | 'translate'
   /** Changes the account's own profile: its bio/About (the `setProfile` command). */
@@ -335,6 +348,8 @@ export interface ReactionFact {
   style?: ReactionStyle;
   /** Who reacted, as far as the network says. */
   authors: string[];
+  /** When each of authors reacted, by native id, where the network says (ms). */
+  at?: Record<string, number>;
   /** The network's total, when it does not name everyone (Discord). Omit when authors is the full list. */
   count?: number;
   /** Super reactions: the colours of the effect, as CSS hex. */
@@ -381,6 +396,11 @@ export interface AttachmentFact {
   explicit?: boolean;
   /** A voice message (rich.ts VoiceFact): drawn as a player with its waveform. */
   voice?: VoiceFact;
+  /**
+   * A GIF the network sends as a video (Telegram's animation, WhatsApp's GIF playback, Signal's GIF flag): drawn
+   * looping and silent, as a GIF, with no player.
+   */
+  gif?: true;
 }
 
 /** A file to send, in the hub's spool. The adapter reads it during the send; the hub deletes it afterwards. */
@@ -392,6 +412,11 @@ export interface OutgoingAttachment {
   kind: AttachmentKind;
   /** Send it as the network's voice message (capability 'sendVoice', media.ts): the only file of its send. */
   voice?: VoiceOut;
+  /**
+   * Send it as the network's GIF (capability 'sendGifs', media.ts): a .gif or a video, which the adapter turns into
+   * what its network calls a GIF (Telegram: an animation; WhatsApp: a video with GIF playback).
+   */
+  gif?: true;
 }
 
 /** What the `setProfile` command changes: only the fields given (see it there). */
@@ -480,7 +505,11 @@ export type AdapterEvent =
   | { t: 'message'; message: MessageFact; live?: boolean; late?: boolean }
   /** A message is gone. `reason: 'expired'`: its disappearing timer ran out, rather than someone deleting it. */
   | { t: 'delete'; conversation: string; nativeId: string; reason?: 'expired' }
-  | { t: 'reaction'; conversation: string; message: string; author: string; key: string; remove?: boolean; style?: ReactionStyle; colors?: string[]; emoji?: CustomEmojiFact }
+  /**
+   * One person added or took back one reaction. `ts`: when, as the network says (ms). Leave it out where the network
+   * gives no time (Discord): the hub then keeps when it heard, and shows it as "by" that time (docs/reactions.md "When").
+   */
+  | { t: 'reaction'; conversation: string; message: string; author: string; key: string; remove?: boolean; style?: ReactionStyle; colors?: string[]; emoji?: CustomEmojiFact; ts?: number }
   /** A moderator removed every reaction on a message, or every one with this key. */
   | { t: 'reactionsCleared'; conversation: string; message: string; key?: string }
   /**
@@ -572,7 +601,8 @@ export type AdapterEvent =
   /** saved, unsaved, reminderDue (sending.ts). */
   | SendEvent
   | { t: 'reply'; id: string; ok: true; result?: unknown }
-  | { t: 'reply'; id: string; ok: false; error: string }
+  /** status: the refusal's HTTP-like status (RefusalError), 404 for nothing there; 5xx or absent for a failure. */
+  | { t: 'reply'; id: string; ok: false; error: string; status?: number }
   | { t: 'log'; level: 'debug' | 'info' | 'warn' | 'error'; msg: string; data?: unknown }
   /** interaction, appModal (apps.ts). */
   | InteractEvent
@@ -728,7 +758,7 @@ export type AdapterCommand =
   | { t: 'react'; id: string; conversation: string; message: string; key: string; remove?: boolean; style?: ReactionStyle; emoji?: CustomEmojiFact }
   /** reply.result: ReactionContext */
   | { t: 'reactionContext'; id: string; conversation: string; message?: string }
-  /** Name the people behind a total: identity facts first, then reply.result: { authors: string[] } */
+  /** Name the people behind a total: identity facts first, then reply.result: { authors: string[]; at?: Record<string, number> } (at as ReactionFact's). */
   | { t: 'reactors'; id: string; conversation: string; message: string; key: string; style?: ReactionStyle }
   | { t: 'edit'; id: string; conversation: string; message: string; body: string }
   /**
@@ -784,9 +814,43 @@ export type AdapterCommand =
   /**
    * Write a post (capability 'publish'): `replyTo` a post's id for a reply, `quote` a post's id to quote it (X: the
    * post's link as its attachment), neither for a new post. `text` has been checked against POST_RULES on the hub.
+   * `replies`: who may reply to a new post (not on a reply): everyone (the default), people it follows, people it
+   * mentions, verified accounts. `media` (capability 'postMedia'): files in the hub's spool, as `send` takes them;
+   * X takes up to 4 pictures (PNG, JPEG, WebP), or one GIF, or one video. `text` may be empty with media.
    * Sent only when you press Post. Identity facts first, then reply.result: PostFact, the post as the network made it.
    */
-  | { t: 'publish'; id: string; text: string; replyTo?: string; quote?: string }
+  | {
+      t: 'publish';
+      id: string;
+      text: string;
+      replyTo?: string;
+      quote?: string;
+      /** Who may reply to a new post (never with `replyTo`): X's "who can reply". Absent: everyone. */
+      replies?: ReplyGate;
+      /** Pictures or a video with it (capability 'postMedia'): up to 4 images, or one GIF or video. */
+      media?: OutgoingAttachment[];
+      /** A new post's title, where the network has them (Reddit, Lemmy: POST_RULES `title`). Never with `replyTo`. */
+      title?: string;
+      /**
+       * Where a new post goes (POST_RULES `place`): a subreddit's name without "r/", a community's as `name` or
+       * `name@instance` without "!". Never with `replyTo`.
+       */
+      place?: string;
+      /** A content warning over it (Mastodon's spoiler text: POST_RULES `warning`), on a new post or a reply. */
+      warning?: string;
+    }
+  /**
+   * Delete a post of the account's own (capability 'unpublish'): `post` is the network's id for it. A post the network
+   * says is gone already counts as deleted. Sent only when you press Delete. reply.result: { deleted: true }
+   */
+  | { t: 'unpublish'; id: string; post: string }
+  /**
+   * One page of the account's home timeline (capability 'home'): `feed` 'following' (newest first) or 'foryou' (the
+   * network's ranking); `cursor` an earlier page's `more` (older) or `top` (newer); `count` how many to ask for
+   * (default 20, at most 40; the network may give fewer). Asked only on request; nothing is marked seen. Identity facts
+   * for every author and every person a reason names first, then reply.result: HomePage
+   */
+  | { t: 'home'; id: string; feed: HomeFeed; cursor?: string; count?: number }
   /**
    * Who liked (`kind` 'like') or reposted ('repost') a post, a page (capability 'postReactors'). X shows who liked a post
    * only to its author. Identity facts first, then reply.result: ReactorsPage.
@@ -827,6 +891,10 @@ export type AdapterCommand =
   /** reply.result: { sounds: CallSound[]; reason?: string } (capability 'soundboard'). */
   | { t: 'call'; id: string; call: string; op: 'sounds' }
   | { t: 'call'; id: string; call: string; op: 'sound'; sound: string; guild: string }
+  /** Bridge mode (capability 'callVideo'): the device's camera and screen, as the bridge's slots carry them, on or off. */
+  | { t: 'call'; id: string; call: string; op: 'video'; camera: boolean; screen: boolean; screenAudio?: boolean }
+  /** Bridge mode (capability 'watchStreams'): watch someone's Go Live, or stop. `user` native. */
+  | { t: 'call'; id: string; call: string; op: 'watch'; user: string; on: boolean }
   /**
    * What an invite, address, name or handle is, without joining, following or telling anyone (capability 'resolve').
    * Identity facts it names first, then reply.result: AddPreview. Not found or expired: an error sentence.

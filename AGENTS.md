@@ -36,6 +36,10 @@ Nothing in the repo may identify the owner or describe their accounts, money, pe
   Radicale, Dovecot) skip elsewhere (test/needs.ts).
 - Tests run managers on fresh temp data dirs, port 0, with fakes (test/fake-*.ts, extractors/*/test). Nothing in a
   test reaches the network or a real account.
+- Flaky tests are fixed, not retried. A test waits for the exact thing it checks (the event, the rpc, the file) and
+  asserts on that, never on "the last call" or "the latest event" while background work (health probes, snapshots,
+  reconnects) can land in between. CI runs the test files a pull request adds or changes five times each
+  (`bun scripts/flake-check.ts`); run it before pushing.
 - Interfaces: after changing one, `bun scripts/gen-types.ts` (a test fails when types.generated.json is stale).
 - apps/android (the approver app) has its own check: `./gradlew testDebugUnitTest assembleDebug`.
 - Each kind has a doc in docs/; keep it true when the kind changes, and add one for a new kind.

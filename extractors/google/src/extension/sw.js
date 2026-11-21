@@ -9,11 +9,16 @@
  * its role (`page`, default 'calendar') and goes to that role's current port only (the newest: a reload or a
  * replacement takes over), never to every tab: a write must happen once. Commands of kind `tab.open` and `tab.reload`
  * are this worker's own: open a role's tab if it has none, or send it back to its start address (or close it and open
- * a new one), so the extractor can bring one page back without touching the other.
+ * a new one), so the extractor can bring one page back without touching the other; `tab.state` says how Chromium sees
+ * a role's tab. Each command handed to a page's port is reported up as `got` (at 'worker'), and the page reports it
+ * again when it arrives (at 'page'), so a command never answered says how far it got (packages/browser's
+ * page/worker-watch.js, put in below).
  *
  * Every frame a page sends up carries its port's role.
  */
 'use strict';
+
+/*@include worker-watch@*/
 
 const ROLES = ['calendar', 'gmail'];
 const NAMES = { calendar: 'Google Calendar', gmail: 'Gmail' };
@@ -172,6 +177,20 @@ async function tabCommand(id, cmd) {
   }
 }
 
+/**
+ * tab.state: what Chromium says of the role's tab (loading or not, discarded, frozen, active, its origin and path template),
+ * and how many ports its page has open, for a log line when the page stops answering.
+ */
+async function tabState(id, cmd) {
+  const role = ROLES.includes(cmd.page) ? cmd.page : 'calendar';
+  let t = null;
+  try {
+    t = await tabFor(role, cmd.tabId);
+  } catch (e) {}
+  const port = current(role);
+  workerWatch.answer(sendUp, id, t ? t.id : null, { portTab: port ? tabOf(port) : null, ports: ports.filter((p) => roleOf(p) === role).length });
+}
+
 // ------------------------------------------------------------ the socket
 async function connect() {
   if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
@@ -209,6 +228,10 @@ async function connect() {
       tabCommand(msg.id, cmd);
       return;
     }
+    if (cmd.kind === 'tab.state') {
+      tabState(msg.id, cmd);
+      return;
+    }
     const role = ROLES.includes(cmd.page) ? cmd.page : 'calendar';
     const port = current(role);
     if (!port) {
@@ -217,6 +240,8 @@ async function connect() {
     }
     try {
       port.postMessage(msg);
+      // Handed to the page's port: a command that is never answered was lost in the page, not on the way to it.
+      workerWatch.got(sendUp, msg.id);
     } catch (err) {
       sendUp({ t: 'reply', id: msg.id, ok: false, error: `the ${NAMES[role]} page went away` });
     }
@@ -260,7 +285,7 @@ chrome.runtime.onConnect.addListener(async (port) => {
   try {
     port.postMessage({
       t: 'settings',
-      settings: { authuser: String((cfg && cfg.authuser) ?? '0'), testOrigin: (cfg && cfg.testOrigin) || null, testMailOrigin: (cfg && cfg.testMailOrigin) || null },
+      settings: { authuser: String((cfg && cfg.authuser) ?? '0'), testOrigin: (cfg && cfg.testOrigin) || null, testMailOrigin: (cfg && cfg.testMailOrigin) || null, peopleApiBase: (cfg && cfg.peopleApiBase) || null, fetchMs: (cfg && cfg.fetchMs) || null },
     });
   } catch (e) {}
 });

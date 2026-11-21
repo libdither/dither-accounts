@@ -60,8 +60,18 @@ const until = async (f: () => unknown | Promise<unknown>, ms: number, what: stri
   console.log(`     (gave up waiting for ${what})`);
   return false;
 };
-const get = async (base: string, path: string) => (await fetch(base + path)).json() as Promise<any>;
-const post = (base: string, path: string, body: unknown) => fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json', origin: base }, body: JSON.stringify(body) });
+/** Both sit behind a login. This script reads the hub as a program, with the service token it writes to its data dir
+ * at its first start (dither-chat docs/login.md), and the manager as its CLI does, with <data>/cli.token and no Origin
+ * (auth.ts). Only each one's /api/health answers without them. The browser signs in to the manager's page itself. */
+const MGR_PASSWORD = `verify-${crypto.randomUUID()}`;
+const auth = (base: string): Record<string, string> => {
+  const file = base === HUB ? join(T, 'hub', 'api.token') : join(T, 'mgr', 'cli.token');
+  if (!existsSync(file)) return {};
+  const token = readFileSync(file, 'utf8').trim();
+  return base === HUB ? { authorization: `Bearer ${token}`, origin: base } : { 'x-dither-accounts-cli': token };
+};
+const get = async (base: string, path: string) => (await fetch(base + path, { headers: auth(base) })).json() as Promise<any>;
+const post = (base: string, path: string, body: unknown) => fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json', ...auth(base) }, body: JSON.stringify(body) });
 const testbed = (...a: string[]) => {
   const r = Bun.spawnSync(['bun', join(ROOT, 'extractors/matrix/testbed/testbed.ts'), ...a], { env: tbEnv, stdout: 'pipe', stderr: 'pipe' });
   if (r.exitCode !== 0) throw new Error(`testbed ${a[0]}: ${r.stderr.toString().slice(-400)}`);
@@ -97,6 +107,9 @@ try {
   check(!!general && tb.users?.quinn?.password, 'the testbed is up');
 
   mkdirSync(join(T, 'mgr'));
+  writeFileSync(join(T, 'mgr-password'), MGR_PASSWORD, { mode: 0o600 });
+  const pw = Bun.spawnSync(['bun', 'packages/manager/src/cli.ts', 'set-password', '--data', join(T, 'mgr'), '--file', join(T, 'mgr-password')], { cwd: ROOT, stdout: 'pipe', stderr: 'pipe' });
+  if (pw.exitCode !== 0) throw new Error(`set-password: ${pw.stderr.toString().slice(-300)}`);
   mgr = spawn(['bun', 'packages/manager/src/main.ts', '--data', join(T, 'mgr'), '--port', '8483', '--host', '127.0.0.1', '--web-dist', join(T, 'dist')], ROOT, { ...process.env, ...fakes }, 'manager.log');
   check(await until(async () => (await fetch(`${MGR}/api/health`)).ok, 20_000, 'the manager'), 'a fresh manager');
   mkdirSync(join(T, 'web'));
@@ -105,11 +118,16 @@ try {
   check(await until(async () => (await fetch(`${HUB}/api/health`)).ok, 30_000, 'the hub'), 'a fresh hub, in remote mode');
   await until(async () => (await get(MGR, '/api/state')).apps.some((a: any) => a.name === 'dither-chat'), 15_000, 'the hub registered');
   const app = (await get(MGR, '/api/state')).apps.find((a: any) => a.name === 'dither-chat');
-  for (const r of app.requests.filter((r: any) => r.state === 'pending')) await fetch(`${MGR}/api/requests/${r.id}/approve`, { method: 'POST', body: '{}' });
-  check(app.requests.length === 2, 'the hub asked for chat and for running its kinds; approved');
+  for (const r of app.requests.filter((r: any) => r.state === 'pending')) await fetch(`${MGR}/api/requests/${r.id}/approve`, { method: 'POST', headers: auth(MGR), body: '{}' });
+  check(['chat', 'accounts'].every((i) => app.requests.some((r: any) => r.interface === i)), 'the hub asked for chat and for running its kinds (among the rest); all approved', app.requests.map((r: any) => r.interface));
 
   browser = await launch();
   const p = browser.page;
+  // The page's login: sign in as a browser would, then hand the browser the session cookie.
+  const login = await fetch(`${MGR}/login`, { method: 'POST', redirect: 'manual', headers: { origin: MGR }, body: new URLSearchParams({ username: 'admin', password: MGR_PASSWORD }) });
+  const session = /dacc_session=([^;]+)/.exec(login.headers.get('set-cookie') ?? '')?.[1];
+  check(!!session, "signed in to the manager's page", session ? '' : login.status);
+  await p.send('Network.setCookie', { name: 'dacc_session', value: session, url: MGR, httpOnly: true });
   const text = (sel: string) => p.eval<string>(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? ''`);
   const attr = (sel: string, name: string) => p.eval<string | null>(`document.querySelector(${JSON.stringify(sel)})?.getAttribute(${JSON.stringify(name)}) ?? null`);
   const click = (sel: string) => p.eval(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) throw new Error('no ' + ${JSON.stringify(sel)}); e.click(); })()`);
@@ -117,15 +135,19 @@ try {
   const type = (sel: string, value: string) =>
     p.eval(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) throw new Error('no ' + ${JSON.stringify(sel)}); e.value = ${JSON.stringify(value)}; e.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   const paneId = () => p.eval<string | null>(`document.querySelector('[data-pane]')?.dataset.pane ?? null`);
-  /** Add a kind on the page; the id of the account it opens. */
-  const add = async (name: string, label: string, fields: Record<string, string> = {}) => {
+  /** Add a service on the page (its tile, its only way in, a nickname); the id of the account it opens. */
+  const add = async (service: string, nickname: string, fields: Record<string, string> = {}) => {
     const before = await paneId();
+    if (!(await p.eval<boolean>(`!!document.querySelector('[data-add-account]')`))) {
+      await p.goto(`${MGR}/#/accounts`);
+      await p.until(`!!document.querySelector('[data-add-account]')`, 8000);
+    }
     await click('[data-add-account]');
     await p.until(`!!document.querySelector('[data-add-dialog]')`, 3000);
-    await p.eval(`[...document.querySelectorAll('[data-add-dialog] .choice')].find((c) => c.querySelector('strong')?.textContent === ${JSON.stringify(name)}).querySelector('input').click()`);
+    await click(`[data-add-service="${service}"]`);
     await p.until(`!!document.querySelector('[data-add-confirm]')`, 3000);
-    await type('.add-form .field input', label);
-    for (const [k, v] of Object.entries(fields)) await type(`[data-add-field="${k}"]`, v);
+    await type('[data-add-nickname]', nickname);
+    for (const [k, v] of Object.entries(fields)) await type(`input[data-add-field="${k}"], [data-add-field="${k}"] input`, v);
     await click('[data-add-confirm]');
     await p.until(`!document.querySelector('[data-add-dialog]') && !!document.querySelector('[data-pane]') && document.querySelector('[data-pane]').dataset.pane !== ${JSON.stringify(before)}`, 8000);
     return (await paneId())!;
@@ -142,7 +164,7 @@ try {
   check(['Discord', 'Signal', 'Matrix', 'WhatsApp', 'Google'].every((n) => dialog.includes(n)), 'the add dialog offers the chat networks and Google');
   await p.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
   await p.until(`!document.querySelector('[data-add-dialog]')`, 3000);
-  const mx = await add('Matrix', 'Testbed Matrix', { homeserver: tb.baseUrl, userId: tb.users.quinn.userId, password: tb.users.quinn.password });
+  const mx = await add('matrix', 'Testbed Matrix', { homeserver: tb.baseUrl, userId: tb.users.quinn.userId, password: tb.users.quinn.password });
   if (shots) await p.shot(`${shots}/01-matrix-added.png`);
   check(await until(async () => (await mgrAccount(mx))?.online && (await mgrAccount(mx))?.status?.status === 'online', 60_000, 'Matrix online'), 'Matrix: signed in from the form, online on the page');
   const secret = JSON.parse(readFileSync(join(T, 'mgr', 'accounts', mx, 'secret.json'), 'utf8'));
@@ -162,7 +184,7 @@ try {
   check(await until(() => testbed('tail', 'general', '10').includes(`pageout${tag}`), 30_000, 'the sent message on the homeserver'), 'and it reaches the homeserver through the manager');
 
   // 2. Signal: link QR, a new one, a scan.
-  const sg = await add('Signal', 'Fake Signal');
+  const sg = await add('signal', 'Fake Signal');
   check(await p.until(`(document.querySelector('[data-qr]')?.dataset.qr ?? '').startsWith('sgnl://linkdevice')`, 30_000).then(() => true, () => false), 'Signal: the page shows its link QR');
   check((await p.eval<number>(`document.querySelector('[data-qr] svg')?.getBoundingClientRect().width ?? 0`)) > 100, 'drawn large enough to scan');
   if (shots) await p.shot(`${shots}/02-signal-qr.png`);
@@ -175,7 +197,7 @@ try {
   check(await until(async () => (await hubAccount(sg))?.status === 'online', 30_000, 'Signal online in the hub'), 'and in the hub');
 
   // 3. WhatsApp: QR, then a pairing code.
-  const wa = await add('WhatsApp', 'Fake WhatsApp');
+  const wa = await add('whatsapp', 'Fake WhatsApp');
   check(await p.until(`document.querySelector('[data-qr]')?.dataset.qr === '2@fake-qr'`, 30_000).then(() => true, () => false), 'WhatsApp: the page shows its QR');
   await type('[data-pair-phone]', '+15551234567');
   await p.eval(`document.querySelector('[data-pair-phone]').form.requestSubmit()`);
@@ -184,7 +206,7 @@ try {
   check(await until(async () => (await hubAccount(wa))?.attention?.detail?.pairCode === 'ABCD-1234', 15_000, 'the code in the hub'), 'the hub has the pairing code too');
 
   // 4. dither-chat's side, as its code is now.
-  const log = await (await fetch(`${HUB}/api/accounts/${mx}/log`)).text();
+  const log = await (await fetch(`${HUB}/api/accounts/${mx}/log`, { headers: auth(HUB) })).text();
   gap(log.length > 0, "the hub's log view shows the log of an account the page made", { chars: log.length });
 
   // 5. Remove the WhatsApp account on the page, with its directory.

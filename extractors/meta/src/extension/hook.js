@@ -30,10 +30,13 @@
 
   // ------------------------------------------------------------------ bridge
   /*@include main-world@*/
+  /*@include command-watch@*/
   const W = window;
   if (!cloak.once()) return;
   const post = (payload) => cloak.send(payload);
   const log = (level, msg) => post({ t: 'log', level, msg: String(msg).slice(0, 300) });
+  // Each command's `got`, page.state and a command still open after 20 s (packages/browser's command-watch.js).
+  const watch = commandWatch({ post, log });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const withTimeout = (p, ms, what) =>
     Promise.race([Promise.resolve(p), new Promise((_, rej) => setTimeout(() => rej(new Error(`${what} timed out`)), ms))]);
@@ -1818,10 +1821,13 @@
   cloak.onDown((p) => {
     if (p.t === 'settings') return void applySettings(p.settings);
     if (p.t !== 'cmd') return;
+    const done = watch.take(p);
+    if (!done) return;
     Promise.resolve()
       .then(() => runCommand(p.cmd || {}))
       .then((result) => post({ t: 'reply', id: p.id, ok: true, result }))
-      .catch((err) => post({ t: 'reply', id: p.id, ok: false, error: errText(err) }));
+      .catch((err) => post({ t: 'reply', id: p.id, ok: false, error: errText(err) }))
+      .finally(done);
   });
 
   post({ t: 'hook', page: location.origin + location.pathname });

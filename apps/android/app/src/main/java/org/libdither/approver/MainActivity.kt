@@ -41,16 +41,19 @@ class MainActivity : Activity() {
     private var justPaired: Pairing? = null
     private var pushMsg: String? = null
     private val onChange: () -> Unit = { render() }
-    /** The shown request's countdown, updated each second without rebuilding the view. */
-    private var countdown: Pair<TextView, Long>? = null
+    /** The shown requests' countdowns, updated each second without rebuilding the view. */
+    private val countdowns = mutableListOf<Pair<TextView, Long>>()
     private val tick = object : Runnable {
         override fun run() {
-            countdown?.let { (t, at) -> t.text = expiresIn(at) }
+            for ((t, at) in countdowns) t.text = expiresIn(at)
             Links.main.postDelayed(this, 1000)
         }
     }
 
-    private fun expiresIn(at: Long) = "Expires in: ${((at - System.currentTimeMillis()) / 1000).coerceAtLeast(0)} s"
+    private fun expiresIn(at: Long): String {
+        val s = ((at - System.currentTimeMillis()) / 1000).coerceAtLeast(0)
+        return "Expires in: " + if (s >= 60) "${s / 60} min ${s % 60} s" else "$s s"
+    }
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -126,7 +129,7 @@ class MainActivity : Activity() {
 
     private fun render() {
         renderTabs()
-        countdown = null
+        countdowns.clear()
         content.removeAllViews()
         when (tab) {
             "home" -> home()
@@ -138,7 +141,7 @@ class MainActivity : Activity() {
 
     private fun renderTabs() {
         tabs.removeAllViews()
-        val waiting = Approvals.pending.size
+        val waiting = Approvals.pending.size + Asks.pending.size
         for ((id, label) in listOf("home" to if (waiting > 0) "Requests ($waiting)" else "Requests", "pair" to "Pair", "keys" to "Passkeys", "log" to "Log")) {
             tabs.addView(Button(this, null, android.R.attr.borderlessButtonStyle).apply {
                 text = label
@@ -151,8 +154,9 @@ class MainActivity : Activity() {
     }
 
     private fun home() {
+        for (x in Asks.pending.sortedBy { it.a.ask.expires }) ask(x)
         val first = Approvals.pending.firstOrNull()
-        if (first != null) request(first) else text("Nothing waiting.", muted = true)
+        if (first != null) request(first) else if (Asks.pending.isEmpty()) text("Nothing waiting.", muted = true)
         if (Approvals.pending.size > 1) text("${Approvals.pending.size - 1} more waiting after this one.", muted = true)
 
         heading("Paired managers")
@@ -164,6 +168,7 @@ class MainActivity : Activity() {
             text(p.url, bold = true)
             text("This phone there: ${p.name.ifEmpty { "(no name)" }}, ${p.deviceId}, paired ${time(p.pairedAt)}", muted = true)
             text("Key fingerprint  ${p.fingerprint}", mono = true)
+            text(p.approvalFingerprint?.let { "Approval key     $it" } ?: "Approval key     not made yet (it needs a screen lock)", mono = true)
             text(if (p.forgotten) "The manager no longer knows this phone. Pair again." else "Link: ${Links.state(p.deviceId)}")
             row(button("Unpair", add = false) {
                 confirm("Unpair from ${p.url}?", "This phone stops answering it. Its passkeys stay until you delete them; remove the phone on the page too.") { Pairings.unpair(p); render() }
@@ -196,12 +201,73 @@ class MainActivity : Activity() {
         field("Approved for ${r.rpId} today", "${Store.signedToday(r.rpId)} times")
         x.credential?.let { field("Passkey", "${it.id.take(8)}…, used ${it.counter} times") }
         field("Manager", x.p.url)
-        countdown = text(expiresIn(r.expiresAt)) to r.expiresAt
+        countdowns += text(expiresIn(r.expiresAt)) to r.expiresAt
         x.note?.let { text(it) }
         row(
             button(if (x.busy) "Waiting…" else "Approve", add = false) { Approvals.approve(this, x); render() },
             button("Deny", add = false) { Approvals.deny(x) },
         )
+    }
+
+    /** An approval: what it is, who asks, the body and payload it signs over, a message, and one button per action. */
+    private fun ask(x: Asked) {
+        val d = x.a.display
+        heading("Approval: ${d.title}")
+        field("Kind", if (d.urgency == "normal") d.kind else "${d.kind}, urgency ${d.urgency}")
+        field("Asked by", d.asker)
+        field("Manager", x.p.url)
+        countdowns += text(expiresIn(x.a.ask.expires)) to x.a.ask.expires
+        if (d.body.isNotEmpty()) {
+            val body = TextView(this).apply {
+                text = d.body
+                typeface = Typeface.MONOSPACE
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                setTextIsSelectable(true)
+                setPadding(dp(8), dp(6), dp(8), dp(6))
+            }
+            val scroll = ScrollView(this).apply {
+                isNestedScrollingEnabled = true
+                isVerticalScrollBarEnabled = true
+                setBackgroundColor(0x14808080)
+                addView(body)
+            }
+            content.addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            // At most about a third of the screen; longer bodies scroll inside.
+            val max = resources.displayMetrics.heightPixels / 3
+            scroll.post { if (scroll.height > max) scroll.layoutParams = scroll.layoutParams.apply { height = max } }
+        }
+        if (d.payloadLines.isNotEmpty()) {
+            text("Payload (signed)", muted = true)
+            text(d.payloadLines.joinToString("\n"), mono = true).setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+        }
+        val msg = EditText(this).apply {
+            hint = "A message with the answer (optional)"
+            setText(x.message)
+            filters = arrayOf(android.text.InputFilter.LengthFilter(Statement.MAX_MESSAGE))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) { x.message = s?.toString().orEmpty() }
+            })
+        }
+        content.addView(msg)
+        x.note?.let { text(it) }
+        val wrap = android.widget.GridLayout(this).apply { columnCount = 3 }
+        for (act in d.actions.sortedBy { it.id == "deny" }) {
+            wrap.addView(Button(this).apply {
+                text = when {
+                    x.busy && act.signed -> "Waiting…"
+                    act.signed && act.id != "deny" -> "${act.label} 🔒"
+                    else -> act.label
+                }
+                isAllCaps = false
+                isEnabled = !x.busy
+                setOnClickListener { Asks.act(this@MainActivity, x, act); render() }
+            })
+        }
+        content.addView(wrap)
+        if (d.actions.any { it.signed && it.id != "deny" }) text("🔒 signs with this phone's approval key, after your fingerprint or PIN.", muted = true)
     }
 
     private fun pair() {

@@ -142,7 +142,7 @@ export function callMessageText(m: RawMessage, selfId: string | undefined, who: 
 /**
  * What the account can do with calls beyond joining them, by the client modules the hook found: callStates once the
  * dispatcher is there, voicePresence with the voice state store, declineCall and ringCalls with the call module, and
- * what a call it is in offers: callVolume, callInput, stage and soundboard.
+ * what a call it is in offers: callVolume, callInput, stage, soundboard, callVideo and watchStreams.
  */
 export function callCapabilities(finders: Record<string, boolean>): P.Capability[] {
   const out: P.Capability[] = [];
@@ -154,5 +154,8 @@ export function callCapabilities(finders: Record<string, boolean>): P.Capability
   if (finders.InputSettings && finders.MediaEngineStore) out.push('callInput');
   if (finders.Rest && finders.VoiceStateStore) out.push('stage');
   if (finders.Rest && finders.SoundboardStore) out.push('soundboard');
+  // Video over the bridge (hook.js "video over the bridge"): the camera button's setting, and the Go Live viewer.
+  if (finders.AudioActions && finders.MediaEngineStore) out.push('callVideo');
+  if (finders.StreamActions) out.push('watchStreams');
   return out;
 }

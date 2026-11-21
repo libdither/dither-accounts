@@ -5,7 +5,8 @@
   "type": "module",
   "workspaces": [
     "packages/*",
-    "extractors/*"
+    "extractors/*",
+    "apps/desk-signer"
   ],
   "scripts": {
     "start": "bun packages/manager/src/main.ts",
@@ -31,6 +32,7 @@
     "@preact/signals": "^2.11.4",
     "@dither-chat/protocol": "workspace:*",
     "@novnc/novnc": "^1.7.0",
-    "uqr": "^0.1.3"
+    "uqr": "^0.1.3",
+    "@dither-accounts/approval": "workspace:*"
   }
 }

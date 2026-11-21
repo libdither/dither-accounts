@@ -5,7 +5,8 @@ exports as `statements` files ([statements.md](statements.md)): History (each br
 Realized Gain/Loss, as the CSV files those pages' **Export** buttons download. Exports, not printed pages:
 schwab.com offers no PDF of those pages to download, only the print, and a print is neither reproducible nor
 something an extension can make. **Read only**: the only controls it presses are the account picker, the date range,
-Search and Export; it cannot trade, transfer or change a setting.
+Search and Export; it cannot trade, transfer or change a setting. Its browser is also lent through the `browser`
+interface ([browser.md](browser.md)), which won't press a button that buys, transfers or deletes below `manage`.
 
 | Schwab page | File | dither-finance's parser |
 |---|---|---|
@@ -148,6 +149,12 @@ cross-origin frame, and so does the hook). `lastRefusal`, `page` and the log sho
 1. On the accounts page, Add account → Money → Charles Schwab; approve your app's `statements` read on it.
 2. Sign in in its live view ([What you do](#what-you-do)); the first pull backfills last year and this year.
 3. Compare the first pull's files with what your app already has for those accounts and days.
+
+## A command the page does not answer
+
+Each command that times out is told apart in the log at once, in one line: `the Schwab page's silence: request …`, with
+how far the request got, how Chromium sees the tab, and nothing from the page: the driver runs each command itself, so the line says whether it took the command, and how Chromium sees the command's tab. See [page-silence.md](page-silence.md); command names
+and path templates only, never a body or an id.
 
 ## Tests
 

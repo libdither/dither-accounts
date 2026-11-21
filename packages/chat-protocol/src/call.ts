@@ -65,7 +65,50 @@ export interface CallState {
   participants: CallParticipant[];
   /** Present when the call is a stage. */
   stage?: CallStage;
+  /** Bridge mode: whose video each of the bridge's receive slots carries now (BRIDGE_MIDS.video). */
+  video?: CallVideo[];
+  /** The account's own client in the call, as it stands (bridge mode: the client that sends; direct mode: its gateway flags). */
+  self?: CallSelf;
 }
+
+/** One remote video on one of the bridge's receive slots. */
+export interface CallVideo {
+  /** The slot's mid, one of BRIDGE_MIDS.video. */
+  slot: string;
+  /** Whose: a native user id from the adapter, a hub identity id from the hub. */
+  who: string;
+  /** Their camera, or their Go Live. */
+  source: 'camera' | 'stream';
+}
+
+/** The account's own client in a call. */
+export interface CallSelf {
+  /** Its voice connection is up: media flows (bridge mode: the client's own connection to the voice server). */
+  connected: boolean;
+  muted: boolean;
+  deafened: boolean;
+  /** Sending the device's camera. */
+  camera?: boolean;
+  /** Sharing the device's screen (Go Live). */
+  streaming?: boolean;
+  /** Native user ids (hub identity ids from the hub) whose Go Live it watches. */
+  watching?: string[];
+}
+
+/**
+ * Bridge mode's peer connection, as the device offers it: each kind of media on a fixed m-line, so turning a camera on
+ * or a remote video changing never renegotiates. The device sends its microphone on `audio` and gets the call's mix
+ * back on it; it sends its camera on `camera`, its screen on `screen` and the screen's sound on `screenAudio`; the
+ * account's client sends others' video on the `video` slots, and CallState.video says whose is on which.
+ */
+export const BRIDGE_MIDS = { audio: '0', camera: '1', screen: '2', screenAudio: '3', video: ['4', '5', '6', '7'] } as const;
+
+/**
+ * The call sounds a device plays, named as Discord names its own (the hub serves Discord's recordings when it has them,
+ * docs/calls.md "Sounds"; the device makes its own otherwise).
+ */
+export const CALL_SOUNDS = ['user_join', 'user_leave', 'user_moved', 'disconnect', 'mute', 'unmute', 'deafen', 'undeafen', 'camera_on', 'camera_off', 'stream_started', 'stream_ended', 'stream_user_joined', 'stream_user_left', 'reconnect', 'call_calling', 'call_ringing'] as const;
+export type CallSoundName = (typeof CALL_SOUNDS)[number];
 
 /** A person's volume goes up to twice as loud, as Discord's own slider does. */
 export const VOLUME_MAX = 200;
@@ -138,6 +181,10 @@ export type CallClientMessage =
   | { op: 'sounds' }
   /** Play one of them. */
   | { op: 'sound'; sound: string; guild: string }
+  /** Bridge mode (capability 'callVideo'): the device's camera and screen are on or off (sent on BRIDGE_MIDS). */
+  | { op: 'video'; camera: boolean; screen: boolean; screenAudio?: boolean }
+  /** Bridge mode (capability 'watchStreams'): watch someone's Go Live, or stop. `user`: a hub identity id. */
+  | { op: 'watch'; user: string; on: boolean }
   /** Bridge mode's WebRTC offer, answer and candidates. The hub passes it through. */
   | { op: 'signal'; data: unknown }
   /** Direct mode: speaking state and similar news the sandbox's view of the call should reflect. */

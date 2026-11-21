@@ -16,6 +16,8 @@ import { inetSockets, rfbBanner, x11vncs } from '../packages/browser/test/inet.t
 import { type FakeGoogle, type FakeMessage, fakeEml, GMAIL_ROWS, startFakeGoogle } from './fake-google.ts';
 
 const LA = 'America/Los_Angeles';
+/** How long the hook gives a Gmail call here before it cuts it off (testFetchMs; 20 s live). */
+const TEST_FETCH_MS = 5000;
 const PRIMARY = 'pat@example.com';
 const WEB = {
   sapisid: 'sapisid-that-must-not-leak',
@@ -27,9 +29,11 @@ const WEB = {
   labels: ['INBOX', 'secret-label-name', 'another-secret-label'],
   /** What the stand-in Gmail app's rows and /sync answers are full of (fake-gmail-page.js). */
   mailMark: 'Mk#7731',
+  /** The key Gmail's config puts beside Google's people API: the people suggestions take it alone. */
+  peopleKey: `AIza${'Q'.repeat(35)}`,
 };
 /** What the Gmail side holds that must never reach a log, a status, the probe's answer or the recorded shapes. */
-const MAIL_SECRETS = [WEB.mailKey, WEB.mailEmail, 'secret-label-name', 'another-secret-label', 'secret-subject-line', '424242', WEB.mailMark, 'Mk%237731'];
+const MAIL_SECRETS = [WEB.mailKey, WEB.mailEmail, 'secret-label-name', 'another-secret-label', 'secret-subject-line', '424242', WEB.mailMark, 'Mk%237731', WEB.peopleKey];
 
 let bins: ReturnType<typeof resolveBins> | null = null;
 try {
@@ -48,6 +52,7 @@ let signedOut: string;
 let mailOff: string;
 const events: Record<string, any[]> = {};
 const saved = process.env.DITHER_GOOGLE_BACKOFF_MS;
+const savedGap = process.env.DITHER_GOOGLE_RELOAD_GAP_MS;
 
 const until = async (f: () => boolean | Promise<boolean>, ms: number, what: string) => {
   const end = Date.now() + ms;
@@ -59,7 +64,7 @@ const until = async (f: () => boolean | Promise<boolean>, ms: number, what: stri
 };
 const statusOf = (account: string) => events[account]?.filter((e) => e.t === 'status').at(-1);
 const layerOf = (account: string, name: string) => statusOf(account)?.layers?.find((l: any) => l.name === name);
-const config = (authuser: number, more: Record<string, unknown> = {}) => ({ authuser, testOrigin: fake.url, apiBase: fake.url, testMailOrigin: fake.mailUrl, gmailApiBase: fake.mailUrl, ...more });
+const config = (authuser: number, more: Record<string, unknown> = {}) => ({ authuser, testOrigin: fake.url, apiBase: fake.url, testMailOrigin: fake.mailUrl, gmailApiBase: fake.mailUrl, peopleApiBase: fake.mailUrl, ...more });
 const accountDir = (id: string) => m!.store.account(id)!.dir;
 const logOf = (id: string) => readFileSync(join(accountDir(id), 'adapter.log'), 'utf8');
 /** The Gmail probe, asked for as an operator would (a file in the account's directory); its answer. */
@@ -97,6 +102,8 @@ function processesOf(ids: string[]): number[] {
 beforeAll(async () => {
   if (!bins) return;
   process.env.DITHER_GOOGLE_BACKOFF_MS = '1';
+  // A silent page's second reload comes at once here, not after the first gap (reload.ts; its back-off: google-transport.test.ts).
+  process.env.DITHER_GOOGLE_RELOAD_GAP_MS = '0';
   fake = startFakeGoogle({ web: WEB });
   fake.addCalendar({ id: PRIMARY, summary: PRIMARY, timeZone: LA, accessRole: 'owner', primary: true, selected: true, backgroundColor: '#9fe1e7' });
   dir = mkdtempSync(join(tmpdir(), 'dacc-gweb-'));
@@ -107,7 +114,7 @@ beforeAll(async () => {
   await until(() => app.connected, 5000, 'the app connected');
   // The signed-in account most tests use, made here rather than in the first test, so that any one of them runs alone
   // (bun test -t): each test below that uses it starts from it up, its Gmail page too.
-  signedIn = (await app.admin({ do: 'create', kind: 'google', label: 'Google (test)', config: config(0, { gmailPollSeconds: 2 }) })).id;
+  signedIn = (await app.admin({ do: 'create', kind: 'google', label: 'Google (test)', config: config(0, { gmailPollSeconds: 2, testFetchMs: TEST_FETCH_MS }) })).id;
   await until(() => statusOf(signedIn)?.status === 'online' && statusOf(signedIn)?.details?.email === WEB.email && statusOf(signedIn)?.details?.endpointsSeen === 2, 60_000, 'online');
   await until(() => layerOf(signedIn, 'Gmail page')?.state === 'ok', 30_000, 'the Gmail page up');
 }, 120_000);
@@ -126,6 +133,8 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true });
   if (saved === undefined) delete process.env.DITHER_GOOGLE_BACKOFF_MS;
   else process.env.DITHER_GOOGLE_BACKOFF_MS = saved;
+  if (savedGap === undefined) delete process.env.DITHER_GOOGLE_RELOAD_GAP_MS;
+  else process.env.DITHER_GOOGLE_RELOAD_GAP_MS = savedGap;
 }, 30_000);
 
 it(
@@ -133,6 +142,8 @@ it(
   async () => {
     await until(() => statusOf(signedIn)?.status === 'online' && statusOf(signedIn)?.details?.email === WEB.email && statusOf(signedIn)?.details?.endpointsSeen === 2, 60_000, 'online');
     await until(() => layerOf(signedIn, 'Gmail page')?.state === 'ok', 30_000, 'the Gmail page up');
+    // The name comes from the page's account button, which the hook reads on its own round after signing in.
+    await until(() => !!statusOf(signedIn)?.self?.addresses?.[0]?.name, 10_000, "the Gmail page's account name");
     const st = statusOf(signedIn);
     expect(st.attention).toBeNull();
     // Apps get the live view's size, not its socket (an app opens it through the manager); the manager keeps the socket,
@@ -180,6 +191,9 @@ it(
       backgroundLane: true,
       backgroundStopped: null,
       readsMarkRead: false,
+      // Suggesting people as Gmail's To field does.
+      contacts: true,
+      contactsNote: null,
     });
     expect(layerOf(signedIn, 'Gmail page')).toEqual({ name: 'Gmail page', state: 'ok', note: 'hook up, signed in', interface: 'mail' });
     // Calendar's chain as it was, then the Gmail page, which it does not rest on: each says whose it is alone.
@@ -193,6 +207,7 @@ it(
       ['Gmail page', 'ok', 'mail'],
       ['Gmail protocol', 'waiting', 'mail'],
       ['Gmail background', 'ok', 'mail'],
+      ['Gmail canary', 'off', 'mail'],
     ]);
     expect(layerOf(signedIn, 'Gmail background')).toEqual({ name: 'Gmail background', state: 'ok', note: 'idle', interface: 'mail' });
     expect([fake.pageLoads('calendar', 0), fake.pageLoads('gmail', 0)]).toEqual([1, 1]);
@@ -264,23 +279,29 @@ it(
   'the Gmail API probe: asked for with a file, answered in probe-gmail.json with statuses and no values',
   async () => {
     const r = await probeGmail(signedIn);
-    expect(r).toMatchObject({ origin: fake.mailUrl, api: fake.mailUrl, page: { tab: true, hook: true, signedIn: true, keys: ['page-html'] }, accepted: true, error: null });
-    // No key, then the key in the Gmail page's HTML; each with the plain and the _u hash. The fake takes the key and a
-    // hash made with the Gmail page's own origin, and refuses _u.
+    expect(r).toMatchObject({ origin: fake.mailUrl, api: fake.mailUrl, page: { tab: true, hook: true, signedIn: true, keys: ['page-html', 'page-html'] }, accepted: true, error: null });
+    // No key, then the two keys in the Gmail page's HTML (the Gmail one, then the one its config gives the people
+    // suggestions); each with the plain and the _u hash. The fake takes the first key and a hash made with the Gmail
+    // page's own origin, and refuses _u and the other key.
     const rows = r.results.map((x: any) => [x.endpoint, x.key, x.auth, x.status, x.googleStatus ?? null, x.reason ?? null]);
+    const other = ['page-html', 400, 'INVALID_ARGUMENT', 'badRequest'];
     expect(rows).toEqual([
       ['profile', 'none', 'plain', 403, 'PERMISSION_DENIED', 'forbidden'],
       ['profile', 'none', 'u', 403, 'PERMISSION_DENIED', 'forbidden'],
       ['profile', 'page-html', 'plain', 200, null, null],
       ['profile', 'page-html', 'u', 401, 'UNAUTHENTICATED', 'authError'],
+      ['profile', other[0], 'plain', ...other.slice(1)],
+      ['profile', other[0], 'u', ...other.slice(1)],
       ['labels', 'none', 'plain', 403, 'PERMISSION_DENIED', 'forbidden'],
       ['labels', 'none', 'u', 403, 'PERMISSION_DENIED', 'forbidden'],
       ['labels', 'page-html', 'plain', 200, null, null],
       ['labels', 'page-html', 'u', 401, 'UNAUTHENTICATED', 'authError'],
+      ['labels', other[0], 'plain', ...other.slice(1)],
+      ['labels', other[0], 'u', ...other.slice(1)],
     ]);
     expect(r.results[0].message).toStartWith("Method doesn't allow unregistered callers");
     expect(r.results[2].fields).toEqual(['emailAddress', 'historyId', 'messagesTotal', 'threadsTotal']);
-    expect(r.results[6].labels).toBe(3);
+    expect(r.results[8].labels).toBe(3);
     expect(r.acceptedWith).toEqual([
       { endpoint: 'profile', key: 'page-html', auth: 'plain' },
       { endpoint: 'labels', key: 'page-html', auth: 'plain' },
@@ -288,7 +309,7 @@ it(
     // Field names and a count: no address, label name, key, cookie or number from the mailbox.
     const text = readFileSync(join(accountDir(signedIn), 'probe-gmail.json'), 'utf8');
     for (const secret of [...MAIL_SECRETS, WEB.sapisid, WEB.email, 'messagesTotal": ', 'historyId": ']) expect(text).not.toContain(secret);
-    expect(fake.mailCalls.filter((c) => c.startsWith('GET /gmail/v1/')).length).toBe(8);
+    expect(fake.mailCalls.filter((c) => c.startsWith('GET /gmail/v1/')).length).toBe(12);
     await until(() => String(statusOf(signedIn)?.details?.gmailProbe).startsWith('accepted ('), 5000, 'the probe in the details');
     expect(logOf(signedIn)).toContain('gmail probe: profile, key page-html, plain hash: 200 fields emailAddress,historyId,messagesTotal,threadsTotal');
   },
@@ -439,6 +460,8 @@ it(
     const before = starts();
     const loads = { calendar: fake.pageLoads('calendar', 0), gmail: fake.pageLoads('gmail', 0) };
     fake.stall('calendar', 'until-reload');
+    // The reload's new page comes 3 s late, so a call made in that moment would reach the old page (2026-11-18).
+    fake.slowLoad('calendar', 3000);
     const t0 = Date.now();
     const first = app.call(googleCalendar, signedIn, 'calendar.calendarList.list', {}).catch((x: any) => x) as Promise<CallFailed>;
     // Meanwhile the Gmail page answers as ever: the probe runs through while the Calendar call hangs.
@@ -462,6 +485,22 @@ it(
     }
     // Two in a row: the Calendar tab, and only it, is sent back to its start page.
     await until(() => logOf(signedIn).includes('the Calendar page did not answer 2 requests in a row; reloading its tab, and only that one'), 10_000, 'the reload');
+    // A call made while the tab is being reloaded waits for the new page: it is not sent to the old one, whose unload
+    // would cut its fetch ("Failed to fetch").
+    expect(fake.pageLoads('calendar', 0)).toBe(loads.calendar);
+    const during = await app.call(googleCalendar, signedIn, 'calendar.calendarList.list', {}).catch((x: any) => x);
+    expect(during.message).toBeUndefined();
+    expect(during.items.length).toBeGreaterThan(0);
+    // Before that, each silence was told apart: the page had the request, its fetch was still open (the hook said so at
+    // 20 s, and again when asked without the network), and the tab was neither discarded nor frozen. Each line has its time.
+    const lines = logOf(signedIn).split('\n');
+    const silences = lines.filter((l) => l.includes("the Calendar page's silence: request received by the page, which never answered; the hook answers without the network"));
+    expect(silences.length).toBeGreaterThanOrEqual(2);
+    const said = JSON.parse(silences[0]!.slice(silences[0]!.indexOf(' {') + 1));
+    expect(said).toMatchObject({ request: 'gfetch', tab: { discarded: false, status: 'complete' }, hook: { visibility: 'visible', wasDiscarded: false } });
+    expect(said.hook.open.map((o: any) => o.what)).toContain(`gfetch GET ${new URL(fake.url).host}/calendar/v3/users/me/calendarList`);
+    expect(lines.some((l) => /^\d{4}-\d\d-\d\dT[\d:.]+Z \[warn\] \[hook\] gfetch GET \S+\/calendar\/v3\/users\/me\/calendarList still open after 20 s/.test(l))).toBe(true);
+    expect(logOf(signedIn)).not.toContain(WEB.sapisid);
     await until(() => fake.pageLoads('calendar', 0) === loads.calendar + 1, 15_000, 'the Calendar page loaded again');
     await until(() => logOf(signedIn).includes('the Calendar tab was sent back to its start page'), 10_000, 'the reload done');
     // It answers again.
@@ -641,6 +680,93 @@ it(
 );
 
 it(
+  "mail.send with an idempotencyKey: sent once however often it is asked, at once or after; a refused key may try again; a key whose send may have gone is refused unsure",
+  async () => {
+    await until(() => layerOf(signedIn, 'Gmail page')?.state === 'ok', 30_000, 'the Gmail page up');
+    const msg = { to: [{ email: 'ann@example.org', name: 'Ann Lee' }], subject: `Once only ${WEB.mailMark}`, text: `one copy ${WEB.mailMark}` };
+    const before = fake.gmail.sent.length;
+    const [a, b] = await Promise.all([mailCall('mail.send', { ...msg, idempotencyKey: 'once-1' }), mailCall('mail.send', { ...msg, idempotencyKey: 'once-1' })]);
+    expect(b).toEqual(a);
+    expect(await mailCall('mail.send', { ...msg, idempotencyKey: 'once-1' })).toEqual(a);
+    expect(fake.gmail.sent.length).toBe(before + 1);
+    expect(a).toEqual({ messageId: fake.gmail.sent.at(-1)!.messageId, sentId: fake.gmail.sent.at(-1)!.id });
+    // Refused before anything went (another From): the key is forgotten, and the same key sends.
+    expect(((await mailCall('mail.send', { ...msg, from: 'other@example.org', idempotencyKey: 'once-2' }).catch((x) => x)) as CallFailed).code).toBe('from');
+    await mailCall('mail.send', { ...msg, idempotencyKey: 'once-2' });
+    expect(fake.gmail.sent.length).toBe(before + 2);
+    // A send that started and never said how it ended (the extractor stopped mid-send): refused, nothing sent.
+    const keys = join(accountDir(signedIn), 'send-keys.json');
+    const kept = JSON.parse(readFileSync(keys, 'utf8'));
+    kept.keys['once-3'] = { at: Date.now(), state: 'started' };
+    writeFileSync(keys, JSON.stringify(kept), { mode: 0o600 });
+    const e = (await mailCall('mail.send', { ...msg, idempotencyKey: 'once-3' }).catch((x) => x)) as CallFailed;
+    expect([e.code, e.status]).toEqual(['unsure', 504]);
+    expect(fake.gmail.sent.length).toBe(before + 2);
+  },
+  120_000,
+);
+
+it(
+  "mail.contacts: what Gmail's To field suggests, through the page with the key in Gmail's config, beside mail; another layout refused",
+  async () => {
+    await until(() => layerOf(signedIn, 'Gmail page')?.state === 'ok', 30_000, 'the Gmail page up');
+    await until(() => statusOf(signedIn)?.details?.contacts === true, 10_000, 'details.contacts');
+    expect(statusOf(signedIn).details.contactsNote).toBeNull();
+    const reloads = statusOf(signedIn).details.gmailReloads;
+    const calls = () => fake.people.calls.length;
+    const n0 = calls();
+    expect(await mailCall('mail.contacts', { query: '   ' })).toEqual({ contacts: [] });
+    expect(calls()).toBe(n0);
+    // The fake answers in the recorded layout: a person with no name, an address twice, a name that is the address, a group.
+    const a = await mailCall('mail.contacts', { query: 'a' });
+    expect(a.contacts).toEqual([
+      { email: 'ann.lee@example.com', name: 'Ann Lee' },
+      { email: 'alice@example.org', name: null },
+      { email: 'albert@example.net', name: null },
+      { email: 'carol@example.com', name: 'Carol Ames' },
+    ]);
+    // The key Gmail's config names, the first time: no other key of the page's was tried (the fake refuses them).
+    expect(fake.people.calls.slice(n0)).toEqual(['ok']);
+    expect((await mailCall('mail.contacts', { query: 'A', limit: 2 })).contacts.map((c: any) => c.email)).toEqual(['ann.lee@example.com', 'alice@example.org']);
+    expect(calls()).toBe(n0 + 1); // the minute's cache
+    // Keystrokes beside mail: a list page and suggestions at once, all answered.
+    const [list, ...sug] = await Promise.all([mailCall('mail.list', { mailboxId: '^i', limit: 5 }), mailCall('mail.contacts', { query: 'b' }), mailCall('mail.contacts', { query: 'c' }), mailCall('mail.contacts', { query: 'stone' })]);
+    expect(list.messages.length).toBe(5);
+    expect(sug.map((s) => s.contacts.map((c: any) => c.email))).toEqual([['bob.stone@example.com'], ['carol@example.com'], ['bob.stone@example.com']]);
+    // Another layout: 502 and why, details.contacts false; the next good answer puts it back.
+    fake.people.layout = 'swapped';
+    try {
+      const e = (await mailCall('mail.contacts', { query: 'al' }).catch((x) => x)) as CallFailed;
+      expect([e.code, e.status]).toEqual(['failed', 502]);
+      expect(e.message).toBe("Gmail's people suggestions answer is not laid out as this extractor knows it (at json[0][0][0][0][0][1][0]: expected an address, got a list of 2); nothing was returned rather than possibly wrong people");
+      await until(() => statusOf(signedIn)?.details?.contacts === false, 5000, 'details.contacts false');
+      expect(statusOf(signedIn).details.contactsNote).toBe(e.message);
+      // Mail does not rest on it.
+      expect(layerOf(signedIn, 'Gmail protocol').state).toBe('ok');
+    } finally {
+      fake.people.layout = 'normal';
+    }
+    expect((await mailCall('mail.contacts', { query: 'car' })).contacts).toEqual([{ email: 'carol@example.com', name: 'Carol Ames' }]);
+    await until(() => statusOf(signedIn)?.details?.contacts === true, 5000, 'details.contacts again');
+    // Google busy: 503 unavailable. Google slower than the hook waits (6 s): 504, within the op's 10 s.
+    fake.people.fails.push(503);
+    const busy = (await mailCall('mail.contacts', { query: 'zz' }).catch((x) => x)) as CallFailed;
+    expect([busy.code, busy.status]).toEqual(['unavailable', 503]);
+    fake.people.delays.push(7000);
+    const t0 = Date.now();
+    const late = (await mailCall('mail.contacts', { query: 'zy' }).catch((x) => x)) as CallFailed;
+    expect([late.code, late.status]).toEqual(['failed', 504]);
+    expect(Date.now() - t0).toBeLessThan(9000);
+    // The hook answered (it gave up on Google itself): not a silence of the page's, so no reload.
+    expect(statusOf(signedIn).details.gmailReloads).toBe(reloads);
+    // Never a query or a person in the log.
+    const log = logOf(signedIn);
+    for (const x of ['ann.lee', 'Ann Lee', 'Carol', 'alice@', 'stone']) expect(log).not.toContain(x);
+  },
+  60_000,
+);
+
+it(
   'a Gmail layout the extractor does not know: refused with 502 and a plain sentence, nothing returned, the Gmail protocol layer failed; ok again after',
   async () => {
     fake.gmail.layout('swapped');
@@ -648,7 +774,8 @@ it(
       const e = (await mailCall('mail.list', { mailboxId: '^i', limit: 5 }).catch((x) => x)) as CallFailed;
       expect([e.code, e.status]).toEqual(['failed', 502]);
       bvRefused++;
-      expect(e.message).toBe("Gmail's list and search (bv) answer is not laid out as this extractor knows it (at json[2][0][0][2]: expected the row's date in ms (13 digits), got an id); nothing was returned rather than possibly wrong mail");
+      // Every row failing alike: a changed layout, refused whole (not that many bad rows).
+      expect(e.message).toMatch(/^Gmail's list and search \(bv\) answer is not laid out as this extractor knows it \(at json\[2\]\[0\]\[0\]\[2\]: expected the row's date in ms \(13 digits\), got an id, and (\d+) of \1 records failed\); nothing was returned rather than possibly wrong mail$/);
       await until(() => layerOf(signedIn, 'Gmail protocol')?.state === 'failed', 5000, 'the layer failed');
       expect(layerOf(signedIn, 'Gmail protocol').note).toContain("bv: at json[2][0][0][2]: expected the row's date in ms (13 digits), got an id");
       // Calendar does not rest on it.
@@ -659,6 +786,26 @@ it(
     }
     expect((await mailCall('mail.list', { mailboxId: '^i', limit: 5 })).messages.length).toBe(5);
     await until(() => layerOf(signedIn, 'Gmail protocol')?.state === 'ok', 5000, 'the layer ok again');
+  },
+  60_000,
+);
+
+it(
+  "a Gmail call that hangs is cut off in the page: it fails as itself, not as the page's silence, and no reload",
+  async () => {
+    await until(() => layerOf(signedIn, 'Gmail page')?.state === 'ok', 30_000, 'the Gmail page up');
+    const reloads = statusOf(signedIn).details.gmailReloads;
+    const logged = logOf(signedIn).length;
+    // The next list call (bv) hangs on Gmail's side well past the hook's cut-off; the watch's s calls go on.
+    fake.gmail.delayNext(TEST_FETCH_MS * 3, 1, 'bv');
+    const e = (await mailCall('mail.list', { mailboxId: '^i', limit: 5 }).catch((x) => x)) as CallFailed;
+    expect(e.status).toBe(503);
+    expect(e.message).toBe('the Gmail page could not make the call (timeout)');
+    // The page answered (Gmail did not): not counted as its silence.
+    expect(logOf(signedIn).slice(logged)).not.toContain('the Gmail page did not answer');
+    expect(statusOf(signedIn).details.gmailReloads).toBe(reloads);
+    expect(layerOf(signedIn, 'Gmail page').state).toBe('ok');
+    expect((await mailCall('mail.list', { mailboxId: '^i', limit: 5 })).messages.length).toBe(5);
   },
   60_000,
 );
@@ -723,7 +870,9 @@ it(
     expect(layerOf(mailOff, 'Gmail protocol')).toEqual({ name: 'Gmail protocol', state: 'off', note: 'no Gmail tab', interface: 'mail' });
     expect(layerOf(mailOff, 'Gmail background')).toEqual({ name: 'Gmail background', state: 'off', note: 'no Gmail tab', interface: 'mail' });
     expect(statusOf(mailOff).details.backgroundLane).toBeUndefined();
-    expect(statusOf(mailOff).details).toMatchObject({ writes: [], canSend: false, sendNote: 'This account reads no mail (mail: false in its config)' });
+    expect(statusOf(mailOff).details).toMatchObject({ writes: [], canSend: false, sendNote: 'This account reads no mail (mail: false in its config)', contacts: false, contactsNote: 'this account reads no mail' });
+    const none = (await app.call(mailIface, mailOff, 'mail.contacts', { query: 'ann' }).catch((x: any) => x)) as CallFailed;
+    expect([none.code, none.status]).toEqual(['failed', 501]);
     expect(fake.pageLoads('gmail', 2)).toBe(0);
     expect(logOf(mailOff)).not.toContain('Gmail tab');
     await app.admin({ do: 'stop', account: mailOff });
@@ -757,6 +906,11 @@ it(
     expect([bg.code, bg.status]).toEqual(['paused', 503]);
     const fg = (await app.call(mailIface, signedOut, 'mail.list', { mailboxId: '^i' }).catch((x: any) => x)) as CallFailed;
     expect([fg.code, fg.status]).toEqual(['failed', 401]);
+    // Suggestions: not now, and why; an empty query still answers.
+    expect(statusOf(signedOut).details).toMatchObject({ contacts: false, contactsNote: 'Google is not signed in; sign in in the live view' });
+    const sug = (await app.call(mailIface, signedOut, 'mail.contacts', { query: 'ann' }).catch((x: any) => x)) as CallFailed;
+    expect([sug.code, sug.status]).toEqual(['unavailable', 503]);
+    expect(await app.call(mailIface, signedOut, 'mail.contacts', { query: '' })).toEqual({ contacts: [] });
   },
   90_000,
 );
@@ -765,7 +919,7 @@ it('no cookie, key, query or event content in the logs or the statuses', () => {
   // The statuses and other events (mail.arrived carries a message, as it should, to apps with a mail grant).
   const said = JSON.stringify(Object.values(events).map((evs) => evs.filter((e) => !String(e.t).startsWith('mail.'))));
   const logs = [signedIn, signedOut, mailOff].filter(Boolean).map((id) => readFileSync(join(m!.store.account(id)!.dir, 'adapter.log'), 'utf8')).join('\n');
-  for (const secret of [WEB.sapisid, WEB.pageKey, WEB.htmlKey, 'secret-query', 'secret-hash', 'page-own-secret-body', 'Dinner', "Luigi's", ...MAIL_SECRETS, fake.gmail.xsrf, fake.gmail.ik, 'Plans', 'Person']) {
+  for (const secret of [WEB.sapisid, WEB.pageKey, WEB.htmlKey, 'secret-query', 'secret-hash', 'page-own-secret-body', 'Dinner', "Luigi's", ...MAIL_SECRETS, fake.gmail.xsrf, fake.gmail.ik, 'Plans', 'Person', 'ann.lee@', 'Carol Ames']) {
     expect(said).not.toContain(secret);
     expect(logs).not.toContain(secret);
   }

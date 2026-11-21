@@ -15,6 +15,18 @@ export interface Sample {
   frames: string[];
   trace?: string;
   status?: number;
+  /**
+   * Where to look around it: the plain logs that have warn or error lines in the minutes around it, and how many, for
+   * an occurrence after the first (a fingerprint is armed when first seen). Paths and counts only: the thread reads
+   * the lines itself.
+   */
+  around?: Around;
+}
+
+export interface Around {
+  from: number;
+  to: number;
+  files: { path: string; lines: number }[];
 }
 
 export type Reason = 'new' | 'spike' | 'always';
@@ -26,6 +38,24 @@ export interface Thread {
   id?: string;
   /** The start failed: how (an exit code, a timeout), never its output. */
   failed?: string;
+  /** What it cost, from threads.show, read now and then until it is done. */
+  record?: ThreadRecord;
+}
+
+export interface ThreadRecord {
+  checkedAt: number;
+  status?: string;
+  runs?: number;
+  /** Items in the thread (messages, tool calls): its rough size. */
+  items?: number;
+  /** Pull requests it opened or linked. */
+  prs?: number;
+  /** From its start to its last change. */
+  minutes?: number;
+  /** No more checks: settled, archived, or old enough. */
+  done?: boolean;
+  /** threads.show failed: how. */
+  error?: string;
 }
 
 export interface Bug {
@@ -51,6 +81,8 @@ export interface Bug {
   thread?: Thread;
   /** Waits for a thread since. */
   queued?: number;
+  /** Triage holds its thread until it is seen again threads.recurMinutes after it was first seen. */
+  held?: boolean;
   /** Was left out of a full queue (bugs with more occurrences waited). */
   dropped?: boolean;
   /** Muted (notify.mute): no notices and no threads until cleared. */

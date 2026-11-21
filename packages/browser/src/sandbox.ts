@@ -16,6 +16,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, write
 import { dirname, join } from 'node:path';
 import type { Subprocess } from 'bun';
 import { markerKey, stampExtension } from './markers.ts';
+import { ChromiumNoise } from './noise.ts';
 import { prepareVncSocket, vncSocketPath, waitForVncSocket, x11vncArgs } from './vnc.ts';
 import { refreshWorker } from './worker.ts';
 
@@ -54,7 +55,7 @@ export interface Bins {
 const CHROMIUM_CANDIDATES = [`/etc/profiles/per-user/${process.env.USER}/bin/chromium`, '/run/current-system/sw/bin/chromium'];
 
 /** Resolve a binary: env override -> PATH -> known candidates -> nix build. */
-function resolveBin(name: 'Xvfb' | 'x11vnc' | 'chromium', envVar: string, nixAttr: string, candidates: string[], log: Log): string {
+function resolveBin(name: 'Xvfb' | 'x11vnc' | 'chromium' | 'xdotool' | 'import', envVar: string, nixAttr: string, candidates: string[], log: Log): string {
   const fromEnv = process.env[envVar];
   if (fromEnv && existsSync(fromEnv)) return fromEnv;
   const onPath = Bun.which(name);
@@ -67,6 +68,16 @@ function resolveBin(name: 'Xvfb' | 'x11vnc' | 'chromium', envVar: string, nixAtt
   const bin = join(store, 'bin', name);
   if (!existsSync(bin)) throw new Error(`nix built ${nixAttr} but ${bin} is missing`);
   return bin;
+}
+
+/** xdotool, for real mouse and key input on an account's display (the `browser` interface: docs/browser.md). */
+export function resolveXdotool(log: Log): string {
+  return resolveBin('xdotool', 'XDOTOOL_BIN', 'xdotool', [], log);
+}
+
+/** ImageMagick's import, for a PNG of an account's display (the `browser` interface's screenshot). */
+export function resolveImport(log: Log): string {
+  return resolveBin('import', 'IMPORT_BIN', 'imagemagick', [], log);
 }
 
 export function resolveBins(log: Log): Bins {
@@ -113,6 +124,7 @@ function parentOf(pid: number): number | null {
 export class Sandbox {
   private procs: { name: string; proc: Subprocess }[] = [];
   private stopped = false;
+  private noise = new ChromiumNoise();
   readonly profileDir: string;
   readonly extensionDir: string;
   /** The live view: x11vnc's Unix socket, for the status's liveView.vncSocket. */
@@ -159,7 +171,8 @@ export class Sandbox {
       },
     });
     this.procs.push({ name, proc });
-    // Drain output into the extractor's log at debug level.
+    // Drain output into the extractor's log at debug level; Chromium's own noise counted instead (noise.ts).
+    const noise = name === 'chromium' ? this.noise : null;
     for (const stream of [proc.stdout, proc.stderr]) {
       (async () => {
         const reader = (stream as ReadableStream<Uint8Array>).getReader();
@@ -167,8 +180,16 @@ export class Sandbox {
         for (;;) {
           const { value, done } = await reader.read();
           if (done) break;
-          const text = dec.decode(value).trim();
-          if (text) this.opts.log('debug', `[${name}] ${text.slice(0, 400)}`);
+          const text = dec.decode(value, { stream: true }).trim();
+          if (!text) continue;
+          if (!noise) {
+            this.opts.log('debug', `[${name}] ${text.slice(0, 400)}`);
+            continue;
+          }
+          const kept = noise.keep(text);
+          if (kept.length) this.opts.log('debug', `[${name}] ${kept.join('\n').slice(0, 400)}`);
+          const said = noise.summary();
+          if (said) this.opts.log('debug', `[${name}] ${said}`);
         }
       })().catch(() => {});
     }
@@ -266,6 +287,8 @@ export class Sandbox {
     await Promise.all(this.procs.map((p) => p.proc.exited.catch(() => {})));
     clearTimeout(killer);
     this.procs = [];
+    const said = this.noise.summary(Date.now(), true);
+    if (said) this.opts.log('debug', `[chromium] ${said}`);
     rmSync(this.vncSocket, { force: true });
     this.opts.log('info', 'sandbox stopped');
   }

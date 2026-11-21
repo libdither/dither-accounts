@@ -4,9 +4,10 @@
  * files, saves a draft and sends it through the Gmail page (write.ts).
  */
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { basename, isAbsolute, relative, sep } from 'node:path';
+import { basename, isAbsolute, join, relative, sep } from 'node:path';
 import type { MailAddress, OutgoingFile, OutgoingMail } from '@dither-accounts/interfaces';
 import { StatusError } from '@dither-accounts/link';
+import { SendOnce } from '@dither-accounts/link/once';
 import { DECIMAL_ID } from './protocol.ts';
 
 /** Gmail takes at most 25 MB of attachments on one message (larger files go to Drive, which this does not do). */
@@ -27,6 +28,16 @@ export interface OutgoingChecked {
   replyTo?: string;
   files: { filename: string; mime: string; bytes: Buffer }[];
 }
+
+/**
+ * mail.send's `idempotencyKey`, kept in the account's send-keys.json (packages/link once.ts). GmailMail.send says a send
+ * that may have gone with 504; every other failure of it comes before the send, so nothing went.
+ */
+export function gmailSendOnce(accountDir: string): SendOnce {
+  return (sendOnce ??= new SendOnce(join(accountDir, 'send-keys.json')));
+}
+let sendOnce: SendOnce | undefined;
+export const gmailMayHaveSent = (e: unknown) => !(e instanceof StatusError) || e.status === 504;
 
 /** The message as an app sent it, checked: 400 for anything malformed, 404 for a replyTo that is no message id, 413 for files over the cap. */
 export function checkOutgoing(m: OutgoingMail, accountDir: string): OutgoingChecked {

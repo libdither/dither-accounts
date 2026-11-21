@@ -9,7 +9,7 @@
  * pages whose CryptoProxy or keys-by-usage thunk the hook cannot find, which must not send.
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AccountsClient, type CallFailed, register } from '@dither-accounts/client';
@@ -150,6 +150,10 @@ it(
       sendCap: 25 * 1024 * 1024,
       maxRecipients: 100,
       sendNote: null,
+      // Suggesting people as Proton's composer does; no list read yet.
+      contacts: true,
+      contactsNote: null,
+      contactsFrom: null,
     });
     // One runtime reached, its modules recorded as they ran (no module cache to read).
     expect(st.details.webpack).toMatch(/^1 runtime, \d+ modules, \d+ ran$/);
@@ -309,6 +313,33 @@ it(
 );
 
 it(
+  "mail.send with an idempotencyKey: sent once however often it is asked, at once or after; a refused key may try again; a key whose send may have gone is refused unsure",
+  async () => {
+    await fake.recipient('plain@example.org', 'clear');
+    const msg = { to: [{ name: null, email: 'plain@example.org' }], subject: 'Once only', text: 'one copy' };
+    const before = fake.sent.length;
+    const [a, b] = await Promise.all([call('mail.send', { ...msg, idempotencyKey: 'once-1' }), call('mail.send', { ...msg, idempotencyKey: 'once-1' })]);
+    expect(b).toEqual(a);
+    expect(await call('mail.send', { ...msg, idempotencyKey: 'once-1' })).toEqual(a);
+    expect(fake.sent.length).toBe(before + 1);
+    expect(a.sentId).toBe(fake.sent.at(-1)!.id);
+    // Refused before anything went (another From): the key is forgotten, and the same key sends.
+    expect(((await call('mail.send', { ...msg, from: 'other@example.org', idempotencyKey: 'once-2' }).catch((x) => x)) as CallFailed).code).toBe('from');
+    await call('mail.send', { ...msg, idempotencyKey: 'once-2' });
+    expect(fake.sent.length).toBe(before + 2);
+    // A send that started and never said how it ended (the extractor stopped mid-send): refused, nothing sent.
+    const keys = join(m!.store.account(signedIn)!.dir, 'send-keys.json');
+    const kept = JSON.parse(readFileSync(keys, 'utf8'));
+    kept.keys['once-3'] = { at: Date.now(), state: 'started' };
+    writeFileSync(keys, JSON.stringify(kept), { mode: 0o600 });
+    const e = (await call('mail.send', { ...msg, idempotencyKey: 'once-3' }).catch((x) => x)) as CallFailed;
+    expect([e.code, e.status]).toEqual(['unsure', 504]);
+    expect(fake.sent.length).toBe(before + 2);
+  },
+  60_000,
+);
+
+it(
   'mail.send to both at once, with a file: one package, its type the OR of theirs; each Proton recipient gets the body and the file under their own key, the outside one the keys in the clear',
   async () => {
     const friend = (await fake.recipient('friend@proton.test', 'internal'))!;
@@ -447,8 +478,8 @@ it(
     }
     const back = await call('mail.send', mixed);
     expect([fake.sent.at(-1)!.id, fake.sent.at(-1)!.verified]).toEqual([back.sentId, { encrypted: 1, clear: 1, attachments: 0 }]);
-    // Every send that went out is counted; refusals are not.
-    await until(() => statusOf(signedIn).details.sent === 6, 5000, 'six sent');
+    // Every send that went out is counted; refusals and repeated idempotency keys are not.
+    await until(() => statusOf(signedIn).details.sent === 8, 5000, 'eight sent');
     expect(fake.rejected).toEqual([]);
   },
   60_000,
@@ -553,6 +584,51 @@ for (const missing of ['CryptoProxy', 'AddressKeysByUsage'] as const) {
 }
 
 it(
+  "mail.contacts: Proton's composer suggestions, from the page's store, else the API's list; ranked by when last used",
+  async () => {
+    // A store with no list (the fake's default): the API's list, every contact email.
+    fake.contact('quill.ames@example.com', { name: 'Quill Ames', lastUsed: 100, order: 50 });
+    fake.contact('quinn.r@example.org', { name: 'Quinn Rowe', lastUsed: 900, order: 51 });
+    fake.contact('Quinn.R@Example.org', { name: 'Quinn at work', lastUsed: 800, order: 52, second: true });
+    await until(() => statusOf(signedIn)?.details?.contacts === true, 10_000, 'details.contacts');
+    const lists = fake.contactLists;
+    expect(await call('mail.contacts', { query: '' })).toEqual({ contacts: [] });
+    expect((await call('mail.contacts', { query: 'QU' })).contacts).toEqual([
+      { email: 'quinn.r@example.org', name: 'Quinn Rowe' },
+      { email: 'quill.ames@example.com', name: 'Quill Ames' },
+    ]);
+    expect((await call('mail.contacts', { query: 'ames', limit: 1 })).contacts).toEqual([{ email: 'quill.ames@example.com', name: 'Quill Ames' }]);
+    // One read of the list for both keystrokes (it is kept a while).
+    expect(fake.contactLists).toBe(lists + 1);
+    await until(() => String(statusOf(signedIn)?.details?.contactsFrom).startsWith('api, '), 5000, 'where the list came from');
+
+    // A page whose store holds the list: read from the page, the API's list never asked.
+    const f = await startFakeProton({ pagePollMs: 500, storeContacts: true });
+    let id = '';
+    try {
+      f.contact('quill.ames@example.com', { name: 'Quill Ames', lastUsed: 100, order: 2 });
+      f.contact('quinn.r@example.org', { name: 'Quinn Rowe', lastUsed: 900, order: 1 });
+      f.contact('noel@example.net', { name: 'Noël Gauss', lastUsed: 0, order: 3 });
+      id = (await app.admin({ do: 'create', kind: 'proton', label: 'Proton (contacts in the store)', config: { testOrigin: f.url, pollSeconds: 1 } })).id;
+      await until(() => statusOf(id)?.status === 'online' && statusOf(id)?.details?.contacts === true, 60_000, 'online');
+      const sug = (q: string) => app.call(mail, id, 'mail.contacts', { query: q }) as Promise<any>;
+      expect((await sug('qu')).contacts.map((c: any) => c.email)).toEqual(['quinn.r@example.org', 'quill.ames@example.com']);
+      expect((await sug('noel')).contacts).toEqual([{ email: 'noel@example.net', name: 'Noël Gauss' }]);
+      expect(f.contactLists).toBe(0);
+      await until(() => statusOf(id)?.details?.contactsFrom === 'store, 3', 5000, 'from the store');
+      // Never a query or a person in the log.
+      const log = readFileSync(join(m!.store.account(id)!.dir, 'adapter.log'), 'utf8');
+      for (const x of ['quill', 'Quinn', 'Noël', 'noel@']) expect(log).not.toContain(x);
+    } finally {
+      if (id) await app.admin({ do: 'delete', account: id, purge: true }).catch(() => {});
+      f.stop();
+    }
+    await until(() => processesOf([id]).length === 0, 15_000, 'its processes gone');
+  },
+  90_000,
+);
+
+it(
   'an access token that runs out: the hook waits for the page to refresh it, and never refreshes itself',
   async () => {
     fake.expireAccess();
@@ -587,6 +663,11 @@ it(
     expect(await rfbBanner(lv.vncSocket)).toMatch(/^RFB /);
     const e = (await app.call(mail, signedOut, 'mail.mailboxes', {}).catch((x: any) => x)) as CallFailed;
     expect([e.code, e.status]).toEqual(['failed', 401]);
+    // Suggestions: not now, and why (503 unavailable, not 401); an empty query still answers.
+    expect(st.details).toMatchObject({ contacts: false, contactsNote: 'Proton is not signed in; sign in in the live view' });
+    const sug = (await app.call(mail, signedOut, 'mail.contacts', { query: 'ann' }).catch((x: any) => x)) as CallFailed;
+    expect([sug.code, sug.status]).toEqual(['unavailable', 503]);
+    expect(await app.call(mail, signedOut, 'mail.contacts', { query: ' ' })).toEqual({ contacts: [] });
   },
   90_000,
 );

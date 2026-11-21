@@ -39,6 +39,8 @@ export interface HostOpts {
   /** The kind's extension dir: manifest.json and page.js (driver.js is added as sw.js). */
   extensionSrc: string;
   startUrl: string;
+  /** What the log calls the site's page when a command to it times out: "the <name> page's silence" (default "site"). */
+  name?: string;
   /** Tests: the fake site's origin, added to the extension's host permissions (and its content scripts' matches). */
   testOrigin?: string | null;
   /** Tests: more of the fake site's origins (Schwab's sign-in frame), added the same way. */
@@ -52,12 +54,13 @@ export interface HostOpts {
 }
 
 /**
- * The driver as the extension's sw.js (with passkeys.js after it for a kind with a passkey), and in tests the fake
+ * The driver as the extension's sw.js (browser.js after it, for the `browser` interface, and passkeys.js for a kind
+ * with a passkey), and in tests the fake
  * site's origins added to the host permissions and the content scripts' matches.
  */
 export function prepareDriver(dir: string, opts: { passkeys?: boolean; testOrigins?: (string | null | undefined)[] } = {}) {
   const ext = join(import.meta.dir, '../extension');
-  const worker = readFileSync(join(ext, 'driver.js'), 'utf8') + (opts.passkeys ? readFileSync(join(ext, 'passkeys.js'), 'utf8') : '');
+  const worker = readFileSync(join(ext, 'driver.js'), 'utf8') + readFileSync(join(ext, 'browser.js'), 'utf8') + (opts.passkeys ? readFileSync(join(ext, 'passkeys.js'), 'utf8') : '');
   writeFileSync(join(dir, 'sw.js'), worker);
   const origins = (opts.testOrigins ?? []).filter((o): o is string => !!o);
   if (!origins.length) return;
@@ -89,6 +92,8 @@ export class BrowserHost {
       onConnect: () => o.onChange?.(),
       onDisconnect: () => o.onChange?.(),
       log: (l, m, d) => o.link.log(l, m, d),
+      // A command that times out is told apart in the log: how far it got, and how Chromium sees its tab.
+      silence: { name: o.name ?? 'site', tab: true, workerRuns: true },
     });
   }
 

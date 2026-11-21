@@ -100,6 +100,13 @@ Nothing joins, asks or answers in the background, and nothing retries a join.
   - which status codes a refused join gets (401, 403, 409, 419);
   - whether switching join approval off leaves requests waiting.
 
+## GIFs
+
+WhatsApp's GIF is an mp4 video with `gifPlayback`. An incoming one is marked `gif: true`. With `sendGifs`, a file sent
+with `gif` that is an mp4 goes as a video with `gifPlayback`. Nothing here converts a .gif to an mp4 (no ffmpeg in the
+adapter or the bridge), so a .gif sent with `gif` goes as it would without: a document, which keeps it moving where an
+image message would show one still frame. Not tried on a live account (docs/chat.md "GIFs").
+
 ## Building and testing the bridge
 
 - **Build:** a source change rebuilds the bridge on the next start of the account. `src/bridge.ts` caches the nix build of `bridge/package.nix` per source hash. That does not apply if `WHATSAPP_BRIDGE_BIN` or a `dither-wa-bridge` on PATH points at another binary.

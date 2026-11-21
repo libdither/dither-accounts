@@ -18,6 +18,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the flake check compares with the base branch
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
@@ -32,3 +34,6 @@ jobs:
       - run: bun run typecheck
       - run: bun run web:build
       - run: bun run test
+      # Flaky tests are fixed, not retried: the test files a pull request adds or changes run five times each.
+      - if: github.event_name == 'pull_request'
+        run: bun scripts/flake-check.ts origin/${{ github.base_ref }}

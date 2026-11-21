@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { installProcessHandlers } from './errors.ts';
 import { createManager } from './index.ts';
-import { restartQueued } from './procs.ts';
+import { restartJob } from './procs.ts';
 
 const args = process.argv.slice(2);
 const given = (n: string): string | undefined => {
@@ -61,8 +61,10 @@ let stopping = false;
 const shutdown = async () => {
   if (stopping) return;
   stopping = true;
-  const leave = m.sup.launch === 'detached' || (m.sup.launch === 'scope' && !!m.service && restartQueued(m.service));
-  console.log(`dither-accounts going: ${leave ? 'a restart, extractors left running for the next manager' : 'stopping its extractors'}`);
+  // What systemd said goes in the line: a restart that stopped its extractors anyway shows why.
+  const job = m.sup.launch === 'scope' && m.service ? restartJob(m.service) : null;
+  const leave = m.sup.launch === 'detached' || !!job?.restart;
+  console.log(`dither-accounts going: ${leave ? 'a restart, extractors left running for the next manager' : 'stopping its extractors'}${job ? ` (${job.why})` : ''}`);
   await m.stop({ leaveExtractors: leave });
   process.exit(0);
 };

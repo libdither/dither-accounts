@@ -19,6 +19,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
 import { NeedsYou, StatementsRunner, writeWhole } from '@dither-accounts/statements-common';
+import { BrowserOps } from '@dither-accounts/statements-common/browser-ops';
 import { BrowserHost, pause, sleep } from '@dither-accounts/statements-common/tabs';
 import { type AmazonState, fileBody, learn, NeedsYouHere, pullOrders, type RawDetails, type RawList, stampUtc } from './amazon.ts';
 import { type Cred, ensure, NEEDS, type Probe } from './auth.ts';
@@ -26,7 +27,7 @@ import { signedInLayer, state as statusOf } from './status.ts';
 
 const link = linkManager({
   onConnect: () => {
-    link.emit({ t: 'hello', kind: 'amazon', version: '1', interfaces: ['statements'], startedAt: STARTED, capabilities: ['liveView'] });
+    link.emit({ t: 'hello', kind: 'amazon', version: '1', interfaces: ['statements', 'browser'], startedAt: STARTED, capabilities: ['liveView'] });
     status(true);
   },
   onCommand,
@@ -68,6 +69,7 @@ let probeTimer: Timer | undefined;
 
 const host = new BrowserHost({
   link,
+  name: 'Amazon',
   extensionSrc: join(import.meta.dir, 'extension'),
   startUrl: `${BASE}/`,
   testOrigin,
@@ -222,9 +224,14 @@ function status(force = false) {
   link.emit(ev);
 }
 
+/** The `browser` interface (docs/browser.md): its tabs only, never while a pull runs. */
+const browserOps = new BrowserOps({ host, log, busy: () => (runner.details().pulling as string | null) ?? null });
+
 async function onCommand(cmd: Command): Promise<unknown> {
   const r = runner.handle(cmd);
   if (r !== undefined) return r;
+  const b = browserOps.handle(cmd);
+  if (b) return b;
   throw new StatusError(`amazon has no operation "${cmd.t}"`, 400);
 }
 

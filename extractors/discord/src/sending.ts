@@ -48,8 +48,8 @@ export type SendingDispatch = 'SAVED_MESSAGES_UPDATE' | 'SAVED_MESSAGE_CREATE' |
 export const SENDING_DISPATCHES = new Set<string>(['SAVED_MESSAGES_UPDATE', 'SAVED_MESSAGE_CREATE', 'SAVED_MESSAGE_DELETE', 'MESSAGE_REMINDER_DUE']);
 
 export type SendingHookCommand =
-  /** reply {} once the client patched it. */
-  | { kind: 'suppressEmbeds'; channelId: string; messageId: string }
+  /** reply {} once the client patched it. `moderator`: someone else's, which the hook allows only with Manage Messages. */
+  | { kind: 'suppressEmbeds'; channelId: string; messageId: string; moderator?: true }
   /** reply RawSaved (a save) or {} (a removal). */
   | { kind: 'save'; channelId: string; messageId: string; dueAt?: string; remove?: boolean }
   /** reply { saved: RawSaved[]; more: boolean }: the client's Saved list, loaded (more: its next page) and read from its store. */
@@ -142,7 +142,7 @@ export function sendingDispatch(event: string, data: any, st: AdapterState): P.A
 export function sendingHookCommand(cmd: P.SendCommand): SendingHookCommand {
   switch (cmd.t) {
     case 'suppressEmbeds':
-      return { kind: 'suppressEmbeds', channelId: cmd.conversation, messageId: cmd.message };
+      return { kind: 'suppressEmbeds', channelId: cmd.conversation, messageId: cmd.message, ...(cmd.moderator ? { moderator: true as const } : {}) };
     case 'save':
       return { kind: 'save', channelId: cmd.conversation, messageId: cmd.message, ...(cmd.remove ? { remove: true } : {}), ...(cmd.dueAt !== undefined ? { dueAt: new Date(cmd.dueAt).toISOString() } : {}) };
     case 'savedList':

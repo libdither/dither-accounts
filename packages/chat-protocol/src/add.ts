@@ -95,6 +95,11 @@ export interface RequestFact {
   warning?: string;
   /** The network filed it as spam (Discord's spam folder): it never notifies, and sits last under Requests. */
   spam?: boolean;
+  /**
+   * Someone else answers it, not this account: a knock on a Matrix room you are in but don't moderate. Shown so you
+   * can see who is asking; it never notifies, waits on nobody here, and offers no answers.
+   */
+  forOthers?: boolean;
 }
 
 /** How you stand with someone that an account's list holds (capability 'relationships'). Incoming requests are RequestFacts. */

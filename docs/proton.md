@@ -291,7 +291,9 @@ Ids (`src/mail.ts`), opaque to apps:
   `{ name, email }` lists (at least one recipient, at most 100), `subject` a string, `text` or `html` or both (with
   `html` the message is HTML, and Proton makes the plain text from it where someone needs plain text), `replyTo` a
   message id of this account, attachments `{ filename, mime, base64 | path }` (a path absolute, a regular file, not one
-  of the account's own files), at most 25 MB together (Proton's limit): 400, 404, 403 or 413. Answers `{ messageId:
+  of the account's own files), at most 25 MB together (Proton's limit): 400, 404, 403 or 413. A file with a
+  `contentId` (an inline part, shown in the HTML as `cid:`) is refused (400): the page uploads files as attachments
+  only, and `details.inlineParts` is not set, so an app sends such a picture another way (a data: URL). Answers `{ messageId:
   <the Message-ID Proton gave>, sentId: <its id> }`; the sent message is the copy in Sent. A message it will not send as
   it stands is **422** with code `recipients` or `settings` and a sentence for a person ("Sending"). An
   `idempotencyKey` sends at most once (docs/mail.md, "Sending once"); `details.sent` counts what went, not repeats.

@@ -14,8 +14,7 @@
  *   - `postAct` (upvote, clear the vote), `publish` (a comment, or a text post with a title in a subreddit) and
  *     `unpublish` (delete your own), once each, when asked.
  *
- * Config: { testOrigin?, noSandbox?, feedFirstMs?, feedEveryMs?, paceMs? (tests: the gap between requests), subsChunk?
- * (tests: subscriptions in one `/r/a+b/new.json`) }. Keeps reddit-state.json (the inbox's newest time and recent ids)
+ * Config: { testOrigin?, noSandbox?, feedFirstMs?, feedEveryMs?, paceMs? (tests: the gap between requests) }. Keeps reddit-state.json (the inbox's newest time and recent ids)
  * in the account directory. Logs paths' shapes, counts and statuses: never post or message text,
  * people's names, cookies or the modhash.
  */
@@ -34,7 +33,6 @@ import {
   HOME_COUNT,
   HOME_COUNT_MAX,
   infoThing,
-  mergeNewest,
   ownPicture,
   type More,
   MORECHILDREN_MAX,
@@ -47,15 +45,9 @@ import {
   parseOverview,
   parsePost,
   parseSubmitted,
-  parseSubscriptions,
-  parseSubsCursor,
   parseThread,
   parseUser,
   personAbout,
-  SUBS_CHUNK,
-  SUBS_CURSOR,
-  SUBS_MAX,
-  subsChunks,
   subredditOf,
   USERNAME,
   writeErrors,
@@ -76,7 +68,7 @@ type Up =
   | { t: 'tabs'; tabs: { id: number; url: string; active: boolean; hook: boolean }[] }
   | { t: 'hook'; page: string }
   | { t: 'page'; state: string; path: string; user: string | null; modhash: boolean; old: boolean };
-type Down = { kind: 'get'; path: string } | { kind: 'post'; path: string; form: Record<string, string> } | { kind: 'go' } | { kind: 'page.state' };
+type Down = { kind: 'get'; path: string } | { kind: 'page'; path: string } | { kind: 'post'; path: string; form: Record<string, string> } | { kind: 'go' } | { kind: 'page.state' };
 
 const hub = linkHub({ onCommand: onCommandCounted, onConnect, onShutdown: () => cleanup() });
 const log = (level: 'debug' | 'info' | 'warn' | 'error', msg: string, data?: unknown) => hub.log(level, msg, data);
@@ -229,6 +221,8 @@ function need(what: string, write = false) {
   if (write && !page.modhash) throw new Error(`cannot ${what}: the page has no modhash (Reddit changed?)`);
 }
 const get = <T = unknown>(path: string) => readPace.run(() => bridge.request<T>({ kind: 'get', path }, 90_000));
+/** A page a person opens, read from its markup in the page (when Reddit refuses its `.json`): the `.json`'s shape. */
+const readPage = <T = unknown>(path: string) => readPace.run(() => bridge.request<T>({ kind: 'page', path }, 90_000));
 const post = <T = unknown>(path: string, form: Record<string, string>, gap = pace) => gap.run(() => bridge.request<T>({ kind: 'post', path, form }, 90_000));
 
 async function run<T>(kind: string, f: () => Promise<T>): Promise<T> {
@@ -324,159 +318,51 @@ async function onCommand(cmd: P.AdapterCommand): Promise<unknown> {
 }
 
 /**
- * One page of the front page: Following is your subscriptions sorted New, For you is Reddit's Best. Following asks the
- * front page's New (`/new.json`) first; when Reddit refuses that (403), it is built from the subscriptions instead
- * (followingFromSubs), and `/new.json` is not asked again for six hours.
+ * One page of the front page: Following is your subscriptions sorted New, For you is Reddit's Best. Each is read as
+ * `/new.json` or `/best.json`; when Reddit's network security refuses that (an HTML 403, as it does live for New since
+ * autumn 2026), the page a person opens is read instead (`/new/`, `/best/`, through the page's own "next" link), and
+ * the `.json` is not asked again for six hours.
  */
 async function home(which: P.HomeFeed, cursor?: string, count?: number): Promise<P.HomePage> {
   if (which !== 'following' && which !== 'foryou') throw new Error('not a home timeline: following or foryou');
-  if (cursor !== undefined && (typeof cursor !== 'string' || !(FULLNAME.test(cursor) || (which === 'following' && SUBS_CURSOR.test(cursor))))) throw new Error('not a Reddit cursor');
+  if (cursor !== undefined && (typeof cursor !== 'string' || !FULLNAME.test(cursor))) throw new Error('not a Reddit cursor');
   const asked = Number(count ?? HOME_COUNT);
   const n = Number.isFinite(asked) ? Math.min(Math.max(Math.floor(asked), 1), HOME_COUNT_MAX) : HOME_COUNT;
   need('read the front page');
   const ctx = ctxOf(drops, testOrigin);
-  let got: P.HomePage;
-  if (which === 'following' && Date.now() - hotSince < NEW_REFUSED_MS) {
-    got = await run('home', () => followingFromHot(cursor, n, ctx));
-  } else if (which === 'following' && (cursor ? SUBS_CURSOR.test(cursor) : Date.now() - newRefusedAt < NEW_REFUSED_MS)) {
-    got = await run('home', () => followingFromSubs(cursor, n, ctx));
-  } else {
-    const path = `/${which === 'following' ? 'new' : 'best'}.json?raw_json=1&limit=${n}${cursor ? `&after=${cursor}` : ''}`;
-    got = await run('home', async () => {
-      try {
-        return parseHome(await get(path), ctx);
-      } catch (e) {
-        // Only the first page falls back: a `t3_` cursor came from /new.json, which answered then.
-        if (which !== 'following' || cursor || !/^Reddit answered 403\b/.test(String((e as Error).message))) throw e;
-        newRefusedAt = Date.now();
-        log('info', 'home: Reddit refused the front page sorted New; reading it from the subscriptions');
-        return followingFromSubs(undefined, n, ctx);
-      }
-    });
-  }
+  const sort = which === 'following' ? 'new' : 'best';
+  const fromPage = async () => {
+    // The page's own "next" link when this cursor came from one; else the page as its "next" link would name it.
+    const path = (cursor && nextPage.get(`${sort}.${cursor}`)) ?? `/${sort}/${cursor ? `?count=25&after=${cursor}` : ''}`;
+    const l = await readPage<{ data?: { next?: string; after?: string } }>(path);
+    const after = l?.data?.after;
+    if (typeof l?.data?.next === 'string' && after) remember(nextPage, `${sort}.${after}`, l.data.next, 200);
+    return parseHome(l, ctx);
+  };
+  const got = await run('home', async () => {
+    if (Date.now() - (jsonRefusedAt.get(sort) ?? -Infinity) < JSON_REFUSED_MS) return fromPage();
+    try {
+      return parseHome(await get(`/${sort}.json?raw_json=1&limit=${n}${cursor ? `&after=${cursor}` : ''}`), ctx);
+    } catch (e) {
+      if (!refused(e)) throw e;
+      jsonRefusedAt.set(sort, Date.now());
+      log('info', `home: Reddit refused /${sort}.json (${String((e as Error).message).slice(0, 120)}); reading the page /${sort}/ instead for six hours`);
+      return fromPage();
+    }
+  });
   for (const it of got.items) if (it.post.root) linkOf.set(it.post.id, it.post.id.slice(3));
   announce(ctx.people);
   return got;
 }
 
-/**
- * When Reddit was found to refuse New also in single subreddits (an HTML 403 for any `new.json`, live), so Following
- * is the front page's Hot (`/hot.json`: signed in, your subscriptions only), each page newest first.
- */
-let hotSince = 0;
-
-async function followingFromHot(cursor: string | undefined, n: number, ctx: ReturnType<typeof ctxOf>): Promise<P.HomePage> {
-  const after = cursor && FULLNAME.test(cursor) ? cursor : undefined;
-  const page = parseHome(await get(`/hot.json?raw_json=1&limit=${n}${after ? `&after=${after}` : ''}`), ctx);
-  page.items.sort((a, b) => b.post.ts - a.post.ts);
-  return page;
-}
-
-/** When /new.json was last refused, and for how long the subscriptions are read instead. */
-let newRefusedAt = 0;
-const NEW_REFUSED_MS = 6 * 3600_000;
-/** Your subscriptions, read at most every 30 minutes. */
-let subs: { user: string; at: number; names: string[] } | null = null;
-const SUBS_TTL_MS = 30 * 60_000;
-const subsChunk = Number(cfg.subsChunk) > 0 ? Math.floor(Number(cfg.subsChunk)) : SUBS_CHUNK;
-
-async function subscriptions(): Promise<string[]> {
-  const user = page?.user ?? '';
-  if (subs && subs.user === user && Date.now() - subs.at < SUBS_TTL_MS) return subs.names;
-  const names: string[] = [];
-  let after: string | null = null;
-  do {
-    const r = parseSubscriptions(await get(`/subreddits/mine/subscriber.json?raw_json=1&limit=100${after ? `&after=${after}` : ''}`), ctxOf(drops, testOrigin));
-    names.push(...r.names);
-    after = r.after;
-  } while (after && names.length < SUBS_MAX);
-  subs = { user, at: Date.now(), names: names.slice(0, SUBS_MAX) };
-  log('info', `home: ${subs.names.length} subscriptions`);
-  return subs.names;
-}
-
-/**
- * Following from the subscriptions: each group's `/r/a+b+c/new.json` from where the cursor left it, merged newest first
- * (map.ts mergeNewest). A cursor from before the subscriptions changed in number of groups starts again from the top.
- */
-async function followingFromSubs(cursor: string | undefined, n: number, ctx: ReturnType<typeof ctxOf>): Promise<P.HomePage> {
-  const now = Date.now();
-  const groups = subsChunks((await subscriptions()).filter((name) => !(now - (refusedSubs.get(name) ?? -Infinity) < NEW_REFUSED_MS)), subsChunk);
-  if (!groups.length) return { items: [], more: null, top: null };
-  const places = (cursor && parseSubsCursor(cursor, groups.length)) || groups.map(() => '0');
-  const pages: ({ items: P.HomeItem[]; more: string | null } | null)[] = [];
-  for (let i = 0; i < groups.length; i++) {
-    const at = places[i]!;
-    if (at === 'x') {
-      pages.push(null);
-      continue;
-    }
-    let listing: unknown;
-    try {
-      listing = await get(`/r/${groups[i]!.join('+')}/new.json?raw_json=1&limit=${n}${at !== '0' ? `&after=${at}` : ''}`);
-    } catch (e) {
-      // Reddit refuses a whole group when it refuses one subreddit in it: find those, leave them out, start again.
-      if (!refused(e)) throw e;
-      const bad = await findRefused(groups[i]!);
-      if (bad === null) {
-        log('warn', `home: Reddit refuses New on its own subreddits too (${String((e as Error).message).slice(0, 200)}); Following is the front page's Hot, newest first, for six hours`);
-        hotSince = Date.now();
-        return followingFromHot(undefined, n, ctx);
-      }
-      if (!bad.length) throw e;
-      const at = Date.now();
-      for (const name of bad) refusedSubs.set(name, at);
-      log('info', `home: Reddit refuses New in ${bad.length} subscription(s), left out for six hours: ${bad.join(', ')}`);
-      return followingFromSubs(undefined, n, ctx);
-    }
-    pages.push(parseHome(listing, ctx));
-  }
-  return mergeNewest(pages, places, n);
-}
-
-/** Subscriptions whose New Reddit refuses (private, quarantined, banned...), and when: left out for six hours. */
-const refusedSubs = new Map<string, number>();
+/** A refusal by Reddit's network security (or any 403): the page a person opens is read instead. */
 const refused = (e: unknown) => /^Reddit answered 403\b/.test(String((e as Error)?.message ?? e));
-/** At most this many reads to find the refused ones in a group; more means Reddit refuses New itself. */
-const PROBES_MAX = 32;
+/** When each `.json` was last refused (by sort, and `comments`), and for how long its page is read instead. */
+const jsonRefusedAt = new Map<string, number>();
+const JSON_REFUSED_MS = 6 * 3600_000;
+/** The page's own "next" link, by `<sort>.<after>`, so the next page is the one Reddit named. */
+const nextPage = new Map<string, string>();
 
-/**
- * The names in a refused group that Reddit refuses, found by asking for each half's newest post and halving the
- * refused ones; null when that takes more than PROBES_MAX reads. Empty when no part is refused on its own.
- */
-async function findRefused(names: string[]): Promise<string[] | null> {
-  // First the group's first and last subreddit on their own: when Reddit refuses both, it refuses New itself (seen
-  // live: every subscription refused one by one), and nothing is left out.
-  const alone = async (name: string) => {
-    try {
-      await get(`/r/${name}/new.json?raw_json=1&limit=1`);
-      return false;
-    } catch (e) {
-      if (!refused(e)) throw e;
-      return true;
-    }
-  };
-  if (names.length > 1 && (await alone(names[0]!)) && (await alone(names.at(-1)!))) return null;
-  const bad: string[] = [];
-  let probes = 0;
-  const visit = async (part: string[]): Promise<boolean> => {
-    if (part.length === 1) {
-      bad.push(part[0]!);
-      return true;
-    }
-    for (const half of [part.slice(0, part.length >> 1), part.slice(part.length >> 1)]) {
-      if (++probes > PROBES_MAX) return false;
-      try {
-        await get(`/r/${half.join('+')}/new.json?raw_json=1&limit=1`);
-      } catch (e) {
-        if (!refused(e)) throw e;
-        if (!(await visit(half))) return false;
-      }
-    }
-    return true;
-  };
-  return (await visit(names)) ? bad : null;
-}
 
 /** Which post each comment seen is under (so a comment's thread needs no lookup), and the `more`s seen, by link. */
 const linkOf = new Map<string, string>();
@@ -486,6 +372,25 @@ const remember = <K, V>(m: Map<K, V>, k: K, v: V, max = 5000) => {
   m.set(k, v);
   while (m.size > max) m.delete(m.keys().next().value!);
 };
+
+/**
+ * A post's comments page (`comment`: a comment's, with the comments above it) as its `.json`; when Reddit refuses
+ * that, read from the page itself, and for six hours only from the page.
+ */
+async function threadRead(link: string, comment?: string): Promise<unknown> {
+  const at = comment ? `/comments/${link}/_/${comment}` : `/comments/${link}`;
+  const query = comment ? 'sort=confidence&context=8' : 'sort=confidence';
+  const fromPage = () => readPage(`${at}/?${query}`);
+  if (Date.now() - (jsonRefusedAt.get('comments') ?? -Infinity) < JSON_REFUSED_MS) return fromPage();
+  try {
+    return await get(`${at}.json?raw_json=1&${query}`);
+  } catch (e) {
+    if (!refused(e)) throw e;
+    jsonRefusedAt.set('comments', Date.now());
+    log('info', `post: Reddit refused a comments page's .json (${String((e as Error).message).slice(0, 120)}); reading the page instead for six hours`);
+    return fromPage();
+  }
+}
 
 /**
  * A post's or a comment's thread, as their pages show them; `cursor` (a `more` from an earlier answer) for more
@@ -503,7 +408,7 @@ async function thread(id: string, cursor?: string): Promise<P.PostThread> {
     if (!m) {
       // Not seen since a restart: the post's page names it again (a `more` under a comment deeper down is read from
       // that comment's thread instead).
-      const r = await run('post', () => get(`/comments/${c.link}.json?raw_json=1&sort=confidence`));
+      const r = await run('post', () => threadRead(c.link));
       const t = parseThread(r, `t3_${c.link}`, ctx);
       for (const [k, v] of t?.mores ?? []) remember(mores, `${c.link}.${k}`, v);
       m = mores.get(`${c.link}.${c.more}`);
@@ -528,8 +433,7 @@ async function thread(id: string, cursor?: string): Promise<P.PostThread> {
     if (!l) throw new Error('Reddit did not find that comment');
     link = l.slice(3);
   }
-  const path = fn.startsWith('t3_') ? `/comments/${link}.json?raw_json=1&sort=confidence` : `/comments/${link}/_/${fn.slice(3)}.json?raw_json=1&sort=confidence&context=8`;
-  const r = await run('post', () => get(path));
+  const r = await run('post', () => threadRead(link, fn.startsWith('t1_') ? fn.slice(3) : undefined));
   const parsed = parseThread(r, fn, ctx);
   if (!parsed) throw new Error('Reddit did not give this thread');
   for (const [k, v] of parsed.mores) remember(mores, `${link}.${k}`, v);

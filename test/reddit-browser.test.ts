@@ -161,103 +161,47 @@ it(
   60_000,
 );
 
+/** What a post shows, without what only the `.json` has (its text's formatting, its pictures' sizes); its time apart. */
+const shown = (p: any) => ({ id: p.id, url: p.url, author: p.author, title: p.title, place: p.place, counts: p.counts, viewer: p.viewer, root: p.root, replyTo: p.replyTo, warning: p.warning });
+
 it(
-  'home: when Reddit refuses New (403), Following is the subscriptions sorted New, merged, and its cursor pages',
+  "home: when Reddit refuses /new.json, Following is read from the New page itself, the next page by the page's own link, and the .json is not asked again",
   async () => {
-    fake.newForbidden = true;
+    const viaJson = await call('home', { feed: 'following' });
+    const olderJson = await call('home', { feed: 'following', cursor: viaJson.more });
+    fake.refused.add('/new.json');
     const from = fake.calls.length;
-    const ids = (p: any) => p.items.map((i: any) => i.post.id);
-    const first = await call('home', { feed: 'following', count: 2 });
-    expect(ids(first)).toEqual(['t3_s1', 't3_s2']);
-    expect(first.more).toBe('subs~t3_s2.0');
-    const second = await call('home', { feed: 'following', cursor: first.more, count: 2 });
-    expect(ids(second)).toEqual(['t3_s3', 't3_s4']);
-    const third = await call('home', { feed: 'following', cursor: second.more, count: 2 });
-    expect(ids(third)).toEqual(['t3_s5']);
-    expect(third.more).toBeNull();
-    // Asked again from the top: New is not asked again, and the subscriptions are remembered.
-    expect(ids(await call('home', { feed: 'following', count: 2 }))).toEqual(['t3_s1', 't3_s2']);
+    const page = await call('home', { feed: 'following' });
+    expect(page.items.map((i: any) => shown(i.post))).toEqual(viaJson.items.map((i: any) => shown(i.post)));
+    expect(page.items.map((i: any) => i.post.text)).toEqual(['', 'https://example.com/b']);
+    expect(page.more).toBe('t3_n2');
+    // The fake dates each answer from now: the same post, read a moment apart.
+    expect(Math.abs(page.items[1].post.ts - viaJson.items[1].post.ts)).toBeLessThan(60_000);
+    const older = await call('home', { feed: 'following', cursor: page.more });
+    expect(older.items.map((i: any) => shown(i.post))).toEqual(olderJson.items.map((i: any) => shown(i.post)));
+    expect(older.more).toBeNull();
+    // /new.json once (refused), then only the page: the first, and the one its "next" link named.
     expect(callsTo('/new.json', from)).toHaveLength(1);
-    expect(callsTo('/subreddits/mine/subscriber.json', from).map((c): string | null => c.query.after ?? null)).toEqual([null, 't5_s1']);
-    // Groups of two (the test's size), in name order: gardening+rustlang, then u_ann_lee.
-    const groups = fake.calls.slice(from).filter((c) => c.path.startsWith('/r/'));
-    expect(groups.map((c): [string, string | null] => [c.path, c.query.after ?? null])).toEqual([
-      ['/r/gardening+rustlang/new.json', null],
-      ['/r/u_ann_lee/new.json', null],
-      ['/r/gardening+rustlang/new.json', 't3_s2'],
-      ['/r/u_ann_lee/new.json', null],
-      ['/r/gardening+rustlang/new.json', 't3_s4'],
-      ['/r/gardening+rustlang/new.json', null],
-      ['/r/u_ann_lee/new.json', null],
-    ]);
-    // For you is still Best.
-    expect(ids(await call('home', { feed: 'foryou' }))).toEqual(['t3_b1']);
-    fake.newForbidden = false;
+    expect(callsTo('/new/', from).map((c) => c.query)).toEqual([{}, { count: '25', after: 't3_n2' }]);
+    fake.refused.delete('/new.json');
+    await call('home', { feed: 'following' });
+    expect(callsTo('/new.json', from)).toHaveLength(1);
   },
   60_000,
 );
 
 it(
-  'home: a subscription whose New Reddit refuses is found by halving its group and left out; the rest still reads',
+  'home: a page that is refused too fails with what the block page says',
   async () => {
-    fake.newForbidden = true;
-    fake.refused.add('rustlang');
-    const from = fake.calls.length;
-    const got = await call('home', { feed: 'following', count: 10 });
-    expect(got.items.length).toBeGreaterThan(0);
-    expect(got.items.every((i: any) => String(i.post.place?.id ?? '').toLowerCase() !== 'rustlang')).toBe(true);
-    const asked = fake.calls.slice(from).filter((c) => c.path.startsWith('/r/'));
-    expect(asked.map((c): [string, string | null] => [c.path, c.query.limit ?? null])).toEqual([
-      ['/r/gardening+rustlang/new.json', '10'],
-      // The first on its own answers, so Reddit does not refuse New itself: halved from there.
-      ['/r/gardening/new.json', '1'],
-      ['/r/gardening/new.json', '1'],
-      ['/r/rustlang/new.json', '1'],
-      ['/r/gardening+u_ann_lee/new.json', '10'],
-    ]);
-    // Left out from then on: no group with it is asked again.
-    await call('home', { feed: 'following', count: 10 });
-    expect(fake.calls.slice(from).filter((c) => c.path.includes('rustlang'))).toHaveLength(2);
-    fake.refused.clear();
-    fake.newForbidden = false;
-  },
-  60_000,
-);
-
-it(
-  'home: when Reddit refuses New in single subreddits too, nothing is left out and Following is the front page Hot, newest first',
-  async () => {
-    fake.newForbidden = true;
-    for (const n of ['gardening', 'rustlang', 'u_ann_lee']) fake.refused.add(n);
-    const from = fake.calls.length;
-    // rustlang was left out by the test before: the one group is gardening+u_ann_lee.
-    // Following is then the front page's Hot, newest first, and it pages by Reddit's after.
-    const hot = await call('home', { feed: 'following', count: 10 });
-    expect(hot.items.map((i: any) => i.post.id)).toEqual(['t3_h2', 't3_h1']);
-    expect(hot.more).toBe('t3_h1');
-    expect(fake.calls.slice(from).filter((c) => c.path.startsWith('/r/')).map((c) => c.path)).toEqual([
-      '/r/gardening+u_ann_lee/new.json',
-      '/r/gardening/new.json',
-      '/r/u_ann_lee/new.json',
-    ]);
-    // Nothing was left out, and New is not asked again while Hot stands in.
-    fake.refused.clear();
-    await call('home', { feed: 'following', count: 10, cursor: hot.more });
-    expect(fake.calls.slice(from).filter((c) => c.path === '/hot.json').map((c): string | null => c.query.after ?? null)).toEqual([null, 't3_h1']);
-    expect(fake.calls.slice(from).filter((c) => c.path.startsWith('/r/'))).toHaveLength(3);
-    fake.newForbidden = false;
-  },
-  60_000,
-);
-
-it(
-  'home: a refusal with no title and no message says its first visible words and its size',
-  async () => {
-    // Hot still stands in for New (the test before), and now Reddit refuses it with a bare block page.
-    fake.hotForbidden = true;
-    const words = /^Reddit answered 403: a text\/html answer, saying "You have been blocked\.", \d+ bytes$/;
-    await expect(call('home', { feed: 'following', count: 10 })).rejects.toThrow(words);
-    fake.hotForbidden = false;
+    fake.refused.add('/best.json');
+    fake.refused.add('/best/');
+    const words = /^Reddit answered 403: a text\/html answer, saying "You've been blocked by network security\. If you think you've been blocked by mistake, file a ticket ", \d+ bytes$/;
+    await expect(call('home', { feed: 'foryou' })).rejects.toThrow(words);
+    fake.refused.delete('/best/');
+    // The page answers again: For you is read from it, Best's picture its thumbnail.
+    const foryou = await call('home', { feed: 'foryou' });
+    expect(foryou.items[0].post).toMatchObject({ id: 't3_b1', title: 'Best one', counts: { likes: 900 }, media: [{ kind: 'image', url: `${fake.url}/pic.jpg` }] });
+    fake.refused.delete('/best.json');
   },
   60_000,
 );
@@ -283,6 +227,32 @@ it(
     expect(callsTo('/api/info.json', from)).toEqual([]);
     expect(callsTo('/comments/g1/_/c2.json', from)[0]!.query).toMatchObject({ context: '8', raw_json: '1' });
     expect(evs(acc).some((e) => e.t === 'identity' && e.identity.nativeId === BEN)).toBe(true);
+  },
+  60_000,
+);
+
+it(
+  "threads: when Reddit refuses a comments page's .json, the thread is read from the page, the same tree, the same more",
+  async () => {
+    const viaJson = await call('post', { post: 't3_g1' });
+    const cJson = await call('post', { post: 't1_c2' });
+    fake.refused.add('/comments/g1.json');
+    const from = fake.calls.length;
+    const t = await call('post', { post: 't3_g1' });
+    expect(shown(t.focal)).toEqual(shown(viaJson.focal));
+    expect(t.focal.text).toBe('They went red at last.');
+    expect(t.replies.map((ch: any[]) => ch.map(shown))).toEqual(viaJson.replies.map((ch: any[]) => ch.map(shown)));
+    expect(t.replies[0][0].text).toBe('Which kind are they?');
+    expect(Math.abs(t.replies[0][0].ts - viaJson.replies[0][0].ts)).toBeLessThan(60_000);
+    expect(t.more).toBe('g1.c6.0');
+    // A comment's page with its context: from the page too, without asking its .json.
+    const c = await call('post', { post: 't1_c2' });
+    expect(c.ancestors.map(shown)).toEqual(cJson.ancestors.map(shown));
+    expect(shown(c.focal)).toEqual(shown(cJson.focal));
+    expect(c.replies.map((ch: any[]) => ch.map(shown))).toEqual(cJson.replies.map((ch: any[]) => ch.map(shown)));
+    expect(callsTo('/comments/g1/_/c2.json', from)).toEqual([]);
+    expect(callsTo('/comments/g1/_/c2/', from)[0]!.query).toMatchObject({ context: '8' });
+    fake.refused.delete('/comments/g1.json');
   },
   60_000,
 );

@@ -463,6 +463,8 @@ describe('mail.send: what is checked here, and what the page answers', () => {
     expect(checkOutgoing({ ...ok, from: ' me@proton.test ' } as any, dir).from).toBe('me@proton.test');
     expect(bad({ ...ok, to: Array.from({ length: 101 }, (_, i) => ({ name: null, email: `p${i}@example.org` })) })).toBe(400);
     expect(bad({ ...ok, attachments: [{ filename: 'a', mime: 'text/plain', path: 'relative' }] })).toBe(400);
+    // No inline parts through the Mail page (details.inlineParts is not set).
+    expect(bad({ ...ok, html: '<img src="cid:pic1">', attachments: [{ filename: 'p.png', mime: 'image/png', base64: 'AQID', contentId: 'pic1' }] })).toBe(400);
     expect(bad({ ...ok, attachments: [{ filename: 'a', mime: 'text/plain', path: join(outside, 'missing') }] })).toBe(404);
     writeFileSync(join(dir, 'events.json'), '{}');
     expect(bad({ ...ok, attachments: [{ filename: 'a', mime: 'text/plain', path: join(dir, 'events.json') }] })).toBe(403);

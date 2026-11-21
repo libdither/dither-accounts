@@ -126,6 +126,8 @@ export interface OutgoingFile {
   /** A file on this machine, or the bytes. One of the two. */
   path?: string;
   base64?: string;
+  /** Shown in the HTML as cid:<contentId> (without angle brackets): sent as an inline part. */
+  contentId?: string;
 }
 
 export interface OutgoingMail {

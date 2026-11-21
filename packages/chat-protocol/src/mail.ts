@@ -61,6 +61,11 @@ export interface MailAccountView {
   /** The most recipients, To, Cc and Bcc together, on one message: `details.maxRecipients`, else 100 on Proton and 500 elsewhere. */
   maxRecipients?: number;
   /**
+   * The account sends files with a contentId as inline parts (`details.inlineParts`), so a picture in the HTML goes as
+   * `cid:`; absent or false, it goes as a data: URL.
+   */
+  inlineParts?: boolean;
+  /**
    * The writes the account makes now, as its status says (`details.writes`): a kind not listed is refused here
    * without a call, and its buttons are hidden. Null or absent: not said, so every write is tried (a 501 says no).
    */

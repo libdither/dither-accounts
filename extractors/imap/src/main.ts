@@ -108,6 +108,8 @@ function sendStatus() {
   const details: Record<string, string | number | boolean | null> = {
     summaryHeaders: true,
     raw: 'original',
+    // mail.send makes a file with a contentId an inline part (smtp.ts composeMessage): the HTML may show it as cid:.
+    inlineParts: true,
     provider: PRESETS[s.provider].name,
     email: s.email,
     username: s.user,

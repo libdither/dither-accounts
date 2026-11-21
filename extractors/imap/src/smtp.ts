@@ -169,6 +169,8 @@ export class Smtp {
     const msg = checkOutgoing(mail);
     const from = this.sender(msg.from);
     const files = (msg.attachments ?? []).map((a, i) => outgoingFile(a, i, accountDir));
+    const cids = files.flatMap((f) => (f.contentId ? [f.contentId.toLowerCase()] : []));
+    if (new Set(cids).size !== cids.length) throw new StatusError('two attachments have the same contentId', 400);
     if (files.reduce((n, f) => n + f.content.length, 0) > TOTAL_CAP) throw new StatusError('the attachments are over 35 MB together', 413);
 
     let original: Awaited<ReturnType<Imap['threading']>> | null = null;
@@ -176,25 +178,8 @@ export class Smtp {
     const domain = from.address.split('@')[1] || 'localhost';
     const mid = `<${randomUUID()}@${domain}>`;
     const date = new Date();
-    const compose = (keepBcc: boolean) => {
-      const node = new MailComposer({
-        from,
-        to: msg.to.map(addr),
-        cc: (msg.cc ?? []).map(addr),
-        bcc: (msg.bcc ?? []).map(addr),
-        subject: msg.subject,
-        ...(msg.text !== undefined ? { text: msg.text } : {}),
-        ...(msg.html !== undefined ? { html: msg.html } : {}),
-        messageId: mid,
-        date,
-        ...(original?.messageId ? { inReplyTo: original.messageId, references: [...original.references, original.messageId].join(' ') } : {}),
-        attachments: files.map((f) => ({ filename: f.filename, contentType: f.mime, content: f.content })),
-        disableFileAccess: true,
-        disableUrlAccess: true,
-      }).compile();
-      node.keepBcc = keepBcc;
-      return new Promise<Buffer>((res, rej) => node.build((err: Error | null, b: Buffer) => (err ? rej(err) : res(b))));
-    };
+    const threading = original?.messageId ? { inReplyTo: original.messageId, references: [...original.references, original.messageId].join(' ') } : {};
+    const compose = (keepBcc: boolean) => composeMessage({ msg, from, files, messageId: mid, date, ...threading }, keepBcc);
     const raw = await compose(false);
     const rcpt = [...msg.to, ...(msg.cc ?? []), ...(msg.bcc ?? [])].map((a) => a.email);
     await this.session(
@@ -241,6 +226,47 @@ export class Smtp {
 
 const addr = (a: MailAddress) => ({ name: a.name ?? '', address: a.email });
 
+/**
+ * The message as it goes out (keepBcc: the copy for Sent), built by MailComposer with file and URL access off: text
+ * and HTML as multipart/alternative; files with a contentId in a multipart/related with the HTML; other files around
+ * that in a multipart/mixed.
+ */
+export function composeMessage(
+  m: { msg: OutgoingMail; from: { name: string; address: string }; files: ReturnType<typeof outgoingFile>[]; messageId: string; date: Date; inReplyTo?: string; references?: string },
+  keepBcc: boolean,
+): Promise<Buffer> {
+  const { msg } = m;
+  const node = new MailComposer({
+    from: m.from,
+    to: msg.to.map(addr),
+    cc: (msg.cc ?? []).map(addr),
+    bcc: (msg.bcc ?? []).map(addr),
+    subject: msg.subject,
+    ...(msg.text !== undefined ? { text: msg.text } : {}),
+    ...(msg.html !== undefined ? { html: msg.html } : {}),
+    messageId: m.messageId,
+    date: m.date,
+    ...(m.inReplyTo ? { inReplyTo: m.inReplyTo, references: m.references } : {}),
+    attachments: m.files.map(composerFile),
+    disableFileAccess: true,
+    disableUrlAccess: true,
+  }).compile();
+  node.keepBcc = keepBcc;
+  return new Promise<Buffer>((res, rej) => node.build((err: Error | null, b: Buffer) => (err ? rej(err) : res(b))));
+}
+
+/** A Content-ID as mail.send takes it (OutgoingFile.contentId): without angle brackets, no spaces or quotes. */
+export const CONTENT_ID = /^[\w.@-]{1,200}$/;
+
+/**
+ * A checked file as MailComposer takes it. One with a contentId is an inline part: MailComposer puts it in a
+ * multipart/related with the HTML (when there is HTML) with `Content-ID: <cid>`; its disposition is set to inline here,
+ * as MailComposer only does that by itself for images. The rest are ordinary attachments.
+ */
+export function composerFile(f: { filename: string; mime: string; content: Buffer; contentId?: string }) {
+  return { filename: f.filename, contentType: f.mime, content: f.content, ...(f.contentId ? { cid: f.contentId, contentDisposition: 'inline' as const } : {}) };
+}
+
 function checkOutgoing(m: OutgoingMail): OutgoingMail {
   const bad = (msg: string) => new StatusError(msg, 400);
   if (!m || typeof m !== 'object') throw bad('a message, please');
@@ -270,7 +296,7 @@ function checkOutgoing(m: OutgoingMail): OutgoingMail {
  * An outgoing file's bytes. A path must be absolute, a regular file of at most 25 MB, and not the account's own
  * files (its secret.json above all): an app that may send as you may attach your files, not the account's keys.
  */
-function outgoingFile(a: OutgoingFile, i: number, accountDir: string) {
+export function outgoingFile(a: OutgoingFile, i: number, accountDir: string) {
   const bad = (msg: string, status = 400) => new StatusError(`attachment ${i + 1}: ${msg}`, status);
   if (!a || typeof a !== 'object' || typeof a.filename !== 'string' || !a.filename || typeof a.mime !== 'string' || !/^[\w.+-]+\/[\w.+-]+$/.test(a.mime)) throw bad('needs filename and mime');
   let content: Buffer;
@@ -295,5 +321,11 @@ function outgoingFile(a: OutgoingFile, i: number, accountDir: string) {
     content = readFileSync(real);
   } else throw bad('one of path and base64');
   if (content.length > ATTACHMENT_CAP) throw bad('over 25 MB', 413);
-  return { filename: a.filename, mime: a.mime, content };
+  return { filename: a.filename, mime: a.mime, content, ...(a.contentId !== undefined ? { contentId: checkContentId(a.contentId, i) } : {}) };
+}
+
+/** An outgoing file's contentId, checked (CONTENT_ID): 400 otherwise. */
+export function checkContentId(cid: unknown, i: number): string {
+  if (typeof cid !== 'string' || !CONTENT_ID.test(cid)) throw new StatusError(`attachment ${i + 1}: contentId is 1 to 200 letters, digits and . _ @ - (no angle brackets)`, 400);
+  return cid;
 }

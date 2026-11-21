@@ -1590,6 +1590,8 @@ test("checkOutgoing: addresses, body, files and sizes checked before anything re
   writeFileSync(join(tmp, 'x.txt'), 'the account\'s own');
   expect(() => checkOutgoing({ ...ok, attachments: [{ filename: 'a', mime: 'text/plain', path: join(tmp, 'x.txt') }] } as any, tmp)).toThrow(expect.objectContaining({ status: 403 }));
   expect(checkOutgoing({ ...ok, subject: 'a\r\nBcc: x@example.org' } as any, tmp).subject).toBe('a Bcc: x@example.org');
+  // No inline parts through the Gmail page (details.inlineParts is not set): a file with a contentId is refused.
+  expect(() => checkOutgoing({ ...ok, html: '<img src="cid:pic1">', attachments: [{ filename: 'p.png', mime: 'image/png', base64: 'AQID', contentId: 'pic1' }] } as any, tmp)).toThrow(expect.objectContaining({ status: 400 }));
 });
 
 test("a send Gmail refuses after taking its draft: 422, the draft left in Drafts, the original not marked replied; a send late in its op's time is not started", async () => {

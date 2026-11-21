@@ -61,6 +61,7 @@ const KIND_MARK: Record<string, Mark> = {
   mastodon: { brand: 'mastodon' },
   lemmy: { brand: 'lemmy' },
   bluesky: { brand: 'bluesky' },
+  zulip: { brand: 'zulip' },
   bugwatch: { glyph: 'bell' },
   t3: { glyph: 'terminal' },
   njalla: { glyph: 'server' },
@@ -200,6 +201,17 @@ const SERVICES: Service[] = [
     category: 'chat',
     line: 'Your notifications, timelines and threads',
     ways: [{ id: 'app-password', label: 'App password', glyph: 'key', kind: 'bluesky', tip: 'Signs in with an app password you make in Bluesky\'s settings and keeps the session: no browser.' }],
+  },
+  {
+    id: 'zulip',
+    name: 'Zulip',
+    mark: { brand: 'zulip' },
+    category: 'chat',
+    line: "Your organization's channels, topics and DMs",
+    ways: [
+      { id: 'api-key', label: 'API key', glyph: 'key', kind: 'zulip', hide: ['password'], need: ['apiKey'], tip: "Your API key, from Zulip's Settings → Account & privacy: works on every server, SSO ones too." },
+      { id: 'password', label: 'Password', glyph: 'key', kind: 'zulip', hide: ['apiKey'], need: ['password'], tip: 'Swaps your password once for your API key and keeps only the key. Not for servers you sign in to with SSO.' },
+    ],
   },
   {
     id: 'gmessages',

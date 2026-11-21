@@ -319,6 +319,11 @@ export interface MessageFact {
   silent?: boolean;
   /** Embeds as `embeds` (api.ts EmbedView), and the keys of rich.ts RichExtra. */
   extra?: Record<string, unknown>;
+  /**
+   * The message now lives in `conversation`, having moved from another one the hub may still hold it in: a Zulip
+   * topic renamed or moved to another channel. The hub moves it; without this flag a message never changes conversation.
+   */
+  moved?: boolean;
 }
 
 /**

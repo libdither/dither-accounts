@@ -372,6 +372,13 @@
         "react-dom": "^19.2.0",
       },
     },
+    "extractors/zulip": {
+      "name": "@dither-accounts/extractor-zulip",
+      "dependencies": {
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+    },
     "packages/approval": {
       "name": "@dither-accounts/approval",
     },
@@ -549,6 +556,8 @@
     "@dither-accounts/extractor-whatsapp": ["@dither-accounts/extractor-whatsapp@workspace:extractors/whatsapp"],
 
     "@dither-accounts/extractor-x": ["@dither-accounts/extractor-x@workspace:extractors/x"],
+
+    "@dither-accounts/extractor-zulip": ["@dither-accounts/extractor-zulip@workspace:extractors/zulip"],
 
     "@dither-accounts/interfaces": ["@dither-accounts/interfaces@workspace:packages/interfaces"],
 

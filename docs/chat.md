@@ -16,6 +16,7 @@ same wire as before: dither-chat's adapter protocol, copied as `packages/chat-pr
 | `mastodon` | `extractors/mastodon` | a Mastodon server's REST API with plain fetch: posts only, notifications as a feed ([mastodon.md](mastodon.md)): no adapter in dither-chat |
 | `lemmy` | `extractors/lemmy` | a Lemmy instance's API v3 with plain fetch: posts and comments only, replies and mentions as a feed ([lemmy.md](lemmy.md)): no adapter in dither-chat |
 | `bluesky` | `extractors/bluesky` | the AT Protocol's HTTP API (XRPC) on the account's own server with plain fetch: posts only, notifications as a feed ([bluesky.md](bluesky.md)): no adapter in dither-chat |
+| `zulip` | `extractors/zulip` | a Zulip server's REST API and event queue with plain fetch: channels as forums, topics as threads ([zulip.md](zulip.md)) |
 | `chat-fake` | `extractors/chat-fake` | a fake for tests: you and Alice in one DM |
 
 ## The `chat` interface
@@ -41,7 +42,7 @@ it heard and shows "by".
 | `whatsapp` | `senderTimestampMS`, else its message's time; history's reactions too | the time of the message taking it back |
 | `matrix` | the `m.reaction` event's `origin_server_ts`; a backfill snapshot's from the reaction index | the redaction's `origin_server_ts` (or `redacted_because`'s) |
 | `telegram` | the `messagePeerReaction` date of each person it names; `reactors` too | none: Telegram drops it from the list |
-| `discord`, `x`, `meta`, `gmessages` | none: their reactions come as lists of who | none |
+| `discord`, `x`, `meta`, `gmessages`, `zulip` | none: their reactions come as lists of who | none |
 
 **A Discord page that never starts or stops answering** (`extractors/discord/src/pagewatch.ts`). The extension's
 worker can be attached while its tab has no working page: after a restart under load, Chromium's network service
@@ -102,6 +103,10 @@ on Discord `next`, its id (see "Reading like a person").
   (scope `all`), a space's rooms, or one room; `in:` narrows the rooms, authors are `senders`, relevance is
   `order_by: rank`; dates are kept to after the fact. The hub's numeric offsets stand for the server's `next_batch`
   tokens, remembered per search. Encrypted rooms are not searched by the server. No member walks.
+- **Zulip** (`extractors/zulip/src/adapter.ts`, `search`): `GET /messages` with a `search` narrow; one `in:` place
+  narrows it to that channel, topic or DM, authors are `sender`, `has:` and mentions of you map to Zulip's operators;
+  the hub's offsets stand for the message ids each page ended at, remembered per search. Member walks read the
+  organization's people as `/register` gave them.
 
 ## Reading like a person (Discord)
 
@@ -695,6 +700,7 @@ The rest of the CLI covers `accounts`, `apps`, `approve <request> [--level L] [-
 
 - **Unit tests:** `bun test` in each `extractors/<kind>` runs that adapter's own tests in their new place.
   - Discord's `pipeline.test.ts` and `attention-pipeline.test.ts` feed the adapter's facts into dither-chat's real hub store. It needs a dither-chat checkout beside this repo (or `DITHER_CHAT_REPO`) and is skipped without one.
+- **Zulip testbed:** `extractors/zulip/testbed/sandbox.ts`, a real Zulip in rootless podman, seeded ([zulip.md](zulip.md), "Testing").
 - **Matrix testbed:** `extractors/matrix/testbed/testbed.ts`, with its integration harnesses in `extractors/matrix/test/` (see its README). Use `DITHER_TESTBED_DIR` and `DITHER_TESTBED_PORT` so a run has its own homeserver.
 - **This repo's tests:** `test/chat-import.test.ts` covers the import, the process check, forgetting an account, and the interface's types. `test/chat-add.test.ts` adds chat accounts the page's way and reads them as the hub does: a fake chat account (and the hub's `createGroup` through the manager to it), Signal on a fake signal-cli (QR, new code, linked) and WhatsApp on a fake bridge (QR, pairing code).
 - **End to end:** dither-chat's `scripts/verify-accounts-matrix.ts` moves a testbed Matrix account from a hub into a manager and back. `scripts/verify-chat-add.ts` here adds Matrix (testbed), Signal and WhatsApp (fakes) on the page in headless Chromium and checks a throwaway hub sees and uses them.

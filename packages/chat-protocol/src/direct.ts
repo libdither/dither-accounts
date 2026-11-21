@@ -48,6 +48,8 @@ export function directTarget(network: Network, input: string): { peer: string } 
   }
   // A T3 thread starts in a project, in T3 Code (dither-accounts' docs/t3.md).
   if (network === 't3') return { error: 'New T3 threads start in T3 Code for now; they show up here once they exist' };
+  // Anyone in the organization, by the email they sign in with (dither-accounts' docs/zulip.md).
+  if (network === 'zulip') return /^[^\s@]+@[^\s@]+$/.test(s) ? { peer: s.toLowerCase() } : { error: 'Someone in the organization, by their email, like ann@example.org' };
   if (network === 'gmessages') return PHONE.test(phone(s)) ? { peer: phone(s) } : { error: 'A phone number needs its country code, like +15551234567' };
   // Their extractors read and answer chats but can't open a new one yet: start it in the account's live view.
   if (network === 'messenger' || network === 'instagram' || network === 'x') {

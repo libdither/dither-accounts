@@ -629,6 +629,12 @@ it(
     expect(raw).toMatchObject({ filename: null, mime: 'message/rfc822', size: Buffer.byteLength(fakeEml(src)) });
     expect(Buffer.from(raw.base64, 'base64').toString()).toBe(fakeEml(src));
     expect((await mailCall('mail.raw', { id: src.id, background: true })).base64).toBe(raw.base64);
+    // A download whose connection breaks ("Failed to fetch" in the page) says where it broke, in the answer and the log.
+    fake.gmail.cutNext();
+    const cut = await mailCall('mail.get', { id: src.id }).catch((x) => x);
+    expect(String(cut?.message)).toMatch(/^Gmail's message download failed: the browser could not fetch it, (before any answer|while its body came in \(\d+ bytes in\)), after [\d.]+ s; try again in a moment$/);
+    expect(logOf(signedIn)).toMatch(/gmail raw: the browser could not fetch it, /);
+    expect((await mailCall('mail.get', { id: src.id })).id).toBe(src.id);
     // That message is unread: it was looked at again after each read (the unread guard), and Gmail (this fake) left it so.
     expect(src.labels).toContain('^u');
     expect(statusOf(signedIn).details.readsMarkRead).toBe(false);

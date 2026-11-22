@@ -1209,8 +1209,9 @@ const gmailTransport: Transport = {
     return { ...r, page: pageKindOf(r?.page) };
   },
   async raw(hex, max) {
-    const r = await pageRequest<{ status?: number; token?: string; size?: number; tooBig?: number; type?: string | null; error?: string; page?: unknown }>('gmail', { kind: 'gmail.raw', hex, max }, RAW_ANSWER_MS);
+    const r = await pageRequest<{ status?: number; token?: string; size?: number; tooBig?: number; type?: string | null; error?: string; page?: unknown; stage?: unknown; ms?: unknown; got?: unknown; online?: unknown }>('gmail', { kind: 'gmail.raw', hex, max }, RAW_ANSWER_MS);
     const status = typeof r?.status === 'number' ? r.status : 0;
+    if (r?.error === 'network') return { status: 0, error: 'network', net: { stage: r.stage === 'body' ? 'body' : 'headers', ms: Number(r.ms) || 0, got: Number(r.got) || 0, online: typeof r.online === 'boolean' ? r.online : null } };
     if (typeof r?.token !== 'string') return { status, tooBig: typeof r?.tooBig === 'number' ? r.tooBig : undefined, type: r?.type ?? null, error: r?.error, page: pageKindOf(r?.page) };
     const size = Number(r.size);
     try {

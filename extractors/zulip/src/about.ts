@@ -10,7 +10,7 @@ import { RefusalError } from '@dither-chat/protocol/client';
 import type { ZulipAdapter } from './adapter.ts';
 import { narrowLink, RESOLVED } from './ids.ts';
 import { mediaUrl } from './markdown.ts';
-import { reactionOf } from './emoji.ts';
+import { codeToChar, customOf, reactionOf } from './emoji.ts';
 import type { ZStream, ZSub, ZUser } from './state.ts';
 
 export function roleName(role: number | undefined): string {
@@ -261,8 +261,13 @@ export async function profile(a: ZulipAdapter, who: string): Promise<P.PersonAbo
   const fields = await customFields(a);
   const handle = a.handleOf(u);
   const out: P.PersonAbout = { displayName: u.full_name, ...(handle ? { handle } : {}), ...(u.avatar_url ? { avatar: mediaUrl(u.avatar_url, a.base) } : {}) };
-  const facts: { label: string; value: string }[] = [{ label: 'Role', value: u.is_bot ? 'Bot' : roleName(u.role) }];
+  const facts: { label: string; value: string; people?: string[] }[] = [{ label: 'Role', value: u.is_bot ? 'Bot' : roleName(u.role) }];
   const links: { label: string; value: string; url?: string }[] = [];
+  /** People a field or the bot's owner names: by name, with their ids so the app links them (identity facts first). */
+  const people = (ids: number[]) => {
+    for (const id of ids) a.ensureIdentity(id);
+    return { value: ids.map((id) => a.st.users.get(id)?.full_name ?? `User ${id}`).join(', '), people: ids.filter((id) => a.st.users.has(id)).map((id) => a.ids.user(id)) };
+  };
   for (const f of fields) {
     const v = u.profile_data?.[String(f.id)]?.value;
     if (!v) continue;
@@ -270,40 +275,41 @@ export async function profile(a: ZulipAdapter, who: string): Promise<P.PersonAbo
     else if (f.type === FIELD.PRONOUNS) out.pronouns = v;
     else if (f.type === FIELD.URL) links.push({ label: f.name, value: v, url: v });
     else if (f.type === FIELD.EXTERNAL) {
-      const sub = (() => {
-        try {
-          return JSON.parse(f.field_data || '{}').subtype as string;
-        } catch {
-          return '';
-        }
-      })();
-      links.push({ label: f.name, value: v, ...(sub === 'github' ? { url: `https://github.com/${v}` } : sub === 'twitter' ? { url: `https://x.com/${v}` } : {}) });
-    } else if (f.type === FIELD.SELECT) {
-      const opts = (() => {
-        try {
-          return JSON.parse(f.field_data || '{}');
-        } catch {
-          return {};
-        }
-      })();
-      facts.push({ label: f.name, value: opts[v]?.text ?? v });
-    } else if (f.type === FIELD.USER) {
-      const names = (() => {
-        try {
-          return (JSON.parse(v) as number[]).map((id) => a.st.users.get(id)?.full_name ?? String(id)).join(', ');
-        } catch {
-          return v;
-        }
-      })();
-      facts.push({ label: f.name, value: names });
-    } else facts.push({ label: f.name, value: v });
+      const url = externalUrl(fieldData(f), v);
+      links.push({ label: f.name, value: v, ...(url ? { url } : {}) });
+    } else if (f.type === FIELD.SELECT) facts.push({ label: f.name, value: fieldData(f)[v]?.text ?? v });
+    else if (f.type === FIELD.USER) {
+      let ids: number[] = [];
+      try {
+        ids = (JSON.parse(v) as unknown[]).filter((x): x is number => typeof x === 'number');
+      } catch {
+        // Not a list: said as it is.
+      }
+      const named = ids.length ? people(ids) : { value: v, people: [] };
+      facts.push({ label: f.name, value: named.value, ...(named.people.length ? { people: named.people } : {}) });
+    } else if (f.type === FIELD.DATE) facts.push({ label: f.name, value: dateText(v) });
+    else facts.push({ label: f.name, value: v });
   }
   if (u.timezone) facts.push({ label: 'Time zone', value: u.timezone });
   if (u.date_joined) out.createdAt = Date.parse(u.date_joined);
-  if (u.is_bot && u.bot_owner_id) facts.push({ label: 'Owner', value: a.st.users.get(u.bot_owner_id)?.full_name ?? String(u.bot_owner_id) });
+  if (u.is_bot && u.bot_owner_id) {
+    const owner = people([u.bot_owner_id]);
+    facts.push({ label: 'Owner', value: owner.value, ...(owner.people.length ? { people: owner.people } : {}) });
+  }
   if (u.is_active === false) facts.push({ label: 'Account', value: 'Deactivated' });
+  // The organization, with their role first and the user groups they are in, as Zulip's profile lists them.
+  out.mutualSpaces = [{ id: a.ids.space, roles: [{ name: roleName(u.role) }, ...groupsOf(a, uid).map((name) => ({ name }))], ...(u.date_joined ? { joinedAt: Date.parse(u.date_joined) } : {}) }];
   const s = a.st.status.get(uid);
-  if (s?.status_text || s?.emoji_name) out.status = { ...(s.status_text ? { text: s.status_text } : {}), ...(s.emoji_name ? { emoji: s.reaction_type === 'unicode_emoji' && s.emoji_code ? String.fromCodePoint(...s.emoji_code.split('-').map((h) => parseInt(h, 16))) : `:${s.emoji_name}:` } : {}) };
+  if (s?.status_text || s?.emoji_name) {
+    const unicode = s.reaction_type === 'unicode_emoji' && s.emoji_code;
+    // A custom emoji (the organization's, or Zulip's own) by name, with its picture.
+    const pic = !unicode && s.emoji_name && s.emoji_code && (s.reaction_type === 'realm_emoji' || s.reaction_type === 'zulip_extra_emoji') ? customOf({ emoji_name: s.emoji_name, emoji_code: s.emoji_code, reaction_type: s.reaction_type }, a.emoji, a.base)?.url : undefined;
+    out.status = {
+      ...(s.status_text ? { text: s.status_text } : {}),
+      ...(s.emoji_name ? { emoji: unicode ? codeToChar(unicode) : `:${s.emoji_name}:` } : {}),
+      ...(pic ? { emojiUrl: pic } : {}),
+    };
+  }
   out.facts = facts;
   if (links.length) out.links = links;
   if (uid === a.st.self) {
@@ -334,6 +340,40 @@ async function customFields(a: ZulipAdapter): Promise<CustomField[]> {
   const list: CustomField[] = (r.custom_fields ?? []).sort((x: CustomField, y: CustomField) => (x.order ?? 0) - (y.order ?? 0));
   fieldsCache.set(a, list);
   return list;
+}
+
+/** A custom field's settings (its choices, an external account's kind and link pattern), or nothing. */
+function fieldData(f: CustomField): Record<string, any> {
+  try {
+    return JSON.parse(f.field_data || '{}') ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/** Where an external account field leads: the organization's own pattern, else Zulip's built-in kinds. */
+const EXTERNAL: Record<string, string> = { github: 'https://github.com/%(username)s', twitter: 'https://x.com/%(username)s' };
+export function externalUrl(data: Record<string, any>, value: string): string | undefined {
+  const pattern = typeof data.url_pattern === 'string' && data.url_pattern ? data.url_pattern : EXTERNAL[data.subtype];
+  if (!pattern || !pattern.includes('%(username)s')) return undefined;
+  const url = pattern.replaceAll('%(username)s', encodeURIComponent(value));
+  return /^https?:\/\//.test(url) ? url : undefined;
+}
+
+/** A date field's `2024-03-05` as words ("March 5, 2024"); anything else as it is. */
+export function dateText(v: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+  if (!m) return v;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return Number.isNaN(d.getTime()) ? v : d.toLocaleDateString('en-US', { timeZone: 'UTC', year: 'numeric', month: 'long', day: 'numeric' });
+}
+
+/** The user groups someone is in directly, by name: not the system ones (role:…), which their role says. */
+export function groupsOf(a: ZulipAdapter, uid: number): string[] {
+  return [...a.st.groups.values()]
+    .filter((g) => !g.is_system_group && !g.deactivated && !g.name.startsWith('role:') && g.members?.includes(uid))
+    .map((g) => g.name)
+    .sort((x, y) => x.localeCompare(y));
 }
 
 export async function setProfile(a: ZulipAdapter, change: P.ProfileChange): Promise<P.PersonAbout> {

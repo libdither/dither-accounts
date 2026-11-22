@@ -108,6 +108,10 @@ test('a new role in the organization is one role lost and one given; a user grou
     [`${host}/u/10`, 'designers', true],
     [`${host}/u/9`, 'designers', false],
   ]);
+  // A new group: the people it is made with are given it.
+  z.push({ type: 'user_group', op: 'add', group: { id: 22, name: 'reviewers', members: [10], is_system_group: false } });
+  await link.next((e) => e.t === 'role' && e.role === 'reviewers');
+  expect(of(link, 'role').slice(4).map((e) => [e.member, e.role, e.given])).toEqual([[`${host}/u/10`, 'reviewers', true]]);
 });
 
 test('@all is offered in a small channel, and in a big one only to those Zulip lets use it', async () => {
@@ -121,4 +125,57 @@ test('@all is offered in a small channel, and in a big one only to those Zulip l
   // Made an owner (role:owners, nested in role:administrators): now it may.
   (a as any).st.groups.get(10).members.push(8);
   expect((await ask(`${host}/s/4`)).everyone).toBe(true);
+});
+
+test("a profile names the organization with their role and user groups; people fields and a bot's owner link; dates read; custom links lead somewhere", async () => {
+  const groups = [
+    { id: 19, name: 'designers', members: [9], is_system_group: false },
+    { id: 20, name: 'admins-old', members: [9], is_system_group: false, deactivated: true },
+    { id: 21, name: 'backend', members: [9, 10], is_system_group: false },
+    { id: 11, name: 'role:administrators', members: [9], is_system_group: true },
+  ];
+  const fields = [
+    { id: 1, name: 'Birthday', type: 4, order: 0 },
+    { id: 2, name: 'Manager', type: 6, order: 1 },
+    { id: 3, name: 'Forge', type: 7, order: 2, field_data: JSON.stringify({ subtype: 'custom', url_pattern: 'https://forge.example.org/%(username)s' }) },
+    { id: 4, name: 'GitHub', type: 7, order: 3, field_data: JSON.stringify({ subtype: 'github' }) },
+  ];
+  const { a, host } = await online({
+    profileFields: fields,
+    users: {
+      9: { date_joined: '2024-01-02T03:04:05+00:00', profile_data: { 1: { value: '1990-03-05' }, 2: { value: '[10]' }, 3: { value: 'ann lee' }, 4: { value: 'annlee' } } },
+      12: { full_name: 'Build Bot', is_bot: true, bot_owner_id: 9, role: 400 },
+    },
+    register: {
+      realm_user_groups: groups,
+      realm_emoji: { 42: { id: '42', name: 'party_parrot', source_url: '/user_avatars/2/emoji/images/42.png', deactivated: false } },
+      user_status: { 9: { status_text: 'Out today', emoji_name: 'party_parrot', emoji_code: '42', reaction_type: 'realm_emoji' } },
+    },
+  });
+  const profile = (who: string) => (a as any).command({ t: 'profile', id: 'p', who }) as Promise<P.PersonAbout>;
+  const ann = await profile(`${host}/u/9`);
+  // The organization first with the role, then the groups by name: not a deactivated one, nor a system one.
+  expect(ann.mutualSpaces).toEqual([{ id: host, roles: [{ name: 'Administrator' }, { name: 'backend' }, { name: 'designers' }], joinedAt: Date.parse('2024-01-02T03:04:05+00:00') }]);
+  expect(ann.facts).toEqual([
+    { label: 'Role', value: 'Administrator' },
+    { label: 'Birthday', value: 'March 5, 1990' },
+    { label: 'Manager', value: 'Bob Kim', people: [`${host}/u/10`] },
+  ]);
+  expect(ann.links).toEqual([
+    { label: 'Forge', value: 'ann lee', url: 'https://forge.example.org/ann%20lee' },
+    { label: 'GitHub', value: 'annlee', url: 'https://github.com/annlee' },
+  ]);
+  // The organization's emoji by name, with its picture.
+  expect(ann.status).toEqual({ text: 'Out today', emoji: ':party_parrot:', emojiUrl: 'zulip:/user_avatars/2/emoji/images/42.png' });
+  const bot = await profile(`${host}/u/12`);
+  expect(bot.facts).toContainEqual({ label: 'Owner', value: 'Ann Lee', people: [`${host}/u/9`] });
+  expect(bot.mutualSpaces?.[0].roles).toEqual([{ name: 'Member' }]);
+});
+
+test('a walk of the members says each one’s role and user groups', async () => {
+  const { a, link, host } = await online({ register: { realm_user_groups: [{ id: 19, name: 'designers', members: [9], is_system_group: false }, { id: 11, name: 'role:administrators', members: [9], is_system_group: true }] } });
+  await (a as any).command({ t: 'walkMembers', id: 'w', space: host, query: '', limit: 10 });
+  const roles = Object.fromEntries(of(link, 'members').flatMap((e) => e.members.map((m) => [m.who, m.roles])));
+  expect(roles[`${host}/u/9`]).toEqual(['Administrator', 'designers']);
+  expect(roles[`${host}/u/10`]).toEqual(['Member']);
 });

@@ -255,7 +255,8 @@ export function parsePost(v: unknown, ctx: PostCtx, depth = 0): P.PostFact | nul
     }
     const info = isObj(m.original_info) ? m.original_info : {};
     const alt = str(m.ext_alt_text, 2000);
-    media.push({ kind: MEDIA_KIND[String(m.type)] ?? 'image', url, ...(num(info.width) ? { width: num(info.width)! } : {}), ...(num(info.height) ? { height: num(info.height)! } : {}), ...(alt ? { alt } : {}) });
+    const durationMs = isObj(m.video_info) ? num(m.video_info.duration_millis) : null;
+    media.push({ kind: MEDIA_KIND[String(m.type)] ?? 'image', url, ...(num(info.width) ? { width: num(info.width)! } : {}), ...(num(info.height) ? { height: num(info.height)! } : {}), ...(alt ? { alt } : {}), ...(durationMs ? { durationMs } : {}) });
   }
 
   const repostRaw = isObj(legacy.retweeted_status_result) ? legacy.retweeted_status_result.result : null;
@@ -864,6 +865,82 @@ export function parseHome(timeline: unknown, drops: Drops, testOrigin?: string |
   // (ads, who to follow) is not.
   const more = tl.entries.length || tl.pinned.length ? tl.bottom : null;
   return { page: { items, more, top: tl.top }, users, named: [...named] };
+}
+
+// ------------------------------------------------------------ your likes
+/** How many posts a likes read asks for by default, and at most. */
+export const LIKES_COUNT = 20;
+export const LIKES_COUNT_MAX = 100;
+/** X's snowflake epoch (ms): an id's top 41 bits are ms since it. */
+const SNOWFLAKE_EPOCH = 1288834974657n;
+/**
+ * When a like was made, from its Likes-tab entry's sort index: X sorts the tab by the like's own snowflake id, so its
+ * time is the id's. Null when the index is no snowflake, or names a time before the post was made (more than a minute
+ * early: clocks) or after now (a day's slack): then X sorts by something else and the time is not given.
+ */
+export function likedAtOf(sortIndex: string | undefined, postTs: number, now = Date.now()): number | null {
+  if (!sortIndex || !/^\d{15,20}$/.test(sortIndex)) return null;
+  const ms = Number((BigInt(sortIndex) >> 22n) + SNOWFLAKE_EPOCH);
+  return ms >= postTs - 60_000 && ms <= now + 86_400_000 ? ms : null;
+}
+
+/**
+ * One page of the account's Likes tab (Likes, `user.result.timeline.timeline`), newest like first: each `tweet-<id>`
+ * entry a liked post, with `likedAt` from its sort index (likedAtOf). Ads and anything that is not a post are left out
+ * and counted (`likes.promoted`, `likes.item-…`), so are posts that are gone (`likes.tombstone`) and sort indexes
+ * that give no time (`likes.no-like-time`). `more` is the Bottom cursor (null on a page of nothing but cursors: the
+ * end), `top` the Top one.
+ */
+export function parseLikes(timeline: unknown, drops: Drops, testOrigin?: string | null, now = Date.now()): { page: P.LikesPage; users: Map<string, XUser> } {
+  const users = new Map<string, XUser>();
+  const ctx: PostCtx = { users, drops, testOrigin };
+  let t = timeline;
+  // The page's own call gives the timeline; a raw answer has it under data.user.result.timeline.timeline.
+  if (isObj(t) && isObj(t.data)) t = t.data;
+  if (isObj(t) && isObj(t.user) && isObj(t.user.result)) {
+    const res = t.user.result;
+    t = isObj(res.timeline) ? res.timeline.timeline : isObj(res.timeline_v2) ? res.timeline_v2.timeline : null;
+  }
+  const tl = entriesOf(t, drops, 'likes');
+  const ids = new Set<string>();
+  const items: P.LikedPost[] = [];
+  for (const e of tl.entries) {
+    if (/^promoted-/.test(e.entryId) || isObj(e.content.promotedMetadata)) {
+      drops.add('likes', 'promoted');
+      continue;
+    }
+    for (const { item } of itemsOf(e)) {
+      if (isObj(item.promotedMetadata)) {
+        drops.add('likes', 'promoted');
+        continue;
+      }
+      if (item.itemType === 'TimelineTombstone' || item.__typename === 'TimelineTombstone') {
+        drops.add('likes', 'tombstone');
+        continue;
+      }
+      if (!isTweetItem(item)) {
+        drops.add('likes', `item-${reason(String(item.__typename ?? item.itemType ?? 'none'))}`);
+        continue;
+      }
+      const r = isObj(item.tweet_results) ? item.tweet_results.result : null;
+      if (!r) {
+        drops.add('likes', 'no-tweet');
+        continue;
+      }
+      if (isObj(r) && r.__typename === 'TweetTombstone') {
+        drops.add('likes', 'tombstone');
+        continue;
+      }
+      const post = parsePost(r, ctx);
+      if (!post || ids.has(post.id)) continue;
+      ids.add(post.id);
+      const likedAt = likedAtOf(e.sortIndex, post.ts, now);
+      if (likedAt === null) drops.add('likes', 'no-like-time');
+      items.push({ post, ...(likedAt !== null ? { likedAt } : {}) });
+    }
+  }
+  const more = tl.entries.length ? tl.bottom : null;
+  return { page: { items, more, top: tl.top }, users };
 }
 
 // ------------------------------------------------------------ what was said

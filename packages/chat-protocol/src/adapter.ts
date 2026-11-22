@@ -106,6 +106,8 @@ export type Capability =
   | 'postReactors'
   /** Reads the account's home timelines, Following and For you, a page at a time (the `home` command, feed.ts HomePage). */
   | 'home'
+  /** Reads the posts the account liked, newest like first, a page at a time (the `likes` command, feed.ts LikesPage). */
+  | 'likes'
   /** Deletes a post of the account's own (the `unpublish` command). */
   | 'unpublish'
   /** Puts pictures, a GIF or a video on a post it writes (`publish`'s `media`, the network's own limits). */
@@ -856,6 +858,12 @@ export type AdapterCommand =
    * for every author and every person a reason names first, then reply.result: HomePage
    */
   | { t: 'home'; id: string; feed: HomeFeed; cursor?: string; count?: number }
+  /**
+   * One page of the posts the account liked, newest like first (capability 'likes'): `cursor` an earlier page's `more`
+   * (older) or `top` (newer); `count` how many to ask for (default 20, at most 100; the network may give fewer). Asked
+   * only on request. Identity facts for every author first, then reply.result: LikesPage
+   */
+  | { t: 'likes'; id: string; cursor?: string; count?: number }
   /**
    * Who liked (`kind` 'like') or reposted ('repost') a post, a page (capability 'postReactors'). X shows who liked a post
    * only to its author. Identity facts first, then reply.result: ReactorsPage.

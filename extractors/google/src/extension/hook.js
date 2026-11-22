@@ -857,6 +857,19 @@
   // gmail.raw: one message's original, kept here (a few at most, two minutes) and handed over in pieces.
   const raws = new Map();
   let rawSeq = 0;
+  /**
+   * A download the browser itself gave up on (fetch's "Failed to fetch": the connection cut, refused, or sent where
+   * the page may not read it), told as an answer rather than thrown: where it failed (at its headers, or while its
+   * body came in, with how much had come), after how long, and whether the browser thought it was online. Names and
+   * counts only. (2026-11-22: a bulk read saw bursts of bare "Failed to fetch" that said none of this.)
+   */
+  function rawNetwork(stage, t0, got) {
+    let online = null;
+    try {
+      online = navigator.onLine === true ? true : navigator.onLine === false ? false : null;
+    } catch (e) {}
+    return { status: 0, error: 'network', stage, ms: Date.now() - t0, got, online };
+  }
   async function rawFetch(hex, max) {
     if (typeof hex !== 'string' || !/^[0-9a-f]{1,16}$/.test(hex)) throw new Error('gmail.raw: not a message id');
     if (!sync.ik) return { status: 0, error: 'no-ik' };
@@ -864,13 +877,14 @@
     const base = sync.mailBase || '/mail/u/' + encodeURIComponent(String(settings.authuser)) + '/';
     const url = location.origin + base + '?ik=' + encodeURIComponent(sync.ik) + '&view=att&th=' + hex + '&attid=0&disp=comp&safe=1&zw';
     const cut = cutoff(fetchMs());
+    const t0 = Date.now();
     let res;
     try {
       res = await cloak.apply(nativeFetch, window, [url, { credentials: 'include', cache: 'no-store', signal: cut.signal }]);
     } catch (e) {
       cut.done();
       if (cut.aborted()) return { status: 0, error: 'timeout' };
-      throw e;
+      return rawNetwork('headers', t0, 0);
     }
     cut.extend(RAW_MS - fetchMs());
     const type = learn.mediaType(res.headers.get('content-type'));
@@ -907,7 +921,7 @@
       }
     } catch (e) {
       if (cut.aborted()) return { status: 0, error: 'timeout' };
-      throw e;
+      return rawNetwork('body', t0, n);
     } finally {
       cut.done();
     }

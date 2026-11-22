@@ -6,7 +6,7 @@
  * Runtime checks stay shallow (an object): the extractors are this repo's own code and check their commands
  * themselves, and the types here keep apps honest at build time.
  */
-import type { About, AdapterCommand, AdapterEvent, AddMembersResult, AddPreview, AddResult, AppAutocompleteResult, AppCommandsResult, BansResult, CreateGroupResult, DirectVoiceSession, GateResult, HistoryResult, HomePage, InteractResult, LeaveResult, NativeMute, NativeScheduledResult, NetworkSearchResult, OpenDirectResult, NetworkTranslation, OwnPresence, PersonAbout, PostFact, PostThread, PostViewer, ReactionContext, ReactorsPage, SavedFact, SavedListResult, ScheduledEventFact, ScheduledEventsResult, SessionsResult, SpaceGate, ThreadsResult } from '@dither-chat/protocol';
+import type { About, AdapterCommand, AdapterEvent, AddMembersResult, AddPreview, AddResult, AppAutocompleteResult, AppCommandsResult, BansResult, CreateGroupResult, DirectVoiceSession, GateResult, HistoryResult, HomePage, InteractResult, LeaveResult, LikesPage, NativeMute, NativeScheduledResult, NetworkSearchResult, OpenDirectResult, NetworkTranslation, OwnPresence, PersonAbout, PostFact, PostThread, PostViewer, ReactionContext, ReactorsPage, SavedFact, SavedListResult, ScheduledEventFact, ScheduledEventsResult, SessionsResult, SpaceGate, ThreadsResult } from '@dither-chat/protocol';
 import type { GifPage, StickerPackFact, StickerPage } from '@dither-chat/protocol';
 import type { CreateThreadResult, ThreadFact } from '@dither-chat/protocol';
 import { ev, iface, op, type Schema, s } from '@dither-accounts/spec';
@@ -43,6 +43,7 @@ export const chat = iface({
     profile: op('read', 'What the network says about a person', input('profile'), out<PersonAbout>(), 60_000),
     post: op('read', "A post's thread: what it answers and its replies", input('post'), out<PostThread>(), 120_000),
     postReactors: op('read', 'Who liked or reposted a post', input('postReactors'), out<ReactorsPage>(), 120_000),
+    likes: op('read', 'A page of the posts the account liked, newest like first', input('likes'), out<LikesPage>(), 120_000),
     home: op('read', "A page of the account's home timeline: Following or For you", input('home'), out<HomePage>(), 120_000),
     translate: op('read', "A post translated by its network, as its own Translate post does", input('translate'), out<NetworkTranslation>(), 60_000),
     resolve: op('read', 'What an invite, address, name or handle is, without acting on it', input('resolve'), out<AddPreview>(), 60_000),

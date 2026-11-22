@@ -112,6 +112,8 @@ export function capabilitiesOf(st: SelfTest | null): P.Capability[] {
   if (api && feedOkOrPending(st, 'reactors')) caps.push('postReactors');
   if (api && feedOkOrPending(st, 'home')) caps.push('home');
   if (api && feedOk(st, 'actions') && feedOkOrPending(st, 'upload')) caps.push('postMedia');
+  // Your likes: the Likes tab's fetchLikes lives on the Posts tab's factory.
+  if (api && feedOk(st, 'profiles')) caps.push('likes');
   return caps;
 }
 

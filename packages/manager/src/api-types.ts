@@ -1,5 +1,5 @@
 /** What the manager's own page reads (GET /api/state) and sends. */
-import type { AddInfo, Level } from '@dither-accounts/spec';
+import type { AddInfo, CallError, Level } from '@dither-accounts/spec';
 
 export interface OpInfo {
   name: string;
@@ -268,7 +268,8 @@ export interface DirListing {
 export interface PageCallResult {
   ok: boolean;
   result?: unknown;
-  error?: { code: string; message: string; status?: number };
+  /** As an app gets it: code, message, status, and its kind and retryAfterMs when known (spec CallError). */
+  error?: CallError;
   ms: number;
 }
 

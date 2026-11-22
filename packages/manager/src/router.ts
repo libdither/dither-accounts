@@ -320,7 +320,8 @@ export class Router {
     try {
       c.span?.event('to the extractor');
       // The extractor's span (one that reads `trace`) is a child of the call's.
-      const r = await this.sup.command(c.account.id, { ...c.input, t: c.op, ...(c.span ? { trace: c.span.traceparent } : {}) }, c.iface.ops[c.op].timeoutMs ?? 30_000);
+      // A read is run again on a restarted extractor that lost it; a write never is (supervisor.ts command).
+      const r = await this.sup.command(c.account.id, { ...c.input, t: c.op, ...(c.span ? { trace: c.span.traceparent } : {}) }, c.iface.ops[c.op].timeoutMs ?? 30_000, { repeatable: c.level === 'read' });
       c.span?.event('the extractor answered');
       return r;
     } catch (e) {

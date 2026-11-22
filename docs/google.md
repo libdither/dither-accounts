@@ -166,9 +166,13 @@ only that one`, then `the Gmail tab was sent back to its start page` or `… was
 (`calendarReloads`, `gmailReloads`). Requests sent to a page before its reload do not count against the new page,
 nor does one cut short by its wait in the lane or by its op's time (given less than 12.5 s), nor a download or
 upload the page said it has (it is working on it; the hook cuts Gmail off at 80 s, more than `mail.get`'s 60 s). After a Calendar reload, one `calendarList` call shows it answers
-again; Gmail makes no call of its own, so its hook coming back up is its answer. A request made while a page's tab is
-being reloaded waits (up to 15 s, within its own time) for the new page's hook, instead of reaching the old page, whose
-unload would cut its fetch ("Failed to fetch"); past that it is sent as before. A dead Chromium still exits for a
+again; Gmail makes no call of its own, so its hook coming back up is its answer. A reload replaces the page the way
+every channel is replaced (packages/spec/src/handover.ts): a request made while a page's tab is being reloaded waits
+(up to 15 s, `RELOAD_SETTLE_MS`, within its own time) for the new page's hook, instead of reaching the old page, whose
+unload would cut its fetch ("Failed to fetch"); past 15 s requests go to the tab as it is, so a page that never comes
+back still counts as silent and is reloaded again. One whose own time runs out first fails `retry` (503: not sent).
+What the old page had when the reload was ordered is lost with it: reads and label changes are sent again to the new
+page, once; anything else (a send, a draft, a Calendar write) fails `unsure` (504): it may or may not have happened. A dead Chromium still exits for a
 supervised restart, as before.
 
 **Each unanswered request is told apart in the log, before any reload**, so the cause of a silence can be found from

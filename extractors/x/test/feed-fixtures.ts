@@ -162,7 +162,7 @@ export interface PostOpts {
   /** A long post's whole text (`note_tweet`); `text` is then its first 275 characters. */
   note?: string;
   urls?: { url: string; expanded: string; display: string }[];
-  media?: { url: string; type: 'photo' | 'video' | 'animated_gif'; img: string; w: number; h: number; alt?: string }[];
+  media?: { url: string; type: 'photo' | 'video' | 'animated_gif'; img: string; w: number; h: number; alt?: string; durationMs?: number }[];
   counts?: { replies?: number; reposts?: number; likes?: number; quotes?: number; views?: number };
   /** What the signed-in account did to it (`legacy.favorited`, `legacy.retweeted`). */
   viewer?: { liked?: boolean; reposted?: boolean };
@@ -188,6 +188,7 @@ export function tweet(o: PostOpts): any {
     type: m.type,
     url: m.url,
     ...(m.alt ? { ext_alt_text: m.alt } : {}),
+    ...(m.durationMs ? { video_info: { aspect_ratio: [16, 9], duration_millis: m.durationMs, variants: [{ content_type: 'video/mp4', url: 'https://video.twimg.com/v.mp4' }] } } : {}),
     original_info: { height: m.h, width: m.w, focus_rects: [] },
     sizes: { large: { h: m.h, w: m.w, resize: 'fit' } },
   }));
@@ -575,4 +576,32 @@ export function homeWorld(now: number) {
     homeTimeline([cursorEntry('Top', c.foryouTop, 1), cursorEntry('Bottom', c.foryou3, 2)], 'for_you'),
   ];
   return { plain, reposted, repost, okra1, okra2, okra3, ad, older, balcony, mulch, rain, frost, following, foryou, cursors: c };
+}
+
+// ------------------------------------------------------------------ your likes
+/** A snowflake id made at `ms` (X's epoch, the low 22 bits as given). */
+export const snowflakeAt = (ms: number, low = 0) => String(((BigInt(ms) - 1288834974657n) << 22n) | BigInt(low));
+/** The whole GraphQL answer of Likes: the timeline under the user, as the Posts tab's. */
+export const likesResponse = (timeline: any) => ({ data: { user: { result: { __typename: 'User', timeline: { timeline } } } } });
+/**
+ * The account's Likes tab: two pages and an empty last one. Each entry's sort index is the like's snowflake (liked
+ * `likedAt` ago), the order X keeps: a short video liked an hour ago, a long one, a picture, an ad, a post that is gone,
+ * then on the second page an old post liked yesterday, and one whose sort index is no snowflake.
+ */
+export function likesWorld(now: number) {
+  const H = 3600_000;
+  const song = tweet({ id: '1856000000000003001', by: CARA, text: 'new single out today', ts: now - 30 * H, media: [{ url: 'https://t.co/s0ng', type: 'video', img: 'https://pbs.twimg.com/amplify_video_thumb/1/img/song.jpg', w: 1920, h: 1080, durationMs: 214_000 }] });
+  const talk = tweet({ id: '1856000000000003002', by: DEV, layout: 'old', text: 'the whole talk', ts: now - 50 * H, media: [{ url: 'https://t.co/t4lk', type: 'video', img: 'https://pbs.twimg.com/amplify_video_thumb/2/img/talk.jpg', w: 1280, h: 720, durationMs: 2_700_000 }] });
+  const pic = tweet({ id: '1856000000000003003', by: EMI, text: 'tomatoes', ts: now - 3 * H, media: [{ url: 'https://t.co/t0m', type: 'photo', img: 'https://pbs.twimg.com/media/Tom.jpg', w: 800, h: 600 }] });
+  const ad = tweet({ id: '1856000000000003004', by: SHOP, text: 'Seeds, half price', ts: now - 6 * H });
+  const old = tweet({ id: '1856000000000003005', by: FINN, layout: 'old', text: 'a song from 2019', ts: now - 400 * 24 * H });
+  const odd = tweet({ id: '1856000000000003006', by: CARA, text: 'sorted by something else', ts: now - 60 * H });
+  const c = { top: 'DAAHlikes-top', page2: 'DAAHlikes-2', page3: 'DAAHlikes-3' };
+  const liked = { song: now - 1 * H, talk: now - 2 * H, pic: now - 2.5 * H, old: now - 24 * H };
+  const pages = [
+    homeTimeline([cursorEntry('Top', c.top, 1), homeTweetEntry(song, snowflakeAt(liked.song, 7)), homeTweetEntry(talk, snowflakeAt(liked.talk)), homeTweetEntry(pic, snowflakeAt(liked.pic)), promotedHomeEntry(ad, snowflakeAt(liked.pic - 1000)), tombstoneHomeEntry(snowflakeAt(liked.pic - 2000)), cursorEntry('Bottom', c.page2, 2)]),
+    homeTimeline([cursorEntry('Top', c.top, 1), homeTweetEntry(old, snowflakeAt(liked.old)), homeTweetEntry(odd, '42'), cursorEntry('Bottom', c.page3, 2)]),
+    homeTimeline([cursorEntry('Top', c.top, 1), cursorEntry('Bottom', c.page3, 2)]),
+  ];
+  return { song, talk, pic, ad, old, odd, liked, pages, cursors: c };
 }

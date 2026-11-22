@@ -232,6 +232,10 @@ export interface ReactorsReply {
 export interface HomeReply {
   timeline: unknown;
 }
+/** A page of the account's Likes tab (Likes), whitelisted. */
+export interface LikesReply {
+  timeline: unknown;
+}
 /** A post deleted: `gone` when X said it was gone already (No status found with that ID). */
 export interface UnpublishReply {
   deleted?: boolean;
@@ -248,6 +252,7 @@ export type Down =
   | { kind: 'publish'; text: string; replyTo?: string; quote?: string; replies?: ReplyControl; files?: OutFile[] }
   | { kind: 'unpublish'; post: string }
   | { kind: 'home'; feed: 'following' | 'foryou'; count: number; cursor?: string }
+  | { kind: 'likes'; user: string; count: number; cursor?: string }
   | { kind: 'reactors'; post: string; of: 'like' | 'repost'; cursor?: string }
   | { kind: 'translate'; post: string; to: string; lang?: string }
   | { kind: 'selftest' }

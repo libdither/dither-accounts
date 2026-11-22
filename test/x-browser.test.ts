@@ -163,7 +163,7 @@ it(
       'hook.typing': 'found (composer)',
       'hook.forward': 'found (action)',
     });
-    expect(helloOf(acc)).toMatchObject({ network: 'x', capabilities: ['liveView', 'media', 'history', 'markRead', 'send', 'sendMedia', 'edit', 'redact', 'react', 'typing', 'forward', 'openDirect', 'requests', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'posts', 'postActions', 'publish', 'translate', 'unpublish', 'postReactors', 'home', 'postMedia'] });
+    expect(helloOf(acc)).toMatchObject({ network: 'x', capabilities: ['liveView', 'media', 'history', 'markRead', 'send', 'sendMedia', 'edit', 'redact', 'react', 'typing', 'forward', 'openDirect', 'requests', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'posts', 'postActions', 'publish', 'translate', 'unpublish', 'postReactors', 'home', 'postMedia', 'likes'] });
     const lv = m!.router.liveView(acc)!;
     expect(lv).toEqual({ vncSocket: join(m!.store.account(acc)!.dir, 'vnc.sock'), width: 1280, height: 800 });
     expect(await rfbBanner(lv.vncSocket)).toMatch(/^RFB \d{3}\.\d{3}/);
@@ -466,6 +466,40 @@ it(
     expect(asked[0]!.variables).toMatchObject({ tweetId: first, count: 20, enableRanking: true });
     expect(chunks().length).toBe(2);
     await expect(call('postReactors', { post: first, kind: 'quote' })).rejects.toThrow('not likes or reposts');
+  },
+  90_000,
+);
+
+it(
+  'likes: your own Likes tab newest like first, page by page, through the Posts tab\'s factory; when each was liked from its sort index; video lengths; ads and gone posts left out',
+  async () => {
+    const l = fake.feed.likes;
+    const asked = () => fake.calls.filter((c) => c.op === 'graphql' && c.name === 'Likes');
+    const one = await call('likes', { count: 50 });
+    expect(one.items.map((i: any) => i.post.id)).toEqual([l.song.rest_id, l.talk.rest_id, l.pic.rest_id]);
+    expect(one.items.map((i: any) => i.likedAt)).toEqual([l.liked.song, l.liked.talk, l.liked.pic]);
+    expect(one.items[0].post).toMatchObject({ author: CARA.id, text: 'new single out today', media: [{ kind: 'video', width: 1920, height: 1080, durationMs: 214_000 }] });
+    expect(one.items[1].post.media).toEqual([expect.objectContaining({ kind: 'video', durationMs: 2_700_000 })]);
+    expect(one.items[2].post.media[0].durationMs).toBeUndefined();
+    expect(one.more).toBe(l.cursors.page2);
+    expect(one.top).toBe(l.cursors.top);
+    const two = await call('likes', { cursor: one.more });
+    expect(two.items.map((i: any) => [i.post.id, i.likedAt ?? null])).toEqual([
+      [l.old.rest_id, l.liked.old],
+      [l.odd.rest_id, null],
+    ]);
+    expect(await call('likes', { cursor: two.more })).toEqual({ items: [], more: null, top: l.cursors.top });
+    // Asked for this account's own likes, the count given (at most 100), as the Likes tab asks.
+    expect(asked().map((c) => [c.variables!.userId, c.variables!.count, c.variables!.cursor ?? null])).toEqual([
+      [SELF.id, 50, null],
+      [SELF.id, 20, l.cursors.page2],
+      [SELF.id, 20, l.cursors.page3],
+    ]);
+    expect(asked()[0]!.variables).toMatchObject({ includePromotedContent: false });
+    for (const p of [CARA, DEV, EMI, FINN]) expect(evs(acc).some((e) => e.t === 'identity' && e.identity.nativeId === p.id)).toBe(true);
+    expect((await call('action', { action: 'diagnose' })).extractor.feed.dropped).toMatchObject({ 'likes.promoted': 1, 'likes.tombstone': 1, 'likes.no-like-time': 1 });
+    await expect(call('likes', { cursor: '' })).rejects.toThrow('not an X cursor');
+    expect(asked().length).toBe(3);
   },
   90_000,
 );
@@ -977,7 +1011,7 @@ it(
     expect(st.attention.message).toMatch(/only reads/);
     expect(st.layers.find((l: any) => l.name === 'sending')).toMatchObject({ state: 'failed', note: 'read-only: the composer events were not found' });
     expect(st.details).toMatchObject({ 'hook.send': 'missing', 'hook.edit': 'missing', 'hook.history': 'found (event)', 'hook.classes': 'found (module)' });
-    expect(helloOf(id).capabilities).toEqual(['liveView', 'media', 'history', 'markRead', 'redact', 'react', 'forward', 'openDirect', 'requests', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'posts', 'postActions', 'publish', 'translate', 'unpublish', 'postReactors', 'home', 'postMedia']);
+    expect(helloOf(id).capabilities).toEqual(['liveView', 'media', 'history', 'markRead', 'redact', 'react', 'forward', 'openDirect', 'requests', 'about', 'configure', 'addMembers', 'createGroup', 'profile', 'posts', 'postActions', 'publish', 'translate', 'unpublish', 'postReactors', 'home', 'postMedia', 'likes']);
     // It still reads.
     await until(() => evs(id).some((e) => e.t === 'message' && e.message.conversation === GROUP), 60_000, 'messages while read-only');
     const d = await call('action', { action: 'diagnose' }, id);

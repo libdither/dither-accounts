@@ -6,6 +6,9 @@
  * - hangupMessage, from the caller to your other devices, says how it went for you: ACCEPTED (answered on another
  *   device), DECLINED, BUSY (busy on another device), NEED_PERMISSION (you had not accepted their message request),
  *   NORMAL (they hung up: missed if nobody answered, else the call is over, and how long it lasted is known).
+ * - ACCEPTED while Signal Desktop, this account's calls body (desktop/calls.ts), is in a call in that chat: it was
+ *   answered here, through dither-chat. The call goes on, and ends answered, with its length, when Desktop's call ends
+ *   (`CallBook.endHere`) or they hang up.
  * - busyMessage and answerMessage answer an offer this device made, which it never does (signal-cli would need its
  *   media tunnel): they are mapped only for a call it knows to be outgoing.
  *
@@ -28,11 +31,15 @@ interface Call {
   answeredAt?: number;
   outcome?: CallOutcome;
   endedAt?: number;
+  /** Answered through this account's Signal Desktop: over when its call there ends. */
+  here?: boolean;
 }
 
 /** Calls heard, by call id: the newest 50. */
 export class CallBook {
   private calls = new Map<string, Call>();
+  /** Whether Signal Desktop, this account's calls body, is in a call in a chat now (adapter.ts sets it). */
+  inCallHere: (conversation: string) => boolean = () => false;
   get(id: string) {
     return this.calls.get(id);
   }
@@ -40,6 +47,17 @@ export class CallBook {
     this.calls.delete(id);
     this.calls.set(id, c);
     if (this.calls.size > 50) this.calls.delete(this.calls.keys().next().value!);
+  }
+  /** Desktop's call in a chat ended at `at`: the calls answered there are over, answered. */
+  endHere(conversation: string, at: number): AdapterEvent[] {
+    const out: AdapterEvent[] = [];
+    for (const [id, c] of this.calls) {
+      if (!c.here || c.endedAt !== undefined || c.conversation !== conversation) continue;
+      c.outcome = 'answered';
+      c.endedAt = Math.max(at, c.answeredAt ?? at);
+      out.push(...ended(id, c));
+    }
+    return out;
   }
 }
 
@@ -99,7 +117,12 @@ export function callEvents(env: SigEnvelope, source: string, self: string, book:
       return ended(id, c);
     }
     const outcome = HANGUP[type];
-    if (!outcome || c.outcome) return [];
+    if (!outcome || c.outcome || c.here) return [];
+    if (outcome === 'elsewhere' && book.inCallHere(c.conversation)) {
+      c.here = true;
+      c.answeredAt = env.timestamp;
+      return [{ t: 'callState', call: fact(id, c, 'ongoing') }];
+    }
     c.outcome = outcome;
     if (outcome === 'elsewhere') c.answeredAt = env.timestamp;
     else c.endedAt = env.timestamp;

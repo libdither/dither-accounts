@@ -6,7 +6,7 @@
  * Desktop with its own code.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AdapterEvent, Capability } from '@dither-chat/protocol';
@@ -118,6 +118,13 @@ async function until<T>(w: World, what: string, fn: () => T | undefined | null |
     await Bun.sleep(20);
   }
 }
+let pushes = 0;
+/** signal-cli hears an envelope (the fake's fake-push folder). */
+const push = (w: World, envelope: Record<string, unknown>) => {
+  const tmp = join(w.dir, `push-${pushes}.tmp`);
+  writeFileSync(tmp, JSON.stringify({ account: '+15550100', envelope: { sourceNumber: null, ...envelope } }));
+  renameSync(tmp, join(w.dir, 'signal-cli', 'fake-push', `${String(pushes++).padStart(4, '0')}.json`));
+};
 const hellos = (w: World) => w.events.filter((e): e is Extract<AdapterEvent, { t: 'hello' }> => e.t === 'hello');
 const cmd = (w: World, c: any) => w.adapter.command({ id: String(Math.random()), ...c });
 const rpc = (w: World, method: string) => {
@@ -245,6 +252,21 @@ describe('calls setting on, a linked account (a phone is the primary)', () => {
       { t: 'callState', call: { nativeId: 'ring:43', conversation: `group:${GID}`, caller: ALICE, startedAt: T0 + 60_000, state: 'ringing', ringsSelf: true } },
       { t: 'callState', call: { nativeId: 'ring:43', conversation: `group:${GID}`, caller: ALICE, startedAt: T0 + 60_000, state: 'ongoing', answeredAt: T0 + 65_000 } },
     ]);
+  });
+
+  test('a call answered here: "accepted on another device" is Desktop, so it goes on, and ends answered when Desktop leaves', async () => {
+    const T0 = Date.now();
+    const facts = () => w.events.filter((e): e is Extract<AdapterEvent, { t: 'callState' }> => e.t === 'callState' && e.call.nativeId === '501').map((e) => e.call);
+    push(w, { sourceUuid: ALICE, timestamp: T0, callMessage: { offerMessage: { id: 501, type: 'AUDIO_CALL' } } });
+    await until(w, 'the ring', () => facts().some((f) => f.state === 'ringing'));
+    await cmd(w, { t: 'call', call: 'c6', op: 'join', conversation: `dm:${SELF}:${ALICE}`, mode: 'bridge' });
+    push(w, { sourceUuid: ALICE, timestamp: T0 + 3_000, callMessage: { hangupMessage: { id: 501, type: 'ACCEPTED', deviceId: 2 } } });
+    const going = await until(w, 'the call going on', () => facts().find((f) => f.state !== 'ringing'));
+    expect(going).toMatchObject({ state: 'ongoing', answeredAt: T0 + 3_000 });
+    await cmd(w, { t: 'call', call: 'c6', op: 'leave' });
+    const over = facts().at(-1)!;
+    expect(over).toMatchObject({ state: 'ended', outcome: 'answered', answeredAt: T0 + 3_000 });
+    expect(over.endedAt).toBeGreaterThanOrEqual(T0 + 3_000);
   });
 
   test('its hook gone: a call through it is over for the device, and the call capabilities go with it', async () => {

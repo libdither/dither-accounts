@@ -630,9 +630,10 @@ it(
     expect(Buffer.from(raw.base64, 'base64').toString()).toBe(fakeEml(src));
     expect((await mailCall('mail.raw', { id: src.id, background: true })).base64).toBe(raw.base64);
     // A download whose connection breaks ("Failed to fetch" in the page) says where it broke, in the answer and the log.
-    fake.gmail.cutNext();
+    // Two cuts: the download and the hook's second try, which does not follow redirects and so sees this one.
+    fake.gmail.cutNext(2);
     const cut = await mailCall('mail.get', { id: src.id }).catch((x) => x);
-    expect(String(cut?.message)).toMatch(/^Gmail's message download failed: the browser could not fetch it, (before any answer|while its body came in \(\d+ bytes in\)), after [\d.]+ s; try again in a moment$/);
+    expect(String(cut?.message)).toMatch(/^Gmail's message download failed: the browser could not fetch it, before any answer, after [\d.]+ s \(asked again, Gmail sent it elsewhere: a redirect the page may not follow\); try again in a moment$/);
     expect(logOf(signedIn)).toMatch(/gmail raw: the browser could not fetch it, /);
     expect((await mailCall('mail.get', { id: src.id })).id).toBe(src.id);
     // That message is unread: it was looked at again after each read (the unread guard), and Gmail (this fake) left it so.

@@ -712,6 +712,9 @@ one call already under way. The rules (`BACKGROUND` in `mail.ts`):
   refused) is an answer from the hook, not a throw: 503 `unavailable`, `Gmail's message download failed: the browser
   could not fetch it, before any answer | while its body came in (N bytes in), after S s[, with the browser offline]`,
   and the same words in the log (`gmail raw: …`). It counts as trouble for the back-off, not against the download route.
+  One that failed before any answer is asked once more without following redirects (its body never read), and the
+  line ends with what that said: `(asked again, Gmail sent it elsewhere: a redirect the page may not follow)`, `(asked
+  again, the connection failed again)`, `(asked again, no answer in 5 s)` or `(asked again, Gmail answered N)`.
 - **Stops**: a **challenge** (an answer that reads as a sign-in or verification page; any other 200 that is not what
   was asked for: no JSON from `bv`, `fd` or `s`, an HTML page from the download route; or a 403), the page **signed
   out** (the Gmail page's own signed-in state, or a 401), or the day's **quota** spent. From then on every background

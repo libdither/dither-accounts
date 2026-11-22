@@ -944,6 +944,15 @@ test("a download the browser could not fetch: a 503 saying where and after how l
   cut = { stage: 'body', ms: 1200, got: 4096, online: false };
   const e2 = await drive(clock, mail.raw({ id: read[1]!.id })).catch((x) => x);
   expect(e2.message).toContain('while its body came in (4096 bytes in), after 1.2 s, with the browser offline');
+  // What the hook's second try (not following redirects) saw is said too.
+  for (const [then, said] of [
+    ['redirect', 'after 0.4 s (asked again, Gmail sent it elsewhere: a redirect the page may not follow)'],
+    ['network', 'after 0.4 s (asked again, the connection failed again)'],
+    [429, 'after 0.4 s (asked again, Gmail answered 429)'],
+  ] as const) {
+    cut = { stage: 'headers', ms: 400, got: 0, online: true, then };
+    expect((await drive(clock, mail.raw({ id: read[1]!.id })).catch((x) => x)).message).toContain(said);
+  }
   // Not the route's failure: the next good download is all there is to it.
   cut = null;
   expect((await drive(clock, mail.raw({ id: read[2]!.id, background: true }))).size).toBeGreaterThan(0);

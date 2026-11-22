@@ -165,6 +165,9 @@ test('the feed: its own layer and details, never the account status; profile onl
   const noUpload = compute(facts({ selfTest: feedHooks(['upload']), feed: fd })).capabilities;
   expect(noUpload).toEqual(waiting.capabilities.filter((c) => c !== 'postMedia'));
   expect(noUpload).toContain('publish');
+  // Your likes ride on the profiles hook (the Posts tab's factory).
+  expect(waiting.capabilities).toContain('likes');
+  expect(compute(facts({ selfTest: feedHooks(['profiles']), feed: fd })).capabilities).not.toContain('likes');
   loaded.feed!.home = { ok: true, via: 'loader' };
   loaded.feed!.upload = { ok: true, via: 'module' };
   expect(compute(facts({ selfTest: loaded, feed: fd })).capabilities).toEqual(expect.arrayContaining(['home', 'postMedia']));

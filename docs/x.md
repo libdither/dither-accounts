@@ -219,6 +219,7 @@ toast they raise is the refusal.
 | `unpublish` | a post of yours deleted, the one call its menu's Delete makes ("Answering on X") |
 | `postReactors` | who liked or reposted a post, a page (`cursor` for more), as its Likes and Reposts tabs ask ("Answering on X") |
 | `home` | a page of the account's Following or For you timeline (`cursor` for more), as Home asks for it ("Home timelines") |
+| `likes` | a page of the posts the account liked, newest like first, with when each was liked (`cursor` for more), as its Likes tab asks for it ("Your likes") |
 | `translate` | a post translated into `to`, as its Translate post link does ("Translating a post") |
 | `action diagnose` | the page's shapes into `diagnostics.json` (below) |
 | `action selftest` | the self-test now |
@@ -596,6 +597,29 @@ message text, a notification's words, a person's name or handle (the account's o
   list answers one-to-ones only, and its conversation bar has no decline for groups). The request's conversation is
   announced and read as any other (quietly); the hub keeps it quiet until it is accepted.
 - **Attachments**: `x-media://…` references, fetched through the page; kind from the mime or X's media type.
+
+## Your likes
+
+`{ t: 'likes', cursor?, count? }` → `LikesPage` (capability `likes`, offered with `profile`): one page of the
+account's own Likes tab, newest like first, read only when asked, at the reading pace, one request per call. X shows
+likes only to the account that made them, so it is always this account's: the hook calls `fetchLikes({ count,
+cursor, userId })` with the account's own id, on the Posts tab's factory (the `profiles` hook: on x.com `fetchLikes`
+sits beside `fetchUserTweets` in one factory). `count` is 20 unless asked (1 to 100; X may give fewer).
+
+`LikesPage` is `{ items, more, top }`, each item `{ post, likedAt? }`, mapped by `parseLikes` in `src/feed.ts`:
+
+- each `tweet-<id>` entry is a liked post, as everywhere; a post already on the page is not repeated;
+- `likedAt` is when it was liked. X gives no time for a like, but sorts the Likes tab by each like's own snowflake id,
+  which is the entry's `sortIndex`: its top bits are the ms since X's epoch (`likedAtOf`). A sort index that is no
+  snowflake, or that would put the like more than a minute before the post or more than a day after now, gives no time
+  (`likes.no-like-time`);
+- a video's or GIF's length is `durationMs` on its `PostMedia` (`video_info.duration_millis`, copied out with
+  `video_info` and `duration_millis` in FEED_KEYS); every post's media carry it, not only liked ones;
+- left out and counted in `feed.dropped`: ads (`likes.promoted`), gone posts (`likes.tombstone`), items that are
+  not posts (`likes.item-…`);
+- `more` is the Bottom cursor (null on a page with nothing but cursors: the end), `top` the Top one.
+
+Identity facts come first for every author. The answer is copied out up to 200,000 nodes, cursors first.
 
 ## What is verified, and what is not
 

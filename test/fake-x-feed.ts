@@ -27,7 +27,7 @@
  * `{ op: 'notifications.seen' }`).
  */
 import { join } from 'node:path';
-import { ANN, CARA, createRetweetResponse, deleteTweetResponse, homeResponse, homeWorld, createTweetResponse, cursorEntry, deleteRetweetResponse, DEV, EMI, favoriteResponse, favoritersResponse, FINN, gardenThread, ME, notificationEntry, reactorsTimeline, retweetersResponse, tweetResultResponse, unfavoriteResponse, xErrorResponse, notificationsResponse, notificationsTimeline, type Person, tweet, tweetDetailResponse, tweetEntry, userByRestIdResponse, userNew, userOld, userTweetsResponse, userTweetsTimeline, withVisibility } from '../extractors/x/test/feed-fixtures.ts';
+import { ANN, CARA, createRetweetResponse, deleteTweetResponse, homeResponse, homeWorld, likesResponse, likesWorld, createTweetResponse, cursorEntry, deleteRetweetResponse, DEV, EMI, favoriteResponse, favoritersResponse, FINN, gardenThread, ME, notificationEntry, reactorsTimeline, retweetersResponse, tweetResultResponse, unfavoriteResponse, xErrorResponse, notificationsResponse, notificationsTimeline, type Person, tweet, tweetDetailResponse, tweetEntry, userByRestIdResponse, userNew, userOld, userTweetsResponse, userTweetsTimeline, withVisibility } from '../extractors/x/test/feed-fixtures.ts';
 
 export { ANN, CARA, DEV, EMI, FINN };
 const PAGE = join(import.meta.dir, '../extractors/x/test/fake-page');
@@ -63,6 +63,8 @@ export interface FeedFake {
   made: Map<string, any>;
   /** Home's pages and posts (feed-fixtures.ts homeWorld). */
   home: ReturnType<typeof homeWorld>;
+  /** The Likes tab's pages and posts (feed-fixtures.ts likesWorld). */
+  likes: ReturnType<typeof likesWorld>;
   /** The uploads, by media id: what INIT said and the bytes APPENDed, and whether FINALIZE came. */
   uploads: Map<string, Upload>;
   notes: Note[];
@@ -183,6 +185,15 @@ export async function startFeedFake(self: Person = ME): Promise<FeedFake> {
     if (cursor === (which === 'following' ? c.following3 : c.foryou3) || cursor === (which === 'following' ? c.followingTop : c.foryouTop)) return pages[2];
     return null;
   }
+  const likes = likesWorld(now);
+  /** A Likes page by cursor: none for the first, a Bottom cursor for the next; a Top one gives nothing new. */
+  function likesPage(cursor: string | undefined) {
+    const c = likes.cursors;
+    if (!cursor) return likes.pages[0];
+    if (cursor === c.page2) return likes.pages[1];
+    if (cursor === c.page3 || cursor === c.top) return likes.pages[2];
+    return null;
+  }
   const uploads = new Map<string, Upload>();
   let uploadN = 0;
   const CATEGORY: Record<string, RegExp> = { tweet_image: /^image\/(png|jpeg|webp)$/, tweet_gif: /^image\/gif$/, amplify_video: /^video\// };
@@ -235,6 +246,7 @@ export async function startFeedFake(self: Person = ME): Promise<FeedFake> {
     thread,
     made,
     home,
+    likes,
     uploads,
     notes,
     like(who) {
@@ -289,6 +301,12 @@ export async function startFeedFake(self: Person = ME): Promise<FeedFake> {
           if (variables.focalTweetId !== thread.focal.rest_id) return json({ data: {}, errors: [{ message: '_Missing: No status found with that ID.', code: 144 }] });
           const page = !variables.cursor ? thread.page1 : variables.cursor === thread.cursors.page2 ? thread.page2 : variables.cursor === thread.cursors.page3 ? thread.page3 : null;
           return json(page ? tweetDetailResponse(page) : { errors: [{ message: 'bad cursor' }] }, page ? 200 : 400);
+        }
+        case 'Likes': {
+          // Only your own likes: X shows nobody else's.
+          if (String(variables.userId) !== self.id) return json({ data: { user: { result: { __typename: 'User', timeline: { timeline: { instructions: [] } } } } } });
+          const page = likesPage(variables.cursor);
+          return json(page ? likesResponse(page) : { errors: [{ message: 'bad cursor' }] }, page ? 200 : 400);
         }
         case 'HomeTimeline':
         case 'HomeLatestTimeline': {

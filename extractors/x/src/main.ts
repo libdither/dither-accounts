@@ -30,10 +30,10 @@ import { linkHub } from '@dither-chat/protocol/client';
 import { ADD_MEMBERS_MAX, aboutChangeProblem, composeState, createGroupProblem, POST_ACTS, POST_RULES } from '@dither-chat/protocol';
 import { aboutOf, directFact, groupFact, ingestRequests, requestFact, Requests } from './gaps.ts';
 import { ingestInbox, ingestMessages, XState } from './ingest.ts';
-import { FeedTracker, FIRST_READ_MS, FIRST_READ_PAGES, type FeedKept, HOME_COUNT, HOME_COUNT_MAX, parseHome, POST_MEDIA, postMediaProblem, REPLY_CONTROL, parseNotifications, parseProfileUser, parsePublished, parseReactors, parseTweetDetail, parseUserTweets, personAbout } from './feed.ts';
+import { FeedTracker, FIRST_READ_MS, FIRST_READ_PAGES, type FeedKept, HOME_COUNT, HOME_COUNT_MAX, LIKES_COUNT, LIKES_COUNT_MAX, parseHome, parseLikes, POST_MEDIA, postMediaProblem, REPLY_CONTROL, parseNotifications, parseProfileUser, parsePublished, parseReactors, parseTweetDetail, parseUserTweets, personAbout } from './feed.ts';
 import { conversationFact, identityFact, parseMediaRef, peerOf, shapeOf, toPlain } from './map.ts';
 import { Pace } from './pace.ts';
-import type { Down, FeedHookName, FeedReply, HomeReply, HookName, OutFile, PageState, PersonRef, PostActReply, PostReply, ProfileReply, PublishReply, ReactorsReply, SelfTest, Up, TranslateReply, UnpublishReply } from './raw.ts';
+import type { Down, FeedHookName, FeedReply, HomeReply, HookName, LikesReply, OutFile, PageState, PersonRef, PostActReply, PostReply, ProfileReply, PublishReply, ReactorsReply, SelfTest, Up, TranslateReply, UnpublishReply } from './raw.ts';
 import { FEED_HOOK_NAMES } from './raw.ts';
 import { capabilitiesOf, compute, CORE, type Facts, type FeedFacts, HOOK_GRACE_MS } from './status.ts';
 import * as V from './validate.ts';
@@ -99,7 +99,7 @@ const bridge = new BridgeServer<Up, Down>({
   silence: { name: 'x.com', tab: true, page: true },
   // A read (or a mark read) the page has not said it has after 3 s is sent again (the page takes an id once); never a
   // send, a post, a reply, a like or anything else others see (packages/browser bridge.ts).
-  resend: { kinds: ['page.state', 'about', 'feed', 'history', 'home', 'inbox', 'media', 'profile', 'reactors', 'requests', 'sync', 'translate', 'markRead'] },
+  resend: { kinds: ['page.state', 'about', 'feed', 'history', 'home', 'inbox', 'likes', 'media', 'profile', 'reactors', 'requests', 'sync', 'translate', 'markRead'] },
 });
 
 /** Writes: a person's pace. Opening conversations to read (catching up, history, media): slower. */
@@ -396,6 +396,8 @@ async function onCommand(cmd: P.AdapterCommand): Promise<unknown> {
       return unpublish(cmd.post);
     case 'home':
       return home(cmd.feed, cmd.cursor, cmd.count);
+    case 'likes':
+      return likes(cmd.cursor, cmd.count);
     case 'postReactors':
       return postReactors(cmd.post, cmd.kind, cmd.cursor);
     case 'action':
@@ -666,6 +668,22 @@ async function home(which: P.HomeFeed, cursor?: string, count?: number): Promise
   const { page: got, users, named } = parseHome(r?.timeline, feedDrops, testOrigin);
   for (const ev of feed.identities(users.values(), st.selfId)) hub.emit(ev);
   for (const ev of feed.stubs(named.filter((id) => !users.has(id)), st.selfId)) hub.emit(ev);
+  return got;
+}
+
+/**
+ * One page of the account's own Likes tab, newest like first, with when each was liked: only when asked, at the
+ * reading pace, one request per call. Identity facts for every author first.
+ */
+async function likes(cursor?: string, count?: number): Promise<P.LikesPage> {
+  if (cursor !== undefined && (typeof cursor !== 'string' || !cursor || cursor.length > 2000)) throw new Error('not an X cursor');
+  const asked = Number(count ?? LIKES_COUNT);
+  const n = Number.isFinite(asked) ? Math.min(Math.max(Math.floor(asked), 1), LIKES_COUNT_MAX) : LIKES_COUNT;
+  feedNeed('profiles', 'read your likes');
+  if (!st.selfId) throw new Error('who this account is is not known yet');
+  const r = await run('likes', () => readPace.run(() => bridge.request<LikesReply>({ kind: 'likes', user: st.selfId!, count: n, ...(cursor ? { cursor } : {}) }, 120_000)));
+  const { page: got, users } = parseLikes(r?.timeline, feedDrops, testOrigin);
+  for (const ev of feed.identities(users.values(), st.selfId)) hub.emit(ev);
   return got;
 }
 

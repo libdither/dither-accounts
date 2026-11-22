@@ -2278,7 +2278,7 @@
   hooks.reactors.via = 'pending';
   hooks.home.via = 'pending';
   hooks.upload.via = 'pending';
-  const feed = { req: null, store: null, api: null, apiVia: null, notif: null, users: null, tweets: null, detail: null, actions: null, reactors: null, home: null, upload: null, lastNotifications: null, lastUser: null, lastTweets: null, lastDetail: null, lastAct: null, lastCreated: null, lastReactors: null, lastHome: null, lastDeleted: null, lastUpload: null, loaderChunk: null, notifChunks: null, reactorsChunk: null, reactorsChunks: null, homeChunk: null, homeChunks: null, uploadChunk: null, uploadLoaders: null, uploadChunks: null, uploadTried: null, uploadWords: null, media: null, mediaItems: null, lastMediaAdd: null, lastMediaUpload: null, uploadKey: null, uploadKeys: null };
+  const feed = { req: null, store: null, api: null, apiVia: null, notif: null, users: null, tweets: null, detail: null, actions: null, reactors: null, home: null, upload: null, lastNotifications: null, lastUser: null, lastTweets: null, lastDetail: null, lastAct: null, lastCreated: null, lastReactors: null, lastHome: null, lastLikes: null, lastDeleted: null, lastUpload: null, loaderChunk: null, notifChunks: null, reactorsChunk: null, reactorsChunks: null, homeChunk: null, homeChunks: null, uploadChunk: null, uploadLoaders: null, uploadChunks: null, uploadTried: null, uploadWords: null, media: null, mediaItems: null, lastMediaAdd: null, lastMediaUpload: null, uploadKey: null, uploadKeys: null };
   const srcOf = (f) => {
     try {
       return cloak.textOf(f) || '';
@@ -2608,6 +2608,27 @@
     feed.lastUser = u;
     feed.lastTweets = t;
     return { user: copyFeed(u, 'user'), tweets: copyFeed(t, 'tweets') };
+  }
+  /**
+   * One page of the account's own Likes tab, as opening it asks for it: the Posts tab's factory's `fetchLikes` (Likes)
+   * for this account's id, newest like first. Only the read: nothing is liked or marked.
+   */
+  async function likesRead(cmd) {
+    const api = feedApi();
+    if (!feed.tweets) throw new Error('X changed: the profile endpoints were not found');
+    if (!/^\d{1,25}$/.test(String(cmd.user))) throw new Error('not a user id');
+    if (cmd.cursor !== undefined && (typeof cmd.cursor !== 'string' || !cmd.cursor || cmd.cursor.length > 2000)) throw new Error('not a cursor');
+    const e = api.withEndpoint(feed.tweets);
+    if (!fn(get(e, 'fetchLikes'))) throw new Error("X changed: the Likes tab's fetchLikes was not found");
+    const count = Math.min(Math.max(Math.floor(Number(cmd.count)) || 20, 1), 100);
+    let res;
+    try {
+      res = await e.fetchLikes({ count, cursor: cmd.cursor || undefined, userId: String(cmd.user) });
+    } catch (err) {
+      throw new Error(xError(err).message);
+    }
+    feed.lastLikes = res;
+    return { timeline: copyFeed(res, 'likes', DETAIL_MAX_NODES) };
   }
   /**
    * One post's page, as opening it asks for it: TweetDetail for `cmd.post` (the focal post), what it answers and its
@@ -3187,7 +3208,9 @@
       // The language X says a post is in (translation: docs/x.md "Translating a post").
       'lang ' +
       // A home timeline (HomeTimeline, HomeLatestTimeline): where it sits, and a post's social-context line.
-      'home home_timeline_urt socialContext contextType landingUrl functionalType topic'
+      'home home_timeline_urt socialContext contextType landingUrl functionalType topic ' +
+      // A video's length (the Likes tab's media, docs/x.md "Your likes").
+      'video_info duration_millis'
     ).split(' '),
   );
   const FEED_MAX_NODES = 60_000;
@@ -3216,7 +3239,7 @@
       }
       if (Array.isArray(x)) {
         const xs = x.slice(0, 500);
-        if (kind === 'detail' || kind === 'home') xs.sort((a, b) => isCursorEntry(b) - isCursorEntry(a));
+        if (kind === 'detail' || kind === 'home' || kind === 'likes') xs.sort((a, b) => isCursorEntry(b) - isCursorEntry(a));
         return xs.map((y) => walk(y, depth + 1));
       }
       const out = {};
@@ -3265,7 +3288,7 @@
       // The uploader: the module's export names, the one used and how many arguments it takes, the chunk loaded; else
       // the lazy components' names seen and how many modules had the upload words.
       upload: feed.upload ? { keys: feed.uploadKeys, key: feed.uploadKey, arity: feed.upload.length, chunk: feed.uploadChunk } : feed.media ? { via: 'store', keys: feed.uploadKeys, drop: !!feed.media.drop, where: typeTag(feed.media.where), chunk: feed.uploadChunk, add: feed.lastMediaAdd, up: feed.lastMediaUpload } : { loaders: feed.uploadLoaders || null, chunks: feed.uploadChunks || null, tried: feed.uploadTried || null, words: feed.uploadWords || null, named: loaders.filter((l) => l.name).length, marked: (marked.upload || []).length },
-      responses: { notifications: jsonShape(feed.lastNotifications, 12), user: jsonShape(feed.lastUser, 6), tweets: jsonShape(feed.lastTweets, 12), detail: jsonShape(feed.lastDetail, 12), act: jsonShape(feed.lastAct, 8), created: jsonShape(feed.lastCreated, 6), reactors: jsonShape(feed.lastReactors, 12), home: jsonShape(feed.lastHome, 12), deleted: jsonShape(feed.lastDeleted, 6), upload: jsonShape(feed.lastUpload, 3) },
+      responses: { notifications: jsonShape(feed.lastNotifications, 12), user: jsonShape(feed.lastUser, 6), tweets: jsonShape(feed.lastTweets, 12), detail: jsonShape(feed.lastDetail, 12), act: jsonShape(feed.lastAct, 8), created: jsonShape(feed.lastCreated, 6), reactors: jsonShape(feed.lastReactors, 12), home: jsonShape(feed.lastHome, 12), likes: jsonShape(feed.lastLikes, 12), deleted: jsonShape(feed.lastDeleted, 6), upload: jsonShape(feed.lastUpload, 3) },
     };
   }
 
@@ -3312,6 +3335,8 @@
         return reactorsRead(cmd);
       case 'home':
         return homeRead(cmd);
+      case 'likes':
+        return likesRead(cmd);
       case 'unpublish':
         return unpublish(cmd);
       case 'requests':

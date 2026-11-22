@@ -263,10 +263,14 @@ export async function profile(a: ZulipAdapter, who: string): Promise<P.PersonAbo
   const out: P.PersonAbout = { displayName: u.full_name, ...(handle ? { handle } : {}), ...(u.avatar_url ? { avatar: mediaUrl(u.avatar_url, a.base) } : {}) };
   const facts: { label: string; value: string; people?: string[] }[] = [{ label: 'Role', value: u.is_bot ? 'Bot' : roleName(u.role) }];
   const links: { label: string; value: string; url?: string }[] = [];
-  /** People a field or the bot's owner names: by name, with their ids so the app links them (identity facts first). */
+  /**
+   * People a field or the bot's owner names: by name, with their ids so the app links them (identity facts first).
+   * Someone not known here (the user list can be partial) is named by id, and then the names stay plain text.
+   */
   const people = (ids: number[]) => {
     for (const id of ids) a.ensureIdentity(id);
-    return { value: ids.map((id) => a.st.users.get(id)?.full_name ?? `User ${id}`).join(', '), people: ids.filter((id) => a.st.users.has(id)).map((id) => a.ids.user(id)) };
+    const known = ids.every((id) => a.st.users.has(id));
+    return { value: ids.map((id) => a.st.users.get(id)?.full_name ?? `User ${id}`).join(', '), people: known ? ids.map((id) => a.ids.user(id)) : [] };
   };
   for (const f of fields) {
     const v = u.profile_data?.[String(f.id)]?.value;

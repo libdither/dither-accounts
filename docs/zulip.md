@@ -87,7 +87,7 @@ is Zulip's stand-in (`user8@chat.example.org`, where the organization keeps addr
   it does not change your own presence), and a look every 15 s for whoever aged past the threshold.
 - **Roles**: a new role in the organization (member → administrator) is a role lost and one given (`role`); joining or
   leaving a user group is that group's role given or lost, as Discord's roles are; a new group is given to the people
-  it was made with.
+  it was made with, and a group deactivated (or back again) is lost (or given) by everyone in it.
 - **Read receipts** for your own messages in DMs and group DMs, where the organization has them on (Zulip 6.0+). Zulip
   sends no event for them, so the extractor asks (`GET /messages/{id}/read_receipts`) about your newest message in each
   DM 30 s, 2 min, 10 min and 1 h after you sent it, and again a few seconds after someone there writes or starts

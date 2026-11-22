@@ -600,7 +600,13 @@ export class ZulipAdapter {
           st.groups.set(ev.group.id, ev.group);
           if (fresh) this.groupChanged(ev.group, ev.group.members ?? [], true);
         } else if (ev.op === 'remove') st.groups.delete(ev.group_id);
-        else if (ev.op === 'update' && st.groups.has(ev.group_id)) Object.assign(st.groups.get(ev.group_id)!, ev.data ?? {});
+        else if (ev.op === 'update' && st.groups.has(ev.group_id)) {
+          const g = st.groups.get(ev.group_id)!;
+          const was = !!g.deactivated;
+          Object.assign(g, ev.data ?? {});
+          // Deactivated, or back again: everyone in it lost it, or has it again.
+          if (ev.data?.deactivated !== undefined && !!g.deactivated !== was) this.groupChanged({ ...g, deactivated: false }, g.members ?? [], !g.deactivated);
+        }
         else if (ev.op === 'add_members' && st.groups.has(ev.group_id)) {
           const g = st.groups.get(ev.group_id)!;
           const added = (ev.user_ids ?? []).filter((u: number) => !g.members.includes(u));

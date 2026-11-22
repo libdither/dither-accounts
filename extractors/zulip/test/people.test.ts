@@ -112,6 +112,21 @@ test('a new role in the organization is one role lost and one given; a user grou
   z.push({ type: 'user_group', op: 'add', group: { id: 22, name: 'reviewers', members: [10], is_system_group: false } });
   await link.next((e) => e.t === 'role' && e.role === 'reviewers');
   expect(of(link, 'role').slice(4).map((e) => [e.member, e.role, e.given])).toEqual([[`${host}/u/10`, 'reviewers', true]]);
+  // Deactivated: lost; back again: given.
+  z.push({ type: 'user_group', op: 'update', group_id: 22, data: { deactivated: true } });
+  await link.next((e) => e.t === 'role' && e.role === 'reviewers' && !e.given);
+  z.push({ type: 'user_group', op: 'update', group_id: 22, data: { deactivated: false } });
+  await link.next((e) => e.t === 'role' && e.role === 'reviewers' && e.given && of(link, 'role').filter((x) => x.role === 'reviewers').length === 3);
+  // A rename says nothing.
+  z.push({ type: 'user_group', op: 'update', group_id: 22, data: { name: 'reviewers-x' } });
+  z.push({ type: 'user_group', op: 'add_members', group_id: 22, user_ids: [9] });
+  await link.next((e) => e.t === 'role' && e.role === 'reviewers-x');
+  expect(of(link, 'role').slice(4).map((e) => [e.member, e.role, e.given])).toEqual([
+    [`${host}/u/10`, 'reviewers', true],
+    [`${host}/u/10`, 'reviewers', false],
+    [`${host}/u/10`, 'reviewers', true],
+    [`${host}/u/9`, 'reviewers-x', true],
+  ]);
 });
 
 test('@all is offered in a small channel, and in a big one only to those Zulip lets use it', async () => {
@@ -139,11 +154,12 @@ test("a profile names the organization with their role and user groups; people f
     { id: 2, name: 'Manager', type: 6, order: 1 },
     { id: 3, name: 'Forge', type: 7, order: 2, field_data: JSON.stringify({ subtype: 'custom', url_pattern: 'https://forge.example.org/%(username)s' }) },
     { id: 4, name: 'GitHub', type: 7, order: 3, field_data: JSON.stringify({ subtype: 'github' }) },
+    { id: 5, name: 'Reviewers', type: 6, order: 4 },
   ];
   const { a, host } = await online({
     profileFields: fields,
     users: {
-      9: { date_joined: '2024-01-02T03:04:05+00:00', profile_data: { 1: { value: '1990-03-05' }, 2: { value: '[10]' }, 3: { value: 'ann lee' }, 4: { value: 'annlee' } } },
+      9: { date_joined: '2024-01-02T03:04:05+00:00', profile_data: { 1: { value: '1990-03-05' }, 2: { value: '[10]' }, 5: { value: '[10, 77]' }, 3: { value: 'ann lee' }, 4: { value: 'annlee' } } },
       12: { full_name: 'Build Bot', is_bot: true, bot_owner_id: 9, role: 400 },
     },
     register: {
@@ -160,6 +176,8 @@ test("a profile names the organization with their role and user groups; people f
     { label: 'Role', value: 'Administrator' },
     { label: 'Birthday', value: 'March 5, 1990' },
     { label: 'Manager', value: 'Bob Kim', people: [`${host}/u/10`] },
+    // Someone not known here: named by id, and the names stay text.
+    { label: 'Reviewers', value: 'Bob Kim, User 77' },
   ]);
   expect(ann.links).toEqual([
     { label: 'Forge', value: 'ann lee', url: 'https://forge.example.org/ann%20lee' },

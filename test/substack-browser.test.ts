@@ -167,6 +167,8 @@ it(
     expect(one.more).toBe('replies-2');
     const p = await call('post', { post: 'p-9001' });
     expect(p.focal).toMatchObject({ id: 'p-9001', title: 'Why soil matters', place: { name: 'ACME Notes' } });
+    // The whole post comes with its page, and only there: the hook keeps body_html on that call alone.
+    expect(p.focal.article).toBe('The whole post, kept only on its page.');
     expect(p.replies.map((c: any[]) => c.map((x) => x.id))).toEqual([['c-7003', 'c-7004']]);
     expect(p.replies[0][0]).toMatchObject({ replyTo: { id: 'p-9001' }, url: 'https://acmenotes.substack.com/p/why-soil-matters/comment/7003' });
     const onPost = await call('post', { post: 'c-7004' });

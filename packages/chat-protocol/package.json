@@ -10,6 +10,7 @@
     "./mail-iface": "./src/mail-iface.ts",
     "./client": "./src/adapter-client.ts",
     "./secret-file": "./src/secret-file.ts",
-    "./outlive": "./src/outlive.ts"
+    "./outlive": "./src/outlive.ts",
+    "./article": "./src/article.ts"
   }
 }

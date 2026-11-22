@@ -429,6 +429,11 @@ export const ABOUT_RULES: Record<Network, AboutRules> = {
     nameMax: 60,
     topicMax: 1024,
   },
+  // Posts and comments only: nothing to configure.
+  lesswrong: {
+    conversation: [],
+    space: [],
+  },
 };
 
 export const ABOUT_LABEL: Record<AboutKey, string> = {

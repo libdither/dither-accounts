@@ -41,7 +41,7 @@ carries the page's state, and `user` (id, name, handle, photo_url) when you are 
 | Notes, For you | `GET /api/v1/reader/feed?tab=for-you[&cursor=]` → `{ items, nextCursor }` | Home's feed hook (`pathname:"home"===a?"/api/v1/reader/feed":…`, `query:{userId, tab, type,…}`); the tab ids `ForYou="for-you"` |
 | a note's page | `GET /api/v1/reader/comment/<id>` → `{ item: { comment, parentComments, post, publication } }` | the note page (`(0,ex.x6)(\`/api/v1/reader/comment/${e}\`)` → `item_load`) |
 | a note's replies | `GET /api/v1/reader/comment/<id>/replies?comment_id=<id>[&cursor=]` → `{ commentBranches, nextCursor }` | the replies list (`pathname: r ? \`/api/v1/reader/comment/${r}/replies\` : \`/api/v1/reader/post/${id}/replies\``) |
-| a post's page | `GET /api/v1/posts/by-id/<id>` → `{ post, publication }` | the post viewer (`/api/v1/posts/by-id/${e}`) |
+| a post's page | `GET /api/v1/posts/by-id/<id>` → `{ post, publication }`, the post with its whole `body_html` | the post viewer (`/api/v1/posts/by-id/${e}`) |
 | a post's comments | `GET /api/v1/reader/post/<id>/replies?publication_id=<pub>[&cursor=]` | the same replies list, with `publication_id` |
 | a profile | `GET /api/v1/user/<handle>/public_profile` | profile pages and hover cards |
 | a profile's feed | `GET /api/v1/reader/feed/profile/<user id>[&cursor=]` → `{ items, nextCursor }` | the profile's Activity tab |
@@ -96,11 +96,16 @@ post and a note never share one. A person is their user id; Substack's own notic
   restacks), `viewer` (liked, restacked), and `warning` **Paid subscribers only** (or Founding members only) when its
   audience is not everyone, with the free preview as the words. Its author is its first byline, else the
   publication's author.
+- A post's **whole body** comes only with its page, so only a post's thread has it: `body_html` as Markdown in
+  `article` (chat-protocol's `htmlToMarkdown`: headings, emphasis, links, pictures with their captions, quotes, lists,
+  code, tables; an embedded video as a link). The reader's furniture inside it goes: subscribe boxes, buttons, a
+  heading's anchor, a picture's expand button. The hook drops `body_html` from every other answer (the Inbox brings
+  it too), so a card carries the subtitle and preview only. A paid post you don't pay for has only its free part.
 - A **note** is a PostFact without a title; a **comment** is one with `replyTo` (the comment above it, or the post) and
   `root` (the thread's first); a note restacking a post with words has it as `quoteOf`.
 - **home**: `following` is the Inbox (newest first), `foryou` is Notes' For you; a restack or a like in a note's
   context line is its `reason`, the notes above a reply its `above`. Cursors are Substack's, passed through.
-- **post**: a post's page and its comments, or a note's page (the post it is on first, then the comments above it)
+- **post**: a post's page (with the whole post as `article`, below) and its comments, or a note's page (the post it is on first, then the comments above it)
   and its replies, each branch a reply chain. `cursor` asks for more.
 - **profile**: name, handle, bio, followers, whether you follow them and they you, what they write and its link, and
   their own notes and posts from their profile's feed (restacks of others left out).

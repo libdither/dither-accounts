@@ -58,6 +58,12 @@ export interface PostFact {
   warning?: string;
   /** Where it was posted when that is not its author's own profile: a subreddit, a community, a channel, a forum, a publication. */
   place?: { id: string; name: string; url?: string };
+  /**
+   * A long-form post's whole body as Markdown (CommonMark: headings, emphasis, links, pictures as `![alt](url)`, quotes,
+   * lists, code, rules), for networks whose posts are articles (Substack, LessWrong). Sent only where the whole post is
+   * read (its thread); `text` stays the short preview a card shows. Links and pictures are http(s) only.
+   */
+  article?: string;
   /** Who may reply, when the author limited it (X's "who can reply", Bluesky's thread gates). */
   replies?: ReplyGate;
 }

@@ -15,6 +15,7 @@ import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Subprocess } from 'bun';
+import { displayIsOurs } from './display.ts';
 import { MEMORY_DISABLED_FEATURES, mergeFeatureFlags } from './flags.ts';
 import { markerKey, stampExtension } from './markers.ts';
 import { ChromiumNoise } from './noise.ts';
@@ -105,23 +106,6 @@ function gpuFlags(): string[] {
 }
 
 /** The pid an X server wrote into its lock file, or null if it cannot be read. */
-function lockOwner(path: string): number | null {
-  try {
-    const pid = Number(readFileSync(path, 'utf8').trim());
-    return Number.isInteger(pid) && pid > 0 ? pid : null;
-  } catch {
-    return null;
-  }
-}
-function parentOf(pid: number): number | null {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-    return Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]) || null;
-  } catch {
-    return null;
-  }
-}
-
 export class Sandbox {
   private procs: { name: string; proc: Subprocess }[] = [];
   private stopped = false;
@@ -254,15 +238,10 @@ export class Sandbox {
    * started); a lock that cannot be read is taken as ours, as before.
    */
   private async waitForDisplay(display: string, xvfb: Subprocess, timeoutMs: number) {
-    const sock = `/tmp/.X11-unix/X${display.slice(1)}`;
-    const lock = `/tmp/.X${display.slice(1)}-lock`;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (xvfb.exitCode !== null) throw new Error(`Xvfb on ${display} exited (${xvfb.exitCode}); is the display taken?`);
-      if (existsSync(sock)) {
-        const owner = lockOwner(lock);
-        if (owner === null || owner === xvfb.pid || parentOf(owner) === xvfb.pid) return;
-      }
+      if (displayIsOurs(Number(display.slice(1)), xvfb.pid)) return;
       await Bun.sleep(100);
     }
     throw new Error(`Xvfb display ${display} did not come up within ${timeoutMs}ms`);

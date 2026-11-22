@@ -20,7 +20,7 @@ function world() {
   const ctx: MapContext = { self: SELF, signalDir: '/tmp/none', calls };
   const hear = (from: string, ts: number, callMessage: SigEnvelope['callMessage']) =>
     mapReceive({ envelope: { sourceUuid: from, sourceNumber: null, timestamp: ts, callMessage } as SigEnvelope }, ctx).events;
-  return { hear };
+  return { hear, calls };
 }
 const states = (evs: AdapterEvent[]) => evs.filter((e) => e.t === 'callState').map((e) => (e as Extract<AdapterEvent, { t: 'callState' }>).call);
 const lines = (evs: AdapterEvent[]) => evs.filter((e) => e.t === 'message').map((e) => (e as Extract<AdapterEvent, { t: 'message' }>).message.body);
@@ -52,6 +52,45 @@ describe('Signal calls', () => {
     const over = hear(ANN, T0 + 5_000 + 12 * 60_000, { hangupMessage: { id: '79', type: 'NORMAL', deviceId: 1 } });
     expect(states(over)).toMatchObject([{ state: 'ended', outcome: 'answered', answeredAt: T0 + 5_000, endedAt: T0 + 5_000 + 12 * 60_000 }]);
     expect(lines(over)).toEqual(['📞 Call, 12 min']);
+  });
+
+  test('answered here, through Signal Desktop: the call goes on, and ends answered with its length when Desktop leaves', () => {
+    const { hear, calls } = world();
+    let here = false;
+    calls.inCallHere = (c) => here && c === DM;
+    hear(ANN, T0, { offerMessage: { id: '90' } });
+    here = true;
+    const accepted = hear(ANN, T0 + 5_000, { hangupMessage: { id: '90', type: 'ACCEPTED', deviceId: 1 } });
+    expect(states(accepted)).toMatchObject([{ state: 'ongoing', answeredAt: T0 + 5_000 }]);
+    expect(states(accepted)[0].outcome).toBeUndefined();
+    expect(lines(accepted)).toEqual([]);
+    // A second ACCEPTED (a resend) changes nothing.
+    expect(hear(ANN, T0 + 6_000, { hangupMessage: { id: '90', type: 'ACCEPTED', deviceId: 1 } })).toEqual([]);
+    here = false;
+    const over = calls.endHere(DM, T0 + 5_000 + 3 * 60_000);
+    expect(states(over)).toMatchObject([{ state: 'ended', outcome: 'answered', answeredAt: T0 + 5_000, endedAt: T0 + 5_000 + 3 * 60_000 }]);
+    expect(lines(over)).toEqual(['📞 Call, 3 min']);
+    // Their hangup after it changes nothing, and nor does Desktop leaving again.
+    expect(states(hear(ANN, T0 + 4 * 60_000, { hangupMessage: { id: '90', type: 'NORMAL', deviceId: 1 } }))).toEqual([]);
+    expect(calls.endHere(DM, T0 + 5 * 60_000)).toEqual([]);
+  });
+
+  test('answered here, and they hang up first: answered, until their hangup', () => {
+    const { hear, calls } = world();
+    calls.inCallHere = (c) => c === DM;
+    hear(ANN, T0, { offerMessage: { id: '91' } });
+    hear(ANN, T0 + 2_000, { hangupMessage: { id: '91', type: 'ACCEPTED', deviceId: 1 } });
+    const over = hear(ANN, T0 + 2_000 + 2 * 60_000, { hangupMessage: { id: '91', type: 'NORMAL', deviceId: 1 } });
+    expect(states(over)).toMatchObject([{ state: 'ended', outcome: 'answered', endedAt: T0 + 2_000 + 2 * 60_000 }]);
+    expect(lines(over)).toEqual(['📞 Call, 2 min']);
+    expect(calls.endHere(DM, T0 + 3 * 60_000)).toEqual([]);
+  });
+
+  test('accepted while Desktop is in a call in another chat: still answered elsewhere', () => {
+    const { hear, calls } = world();
+    calls.inCallHere = (c) => c === `dm:${SELF}:${EVE}`;
+    hear(ANN, T0, { offerMessage: { id: '92' } });
+    expect(states(hear(ANN, T0 + 1_000, { hangupMessage: { id: '92', type: 'ACCEPTED', deviceId: 1 } }))).toMatchObject([{ state: 'ended', outcome: 'elsewhere' }]);
   });
 
   test('declined or busy on another device', () => {

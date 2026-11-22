@@ -211,6 +211,20 @@ export interface RawAnswer {
   type?: string | null;
   error?: string;
   page?: PageKind | null;
+  /** error 'network' (the browser gave up on the download): where, after how long, how much came, and online or not. */
+  net?: RawNetwork;
+}
+export interface RawNetwork {
+  stage: 'headers' | 'body';
+  ms: number;
+  got: number;
+  online: boolean | null;
+}
+/** One line on a download the browser gave up on: counts and names only. */
+export function rawNetworkText(n: RawNetwork | undefined): string {
+  if (!n) return 'the browser could not fetch it';
+  const at = n.stage === 'body' ? `while its body came in (${n.got} bytes in)` : 'before any answer';
+  return `the browser could not fetch it, ${at}, after ${(n.ms / 1000).toFixed(1)} s${n.online === false ? ', with the browser offline' : ''}`;
 }
 type Answer = { status: number; json?: unknown; bytes?: Buffer; page?: PageKind | null; error?: string; type?: string | null };
 interface Job {
@@ -635,11 +649,12 @@ export class GmailMail {
     else if (r?.status === 200 && ((r.error === 'not-json' && r.json === undefined) || (!r.bytes && /^text\/html\b/i.test(r.type ?? '')))) this.block('challenge', 'Gmail answered a page that is not what was asked for');
     else if (r?.status === 401) this.block('signedOut', 'Gmail answered 401');
     else if (r?.status === 403) this.block('challenge', 'Gmail answered 403');
-    const bad = !r || ms > this.rules.slowMs || r.status === 429 || r.status >= 500;
+    // A download the browser gave up on is trouble reaching Gmail too, as much as a 5xx.
+    const bad = !r || ms > this.rules.slowMs || r.status === 429 || r.status >= 500 || r.error === 'network';
     if (bad) {
       const next = this.backoff.ms ? Math.min(this.backoff.ms * 2, this.rules.backoffMaxMs) : this.rules.backoffMinMs;
       this.backoff = { ms: next, until: this.now() + next, good: 0 };
-      this.o.log('info', `gmail background: backing off ${next / 1000} s after ${!r ? 'no answer' : ms > this.rules.slowMs ? `a slow answer (${Math.round(ms / 1000)} s)` : `a ${r.status}`}`);
+      this.o.log('info', `gmail background: backing off ${next / 1000} s after ${!r ? 'no answer' : ms > this.rules.slowMs ? `a slow answer (${Math.round(ms / 1000)} s)` : r.error === 'network' ? 'a download the browser could not fetch' : `a ${r.status}`}`);
       this.tick('backoff', this.backoff.until + 10);
       this.o.onChange?.();
       return;
@@ -1272,6 +1287,12 @@ export class GmailMail {
   /** The original from Gmail's download route (the same bytes "Show original" downloads); its bytes count against the budget. */
   private async fetchRaw(id: string, lane: LaneName): Promise<Buffer> {
     const r = await this.paced(lane, 'message', () => this.t.raw(hexOf(id), RAW_CAP));
+    if (r.status === 0 && r.error === 'network') {
+      // Not noted against the endpoint: the route is fine, the connection was not; the back-off covers a run of them.
+      const why = rawNetworkText(r.net);
+      this.o.log('warn', `gmail raw: ${why}`);
+      throw new StatusError(`Gmail's message download failed: ${why}; try again in a moment`, 503, 'unavailable');
+    }
     if (r.status === 0) throw new StatusError(r.error === 'no-ik' ? 'the Gmail page has not shown its account key yet; try again in a moment' : `the Gmail page could not download the message (${String(r.error ?? 'no reason').slice(0, 80)})`, 503, r.error === 'no-ik' ? 'unavailable' : undefined);
     if (r.page) {
       const what = r.page === 'signin' ? 'a sign-in page' : 'a verification page';

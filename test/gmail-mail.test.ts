@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { MailSummary } from '@dither-accounts/interfaces';
-import { type BackgroundRules, type Clock, GmailMail, parseState, REPEAT, RETRY, SEND_LIMITS, type Transport } from '../extractors/google/src/gmail/mail.ts';
+import { type BackgroundRules, type Clock, GmailMail, parseState, type RawAnswer, REPEAT, RETRY, SEND_LIMITS, type Transport } from '../extractors/google/src/gmail/mail.ts';
 import { parseMessage } from '../extractors/google/src/gmail/mime.ts';
 import { bvRequest, categoryOf, fdThreadsRequest, flagsOf, isUserLabel, LayoutError, labelsOf, notAMessage, operatorsOnly, parseBv, parseFd, parseS, readOnlySync, sRequest } from '../extractors/google/src/gmail/protocol.ts';
 import { runCanary } from '../extractors/google/src/gmail/canary.ts';
@@ -924,6 +924,30 @@ test('the background lane backs off after a 5xx, a 429 or a slow answer, doublin
   expect(codeOf(await quick.raw({ id: read[8]!.id, background: true }).catch((x) => x))).toEqual([503, 'backoff']);
   expect([quickClock.now(), quickCalls.length]).toEqual([t0, n]);
   expect((await quick.raw({ id: read[8]!.id })).size).toBeGreaterThan(0);
+});
+
+test("a download the browser could not fetch: a 503 saying where and after how long, logged as such, and the background backs off; the route's own state is left alone", async () => {
+  const clock = new FakeClock();
+  const logged: string[] = [];
+  let cut: RawAnswer['net'] | null = null;
+  const base = transport({ now: clock.now });
+  const t: Transport = { ...base, raw: (h, max) => (cut ? Promise.resolve({ status: 0, error: 'network', net: cut }) : base.raw(h, max)) };
+  const mail = new GmailMail(t, { log: (_l: string, m: string) => void logged.push(m), gapMs: 0, clock, background: { listMs: 0, messageMs: 0, backoffMinMs: 300 }, stateFile: join(tmp, 'reads-network.json') });
+  const read = readOnes().slice(0, 3);
+  cut = { stage: 'headers', ms: 650, got: 0, online: true };
+  const e = await mail.get({ id: read[0]!.id, background: true }).catch((x) => x);
+  expect(codeOf(e)).toEqual([503, 'unavailable']);
+  expect(e.message).toBe("Gmail's message download failed: the browser could not fetch it, before any answer, after 0.7 s; try again in a moment");
+  expect(logged).toContain('gmail raw: the browser could not fetch it, before any answer, after 0.7 s');
+  expect(logged).toContain('gmail background: backing off 0.3 s after a download the browser could not fetch');
+  expect(mail.background().backoffMs).toBe(300);
+  cut = { stage: 'body', ms: 1200, got: 4096, online: false };
+  const e2 = await drive(clock, mail.raw({ id: read[1]!.id })).catch((x) => x);
+  expect(e2.message).toContain('while its body came in (4096 bytes in), after 1.2 s, with the browser offline');
+  // Not the route's failure: the next good download is all there is to it.
+  cut = null;
+  expect((await drive(clock, mail.raw({ id: read[2]!.id, background: true }))).size).toBeGreaterThan(0);
+  expect(mail.layer().state).not.toBe('failed');
 });
 
 test('the unread guard, not tripped: an unread message read here is looked at again (fd) and is still unread; nothing else changes', async () => {

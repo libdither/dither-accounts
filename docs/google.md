@@ -705,9 +705,13 @@ one call already under way. The rules (`BACKGROUND` in `mail.ts`):
 - **Budget**: at most **2 GB** (2 × 10⁹ bytes) of messages downloaded per rolling 24 h per account, counted from the
   bytes actually fetched, by both lanes (the foreground is never stopped by it, but its downloads count). Kept per
   minute in **`gmail-reads.json`** in the account's directory (0600), so a restart does not reset it.
-- **Back-off**: after a slow answer (over 10 s), a 429 or a 5xx (from either lane), or a call the page did not
-  answer, background calls wait 2 s, doubling with each such answer up to 5 minutes; five good background answers in
-  a row end it.
+- **Back-off**: after a slow answer (over 10 s), a 429 or a 5xx (from either lane), a download the browser could not
+  fetch, or a call the page did not answer, background calls wait 2 s, doubling with each such answer up to 5
+  minutes; five good background answers in a row end it.
+- **A download the browser could not fetch** (fetch's "Failed to fetch" in the page: the connection dropped or was
+  refused) is an answer from the hook, not a throw: 503 `unavailable`, `Gmail's message download failed: the browser
+  could not fetch it, before any answer | while its body came in (N bytes in), after S s[, with the browser offline]`,
+  and the same words in the log (`gmail raw: …`). It counts as trouble for the back-off, not against the download route.
 - **Stops**: a **challenge** (an answer that reads as a sign-in or verification page; any other 200 that is not what
   was asked for: no JSON from `bv`, `fd` or `s`, an HTML page from the download route; or a 403), the page **signed
   out** (the Gmail page's own signed-in state, or a 401), or the day's **quota** spent. From then on every background

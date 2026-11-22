@@ -18,7 +18,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import type { Subprocess } from 'bun';
-import { prepareVncSocket, vncSocketPath, waitForVncSocket, x11vncArgs } from '@dither-accounts/browser';
+import { displayIsOurs, prepareVncSocket, vncSocketPath, waitForVncSocket, x11vncArgs } from '@dither-accounts/browser';
 import { type Log, type SandboxBins, sandboxBins } from './bins.ts';
 import { DBusConnection } from './dbus.ts';
 import { DesktopServices, type FileRequest, fileUri, type Notification } from './services.ts';
@@ -174,7 +174,7 @@ export class AppSandbox {
 
     // The display: only its path socket, which is the one bound into the sandbox.
     const xvfb = this.spawn('Xvfb', [this.bins.xvfb, d, '-screen', '0', `${this.o.width}x${this.o.height}x24`, '-nolisten', 'tcp', '-nolisten', 'local', '-nocursor', '-dpi', '96'], d);
-    await this.waitFor(`/tmp/.X11-unix/X${this.o.display}`, xvfb, 8000, `Xvfb on ${d}`);
+    await this.waitForDisplay(xvfb, 8000, `Xvfb on ${d}`);
     prepareVncSocket(this.vncSocket);
     const vnc = this.spawn('x11vnc', x11vncArgs(this.bins.x11vnc, d, this.vncSocket), `-unixsock ${this.vncSocket}`);
     await waitForVncSocket(this.vncSocket, vnc, 10_000);
@@ -620,6 +620,17 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
       }
     } catch {}
     rmSync(file, { force: true });
+  }
+
+  /** Our Xvfb's display is up: its socket there and its lock naming it (a dead server's socket stays until then). */
+  private async waitForDisplay(xvfb: Subprocess, ms: number, what: string) {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      if (xvfb.exitCode !== null) throw new Error(`${what} exited (${xvfb.exitCode}); is the display taken?`);
+      if (displayIsOurs(this.o.display, xvfb.pid)) return;
+      await Bun.sleep(50);
+    }
+    throw new Error(`${what} did not come up within ${ms} ms`);
   }
 
   private async waitFor(path: string, proc: Subprocess, ms: number, what: string) {

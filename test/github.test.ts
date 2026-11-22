@@ -266,10 +266,10 @@ test('rate limits: a primary one is waited out without asking, apps hear 429, th
   expect(st.status).toBe('online');
   expect(st.attention).toBeNull();
   const limitedUntil = Date.parse(st.layers[3].note!.slice('rate limited until '.length));
-  const t0 = Date.now();
+  // Refused at once, not waited out: a request sent after the reset would have been answered.
   const e = (await call('notify.list', {}).catch((x) => x)) as CallFailed;
   expect([e.code, e.status]).toEqual(['failed', 429]);
-  expect(Date.now() - t0).toBeLessThan(1000);
+  expect(e.message).toContain(`try again after ${new Date(limitedUntil).toISOString().replace('.000Z', 'Z')}`);
   await until(async () => (await status()).layers[3].state === 'ok', 10_000, 'polling again');
   // Nothing reached GitHub while limited (the reset is on a whole second, so it can come at any time in the window):
   // every request since is from after the reset.

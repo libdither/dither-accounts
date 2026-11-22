@@ -294,7 +294,11 @@ export class SignalAdapter {
           if (!rpc?.open) throw new Error('signal-cli is not running');
           await rpc.call('addDevice', { uri }, 60_000);
         },
+        left: (conversation, at) => {
+          for (const ev of this.callBook.endHere(conversation, at)) this.host.emit(ev);
+        },
       });
+      this.callBook.inCallHere = (conversation) => !!this.calls?.inCall(conversation);
     }
   }
 

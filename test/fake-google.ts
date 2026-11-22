@@ -254,6 +254,7 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
   let marksRead = false;
   let trailer: number | null = null;
   const fails: { status: number; count: number }[] = [];
+  let cuts = 0;
   const delays: { ms: number; count: number; only?: 'bv' | 'fd' | 's' | 'raw' }[] = [];
   const calls = { bv: 0, fd: 0, s: 0, raw: 0 };
   const rawFetched: string[] = [];
@@ -485,6 +486,12 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
       calls.raw++;
       const no = blocked() ?? (await trouble('raw'));
       if (no) return no;
+      if (cuts > 0) {
+        // The page's fetch fails ("Failed to fetch"), as a dropped connection does: sent on to a port browsers refuse
+        // (9, discard), so nothing is reached.
+        cuts--;
+        return new Response(null, { status: 302, headers: { location: 'http://127.0.0.1:9/' } });
+      }
       const th = url.searchParams.get('th') ?? '';
       const dec = /^[0-9a-f]{1,16}$/.test(th) ? BigInt(`0x${th}`).toString() : '';
       const msg = visible().find((x) => !x.pending && x.id === dec);
@@ -621,6 +628,10 @@ export function fakeGmail(mark: string, opts: { sapisid: string; now?: number } 
     /** The next `count` sync calls or downloads answer `status`. */
     failNext(status: number, count = 1) {
       fails.push({ status, count });
+    },
+    /** The next `count` downloads fail in the page as a dropped connection does ("Failed to fetch"). */
+    cutNext(count = 1) {
+      cuts += count;
     },
     /** The next `count` sync calls or downloads (or only those to `only`) answer only after `ms`. */
     delayNext(ms: number, count = 1, only?: 'bv' | 'fd' | 's' | 'raw') {

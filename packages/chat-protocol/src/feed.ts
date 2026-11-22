@@ -18,6 +18,8 @@ export interface PostMedia {
   width?: number;
   height?: number;
   alt?: string;
+  /** A video's or GIF's length in ms, where the network says (X: video_info.duration_millis). */
+  durationMs?: number;
 }
 
 /**
@@ -152,6 +154,21 @@ export interface HomePage {
   /** Ask with this cursor for older posts (the Bottom cursor), or null. */
   more: string | null;
   /** Ask with this cursor for what came since (the Top cursor), or null. */
+  top: string | null;
+}
+
+/** A post the account liked, and when it liked it where the network says (X: the Likes tab's entry sort index is the like's own snowflake id). */
+export interface LikedPost {
+  post: PostFact;
+  /** ms epoch. */
+  likedAt?: number;
+}
+/** A page of the posts the account liked, newest like first (the `likes` command). */
+export interface LikesPage {
+  items: LikedPost[];
+  /** Ask with this cursor for older likes (the Bottom cursor), or null at the end. */
+  more: string | null;
+  /** Ask with this cursor for likes since (the Top cursor), or null. */
   top: string | null;
 }
 

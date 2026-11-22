@@ -25,6 +25,12 @@ describe('htmlToMarkdown', () => {
   test("math as its TeX: MathML's alttext, MathJax's aria-label, never its glyphs", () => {
     expect(htmlToMarkdown('<p>Let <math alttext="x^2"><mi>x</mi></math> and <span class="mjx-chtml"><span class="mjx-math" aria-label="y + 1"><span>y+1</span></span></span>.</p>')).toBe('Let $x^2$ and $y + 1$.');
   });
+  test("display math (MathJax's MJXc-display, MathML's display=block) is a block between lines of $$; a plain $ is escaped", () => {
+    const html =
+      '<p>It costs $5 and $6 so <span class="mjpage mjpage__block"><span class="mjx-chtml MJXc-display"><span class="mjx-math" aria-label="\\log_2(n) = k"><span aria-hidden="true">log</span></span></span><style>.mjx-chtml{}</style></span> holds.</p><math display="block" alttext="a+b"><mi>a</mi></math>';
+    expect(htmlToMarkdown(html)).toBe('It costs \\$5 and \\$6 so\n\n$$\n\\log_2(n) = k\n$$\n\nholds.\n\n$$\na+b\n$$');
+    expect(htmlPreview('<p>It costs $5.</p>')).toBe('It costs $5.');
+  });
   test('entities, implied end tags and stray closers are read as a browser would', () => {
     expect(htmlToMarkdown('<p>a &amp; b &lt;c&gt; &#x1F600;<p>next</div><li>loose')).toBe('a & b \\<c\\> 😀\n\nnext\n\nloose');
   });
@@ -39,5 +45,9 @@ describe('htmlPreview', () => {
   test('plain words of the first paragraphs, cut at a word', () => {
     expect(htmlPreview('<h2>Title</h2><p>Some <b>bold</b> and <a href="https://example.com">a link</a> here.</p><img src="https://example.com/a.png">', 40)).toBe('Title\n\nSome bold and a link here.');
     expect(htmlPreview('<p>one two three four five six</p>', 12)).toBe('one two…');
+    // A footnote mark's link (escaped brackets in its words) and an escaped literal keep their words.
+    expect(htmlPreview('<p>True.<sup><a href="https://example.com/p#fn1">[1]</a></sup> And 2 * 3 = 6.</p>')).toBe('True.[1] And 2 * 3 = 6.');
+    // Math keeps its TeX: underscores and backslashes are not emphasis or escapes there.
+    expect(htmlPreview('<p>Cost $3 for <span class="mjx-chtml"><span class="mjx-math" aria-label="x_1 * \\alpha"></span></span> each.</p>')).toBe('Cost $3 for $x_1 * \\alpha$ each.');
   });
 });

@@ -62,6 +62,7 @@ const KIND_MARK: Record<string, Mark> = {
   lemmy: { brand: 'lemmy' },
   bluesky: { brand: 'bluesky' },
   zulip: { brand: 'zulip' },
+  lesswrong: { glyph: 'book' },
   bugwatch: { glyph: 'bell' },
   t3: { glyph: 'terminal' },
   njalla: { glyph: 'server' },
@@ -211,6 +212,17 @@ const SERVICES: Service[] = [
     ways: [
       { id: 'api-key', label: 'API key', glyph: 'key', kind: 'zulip', hide: ['password'], need: ['apiKey'], tip: "Your API key, from Zulip's Settings → Account & privacy: works on every server, SSO ones too." },
       { id: 'password', label: 'Password', glyph: 'key', kind: 'zulip', hide: ['apiKey'], need: ['password'], tip: 'Swaps your password once for your API key and keeps only the key. Not for servers you sign in to with SSO.' },
+    ],
+  },
+  {
+    id: 'lesswrong',
+    name: 'LessWrong',
+    mark: { glyph: 'book' },
+    category: 'chat',
+    line: 'Your notifications, subscriptions, the frontpage feed and comment threads (the EA and Alignment Forums too)',
+    ways: [
+      { id: 'password', label: 'Password', glyph: 'key', kind: 'lesswrong', hide: ['token'], need: ['username', 'password'], tip: 'Signs in once with your password and keeps only the sign-in the site gives, never the password.' },
+      { id: 'token', label: 'Login token', glyph: 'cookie', kind: 'lesswrong', hide: ['username', 'password'], need: ['token'], tip: 'For accounts that sign in with Google or GitHub: paste the loginToken cookie from your browser.' },
     ],
   },
   {

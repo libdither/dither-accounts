@@ -191,6 +191,13 @@
         "@dither-chat/protocol": "workspace:*",
       },
     },
+    "extractors/lesswrong": {
+      "name": "@dither-accounts/extractor-lesswrong",
+      "dependencies": {
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+    },
     "extractors/mastodon": {
       "name": "@dither-accounts/extractor-mastodon",
       "dependencies": {
@@ -520,6 +527,8 @@
     "@dither-accounts/extractor-instagram": ["@dither-accounts/extractor-instagram@workspace:extractors/instagram"],
 
     "@dither-accounts/extractor-lemmy": ["@dither-accounts/extractor-lemmy@workspace:extractors/lemmy"],
+
+    "@dither-accounts/extractor-lesswrong": ["@dither-accounts/extractor-lesswrong@workspace:extractors/lesswrong"],
 
     "@dither-accounts/extractor-mastodon": ["@dither-accounts/extractor-mastodon@workspace:extractors/mastodon"],
 

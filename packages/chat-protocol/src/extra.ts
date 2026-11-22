@@ -63,6 +63,11 @@ export interface AttachmentNote {
 
 /** The known keys of MessageFact.extra. */
 export interface MessageExtra {
+  /**
+   * When the message was last moved to the conversation it is in now (ms epoch): a Zulip message moved to another
+   * topic or channel (its `last_moved_timestamp`). Shown as "moved" beside "edited".
+   */
+  movedAt?: number;
   quote?: QuoteFact;
   contacts?: SharedContactFact[];
   /** A reply to a story (or, with `emoji`, a reaction to one). `author`: whose story, native id. */

@@ -298,7 +298,11 @@ export async function profile(a: ZulipAdapter, who: string): Promise<P.PersonAbo
       facts.push({ label: f.name, value: names });
     } else facts.push({ label: f.name, value: v });
   }
-  if (u.timezone) facts.push({ label: 'Time zone', value: u.timezone });
+  // Its IANA name, so the app can say their local time; the fact for an app that does not read `timeZone` yet.
+  if (u.timezone) {
+    out.timeZone = u.timezone;
+    facts.push({ label: 'Time zone', value: u.timezone });
+  }
   if (u.date_joined) out.createdAt = Date.parse(u.date_joined);
   if (u.is_bot && u.bot_owner_id) facts.push({ label: 'Owner', value: a.st.users.get(u.bot_owner_id)?.full_name ?? String(u.bot_owner_id) });
   if (u.is_active === false) facts.push({ label: 'Account', value: 'Deactivated' });

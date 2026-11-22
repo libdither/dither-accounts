@@ -67,6 +67,9 @@ test('messages and read state at start: mentions, reactions, unread counts', asy
   expect(m.get(`${host}/m/100`)).toMatchObject({ conversation: `${host}/s/3/t/plans`, author: `${host}/u/9`, body: `hello <@${host}/u/8>`, mentionsSelf: true, ts: 1_700_000_000_100 });
   // Zulip's seconds, with the id's last digits as milliseconds so one second's messages keep their order.
   expect(m.get(`${host}/m/101`)?.reactions).toEqual([{ key: '👍', authors: [`${host}/u/9`] }]);
+  // Moved to this topic after it was sent (Zulip's last_moved_timestamp): when, for the app's "moved" mark.
+  expect(m.get(`${host}/m/101`)?.extra).toMatchObject({ movedAt: 1_700_000_050_000 });
+  expect(m.get(`${host}/m/100`)?.extra?.movedAt).toBeUndefined();
   const reads = new Map(of(link, 'read').map((e) => [e.conversation, e]));
   expect(reads.get(`${host}/s/3/t/plans`)).toMatchObject({ unread: 1, mentions: 1, upToTs: 1_700_000_000_100 - 1 });
   expect(reads.get(`${host}/dm/8,9`)).toMatchObject({ unread: 1, mentions: 0 });
@@ -91,10 +94,18 @@ test('live events: a message, a reaction, an edit, a move to another topic, a de
   const edited = await link.next<Extract<P.AdapterEvent, { t: 'message' }>>((e) => e.t === 'message' && e.message.body === 'edited', 5_000, from);
   expect(edited.message).toMatchObject({ editedTs: 1_700_000_200_000 });
   expect(edited.message.mentionsSelf).toBeUndefined();
+  // An edit of its words is not a move.
+  expect(edited.message.extra?.movedAt).toBeUndefined();
 
   z.push({ type: 'update_message', message_id: 150, message_ids: [150], stream_id: 3, orig_subject: 'plans', subject: 'later', propagate_mode: 'change_one', edit_timestamp: 1_700_000_300 });
   const moved = await link.next<Extract<P.AdapterEvent, { t: 'message' }>>((e) => e.t === 'message' && e.message.conversation === `${host}/s/3/t/later`, 5_000, from);
   expect(moved.message.moved).toBe(true);
+  expect(moved.message.extra).toMatchObject({ movedAt: 1_700_000_300_000 });
+  // Resolving the topic renames it by its ✔ only: not a move, so the time stays the move's.
+  const beforeResolve = link.events.length;
+  z.push({ type: 'update_message', message_id: 150, message_ids: [150], stream_id: 3, orig_subject: 'later', subject: '✔ later', propagate_mode: 'change_all', edit_timestamp: 1_700_000_350 });
+  const resolved = await link.next<Extract<P.AdapterEvent, { t: 'message' }>>((e) => e.t === 'message' && e.message.nativeId === `${host}/m/150`, 5_000, beforeResolve);
+  expect(resolved.message.extra).toMatchObject({ movedAt: 1_700_000_300_000 });
 
   z.push({ type: 'update_message_flags', op: 'add', flag: 'read', messages: [150], all: false });
   await link.next((e) => e.t === 'read' && e.conversation === `${host}/s/3/t/later` && e.unread === 0, 5_000, from);
@@ -178,4 +189,13 @@ test('a message deleted while the queue was gone is deleted here once it is back
   z.removeMessage(101);
   z.dropQueue();
   expect(await link.next((e) => e.t === 'delete', 10_000, from)).toEqual({ t: 'delete', conversation: `${host}/s/3/t/plans`, nativeId: `${host}/m/101` });
+});
+
+test("a profile gives the person's time zone as its own field, and as a fact for an app that does not read it", async () => {
+  const { a, host } = await online();
+  const about = (await a.command({ t: 'profile', id: 'p1', who: `${host}/u/9` })) as P.PersonAbout;
+  expect(about.timeZone).toBe('Europe/Berlin');
+  expect(about.facts).toContainEqual({ label: 'Time zone', value: 'Europe/Berlin' });
+  const none = (await a.command({ t: 'profile', id: 'p2', who: `${host}/u/10` })) as P.PersonAbout;
+  expect(none.timeZone).toBeUndefined();
 });

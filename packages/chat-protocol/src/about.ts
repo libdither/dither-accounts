@@ -582,6 +582,11 @@ export interface PersonAbout {
   friends?: string[];
   /** Connected accounts, websites, a phone number. */
   links?: { label: string; value: string; url?: string; verified?: boolean }[];
+  /**
+   * Their time zone, an IANA name ("Europe/Berlin"), where the network says one (Zulip's `timezone`, Matrix's `m.tz`):
+   * the app shows their local time from it.
+   */
+  timeZone?: string;
   /** Anything else worth a line: "Business account", "Local time". */
   facts?: { label: string; value: string }[];
   /** Badges the network shows on their profile, by name, with the network's picture. */

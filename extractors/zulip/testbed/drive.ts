@@ -16,6 +16,8 @@ import { join } from 'node:path';
 import type * as P from '@dither-chat/protocol';
 import { canonicalReactionKey } from '@dither-chat/protocol';
 import { ZulipAdapter } from '../src/adapter.ts';
+import { msOf, RESOLVED } from '../src/ids.ts';
+import { plainText } from '../src/markdown.ts';
 import { type TestLink, testLink } from '../test/link.ts';
 
 // ---------------------------------------------------------------- the sandbox
@@ -54,7 +56,8 @@ const RUN = Date.now().toString(36);
 const uid = (w: Who | number) => `${HOST}/u/${typeof w === 'number' ? w : w.userId}`;
 const mid = (id: number) => `${HOST}/m/${id}`;
 const chan = (stream: number) => `${HOST}/s/${stream}`;
-const topicId = (stream: number, topic: string) => `${HOST}/s/${stream}/t/${encodeURIComponent(topic.toLowerCase())}`;
+// A resolved topic keeps its id: the ✔ is left out of it (src/ids.ts).
+const topicId = (stream: number, topic: string) => `${HOST}/s/${stream}/t/${encodeURIComponent((topic.startsWith(RESOLVED) ? topic.slice(RESOLVED.length) : topic).toLowerCase())}`;
 const dmId = (...users: (Who | number)[]) => `${HOST}/dm/${[...new Set(users.map((u) => (typeof u === 'number' ? u : u.userId)))].sort((a, b) => a - b).join(',')}`;
 /** A topic name of this run. */
 const tn = (name: string) => `drv ${RUN} ${name}`;
@@ -402,13 +405,16 @@ check('start.channels', async (t) => {
     const f = s.folder_id ? folders.get(s.folder_id) : null;
     t.eq(
       { shape: c.shape, variant: c.variant, name: c.name, topic: c.topic ?? '', archived: !!c.archived, muted: !!c.mute?.muted, space: c.spaces?.[0]?.nativeId },
-      { shape: 'channel', variant: 'forum', name: s.name, topic: s.description ?? '', archived: !!s.is_archived, muted: !!s.is_muted, space: f && !f.is_archived ? `${HOST}/f/${f.id}` : HOST },
+      { shape: 'channel', variant: 'forum', name: s.name, topic: plainText(s.description ?? ''), archived: !!s.is_archived, muted: !!s.is_muted, space: f && !f.is_archived ? `${HOST}/f/${f.id}` : HOST },
       `#${s.name} as a forum channel`,
     );
   }
   t.ok((t.S.truth.subscriptions as any[]).some((s) => s.is_archived), 'the server lists the archived channel among the subscriptions (so the check above covers it)');
-  const stray = start.filter((e) => e.t === 'conversation' && e.conversation.shape === 'channel' && !(t.S.truth.subscriptions as any[]).some((s) => chan(s.stream_id) === e.conversation.nativeId));
-  t.eq(stray.map((e) => e.conversation.name), [], 'no channel is said that the account is not in');
+  // A channel the account is not in is said only as the place of messages it still has from there (it left, or was
+  // mentioned): their topics need a parent.
+  const said = new Set(start.filter((e) => e.t === 'message').map((e: any) => e.message.conversation.split('/t/')[0]));
+  const stray = start.filter((e) => e.t === 'conversation' && e.conversation.shape === 'channel' && !(t.S.truth.subscriptions as any[]).some((s) => chan(s.stream_id) === e.conversation.nativeId) && !said.has(e.conversation.nativeId));
+  t.eq(stray.map((e) => e.conversation.name), [], 'no channel is said that the account is not in, but for messages it has from there');
 });
 
 check('start.topics', async (t) => {
@@ -683,12 +689,12 @@ check('live.channel-message', async (t) => {
   const e = await t.event('the message', isMsg(id), from);
   if (!e) return;
   const src = await raw(id);
-  t.eq({ live: e.live, conversation: e.message.conversation, author: e.message.author, body: e.message.body, ts: e.message.ts, kind: e.message.kind }, { live: true, conversation: conv, author: uid(ann), body: 'A new message, live.', ts: src.timestamp * 1000, kind: 'text' }, 'the message fact');
+  t.eq({ live: e.live, conversation: e.message.conversation, author: e.message.author, body: e.message.body, ts: e.message.ts, kind: e.message.kind }, { live: true, conversation: conv, author: uid(ann), body: 'A new message, live.', ts: msOf(src), kind: 'text' }, 'the message fact');
   t.ok(!e.message.mentionsSelf && !e.message.editedTs && !e.message.moved, 'no mention, edit or move on it', e.message);
   const all = t.S.link.events as Ev[];
   const at = all.indexOf(e);
   const fact = all.slice(from, at).filter(isConv(conv)).pop()?.conversation;
-  t.eq(fact && { shape: fact.shape, parent: fact.parentConversation, name: fact.name, last: fact.lastMessageAt }, { shape: 'thread', parent: chan(G()), name: topic, last: src.timestamp * 1000 }, 'the new topic is said before its first message, with the name as written');
+  t.eq(fact && { shape: fact.shape, parent: fact.parentConversation, name: fact.name, last: fact.lastMessageAt }, { shape: 'thread', parent: chan(G()), name: topic, last: msOf(src) }, 'the new topic is said before its first message, with the name as written');
   await t.event('read: 1 unread, 0 mentions', (x) => isRead(conv, 1)(x) && x.mentions === 0, at);
 });
 
@@ -790,7 +796,7 @@ check('live.edit', async (t) => {
   const e = await t.event('the edited message', (x) => isMsg(id)(x) && x.message.body !== 'First wording.', from);
   if (!e) return;
   const src = await raw(id);
-  t.eq({ body: e.message.body, editedTs: e.message.editedTs, live: e.live, conversation: e.message.conversation, ts: e.message.ts, moved: !!e.message.moved }, { body: 'Second wording, **edited**.', editedTs: src.last_edit_timestamp * 1000, live: false, conversation: topicId(G(), topic), ts: src.timestamp * 1000, moved: false }, 'the edit');
+  t.eq({ body: e.message.body, editedTs: e.message.editedTs, live: e.live, conversation: e.message.conversation, ts: e.message.ts, moved: !!e.message.moved }, { body: 'Second wording, **edited**.', editedTs: src.last_edit_timestamp * 1000, live: false, conversation: topicId(G(), topic), ts: msOf(src), moved: false }, 'the edit');
 });
 
 check('live.edit-adds-mention', async (t) => {
@@ -863,7 +869,8 @@ check('live.move-channel', async (t) => {
     if (e) t.eq(e.message.moved, true, 'moved: true');
   }
   const fact = t.heard(isConv(to), from)[0];
-  t.eq(fact && [fact.conversation.parentConversation, fact.conversation.spaces?.[0]?.nativeId], [chan(CH.design), `${HOST}/f/1`], 'the topic now hangs off #design, in its folder');
+  // A topic carries no spaces of its own: it sits where its channel does.
+  t.eq(fact && [fact.conversation.parentConversation, fact.conversation.spaces], [chan(CH.design), undefined], 'the topic now hangs off #design');
   await t.event('read: both unread in the new place', isRead(to, 2), from);
   await t.event('read: none in the old', isRead(topicId(G(), a), 0), from);
   // One message of several moved out (propagate_mode change_one): the old topic stays.
@@ -985,7 +992,7 @@ check('live.read-elsewhere', async (t) => {
   const conv = topicId(G(), topic);
   const ids = [await say(ann, { stream: G(), topic }, 'One.'), await say(ann, { stream: G(), topic }, 'Two.'), await say(ann, { stream: G(), topic }, 'Three.')];
   await t.event('read: 3 unread', isRead(conv, 3), 0);
-  const ts = await Promise.all(ids.map(async (i) => (await raw(i)).timestamp * 1000));
+  const ts = await Promise.all(ids.map(async (i) => msOf(await raw(i))));
   let from = t.mark();
   await rest(quinn, 'POST', '/messages/flags', { messages: [ids[0]], op: 'add', flag: 'read' });
   const r1 = await t.event('read: 2 unread after the first is read elsewhere', isRead(conv, 2), from);
@@ -1113,7 +1120,7 @@ check('live.channel-rename', async (t) => {
   t.ok(f, 'renamed');
   from = t.mark();
   await rest(ann, 'PATCH', `/streams/${c.id}`, { description: 'A new *description*.' });
-  await t.event('the channel with its new description', (x) => isConv(chan(c.id))(x) && x.conversation.topic === 'A new *description*.', from);
+  await t.event('the channel with its new description', (x) => isConv(chan(c.id))(x) && x.conversation.topic === 'A new description.', from);
   from = t.mark();
   await rest(ann, 'PATCH', `/streams/${c.id}`, { new_name: c.name });
   await t.event('the channel with its first name again', (x) => isConv(chan(c.id))(x) && x.conversation.name === c.name, from);
@@ -1356,7 +1363,7 @@ check('cmd.send-direct', async (t) => {
     const src = await raw(id);
     t.eq([src.type, src.display_recipient.map((x: any) => x.id).sort((a: number, b: number) => a - b)], ['private', people.map((p) => p.userId).sort((a, b) => a - b)], `${what}: as the server has it`);
     const r2 = await t.maybe(isRead(conv), from, 3000);
-    t.ok(r2 && r2.upToTs >= src.timestamp * 1000 - 1 === (r2.unread === 0) , `${what}: a read event after an own message agrees with itself`, r2);
+    t.ok(r2 && r2.upToTs >= msOf(src) - 1 === (r2.unread === 0) , `${what}: a read event after an own message agrees with itself`, r2);
   }
 });
 
@@ -1616,7 +1623,7 @@ check('cmd.markUnread', async (t) => {
   await t.cmd({ t: 'markUnread', conversation: conv, from: mid(ids[1]) });
   t.eq(await Promise.all(ids.map(async (i) => (await raw(i)).flags.includes('read'))), [true, false, false], 'unread from that message on, on the server');
   const r = await t.event('read: 2 unread, manual', (x) => isRead(conv, 2)(x) && x.manual === true, from);
-  const ts1 = (await raw(ids[1])).timestamp * 1000;
+  const ts1 = msOf(await raw(ids[1]));
   t.ok(r && r.upToTs < ts1, 'with the read point before that message', { r, ts1 });
 });
 
@@ -1642,7 +1649,7 @@ check('cmd.typing', async (t) => {
 
 check('cmd.history', async (t) => {
   const conv = topicId(G(), 'history');
-  const all = ((await rest(quinn, 'GET', '/messages', { anchor: 'newest', num_before: 1000, num_after: 0, narrow: [{ operator: 'channel', operand: G() }, { operator: 'topic', operand: 'history' }], apply_markdown: false })).messages as any[]).map((m) => ({ id: m.id, ts: m.timestamp * 1000 }));
+  const all = ((await rest(quinn, 'GET', '/messages', { anchor: 'newest', num_before: 1000, num_after: 0, narrow: [{ operator: 'channel', operand: G() }, { operator: 'topic', operand: 'history' }], apply_markdown: false })).messages as any[]).map((m) => ({ id: m.id, ts: msOf(m) }));
   t.ok(all.length >= 120, 'the seeded topic has its 120 messages', all.length);
   let from = t.mark();
   const p1 = await t.cmd({ t: 'history', conversation: conv, limit: 50 });
@@ -2707,6 +2714,84 @@ check(
  * with room in that budget, so none of them fails for having run after a busy one (robust.low-budget-events and
  * robust.rate-limit-real are the checks of what the extractor does when the budget is short).
  */
+// ---------------------------------------------------------------- people: receipts, presence, roles, @all
+
+check('people.receipts', async (t) => {
+  // A DM to Bob: nobody has read it, so nothing is said until Bob reads it and starts typing back.
+  let from = t.mark();
+  const id = await say(quinn, { dm: [bob] }, `Did you see this? ${RUN}`);
+  await t.event('the DM to Bob', isMsg(id), from);
+  t.ok(!(await t.maybe((e) => e.t === 'receipt' && e.messages.includes(mid(id)), from, 1500)), 'no receipt before Bob read it');
+  from = t.mark();
+  await rest(bob, 'POST', '/messages/flags', { messages: [id], op: 'add', flag: 'read' });
+  await rest(bob, 'POST', '/typing', { op: 'start', type: 'direct', to: [quinn.userId] });
+  // Up to a rate window: the driver's own calls as Quinn spend the budget the extractor asks from, and it waits for the
+  // window's reset rather than spend the last of it.
+  const r = await t.event('Bob read it', (e) => e.t === 'receipt' && e.messages.includes(mid(id)), from, 75_000);
+  t.eq(r && { conversation: r.conversation, who: r.who, state: r.state }, { conversation: dmId(quinn, bob), who: uid(bob), state: 'read' }, 'the receipt');
+  // A group DM: Bob reads and writes back, Cara does not: only Bob is said.
+  from = t.mark();
+  const g = await say(quinn, { dm: [bob, cara] }, `Plans for Friday? ${RUN}`);
+  await t.event('the group DM', isMsg(g), from);
+  from = t.mark();
+  await rest(bob, 'POST', '/messages/flags', { messages: [g], op: 'add', flag: 'read' });
+  await say(bob, { dm: [quinn, cara] }, 'Works for me');
+  await t.event('Bob read the group DM', (e) => e.t === 'receipt' && e.messages.includes(mid(g)) && e.who === uid(bob), from, 75_000);
+  t.eq(t.heard((e) => e.t === 'receipt' && e.messages.includes(mid(g)), from).map((e: any) => e.who), [uid(bob)], 'only Bob, once');
+  t.eq(t.S.a.receipts.size >= 1, true, 'the group DM still watched for Cara');
+});
+
+check('people.presence', async (t) => {
+  const start = (t.S.link.events as Ev[]).slice(0, t.S.startEnd).filter((e) => e.t === 'presence');
+  t.ok(!start.some((e: any) => e.who === uid(quinn)), 'yourself not among the presences', start);
+  t.eq((t.S.a as any).st.offlineMs, (await registered(['realm'])).server_presence_offline_threshold_seconds * 1000, "the server's offline threshold");
+  // Ann's client says she is active. Zulip's event comes only if she was not online already (an earlier run).
+  await rest(ann, 'POST', '/users/me/presence', { status: 'active', new_user_input: true });
+  const st = (t.S.a as any).st;
+  // Her times here aged past the threshold: offline, by the sweep.
+  let from = t.mark();
+  st.presence.set(ann.userId, { active: Date.now() - st.offlineMs - 1000, idle: Date.now() - st.offlineMs - 1000 });
+  (t.S.a as any).presenceSweep();
+  await t.event('Ann offline once her times aged', (e) => e.t === 'presence' && e.who === uid(ann) && e.state === 'offline', from, 2000);
+  // Everyone's presence read again, as Zulip's apps do each ping interval: she is active, so online again.
+  from = t.mark();
+  await (t.S.a as any).refreshPresence();
+  await t.event('Ann online again from the server', (e) => e.t === 'presence' && e.who === uid(ann) && e.state === 'online', from, 2000);
+  t.ok(Date.now() - st.presence.get(ann.userId).active < 60_000, "her active time from the server", st.presence.get(ann.userId));
+});
+
+check('people.roles', async (t) => {
+  const designers = creds.groups.designers!;
+  let from = t.mark();
+  await rest(quinn, 'PATCH', `/users/${dave.userId}`, { role: 400 });
+  try {
+    await t.event('Dave made a member', (e) => e.t === 'role' && e.member === uid(dave) && e.role === 'Member' && e.given, from);
+    t.ok(t.heard((e) => e.t === 'role' && e.member === uid(dave) && e.role === 'Guest' && !e.given, from).length === 1, 'and no longer a guest');
+  } finally {
+    await rest(quinn, 'PATCH', `/users/${dave.userId}`, { role: 600 });
+  }
+  from = t.mark();
+  await rest(quinn, 'POST', `/user_groups/${designers}/members`, { add: [dave.userId] });
+  try {
+    const r = await t.event('Dave joined designers', (e) => e.t === 'role' && e.member === uid(dave) && e.role === 'designers' && e.given, from);
+    t.eq(r && (r as any).target, { kind: 'space', nativeId: HOST }, 'on the organization');
+  } finally {
+    from = t.mark();
+    await rest(quinn, 'POST', `/user_groups/${designers}/members`, { delete: [dave.userId] });
+  }
+  await t.event('Dave left designers', (e) => e.t === 'role' && e.member === uid(dave) && e.role === 'designers' && !e.given, from);
+  // The role change back to guest moved him between system groups too: not said twice.
+  t.eq(t.heard((e) => e.t === 'role' && e.member === uid(dave) && String((e as any).role).startsWith('role:')).length, 0, 'system groups not said as roles');
+});
+
+check('people.mentionAll', async (t) => {
+  const r = await t.cmd({ t: 'mentionables', conversation: chan(G()), query: '', limit: 5 });
+  t.eq(r?.everyone, true, '@all offered in a small channel');
+  const d = await t.cmd({ t: 'mentionables', conversation: dmId(quinn, ann), query: '', limit: 5 });
+  t.eq(d?.everyone, false, 'not in a DM');
+  t.eq((t.S.a as any).st.canMentionMany, (await registered(['realm'])).realm_can_mention_many_users_group, "who may in big channels, as the server says");
+});
+
 async function headroom() {
   const r = await restRaw(quinn, 'GET', '/users/me');
   const left = Number(r.headers.get('x-ratelimit-remaining'));

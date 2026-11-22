@@ -6,7 +6,8 @@
  *   2. "Replace sign-in" on the manager's page with the right key: online on the page and in the hub
  *   3. A second account by password on the manager's page: the key is fetched, the password is in no secret or config
  *   4. Structure in the hub: the organization a community, the folder a section, channels forums, topics threads, DMs
- *   5. New post in the app starts a topic, the topic's message box sends into it, Zulip has both
+ *   5. New post in the app starts a topic, the topic's message box sends into it, Zulip has both; the @ picker there
+ *      offers @everyone and @here
  *   6. Live from Zulip: a message, a reaction, a rename that moves the messages, a resolve
  *   7. A restart of the extractor: online again, the message sent meanwhile there once
  *
@@ -267,6 +268,15 @@ try {
   await typeInto(`document.querySelector('.composer textarea')`, `Second message ${tag}.`);
   await enter();
   check(await until(async () => (await newest(topic)).some((m) => m.content === `Second message ${tag}.`), 15_000, 'the message in Zulip'), 'the topic’s message box sends into it');
+  // The @ picker in the topic: Zulip's people and groups, and @everyone and @here (sent as Zulip's @**all** and @**topic**).
+  await typeInto(`document.querySelector('.composer textarea')`, '@');
+  const offered = await p.until(`[...document.querySelectorAll('.mp-pop .mp-note')].some((e) => e.textContent === 'everyone in this topic')`, 10_000).then(
+    () => true,
+    () => false,
+  );
+  check(offered, 'the @ picker offers @everyone and @here in a topic');
+  if (shots) await p.shot(`${shots}/mention-picker.png`);
+  await typeInto(`document.querySelector('.composer textarea')`, ' ');
 
   // 6. Live from Zulip.
   const live = await say('ann', topic, `@**Quinn Park** live ${tag}`);

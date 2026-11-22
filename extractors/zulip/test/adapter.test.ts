@@ -54,7 +54,7 @@ test('the organization, its folder, channels as forums, topics as threads and DM
   const convs = new Map(of(link, 'conversation').map((e) => [e.conversation.nativeId, e.conversation]));
   expect(convs.get(`${host}/s/3`)).toMatchObject({ shape: 'channel', variant: 'forum', name: 'general', spaces: [{ nativeId: host }], mute: {} });
   expect(convs.get(`${host}/s/4`)).toMatchObject({ spaces: [{ nativeId: `${host}/f/1` }], mute: { muted: true } });
-  expect(convs.get(`${host}/s/3/t/plans`)).toMatchObject({ shape: 'thread', name: 'plans', parentConversation: `${host}/s/3`, lastMessageAt: 1_700_000_010_000 });
+  expect(convs.get(`${host}/s/3/t/plans`)).toMatchObject({ shape: 'thread', name: 'plans', parentConversation: `${host}/s/3`, lastMessageAt: 1_700_000_010_101 });
   expect(convs.get(`${host}/dm/8,9`)).toMatchObject({ shape: 'direct', participants: [`${host}/u/8`, `${host}/u/9`] });
   const me = of(link, 'identity').find((e) => e.identity.nativeId === `${host}/u/8`);
   // The sign-in address, not the stand-in the API shows others.

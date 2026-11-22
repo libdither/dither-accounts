@@ -11,7 +11,20 @@ export interface Call {
 
 const KEY = 'k'.repeat(32);
 
-export function fakeZulip() {
+export interface FakeOptions {
+  /** More of /register's answer (settings, presences, groups), over the defaults. */
+  register?: Record<string, unknown>;
+  /** More messages, after the three every test has. */
+  messages?: any[];
+  /** A channel's subscribers, for /streams/{id}/members (default: everyone). */
+  subscribers?: Record<number, number[]>;
+  /** Who has read which message, for /messages/{id}/read_receipts, from the start. */
+  readers?: Record<number, number[]>;
+  /** GET /realm/presence's answer, by API email (Zulip's legacy form). */
+  realmPresence?: Record<string, unknown>;
+}
+
+export function fakeZulip(opts: FakeOptions = {}) {
   const users = [
     { user_id: 8, email: 'user8@chat.example.org', delivery_email: 'quinn@example.com', full_name: 'Quinn Park', role: 100, is_active: true, avatar_url: '/user_avatars/2/q.png' },
     { user_id: 9, email: 'user9@chat.example.org', full_name: 'Ann Lee', role: 200, is_active: true, avatar_url: 'https://example.com/ann.png' },
@@ -22,7 +35,10 @@ export function fakeZulip() {
     { id: 100, sender_id: 9, sender_full_name: 'Ann Lee', content: 'hello @**Quinn Park|8**', timestamp: 1_700_000_000, type: 'stream', stream_id: 3, subject: 'plans', display_recipient: 'general', reactions: [], submessages: [], flags: ['mentioned'] },
     { id: 101, sender_id: 8, sender_full_name: 'Quinn Park', content: 'hi', timestamp: 1_700_000_010, type: 'stream', stream_id: 3, subject: 'plans', display_recipient: 'general', reactions: [{ emoji_name: 'thumbs_up', emoji_code: '1f44d', reaction_type: 'unicode_emoji', user_id: 9 }], submessages: [], flags: ['read'] },
     { id: 102, sender_id: 9, sender_full_name: 'Ann Lee', content: 'dm', timestamp: 1_700_000_020, type: 'private', display_recipient: [{ id: 8, email: 'user8@chat.example.org', full_name: 'Quinn Park' }, { id: 9, email: 'user9@chat.example.org', full_name: 'Ann Lee' }], reactions: [], submessages: [], flags: [] },
+    ...(opts.messages ?? []),
   ];
+  /** Who has read each message, for /messages/{id}/read_receipts; a test changes it as people read. */
+  const readers = new Map<number, number[]>(Object.entries(opts.readers ?? {}).map(([k, v]) => [Number(k), v]));
   let nextId = 200;
   const queue: any[] = [];
   let eventId = -1;
@@ -78,6 +94,7 @@ export function fakeZulip() {
           muted_users: [],
           starred_messages: [101],
           unread_msgs: { streams: [{ stream_id: 3, topic: 'plans', unread_message_ids: [100] }], pms: [{ other_user_id: 9, unread_message_ids: [102] }], huddles: [], mentions: [100] },
+          ...opts.register,
         });
       }
       if (path === '/events' && req.method === 'GET') {
@@ -109,6 +126,9 @@ export function fakeZulip() {
         return ok({ processed_count: hit.length, updated_count: hit.length, first_processed_id: hit[0]?.id ?? null, last_processed_id: hit.at(-1)?.id ?? null, found_oldest: true, found_newest: true });
       }
       if (/^\/messages\/\d+\/reactions$/.test(path)) return ok();
+      if (/^\/messages\/\d+\/read_receipts$/.test(path)) return ok({ user_ids: readers.get(Number(path.split('/')[2])) ?? [] });
+      if (path === '/realm/presence') return ok({ presences: opts.realmPresence ?? {}, server_timestamp: Date.now() / 1000 });
+      if (/^\/streams\/\d+\/members$/.test(path)) return ok({ subscribers: opts.subscribers?.[Number(path.split('/')[2])] ?? users.map((u) => u.user_id) });
       if (/^\/messages\/\d+$/.test(path) && req.method === 'PATCH') return ok();
       if (/^\/users\/me\/muted_users\/\d+$/.test(path)) return ok();
       if (/^\/users\/me\/\d+\/topics$/.test(path)) {
@@ -127,6 +147,7 @@ export function fakeZulip() {
     key: KEY,
     calls,
     push,
+    readers,
     addMessage(m: object) {
       messages = [...messages, m];
     },

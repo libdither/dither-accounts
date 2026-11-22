@@ -459,6 +459,12 @@ What is known of the protocol comes from the shapes the learn run recorded on th
 never values; `gmail-shapes.json`, above). Positions that the shapes cannot explain are marked as guesses below; the
 self-check (next section) settles most of them on the live account without reading anything private.
 
+What kind of failure each refusal is (`CallError.kind`, docs/manager.md) is said where it is made, not left to the
+status: a download the browser could not fetch, the sandbox browser or Gmail page not up yet, a back-off and a spent
+day's budget are `transient` (the back-off and the budget with `retryAfterMs`, until they end); a signed-out or
+verification page is `expected` (it waits for you); an answer not laid out as the extractor knows it, or not JSON,
+is a `bug`. People suggestions say the same of theirs.
+
 ### How a call is made
 
 - **What the hook learns from the page** (in the Gmail tab only, kept in the page, never sent up): from the page's own

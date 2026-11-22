@@ -285,8 +285,14 @@ export class Watch {
     return this.cfg.ignore.some((re) => texts.some((t) => re.test(t)));
   }
 
+  /**
+   * One record into its bug. Its writer's kind (Rec.kind) decides first: an `expected` one is no bug and is dropped; a
+   * `transient` one is counted, so a run of them shows as a spike, but one alone raises nothing (it is the world, not
+   * the code). A bug whose records were all transient is raised as new by its first record that is not.
+   */
   private ingest(src: Source, r: Rec, raised: Map<string, Reason>, touched: Set<Bug>) {
-    if (this.ignored(r)) return;
+    if (r.kind === 'expected' || this.ignored(r)) return;
+    const passing = r.kind === 'transient';
     const fp = fingerprint({ sourceName: src.name, source: r.source, where: r.where, name: r.name, message: r.message, stack: r.stack }, src.project);
     let b = this.st.bugs[fp.id];
     const prevLast = b?.last;
@@ -306,8 +312,11 @@ export class Watch {
         buckets: {},
         samples: [],
         crash: false,
+        ...(passing ? { transient: true } : {}),
       };
     }
+    const wasTransient = b.transient === true;
+    if (!passing && wasTransient) delete b.transient;
     b.count += r.count;
     const k = String(Math.floor(r.at / BUCKET_MS));
     b.buckets[k] = (b.buckets[k] ?? 0) + r.count;
@@ -326,7 +335,7 @@ export class Watch {
       if (this.pending.length > 50) this.pending.shift();
     }
 
-    if (prevLast === undefined || r.at - prevLast > NEW_AFTER) this.raise(b, 'new', raised);
+    if (!passing && (prevLast === undefined || wasTransient || r.at - prevLast > NEW_AFTER)) this.raise(b, 'new', raised);
     const rule = this.cfg.always.find((a) => a.match.test(`${r.source}/${r.where}`));
     if (rule && (!b.lastAlwaysAt || r.at - b.lastAlwaysAt >= rule.gapHours * HOUR)) {
       b.lastAlwaysAt = r.at;

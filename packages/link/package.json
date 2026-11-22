@@ -4,5 +4,5 @@
   "private": true,
   "type": "module",
   "exports": { ".": "./src/index.ts", "./once": "./src/once.ts" },
-  "dependencies": { "@dither-chat/protocol": "workspace:*" }
+  "dependencies": { "@dither-accounts/spec": "workspace:*", "@dither-chat/protocol": "workspace:*" }
 }

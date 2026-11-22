@@ -36,6 +36,15 @@ Three words mean the same wherever they come from (packages/spec `CallError`): `
 sent and may be sent again (it waited for an extractor or a page being replaced, and its time ran out first);
 `unsure` (504), a write that may or may not have happened; and `duplicate` (409).
 
+It also says what kind of failure it is, in `CallError.kind` (spec `FailureKind`), so the app need not guess it from
+the message: `expected` for a refusal that is the right answer (`denied`, `invalid`, `offline`, a 404), `transient`
+for the world failing for a moment (`limited`, `timeout`, a 503; `retryAfterMs` says how long to wait when that is
+known, as for `limited`), and `bug` for something that waiting will not fix. The extractor says it
+(`new StatusError(message, 503, 'unavailable', { kind: 'transient', retryAfterMs })`); when it does not, the manager
+fills it in from its own code, else the status (a 4xx other than 408 and 429, or a 501: expected; 408, 429, 503, 504:
+transient). A 500, a 502 or a plain error stays without one: not known. The call's span carries the same `kind`, for
+bugwatch. `transient` does not make a write safe to send again: `unsure` is transient too.
+
 ### A call runs once
 
 An app's client resends what it was waiting for when its socket drops and comes back (a deploy restarts the manager,

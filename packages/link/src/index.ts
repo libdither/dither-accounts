@@ -4,7 +4,7 @@
  *
  *   const link = linkManager({
  *     onConnect: () => link.emit({ t: 'hello', ... }),
- *     onCommand: async (cmd) => result,      // replied to automatically; throw to fail (a StatusError keeps its status and code)
+ *     onCommand: async (cmd) => result,      // replied to automatically; throw to fail (a StatusError keeps its status, code, kind and retryAfterMs)
  *   });
  *
  * The manager starts the process with DITHER_HUB_URL (the manager's /extractor socket), DITHER_ACCOUNT_ID,
@@ -25,6 +25,7 @@
 import { join } from 'node:path';
 import { exitWhenManagerGone, managerHandshake, reconnectDelay, recordExitCode } from '@dither-chat/protocol/outlive';
 import { readSecretFile, writeSecretFile } from '@dither-chat/protocol/secret-file';
+import { type FailureKind, isFailureKind, retryAfterOf } from '@dither-accounts/spec';
 
 /** An op's input with `t`, its name. The manager's call id comes as `rid` and is taken off before onCommand. */
 export type Command = { t: string; [k: string]: unknown };
@@ -58,15 +59,39 @@ export interface LinkOptions {
  * the refusal's reason in a word of the interface's (mail.send's 'recipients'): the app's call fails with that code and
  * this status (CallError.code; spec's isExtractorCode says which words pass, anything else arrives as 'failed'). It is
  * not called `code` so that an upstream's own codes (ProtonError's numbers) never go out as one.
+ *
+ * `kind` says whether the refusal is an answer, the world failing, or a bug (spec FailureKind); without one the
+ * manager works it out from the status (a 4xx is expected, a 503 or 504 transient, a 500 or 502 not known).
+ * `retryAfterMs` says how long to wait before the same call may work (a back-off's end).
  */
 export class StatusError extends Error {
+  readonly kind?: FailureKind;
+  readonly retryAfterMs?: number;
   constructor(
     message: string,
     readonly status: number,
     readonly callCode?: string,
+    more: { kind?: FailureKind; retryAfterMs?: number } = {},
   ) {
     super(message);
+    if (more.kind) this.kind = more.kind;
+    const after = retryAfterOf(more.retryAfterMs);
+    if (after !== undefined) this.retryAfterMs = after;
   }
+}
+
+/** What a failed reply says of a thrown error besides its message: a StatusError's status, code, kind and retryAfterMs. */
+export function replyError(err: any): { error: string; status?: number; code?: string; kind?: FailureKind; retryAfterMs?: number } {
+  const out: ReturnType<typeof replyError> = { error: String(err?.message ?? err) };
+  // A status goes from any error that has a number for one (as before); the rest only from a StatusError, never from
+  // another error that happens to carry the same names (Node's ENOENT code and the like).
+  if (typeof err?.status === 'number') out.status = err.status;
+  if (err instanceof StatusError) {
+    if (typeof err.callCode === 'string') out.code = err.callCode;
+    if (isFailureKind(err.kind)) out.kind = err.kind;
+    if (err.retryAfterMs !== undefined) out.retryAfterMs = err.retryAfterMs;
+  }
+  return out;
 }
 
 const MAX_QUEUE = 100_000;
@@ -153,9 +178,7 @@ export function linkManager(opts: LinkOptions): Link {
         const result = await opts.onCommand(input as Command);
         if (rid) send(JSON.stringify({ t: 'reply', id: rid, ok: true, result }));
       } catch (err: any) {
-        // A StatusError's code goes with it; never a code that another error happens to carry (Node's ENOENT and the like).
-        const code = err instanceof StatusError && typeof err.callCode === 'string' ? { code: err.callCode } : {};
-        if (rid) send(JSON.stringify({ t: 'reply', id: rid, ok: false, error: String(err?.message ?? err), ...(typeof err?.status === 'number' ? { status: err.status } : {}), ...code }));
+        if (rid) send(JSON.stringify({ t: 'reply', id: rid, ok: false, ...replyError(err) }));
       }
     };
     ws.onclose = () => {

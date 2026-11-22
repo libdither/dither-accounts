@@ -20,7 +20,7 @@
   /*@include main-world@*/
   /*@include command-watch@*/
   if (!cloak.once()) return;
-  const HOOK_VERSION = 1;
+  const HOOK_VERSION = 2;
   const settings = { testOrigin: null };
   // The page's fetch as it was at document_start, before any of its scripts ran.
   const pageFetch = window.fetch;
@@ -87,18 +87,20 @@
     return parts.length ? path + (path.indexOf('?') >= 0 ? '&' : '?') + parts.join('&') : path;
   }
 
-  // Keys of the reader's answers that nothing on the other side reads, dropped from the copy.
+  // Keys of the reader's answers that nothing on the other side reads, dropped from the copy. A post's page keeps its
+  // body_html: it is the post itself (the Feed shows it whole in the post's thread).
   const DROP = new Set(['body_html', 'trackingParameters', 'tracking_parameters', 'dismissFeedbackOptions', 'publicationSettings', 'publicationUserSettings', 'theme', 'postTags', 'audio_items', 'coverImagePalette', 'userStatus', 'plans', 'podcastFields', 'trailer_body_json', 'stripe_publishable_key']);
-  function trim(v, depth) {
+  const KEEP_BODY = new Set(['body_html']);
+  function trim(v, depth, keep) {
     if (depth > 12 || v === null || typeof v !== 'object') return v;
-    if (Array.isArray(v)) return v.map((x) => trim(x, depth + 1));
+    if (Array.isArray(v)) return v.map((x) => trim(x, depth + 1, keep));
     const out = {};
-    for (const k of Object.keys(v)) if (!DROP.has(k)) out[k] = trim(v[k], depth + 1);
+    for (const k of Object.keys(v)) if (!DROP.has(k) || (keep && keep.has(k))) out[k] = trim(v[k], depth + 1, keep);
     return out;
   }
 
   /** One call as the reader's fetch helper makes it; its JSON, or an Error in Substack's words. */
-  async function call(method, path, query, json) {
+  async function call(method, path, query, json, keep) {
     const init = { cache: 'no-cache', method };
     if (json !== undefined) {
       init.body = JSON.stringify(json);
@@ -115,7 +117,7 @@
       e.status = res.status;
       throw e;
     }
-    return trim(body, 0);
+    return trim(body, 0, keep);
   }
 
   /** ProseMirror's document for plain text, as the note composer makes it from typed lines. */
@@ -166,7 +168,7 @@
     notes: (c) => call('GET', '/api/v1/reader/feed', { tab: 'for-you', cursor: cursor(c.cursor) }),
     note: (c) => call('GET', '/api/v1/reader/comment/' + id(c.id, 'note')),
     noteReplies: (c) => call('GET', '/api/v1/reader/comment/' + id(c.id, 'note') + '/replies', { comment_id: id(c.id, 'note'), cursor: cursor(c.cursor) }),
-    post: (c) => call('GET', '/api/v1/posts/by-id/' + id(c.id, 'post')),
+    post: (c) => call('GET', '/api/v1/posts/by-id/' + id(c.id, 'post'), undefined, undefined, KEEP_BODY),
     postReplies: (c) => call('GET', '/api/v1/reader/post/' + id(c.id, 'post') + '/replies', { publication_id: id(c.pub, 'publication'), cursor: cursor(c.cursor) }),
     profile: (c) => {
       const h = String(c.handle || '');

@@ -24,6 +24,7 @@
  * share one. A person is their user id. Anything without what the mapping needs is dropped and counted.
  */
 import type * as P from '@dither-chat/protocol';
+import { htmlToMarkdown } from '@dither-chat/protocol/article';
 
 export const SITE = 'https://substack.com';
 /** The author of an activity item no person sent ("Your post has received a lot of traffic"). */
@@ -425,10 +426,26 @@ export function parseNotePage(v: unknown, ctx: Ctx): { focal: P.PostFact | null;
   return { focal: commentFact(item.comment, ctx), ancestors };
 }
 
-/** A post's page (`/posts/by-id/<id>`): the post with its publication. */
+/**
+ * What in a post's body is the reader's furniture, not the post: subscribe and share boxes, buttons, a heading's
+ * anchor, a picture's expand button. They go with what they hold.
+ */
+const FURNITURE = /\b(subscription-widget[\w-]*|subscribe-widget|button-wrapper|captioned-button-wrap|header-anchor-parent|image-link-expand|share-dialog|paywall-jump|install-substack-app[\w-]*)\b/;
+
+/** A post's whole body (`body_html`, which only its page brings) as the Markdown of `article`. */
+export function postArticle(html: unknown, base: string | undefined): string | null {
+  if (typeof html !== 'string' || !html.trim()) return null;
+  const md = htmlToMarkdown(html, { ...(base ? { base } : {}), drop: (el) => FURNITURE.test(el.attrs.class ?? '') });
+  return md || null;
+}
+
+/** A post's page (`/posts/by-id/<id>`): the post with its publication, and its whole body as `article`. */
 export function parsePostPage(v: unknown, ctx: Ctx): P.PostFact | null {
   if (!isObj(v)) return null;
-  return postFact(v.post, ctx, v.publication ?? undefined);
+  const p = postFact(v.post, ctx, v.publication ?? undefined);
+  if (!p || !isObj(v.post)) return p;
+  const article = postArticle(v.post.body_html, p.url);
+  return article ? { ...p, article } : p;
 }
 
 /** What the composer's answer says it made: the note or comment (bare, or under `comment`). */

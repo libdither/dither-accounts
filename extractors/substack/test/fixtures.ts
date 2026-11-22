@@ -30,7 +30,7 @@ const PEOPLE = [ME, ANN, BEN, CAL];
 export const MY_PUB: Pub = { id: 5001, name: 'ACME Notes', subdomain: 'acmenotes', custom_domain: null, author_id: ME.id, logo_url: null };
 export const ANN_PUB: Pub = { id: 5002, name: 'Garden Weekly', subdomain: 'gardenweekly', custom_domain: 'garden.example.com', author_id: ANN.id, logo_url: null };
 
-export function post(o: { id: number; pub: Pub; by: User; title: string; subtitle?: string; preview?: string; at: number; audience?: string; likes?: number; comments?: number; restacks?: number; liked?: boolean; restacked?: boolean; cover?: string }) {
+export function post(o: { id: number; pub: Pub; by: User; title: string; subtitle?: string; preview?: string; at: number; audience?: string; likes?: number; comments?: number; restacks?: number; liked?: boolean; restacked?: boolean; cover?: string; body?: string }) {
   const slug = o.title.toLowerCase().replace(/[^a-z]+/g, '-');
   return {
     id: o.id,
@@ -51,7 +51,7 @@ export function post(o: { id: number; pub: Pub; by: User; title: string; subtitl
     restacks: o.restacks ?? 0,
     restacked: !!o.restacked,
     publishedBylines: [{ id: o.by.id, name: o.by.name, handle: o.by.handle, photo_url: o.by.photo_url, bio: o.by.bio }],
-    body_html: '<p>should be dropped by the hook</p>',
+    body_html: o.body ?? '<p>The whole post, kept only on its page.</p>',
     language: 'en',
   };
 }

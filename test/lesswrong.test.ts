@@ -137,6 +137,8 @@ test('signing in: a wrong password is forgotten and asked for again; the right o
   expect(calls('Me').at(-1)!.token).toBe(secret.token);
   expect(calls('Login').every((c) => c.token === null)).toBe(true);
   const accDir = m.store.account(id)!.dir;
+  // The state file is written by the first read of notifications, which the status says is done.
+  await until(() => lastStatus(id)?.layers?.find((l: any) => l.name === 'notifications')?.state === 'ok', 10_000, 'the first read');
   const detail = await (await fetch(`${m.url}/api/accounts/${id}`, { headers: { origin: m.url } })).json();
   const elsewhere = JSON.stringify(detail) + JSON.stringify(evs(id, 'status')) + readFileSync(join(accDir, 'adapter.log'), 'utf8') + readFileSync(join(accDir, 'state.json'), 'utf8');
   expect(elsewhere).not.toContain(secret.token);

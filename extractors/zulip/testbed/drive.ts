@@ -15,7 +15,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as P from '@dither-chat/protocol';
 import { canonicalReactionKey } from '@dither-chat/protocol';
-import { ZulipAdapter } from '../src/adapter.ts';
+import { MUTED, ZulipAdapter } from '../src/adapter.ts';
 import { msOf, RESOLVED } from '../src/ids.ts';
 import { plainText } from '../src/markdown.ts';
 import { type TestLink, testLink } from '../test/link.ts';
@@ -1919,7 +1919,7 @@ check('cmd.mute', async (t) => {
   let r = await t.cmd({ t: 'mute', target: { kind: 'conversation', nativeId: chan(c.id) }, muted: true });
   t.eq((await subOf(c.id))?.is_muted, true, 'the channel is muted on the server');
   await t.event('the channel, muted', (x) => isConv(chan(c.id))(x) && x.conversation.mute?.muted === true, from);
-  t.eq(r, { muted: true }, 'answers the NativeMute as it now stands (attention.ts)');
+  t.eq(r, MUTED, 'answers the NativeMute as it now stands (attention.ts): level none with muted');
   // In a muted channel, unmuting a topic is Zulip's "unmuted" policy.
   r = await t.cmd({ t: 'mute', target: { kind: 'conversation', nativeId: conv }, muted: false });
   t.eq(await policyOf(c.id, 'mute'), 2, 'a topic unmuted in a muted channel');
@@ -1933,7 +1933,7 @@ check('cmd.mute', async (t) => {
   r = await t.cmd({ t: 'mute', target: { kind: 'conversation', nativeId: conv }, muted: true });
   t.eq(await policyOf(c.id, 'mute'), 1, 'the topic is muted on the server');
   await t.event('the topic, muted', (x) => isConv(conv)(x) && x.conversation.mute?.muted === true, from);
-  t.eq(r, { muted: true }, 'answers the topic\'s NativeMute');
+  t.eq(r, MUTED, 'answers the topic\'s NativeMute');
   await t.cmd({ t: 'mute', target: { kind: 'conversation', nativeId: conv }, muted: false });
   t.eq(await policyOf(c.id, 'mute'), 0, 'and unmuted');
   await t.refuses({ t: 'mute', target: { kind: 'conversation', nativeId: dmId(quinn, ann) }, muted: true }, 'muting a direct conversation');

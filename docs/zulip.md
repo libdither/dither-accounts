@@ -44,6 +44,9 @@ secret as it now stands.
 shown is the latest spelling seen. A channel takes no messages of its own: open a topic, or write one to start a new
 topic (`createPost`). The empty topic ("general chat") is the topic whose name is empty.
 
+A muted channel or topic (a topic inherits its channel's mute unless it says otherwise) has the mute
+`{ level: 'none', muted: true }`, as a Discord mute does: a hub that reads only `level` still keeps it to the list.
+
 A person's handle is their real address where you may see it (`delivery_email`), else the API's `email`, unless that
 is Zulip's stand-in (`user8@chat.example.org`, where the organization keeps addresses from members): then none.
 

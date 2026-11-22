@@ -137,7 +137,7 @@ export function fakeZulip(opts: FakeOptions = {}) {
         for (const m of messages) if (m.stream_id === stream) topics.set(m.subject, Math.max(topics.get(m.subject) ?? 0, m.id));
         return ok({ topics: [...topics].map(([name, max_id]) => ({ name, max_id })).sort((a, b) => b.max_id - a.max_id) });
       }
-      if (path === '/user_topics' || path === '/typing') return ok();
+      if (path === '/user_topics' || path === '/typing' || path === '/users/me/subscriptions/properties') return ok();
       return json({ result: 'error', msg: `fake has no ${req.method} ${path}` }, 404);
     },
   });

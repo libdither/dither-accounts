@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import type * as P from '@dither-chat/protocol';
-import { ZulipAdapter } from '../src/adapter.ts';
+import { MUTED, ZulipAdapter } from '../src/adapter.ts';
 import { fakeZulip } from './fake-zulip.ts';
 import { testLink, type TestLink } from './link.ts';
 
@@ -140,6 +140,23 @@ test('commands: send to a topic and a DM, a reply quotes, react, mark read, typi
 
   await a.command({ t: 'followThread', id: '7', conversation: `${host}/s/3/t/plans`, follow: true });
   expect(z.calls.findLast((c) => c.path === '/user_topics')?.params).toEqual({ stream_id: 3, topic: 'plans', visibility_policy: 3 });
+});
+
+test('a mute says level none with muted, as Discord does, so a hub reading only the level keeps it to the list', async () => {
+  const { a, link, host } = await online();
+  expect(MUTED).toEqual({ level: 'none', muted: true });
+  const convs = new Map(of(link, 'conversation').map((e) => [e.conversation.nativeId, e.conversation]));
+  expect(convs.get(`${host}/s/4`)?.mute).toEqual(MUTED);
+  // A topic muted: its fact, and the answer, say it the same way.
+  let from = link.events.length;
+  expect(await a.command({ t: 'mute', id: '1', target: { kind: 'conversation', nativeId: `${host}/s/3/t/plans` }, muted: true })).toEqual(MUTED);
+  const topic = await link.next<Extract<P.AdapterEvent, { t: 'conversation' }>>((e) => e.t === 'conversation' && e.conversation.nativeId === `${host}/s/3/t/plans`, 5_000, from);
+  expect(topic.conversation.mute).toEqual(MUTED);
+  // A channel muted: the same.
+  from = link.events.length;
+  expect(await a.command({ t: 'mute', id: '2', target: { kind: 'conversation', nativeId: `${host}/s/3` }, muted: true })).toEqual(MUTED);
+  const chan = await link.next<Extract<P.AdapterEvent, { t: 'conversation' }>>((e) => e.t === 'conversation' && e.conversation.nativeId === `${host}/s/3`, 5_000, from);
+  expect(chan.conversation.mute).toEqual(MUTED);
 });
 
 test('history pages back by message id', async () => {

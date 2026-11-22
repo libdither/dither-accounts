@@ -44,6 +44,11 @@ const TYPING_TTL = 15_000;
 const PRESENCE_SWEEP_MS = num('DITHER_ZULIP_PRESENCE_SWEEP_MS', 15_000);
 /** Room for one second's messages after a moment, when history is asked for from a time. */
 const SAME_SECOND = 50;
+/**
+ * A muted channel or topic: muted outright, and set to notify on nothing too, as Discord sends a mute. A hub from before
+ * it read `muted` reads it by `level`, so it still keeps the place to the list.
+ */
+export const MUTED: P.NativeMute = Object.freeze({ level: 'none', muted: true });
 
 /** A presence as Zulip gives it (slim, or the older per-client form), as times in ms. */
 function presenceTimes(p: any): { active: number; idle: number } {
@@ -981,7 +986,7 @@ export class ZulipAdapter {
       ...(s.description ? { topic: plainText(s.description) } : {}),
       spaces: this.spacesOf(s),
       archived: !!s.is_archived,
-      mute: s.is_muted || s.in_home_view === false ? { muted: true } : {},
+      mute: s.is_muted || s.in_home_view === false ? MUTED : {},
       forum: { tags: [], sort: 'activity', layout: 'list' },
       ...(newest ? { lastMessageAt: newest.ts } : {}),
     };
@@ -1012,7 +1017,7 @@ export class ZulipAdapter {
       parentConversation: this.ids.channel(stream),
       // A resolved topic (Zulip's ✔) reads as archived: done, kept, still open to write in.
       archived: name.startsWith(RESOLVED),
-      mute: muted ? { muted: true } : policy === 3 || policy === 2 ? { level: 'all' } : {},
+      mute: muted ? MUTED : policy === 3 || policy === 2 ? { level: 'all' } : {},
       thread: { joined: policy === 3, ...(policy === 3 ? { notify: 'all' as const } : policy === 1 ? { muted: true } : {}) },
       ...(t?.lastTs ? { lastMessageAt: t.lastTs } : {}),
     };

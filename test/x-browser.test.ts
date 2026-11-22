@@ -471,23 +471,20 @@ it(
 );
 
 it(
-  'likes: your own Likes tab newest like first, page by page, through the Posts tab\'s factory; when each was liked from its sort index; video lengths; ads and gone posts left out',
+  "likes: your own Likes tab newest like first, page by page, through the Posts tab's factory; video lengths; no like time; ads and gone posts left out",
   async () => {
     const l = fake.feed.likes;
     const asked = () => fake.calls.filter((c) => c.op === 'graphql' && c.name === 'Likes');
     const one = await call('likes', { count: 50 });
     expect(one.items.map((i: any) => i.post.id)).toEqual([l.song.rest_id, l.talk.rest_id, l.pic.rest_id]);
-    expect(one.items.map((i: any) => i.likedAt)).toEqual([l.liked.song, l.liked.talk, l.liked.pic]);
+    expect(one.items.some((i: any) => 'likedAt' in i)).toBe(false);
     expect(one.items[0].post).toMatchObject({ author: CARA.id, text: 'new single out today', media: [{ kind: 'video', width: 1920, height: 1080, durationMs: 214_000 }] });
     expect(one.items[1].post.media).toEqual([expect.objectContaining({ kind: 'video', durationMs: 2_700_000 })]);
     expect(one.items[2].post.media[0].durationMs).toBeUndefined();
     expect(one.more).toBe(l.cursors.page2);
     expect(one.top).toBe(l.cursors.top);
     const two = await call('likes', { cursor: one.more });
-    expect(two.items.map((i: any) => [i.post.id, i.likedAt ?? null])).toEqual([
-      [l.old.rest_id, l.liked.old],
-      [l.odd.rest_id, null],
-    ]);
+    expect(two.items.map((i: any) => i.post.id)).toEqual([l.old.rest_id, l.odd.rest_id]);
     expect(await call('likes', { cursor: two.more })).toEqual({ items: [], more: null, top: l.cursors.top });
     // Asked for this account's own likes, the count given (at most 100), as the Likes tab asks.
     expect(asked().map((c) => [c.variables!.userId, c.variables!.count, c.variables!.cursor ?? null])).toEqual([
@@ -497,7 +494,7 @@ it(
     ]);
     expect(asked()[0]!.variables).toMatchObject({ includePromotedContent: false });
     for (const p of [CARA, DEV, EMI, FINN]) expect(evs(acc).some((e) => e.t === 'identity' && e.identity.nativeId === p.id)).toBe(true);
-    expect((await call('action', { action: 'diagnose' })).extractor.feed.dropped).toMatchObject({ 'likes.promoted': 1, 'likes.tombstone': 1, 'likes.no-like-time': 1 });
+    expect((await call('action', { action: 'diagnose' })).extractor.feed.dropped).toMatchObject({ 'likes.promoted': 1, 'likes.tombstone': 1 });
     await expect(call('likes', { cursor: '' })).rejects.toThrow('not an X cursor');
     expect(asked().length).toBe(3);
   },

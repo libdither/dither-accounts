@@ -871,27 +871,14 @@ export function parseHome(timeline: unknown, drops: Drops, testOrigin?: string |
 /** How many posts a likes read asks for by default, and at most. */
 export const LIKES_COUNT = 20;
 export const LIKES_COUNT_MAX = 100;
-/** X's snowflake epoch (ms): an id's top 41 bits are ms since it. */
-const SNOWFLAKE_EPOCH = 1288834974657n;
-/**
- * When a like was made, from its Likes-tab entry's sort index: X sorts the tab by the like's own snowflake id, so its
- * time is the id's. Null when the index is no snowflake, or names a time before the post was made (more than a minute
- * early: clocks) or after now (a day's slack): then X sorts by something else and the time is not given.
- */
-export function likedAtOf(sortIndex: string | undefined, postTs: number, now = Date.now()): number | null {
-  if (!sortIndex || !/^\d{15,20}$/.test(sortIndex)) return null;
-  const ms = Number((BigInt(sortIndex) >> 22n) + SNOWFLAKE_EPOCH);
-  return ms >= postTs - 60_000 && ms <= now + 86_400_000 ? ms : null;
-}
-
 /**
  * One page of the account's Likes tab (Likes, `user.result.timeline.timeline`), newest like first: each `tweet-<id>`
- * entry a liked post, with `likedAt` from its sort index (likedAtOf). Ads and anything that is not a post are left out
- * and counted (`likes.promoted`, `likes.item-…`), so are posts that are gone (`likes.tombstone`) and sort indexes
- * that give no time (`likes.no-like-time`). `more` is the Bottom cursor (null on a page of nothing but cursors: the
+ * entry a liked post. X gives no time for a like: the entries' sort indexes are the read's own time with a counter
+ * (docs/x.md "Your likes"), so no item has `likedAt`. Ads and anything that is not a post are left out and counted
+ * (`likes.promoted`, `likes.item-…`), so are posts that are gone (`likes.tombstone`). `more` is the Bottom cursor (null on a page of nothing but cursors: the
  * end), `top` the Top one.
  */
-export function parseLikes(timeline: unknown, drops: Drops, testOrigin?: string | null, now = Date.now()): { page: P.LikesPage; users: Map<string, XUser> } {
+export function parseLikes(timeline: unknown, drops: Drops, testOrigin?: string | null): { page: P.LikesPage; users: Map<string, XUser> } {
   const users = new Map<string, XUser>();
   const ctx: PostCtx = { users, drops, testOrigin };
   let t = timeline;
@@ -934,9 +921,7 @@ export function parseLikes(timeline: unknown, drops: Drops, testOrigin?: string 
       const post = parsePost(r, ctx);
       if (!post || ids.has(post.id)) continue;
       ids.add(post.id);
-      const likedAt = likedAtOf(e.sortIndex, post.ts, now);
-      if (likedAt === null) drops.add('likes', 'no-like-time');
-      items.push({ post, ...(likedAt !== null ? { likedAt } : {}) });
+      items.push({ post });
     }
   }
   const more = tl.entries.length ? tl.bottom : null;

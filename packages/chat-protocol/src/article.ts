@@ -5,7 +5,7 @@
  * Kept: paragraphs, headings, bold, italic, strikethrough, inline and block code, links, pictures (with their caption
  * under them), quotes, lists (nested), tables (GitHub's pipes), rules and line breaks. A video or frame becomes a link
  * to it. Dropped with everything inside: scripts, styles, forms and their buttons, svg, math markup a renderer would
- * need (its text alternative stays where there is one), and whatever `drop` matches (a site's subscribe boxes and
+ * need (its TeX stays where there is one: `$tex$` inline, display math between lines of `$$`; a plain `$` is escaped), and whatever `drop` matches (a site's subscribe boxes and
  * share buttons). Links and pictures are http(s) only; anything else keeps its words and loses the link.
  */
 
@@ -103,8 +103,8 @@ const httpUrl = (raw: string | undefined, base?: string): string | null => {
   }
 };
 
-/** Characters Markdown would read as markup, escaped in plain words. */
-const escText = (s: string) => s.replace(/([\\`*_[\]<>~|])/g, '\\$1');
+/** Characters Markdown would read as markup, escaped in plain words; `$` too, since math is `$tex$` here. */
+const escText = (s: string) => s.replace(/([\\`*_[\]<>~|$])/g, '\\$1');
 /** A line that would start a heading, quote, list or rule otherwise. */
 const escLineStart = (s: string) => s.replace(/^(\s*)([#>+-]|\d+[.)])(?=\s|$)/gm, '$1\\$2').replace(/^(\s*)(=+|-{3,})\s*$/gm, '$1\\$2');
 const urlPart = (u: string) => u.replace(/[()<> ]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'));
@@ -113,6 +113,28 @@ const urlPart = (u: string) => u.replace(/[()<> ]/g, (c) => '%' + c.charCodeAt(0
 function imgSrc(el: El, base?: string): string | null {
   const a = el.attrs;
   return httpUrl(a.src, base) ?? httpUrl(a['data-src'], base) ?? httpUrl((a.srcset ?? a['data-srcset'] ?? '').split(',')[0]?.trim().split(/\s+/)[0], base);
+}
+
+/** The TeX of a math element: MathML's alttext, or the aria-label of MathJax's rendered span. */
+function texOf(n: El): string | undefined {
+  const own = n.tag === 'math' ? n.attrs.alttext : /\bmjx-math\b/.test(n.attrs.class ?? '') ? n.attrs['aria-label'] : undefined;
+  return own?.replace(/\s+/g, ' ').trim() || undefined;
+}
+
+/** Display math (MathJax's MJXc-display or mjpage__block, MathML's display="block"): the TeX of the math inside. */
+function displayTex(n: El): string | undefined {
+  const block = (n.tag === 'math' && n.attrs.display === 'block') || /\b(MJXc-display|mjpage__block)\b/.test(n.attrs.class ?? '');
+  if (!block) return undefined;
+  const find = (e: El): string | undefined => {
+    const t = texOf(e);
+    if (t) return t;
+    for (const k of e.kids) {
+      const f = typeof k === 'string' ? undefined : find(k);
+      if (f) return f;
+    }
+    return undefined;
+  };
+  return find(n);
 }
 
 function textOf(n: Node): string {
@@ -133,9 +155,9 @@ export function htmlToMarkdown(html: string | null | undefined, o: ArticleOpts =
         continue;
       }
       // Math: its TeX, from MathML's alttext or MathJax's rendered span (aria-label), instead of its glyphs.
-      const tex = n.tag === 'math' ? n.attrs.alttext : /\bmjx-math\b/.test(n.attrs.class ?? '') ? n.attrs['aria-label'] : undefined;
+      const tex = texOf(n);
       if (tex) {
-        out += `$${tex.replace(/\s+/g, ' ').trim()}$`;
+        out += `$${tex}$`;
         continue;
       }
       if (!keep(n) || /\bMJX_Assistive_MathML\b/.test(n.attrs.class ?? '')) continue;
@@ -206,6 +228,13 @@ export function htmlToMarkdown(html: string | null | undefined, o: ArticleOpts =
     };
     for (const n of nodes) {
       if (typeof n === 'string' || !BLOCK.has(n.tag)) {
+        const display = typeof n === 'string' ? undefined : displayTex(n);
+        if (display) {
+          // Display math is a block of its own, between lines of $$.
+          flush();
+          out.push(`$$\n${display}\n$$`);
+          continue;
+        }
         if (typeof n !== 'string' && n.tag === 'img' && keep(n)) {
           // A picture on its own is a block of its own.
           flush();
@@ -309,13 +338,17 @@ export function htmlToMarkdown(html: string | null | undefined, o: ArticleOpts =
 }
 
 /** Plain words of an article's HTML, for a card's preview: the first paragraphs, up to `max` characters. */
-export function htmlPreview(html: string | null | undefined, max = 600): string {
+export function htmlPreview(html: string | null | undefined, max = 600, o: Pick<ArticleOpts, 'drop'> = {}): string {
   if (!html) return '';
-  const md = htmlToMarkdown(html, { max: max * 4 });
+  const md = htmlToMarkdown(html, { max: max * 4, drop: o.drop });
   const plain = md
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/^#+\s|^>\s?|[*_~`]|\\(?=.)/gm, '')
+    // Pictures and links whose words hold escaped brackets ([\[1\]](…), a footnote mark) too.
+    .replace(/!\[(?:\\.|[^\]\\])*\]\([^)]*\)/g, '')
+    .replace(/\[((?:\\.|[^\]\\])*)\]\([^)]*\)/g, '$1')
+    .replace(/^#+\s|^>\s?/gm, '')
+    // Emphasis marks go; an escaped character is the character itself (2 \* 3 is 2 * 3); math ($x_1$, a $$ block)
+    // keeps its TeX whole.
+    .replace(/\$\$\n[\s\S]*?\n\$\$|\$[^$\n]+\$|\\(.)|[*_~`]/g, (m, esc?: string) => (m.startsWith('$') ? m : (esc ?? '')))
     .replace(/\n{2,}/g, '\n\n')
     .trim();
   if (plain.length <= max) return plain;

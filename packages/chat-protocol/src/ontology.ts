@@ -15,7 +15,7 @@
  * (persons, folders, notification rules, triage) are never written back.
  */
 
-export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' | 'gmessages' | 'messenger' | 'instagram' | 'x' | 'reddit' | 'email' | 'calendar' | 't3' | 'substack' | 'mastodon' | 'lemmy' | 'bluesky' | 'zulip';
+export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' | 'gmessages' | 'messenger' | 'instagram' | 'x' | 'reddit' | 'email' | 'calendar' | 't3' | 'substack' | 'mastodon' | 'lemmy' | 'bluesky' | 'zulip' | 'lesswrong';
 /**
  * The chat networks this hub offers. telegram, gmessages (Google Messages: SMS and RCS), messenger, instagram and x
  * (X's direct messages) run only in dither-accounts, and so does reddit (a Reddit account's front page, inbox and
@@ -30,8 +30,10 @@ export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' 
  * docs/mastodon.md and docs/lemmy.md): no direct messages.
  * `bluesky` brings posts only (a feed of notifications, home timelines, threads; dither-accounts' docs/bluesky.md): no
  * direct messages.
+ * `lesswrong` is LessWrong (and the other ForumMagnum forums): posts and comments, notifications as a feed
+ * (dither-accounts' docs/lesswrong.md), no direct messages.
  */
-export const NETWORKS: readonly Network[] = ['discord', 'signal', 'matrix', 'whatsapp', 'telegram', 'gmessages', 'messenger', 'instagram', 'x', 'reddit', 'calendar', 't3', 'substack', 'mastodon', 'lemmy', 'bluesky', 'zulip'];
+export const NETWORKS: readonly Network[] = ['discord', 'signal', 'matrix', 'whatsapp', 'telegram', 'gmessages', 'messenger', 'instagram', 'x', 'reddit', 'calendar', 't3', 'substack', 'mastodon', 'lemmy', 'bluesky', 'zulip', 'lesswrong'];
 
 /** Where a conversation sits in the social structure, independent of network. */
 export type Shape =
@@ -191,6 +193,8 @@ export const REACTION_RULES: Record<Network, ReactionRules> = {
   bluesky: { exclusive: true, freeText: false, maxDistinct: 0 },
   // Zulip: any number of emoji on a message, each person once per emoji; Unicode, the organization's own and :zulip:.
   zulip: { exclusive: false, freeText: false },
+  // Posts and comments only: a karma vote is a postAct, not a reaction.
+  lesswrong: { exclusive: true, freeText: false, maxDistinct: 0 },
 };
 
 export function discordEmojiUrl(id: string, animated?: boolean): string {
@@ -268,6 +272,8 @@ export const ATTACHMENT_LIMITS: Record<Network, { bytes: number; files: number }
   bluesky: { bytes: 0, files: 0 },
   // Zulip's default upload limit (each organization may set its own: max_file_upload_size_mib); files go as links.
   zulip: { bytes: 25 * 1024 * 1024, files: 10 },
+  // No messages to send files with.
+  lesswrong: { bytes: 0, files: 0 },
 };
 
 /**
@@ -305,4 +311,5 @@ export const NETWORK_META: Record<Network, { name: string; color: string; spaceN
   substack: { name: 'Substack', color: '#FF6719', spaceNoun: 'publication', sectionNoun: 'section' },
   bluesky: { name: 'Bluesky', color: '#0085FF', spaceNoun: 'feed', sectionNoun: 'section' },
   zulip: { name: 'Zulip', color: '#6492FE', spaceNoun: 'organization', sectionNoun: 'folder' },
+  lesswrong: { name: 'LessWrong', color: '#5F9B65', spaceNoun: 'forum', sectionNoun: 'section' },
 };

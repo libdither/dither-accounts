@@ -584,9 +584,9 @@ export const snowflakeAt = (ms: number, low = 0) => String(((BigInt(ms) - 128883
 /** The whole GraphQL answer of Likes: the timeline under the user, as the Posts tab's. */
 export const likesResponse = (timeline: any) => ({ data: { user: { result: { __typename: 'User', timeline: { timeline } } } } });
 /**
- * The account's Likes tab: two pages and an empty last one. Each entry's sort index is the like's snowflake (liked
- * `likedAt` ago), the order X keeps: a short video liked an hour ago, a long one, a picture, an ad, a post that is gone,
- * then on the second page an old post liked yesterday, and one whose sort index is no snowflake.
+ * The account's Likes tab: two pages and an empty last one, newest like first: a short video, a long one, a picture,
+ * an ad, a post that is gone, then on the second page an old post and a newer one liked before it. The sort indexes
+ * are as X gives them: a snowflake of the read's own time, counting down (they say nothing about the likes).
  */
 export function likesWorld(now: number) {
   const H = 3600_000;
@@ -595,13 +595,13 @@ export function likesWorld(now: number) {
   const pic = tweet({ id: '1856000000000003003', by: EMI, text: 'tomatoes', ts: now - 3 * H, media: [{ url: 'https://t.co/t0m', type: 'photo', img: 'https://pbs.twimg.com/media/Tom.jpg', w: 800, h: 600 }] });
   const ad = tweet({ id: '1856000000000003004', by: SHOP, text: 'Seeds, half price', ts: now - 6 * H });
   const old = tweet({ id: '1856000000000003005', by: FINN, layout: 'old', text: 'a song from 2019', ts: now - 400 * 24 * H });
-  const odd = tweet({ id: '1856000000000003006', by: CARA, text: 'sorted by something else', ts: now - 60 * H });
+  const odd = tweet({ id: '1856000000000003006', by: CARA, text: 'liked before the old one', ts: now - 60 * H });
   const c = { top: 'DAAHlikes-top', page2: 'DAAHlikes-2', page3: 'DAAHlikes-3' };
-  const liked = { song: now - 1 * H, talk: now - 2 * H, pic: now - 2.5 * H, old: now - 24 * H };
+  const si = (n: number) => String(BigInt(snowflakeAt(now, 4000)) - BigInt(n));
   const pages = [
-    homeTimeline([cursorEntry('Top', c.top, 1), homeTweetEntry(song, snowflakeAt(liked.song, 7)), homeTweetEntry(talk, snowflakeAt(liked.talk)), homeTweetEntry(pic, snowflakeAt(liked.pic)), promotedHomeEntry(ad, snowflakeAt(liked.pic - 1000)), tombstoneHomeEntry(snowflakeAt(liked.pic - 2000)), cursorEntry('Bottom', c.page2, 2)]),
-    homeTimeline([cursorEntry('Top', c.top, 1), homeTweetEntry(old, snowflakeAt(liked.old)), homeTweetEntry(odd, '42'), cursorEntry('Bottom', c.page3, 2)]),
+    homeTimeline([cursorEntry('Top', c.top, 1), homeTweetEntry(song, si(1)), homeTweetEntry(talk, si(2)), homeTweetEntry(pic, si(3)), promotedHomeEntry(ad, si(4)), tombstoneHomeEntry(si(5)), cursorEntry('Bottom', c.page2, 2)]),
+    homeTimeline([cursorEntry('Top', c.top, 1), homeTweetEntry(old, si(6)), homeTweetEntry(odd, si(7)), cursorEntry('Bottom', c.page3, 2)]),
     homeTimeline([cursorEntry('Top', c.top, 1), cursorEntry('Bottom', c.page3, 2)]),
   ];
-  return { song, talk, pic, ad, old, odd, liked, pages, cursors: c };
+  return { song, talk, pic, ad, old, odd, pages, cursors: c };
 }

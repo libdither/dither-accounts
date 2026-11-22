@@ -22,6 +22,7 @@ import { markerKey, stampExtension } from '@dither-accounts/browser/markers';
 import type { Subprocess } from 'bun';
 import {
   claimDisplay,
+  displayIsOurs,
   displayTaken,
   MEMORY_DISABLED_FEATURES,
   mergeFeatureFlags,
@@ -185,8 +186,8 @@ export class Sandbox {
     // 1. Virtual display.
     // -dpi 96: Xvfb defaults to 100, and Chromium scales itself to match, which makes its window
     // wider and taller than the display and the page cut off at the edges.
-    this.spawn('Xvfb', [bins.xvfb, d, '-screen', '0', `${width}x${height}x24`, '-nolisten', 'tcp', '-nocursor', '-dpi', '96']);
-    await this.waitForDisplay(d, 8000);
+    const xvfb = this.spawn('Xvfb', [bins.xvfb, d, '-screen', '0', `${width}x${height}x24`, '-nolisten', 'tcp', '-nocursor', '-dpi', '96']);
+    await this.waitForDisplay(d, xvfb, 8000);
 
     // 2. The browser (ordinary window, persistent profile, our extension).
     const flags = [
@@ -223,12 +224,12 @@ export class Sandbox {
     return bins;
   }
 
-  /** Poll for the X socket so Chromium/x11vnc never race the display. */
-  private async waitForDisplay(display: string, timeoutMs: number) {
-    const sock = `/tmp/.X11-unix/X${display.slice(1)}`;
+  /** Poll for our Xvfb's display (its socket, its lock naming it) so Chromium/x11vnc never race the display. */
+  private async waitForDisplay(display: string, xvfb: Subprocess, timeoutMs: number) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      if (existsSync(sock)) return;
+      if (xvfb.exitCode !== null) throw new Error(`Xvfb on ${display} exited (${xvfb.exitCode}); is the display taken?`);
+      if (displayIsOurs(Number(display.slice(1)), xvfb.pid)) return;
       await Bun.sleep(100);
     }
     throw new Error(`Xvfb display ${display} did not come up within ${timeoutMs}ms`);

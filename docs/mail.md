@@ -284,7 +284,7 @@ value capped, a bare In-Reply-To; on mail.list, mail.search, mail.changes' added
 there (canSend false, reading goes on) and comes later (canSend true by itself), a bad password and a new one, the server down and back, a restart keeping state and
 announcing what came meanwhile, a pinned certificate changed and refused (no LOGIN reaches it) and renewed, a
 fingerprint in the config, a self-signed server under `verify`, the Proton Bridge preset (its ports pointed at the test
-Dovecot) and Bridge not running. Ports 18550–18560. `KEEP_IMAP_TEST=1` keeps the temp directories.
+Dovecot) and Bridge not running. The servers go on free ports picked at start, so runs side by side do not meet. `KEEP_IMAP_TEST=1` keeps the temp directories.
 
 ## Checklist (what only a real mailbox can show)
 

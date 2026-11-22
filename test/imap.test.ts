@@ -3,7 +3,7 @@
  * and an app on its wire: every mail op, IDLE events, UIDVALIDITY → 410, a bad password, the server going away and
  * coming back, a restart that keeps its state, and a certificate change refused under pinning.
  *
- * Ports 18550 (IMAP, STARTTLS), 18551 (IMAPS), 18552 (SMTP), 18560 (a test's own SMTP server: one that starts late,
+ * Free ports picked at start (servers.ts freePorts): IMAP (STARTTLS), IMAPS, SMTP, and a test's own SMTP server (one that starts late,
  * one on the renewed certificate). Dovecot comes from nix (or DOVECOT_BIN).
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
@@ -11,7 +11,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { Harness, simpleParser, until } from '../extractors/imap/test/harness.ts';
-import { Dovecot, rfc822, SmtpSink, type User } from '../extractors/imap/test/servers.ts';
+import { Dovecot, freePorts, rfc822, SmtpSink, type User } from '../extractors/imap/test/servers.ts';
 import { dovecot, why } from './needs.ts';
 
 const ok = why('Dovecot (from nixpkgs, or DOVECOT_BIN)', dovecot);
@@ -19,10 +19,7 @@ const it = test.skipIf(!ok);
 
 const alice: User = { email: 'alice@example.test', password: 'alice-pw-1' };
 const bob: User = { email: 'bob@example.test', password: 'bob-pw-2' };
-const IMAP = 18550;
-const IMAPS = 18551;
-const SMTP = 18552;
-const LATE_SMTP = 18560;
+const [IMAP, IMAPS, SMTP, LATE_SMTP] = (await freePorts(4)) as [number, number, number, number];
 
 let dv: Dovecot;
 let sink: SmtpSink;
@@ -44,6 +41,12 @@ const config = (over: Record<string, unknown> = {}) => ({
   sentCopy: 'detect',
   ...over,
 });
+
+/** A QRESYNC state's parts (`q.<UIDVALIDITY>.<HIGHESTMODSEQ>.<UIDNEXT>`). */
+const q = (state: string) => {
+  const [, , modseq, uidNext] = state.split('.');
+  return { modseq: BigInt(modseq!), uidNext: Number(uidNext) };
+};
 
 /** Another mail program's view of alice's mailbox. */
 async function other<T>(f: (c: Awaited<ReturnType<Dovecot['client']>>) => Promise<T>, user = alice): Promise<T> {
@@ -316,14 +319,18 @@ describe('keeping up', () => {
     expect(arrived.account).toBe(acc);
     expect(arrived.message).toMatchObject({ mailboxId: mbox.inbox, messageId: '<live@example.test>', flags: { seen: false }, inReplyTo: '<report@example.test>', references: ['<report@example.test>'] });
     expect(arrived.message.bulk).toEqual({ listId: null, unsubscribe: null, precedence: 'bulk', autoSubmitted: null });
-    const changed = await h.event((e) => e.t === 'mail.changed' && e.mailboxId === mbox.inbox, 15_000, from);
+    // The mail.changed that came of this arrival: its state counts it. One the last test's changes started can still
+    // land after `from`, with an older state.
+    const uid = Number(arrived.message.id.split('.').pop());
+    const changed = await h.event((e) => e.t === 'mail.changed' && e.mailboxId === mbox.inbox && q(e.state).uidNext > uid, 15_000, from);
     expect(changed.state).toMatch(/^q\./);
     const from2 = h.events.length;
     await other(async (c) => {
       await c.mailboxOpen('INBOX');
-      await c.messageFlagsAdd(arrived.message.id.split('.').pop(), ['\\Seen'], { uid: true });
+      await c.messageFlagsAdd(String(uid), ['\\Seen'], { uid: true });
     });
-    const again = await h.event((e) => e.t === 'mail.changed' && e.mailboxId === mbox.inbox, 15_000, from2);
+    // And the one that came of the flag: a later MODSEQ (another one of the arrival's can land after `from2`).
+    const again = await h.event((e) => e.t === 'mail.changed' && e.mailboxId === mbox.inbox && q(e.state).modseq > q(changed.state).modseq, 15_000, from2);
     const ch = await h.call(acc, 'mail.changes', { mailboxId: mbox.inbox, state: changed.state });
     expect(ch.changed.map((x: any) => [x.id, x.flags.seen])).toEqual([[arrived.message.id, true]]);
     expect(again.state).not.toBe(changed.state);
@@ -488,7 +495,11 @@ describe('writing', () => {
 describe('when things go wrong', () => {
   it('a bad password: attention, the signed-in layer failed, calls answer 401, nothing retried', async () => {
     const bad = await h.add(config(), 'wrong-password', 'Bad');
-    await until(async () => (await h.detail(bad)).status?.status === 'attention', 20_000, 'attention');
+    // IMAP's refusal: SMTP signs in on its own and can bring attention first, while IMAP's layers still wait.
+    await until(async () => {
+      const d = await h.detail(bad);
+      return d.status?.status === 'attention' && d.layers?.find((l: any) => l.name === 'signed in')?.state === 'failed';
+    }, 20_000, 'IMAP refused the password');
     const d = await h.detail(bad);
     expect(d.status.attention).toMatchObject({ kind: 'login' });
     expect(d.status.attention.message).toContain('refused the password');

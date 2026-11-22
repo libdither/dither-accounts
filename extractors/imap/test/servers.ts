@@ -157,6 +157,8 @@ ssl_server_key_file = ${this.cert.key}
 auth_allow_cleartext = no
 auth_failure_delay = 0
 mail_driver = maildir
+# A throwaway server: no fsyncs, so a busy disk (a ZFS sync can hold one for seconds) cannot stall a test's calls.
+mail_fsync = never
 mail_path = ${this.dir}/mail/%{user}
 mail_home = ${this.dir}/mail/%{user}
 mail_uid = ${me.username}
@@ -354,6 +356,23 @@ function tail(f: string) {
   } catch {
     return '';
   }
+}
+
+/**
+ * Ports nothing listens on now, all different, picked by the system (port 0): a test's servers go on these, never on
+ * fixed numbers, so two runs at once (two worktrees, two agents) do not answer each other's clients.
+ */
+export async function freePorts(n: number): Promise<number[]> {
+  const servers = await Promise.all(
+    Array.from({ length: n }, () => new Promise<net.Server>((res, rej) => {
+      const s = net.createServer();
+      s.once('error', rej);
+      s.listen(0, '127.0.0.1', () => res(s));
+    })),
+  );
+  const ports = servers.map((s) => (s.address() as net.AddressInfo).port);
+  await Promise.all(servers.map((s) => new Promise((res) => s.close(res))));
+  return ports;
 }
 
 export async function waitPort(port: number, open: boolean, ms: number, why: () => string) {

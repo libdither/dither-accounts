@@ -4,22 +4,20 @@
  * The account uses the Proton Bridge preset with its ports pointed at this Dovecot, so the Bridge layer, the pinned
  * certificate and "the server keeps the Sent copy" are covered too; never the real Bridge's ports.
  *
- * Ports 18553 (IMAP, STARTTLS), 18554 (SMTP); 18559 has nothing on it (Bridge not running).
+ * Free ports picked at start (servers.ts freePorts): IMAP (STARTTLS), SMTP, and one with nothing on it (Bridge not running).
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { Harness, until } from '../extractors/imap/test/harness.ts';
-import { Dovecot, makeCaSigned, rfc822, SmtpSink, type User } from '../extractors/imap/test/servers.ts';
+import { Dovecot, freePorts, makeCaSigned, rfc822, SmtpSink, type User } from '../extractors/imap/test/servers.ts';
 import { dovecot, why } from './needs.ts';
 
 const ok = why('Dovecot (from nixpkgs, or DOVECOT_BIN)', dovecot);
 const it = test.skipIf(!ok);
 
 const alice: User = { email: 'alice@example.test', password: 'alice-pw-1' };
-const IMAP = 18553;
-const SMTP = 18554;
-const NOTHING = 18559;
+const [IMAP, SMTP, NOTHING] = (await freePorts(3)) as [number, number, number];
 
 let dv: Dovecot;
 let sink: SmtpSink;

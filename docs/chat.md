@@ -369,7 +369,9 @@ mapping; `hook.js` whitelists it from the gateway's raw object or the client's o
   flattened into the body and attachments.
 - Roles: `mention_roles`, and the roles a message names with their names and colours from the client's role store.
   Your own roles in each server come from the client's member store, for you only (the snapshot's `selfRoles`, a
-  joined server's `self_roles`, GUILD_MEMBER_UPDATE of you), and a ping to one of them is `mentionsSelf`.
+  joined server's `self_roles`, GUILD_MEMBER_UPDATE of you), and a ping to one of them is `mentionsSelf`, with
+  `mentionsGroup` when it does not name you too (the hub weighs it below your name, and a server's "Suppress all role
+  @mentions" keeps it from counting as notified).
 - Attachments' alt text, spoiler and explicit flags, a voice message's length and waveform; embeds' colour, footer,
   timestamp, author icon and video (Discord's proxies preferred; a YouTube, Twitch or Vimeo player page is passed as
   a player, loaded by the app only when clicked).

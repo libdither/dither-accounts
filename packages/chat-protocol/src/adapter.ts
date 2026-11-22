@@ -246,9 +246,13 @@ export interface NativeMute {
   until?: number;
   /** Muted outright (Discord's Mute), rather than set to notify on nothing. */
   muted?: boolean;
-  /** A space's: @everyone and @here do not notify there (Discord's "Suppress @everyone and @here"). */
+  /**
+   * @everyone and @here do not notify there (Discord's "Suppress @everyone and @here" on a server; Zulip's wildcard
+   * mentions setting on a channel or topic). The most specific place that says either way decides: a topic set false
+   * notifies them in a channel set true.
+   */
   suppressEveryone?: boolean;
-  /** A space's: role mentions do not notify there. */
+  /** A space's: role mentions do not notify there (Discord's "Suppress all role @mentions"): a mentionsGroup one does not. */
   suppressRoles?: boolean;
 }
 
@@ -312,6 +316,12 @@ export interface MessageFact {
   mentionsSelf?: boolean;
   /** With mentionsSelf: the mention was @everyone or @here, not you by name. It notifies, but is not addressed to you. */
   mentionsAll?: boolean;
+  /**
+   * With mentionsSelf, not mentionsAll: a group you are in was mentioned (a Zulip user group, a Discord role you hold),
+   * not you by name. Addressed to you less than your name, more than @everyone. An older adapter leaves it out: the
+   * mention then counts as one by name.
+   */
+  mentionsGroup?: boolean;
   attachments?: AttachmentFact[];
   /** Full reaction snapshot (backfill). Live changes use the `reaction` event. */
   reactions?: ReactionFact[];
@@ -521,9 +531,12 @@ export type AdapterEvent =
   | { t: 'reactionsCleared'; conversation: string; message: string; key?: string }
   /**
    * Read state as the network reports it. Counts override the hub's own tally when given. `manual`: you marked it
-   * unread on the network, so the read point moves back to upToTs (otherwise it only moves forward).
+   * unread on the network, so the read point moves back to upToTs (otherwise it only moves forward). `mentions`
+   * counts every unread mention of you, @everyone-style ones included; `wildcards` says how many of them were
+   * @everyone, @all, @here or @topic rather than you or a group you are in. Without it the hub counts them from the
+   * messages it has.
    */
-  | { t: 'read'; conversation: string; upToTs: number; unread?: number; mentions?: number; manual?: boolean }
+  | { t: 'read'; conversation: string; upToTs: number; unread?: number; mentions?: number; wildcards?: number; manual?: boolean }
   /**
    * History the hub keeps (docs/history.md). `by` is who did it and `ts` when, where the network says; else the hub
    * uses the time it heard.

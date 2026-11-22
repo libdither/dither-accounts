@@ -48,6 +48,12 @@ export interface Parsed {
   replyTo?: string;
   /** People named with a mention (silent ones included), by native id. */
   mentioned: string[];
+  /**
+   * Who and which user groups it pings: mentions that are not silent (`@**…**`, `@*…*`, not `@_…`) and not in a
+   * quote, by native id.
+   * Zulip's `mentioned` flag says you were pinged by name or through a group you are in; these say which.
+   */
+  pinged: { people: string[]; groups: string[] };
 }
 
 const UPLOAD = /^\/user_uploads\/\S+$/;
@@ -127,10 +133,13 @@ function outsideCode(s: string, f: (t: string) => string): string {
 
 const WILD_ALL = new Set(['all', 'everyone', 'channel', 'stream']);
 
-function inline(s: string, ctx: MdCtx, out: Parsed): string {
+/** A mention at `at` in `t` is in a quote: a quote block's text, or a `>` line. Zulip does not ping from a quote. */
+const inQuote = (quoted: boolean, t: string, at: number) => quoted || /^ {0,3}>/.test(t.slice(t.lastIndexOf('\n', at - 1) + 1));
+
+function inline(s: string, ctx: MdCtx, out: Parsed, quoted = false): string {
   return outsideCode(s, (t) => {
     // Person and wildcard mentions: @**Name|id**, @**Name**, silent @_**…**.
-    t = t.replace(/@(_?)\*\*([^*\n]+?)\*\*/g, (whole, _silent: string, inner: string) => {
+    t = t.replace(/@(_?)\*\*([^*\n]+?)\*\*/g, (whole, _silent: string, inner: string, at: number) => {
       const m = inner.match(/^(.*)\|(\d+)$/);
       if (!m && WILD_ALL.has(inner)) return '@everyone';
       if (!m && inner === 'topic') return '@here';
@@ -138,11 +147,13 @@ function inline(s: string, ctx: MdCtx, out: Parsed): string {
       if (!u) return m ? `@${m[1]}` : whole;
       const id = ctx.ids.user(u.user_id);
       if (!out.mentioned.includes(id)) out.mentioned.push(id);
+      if (!_silent && !inQuote(quoted, t, at) && !out.pinged.people.includes(id)) out.pinged.people.push(id);
       return `<@${id}>`;
     });
     // User groups: @*name*, silent @_*name*: the group's role mention where the organization has it.
-    t = t.replace(/@_?\*([^*\n]+?)\*/g, (_, name: string) => {
+    t = t.replace(/@(_?)\*([^*\n]+?)\*/g, (_, silent: string, name: string, at: number) => {
       const id = ctx.groupByName?.(name);
+      if (id && !silent && !inQuote(quoted, t, at) && !out.pinged.groups.includes(id)) out.pinged.groups.push(id);
       return id ? `<@&${id}>` : `@${name}`;
     });
     // Channel and topic links.
@@ -176,22 +187,22 @@ function inline(s: string, ctx: MdCtx, out: Parsed): string {
   });
 }
 
-function convert(src: string, ctx: MdCtx, out: Parsed): string {
+function convert(src: string, ctx: MdCtx, out: Parsed, quoted = false): string {
   const parts: string[] = [];
   for (const b of blocks(src)) {
     if (!b.fence) {
-      parts.push(inline(b.text, ctx, out));
+      parts.push(inline(b.text, ctx, out, quoted));
       continue;
     }
     const info = b.fence.info;
     const kind = info.split(/\s+/)[0].toLowerCase();
     if (kind === 'quote') {
-      const inner = convert(b.text, ctx, out);
+      const inner = convert(b.text, ctx, out, true);
       parts.push(inner.split('\n').map((l) => (l ? `> ${l}` : '>')).join('\n'));
     } else if (kind === 'spoiler') {
       const title = info.slice('spoiler'.length).trim();
-      const inner = convert(b.text, ctx, out).trim();
-      parts.push(`${title ? `**${inline(title, ctx, out)}** ` : ''}||${inner}||`);
+      const inner = convert(b.text, ctx, out, quoted).trim();
+      parts.push(`${title ? `**${inline(title, ctx, out, quoted)}** ` : ''}||${inner}||`);
     } else parts.push(`\`\`\`${info}\n${b.text}\n\`\`\``);
   }
   return parts.join('\n');
@@ -202,7 +213,7 @@ function convert(src: string, ctx: MdCtx, out: Parsed): string {
 export const REPLY = /^@_?\*\*[^*\n]+?\*\* \[[^\]\n]+\]\(([^)\s]+)\)(?: in #\*\*[^\n]+?\*\*| to [^\n]+?)?:\n(`{3,}|~{3,})quote\n[\s\S]*?\n\2[ \t]*(?:\n|$)/;
 
 export function fromZulip(content: string, ctx: MdCtx, opts: { keepReplyQuote?: boolean } = {}): Parsed {
-  const out: Parsed = { body: '', attachments: [], mentioned: [] };
+  const out: Parsed = { body: '', attachments: [], mentioned: [], pinged: { people: [], groups: [] } };
   let src = content.replace(/\r\n/g, '\n');
   const r = src.match(REPLY);
   if (r && !opts.keepReplyQuote) {

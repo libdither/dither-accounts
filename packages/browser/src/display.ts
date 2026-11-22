@@ -22,8 +22,49 @@ export function portInUse(port: number, host: string): Promise<boolean> {
   });
 }
 
-export function displayTaken(n: number): boolean {
-  return existsSync(`/tmp/.X11-unix/X${n}`) || existsSync(`/tmp/.X${n}-lock`);
+/**
+ * Display n is in use: an X server's lock names a live process, or there is its socket without a lock. A lock whose
+ * process is gone (an Xvfb killed with SIGKILL, a crash, a test run stopped midway) is free: the next Xvfb on n takes
+ * over both it and the socket it left, as X servers do (2026-11-22: 44 such locks had taken every display in the
+ * ranges, so no sandbox could start). A lock that can't be read, or doesn't hold a pid, still counts as taken.
+ */
+export function displayTaken(n: number, root = '/tmp'): boolean {
+  const lock = `${root}/.X${n}-lock`;
+  if (existsSync(lock)) {
+    const pid = lockOwner(lock);
+    return pid === null || alive(pid);
+  }
+  return existsSync(`${root}/.X11-unix/X${n}`);
+}
+
+/** The pid an X server's lock names, or null when it can't be read or holds none. */
+export function lockOwner(path: string): number | null {
+  try {
+    const pid = Number(readFileSync(path, 'utf8').trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+export function parentOf(pid: number): number | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Display n is up, and it is our X server's: its socket is there and its lock names `xserver` (or a process it
+ * started). A socket alone is not enough: a dead server's socket stays until the next one takes the display over, and
+ * a sandbox starting at the same moment may have won it. A lock that can't be read is taken as ours.
+ */
+export function displayIsOurs(n: number, xserver: number | undefined, root = '/tmp'): boolean {
+  if (!existsSync(`${root}/.X11-unix/X${n}`)) return false;
+  const owner = lockOwner(`${root}/.X${n}-lock`);
+  return owner === null || owner === xserver || (xserver !== undefined && parentOf(owner) === xserver);
 }
 
 /** Where a sandbox's display comes from when the caller names no range, in order. */

@@ -1,9 +1,9 @@
 /** pickFreeDisplay: a display that is taken, claimed, or that the caller skips, is passed over; a full range throws. */
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CLAIM_MS, claimDisplay, displayTaken, pickFreeDisplay } from '../src/display.ts';
+import { CLAIM_MS, claimDisplay, displayIsOurs, displayTaken, pickFreeDisplay } from '../src/display.ts';
 
 // Claims go to a directory of this file's own, not the machine's, so a test never holds a display a live sandbox wants.
 process.env.DITHER_DISPLAY_CLAIMS = mkdtempSync(join(tmpdir(), 'display-claims-file-'));
@@ -27,6 +27,46 @@ test('past :80–:89 the default goes on at :100, never into Discord\'s :90–:9
   const next = await pickFreeDisplay(undefined, skip);
   expect(next.display).toBeGreaterThanOrEqual(100);
   expect(next.display).toBeLessThanOrEqual(159);
+});
+
+describe("an X server's leftovers: a dead server's display is free again", () => {
+  const root = mkdtempSync(join(tmpdir(), 'display-root-'));
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+  const lock = (n: number, body: string) => writeFileSync(join(root, `.X${n}-lock`), body);
+  const deadPid = () => {
+    const p = Bun.spawnSync(['true']);
+    return p.pid;
+  };
+
+  test("a lock naming a live process is taken; one whose process is gone is free, its socket with it", () => {
+    mkdirSync(join(root, '.X11-unix'), { recursive: true });
+    lock(1, `${String(process.pid).padStart(10)}\n`);
+    expect(displayTaken(1, root)).toBe(true);
+    lock(2, `${String(deadPid()).padStart(10)}\n`);
+    writeFileSync(join(root, '.X11-unix', 'X2'), '');
+    expect(displayTaken(2, root)).toBe(false);
+  });
+  test('a lock without a pid, or a socket without a lock, still counts as taken; nothing at all is free', () => {
+    lock(3, 'garbled');
+    expect(displayTaken(3, root)).toBe(true);
+    lock(4, '');
+    expect(displayTaken(4, root)).toBe(true);
+    writeFileSync(join(root, '.X11-unix', 'X5'), '');
+    expect(displayTaken(5, root)).toBe(true);
+    expect(displayTaken(6, root)).toBe(false);
+  });
+  test("up and ours only once the lock names our server: a dead server's socket left behind is not enough", () => {
+    const ours = process.pid;
+    writeFileSync(join(root, '.X11-unix', 'X7'), '');
+    lock(7, `${String(deadPid()).padStart(10)}\n`);
+    expect(displayIsOurs(7, ours, root)).toBe(false);
+    lock(7, `${String(ours).padStart(10)}\n`);
+    expect(displayIsOurs(7, ours, root)).toBe(true);
+    lock(7, `${String(process.ppid).padStart(10)}\n`);
+    expect(displayIsOurs(7, ours, root)).toBe(false);
+    expect(displayIsOurs(7, process.ppid, root)).toBe(true);
+    expect(displayIsOurs(8, ours, root)).toBe(false);
+  });
 });
 
 describe('claims: extractors starting together never pick the same display', () => {

@@ -46,7 +46,7 @@ Google signs the browser out.
 ### What runs
 
 - **The sandbox** (packages/browser, the Discord sandbox made general): a private Xvfb display, the first free one in
-  :80–:89, then :100–:159 (no X socket, no X lock, no live claim); an ordinary, non-headless Chromium with its profile in
+  :80–:89, then :100–:159 (no live X server: its lock naming a running process, or a socket with no lock; and no live claim); an ordinary, non-headless Chromium with its profile in
   `<data>/accounts/<id>/profile` and the extension copied to `<id>/extension` each start; x11vnc on
   `<id>/vnc.sock` and no TCP port, which the manager carries to the page as the live view. Deliberately not automation: no CDP, no
   `--remote-debugging-port`, no `--enable-automation`, no Playwright. The extension is the only instrument.

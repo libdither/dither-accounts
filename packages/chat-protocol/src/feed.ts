@@ -157,7 +157,11 @@ export interface HomePage {
   top: string | null;
 }
 
-/** A post the account liked, and when it liked it where the network says (X: the Likes tab's entry sort index is the like's own snowflake id). */
+/**
+ * A post the account liked, and when it liked it where the network says. X does not say: its Likes tab is in like
+ * order, newest first, so a reader bounds each like from below by the newest post time at or after it in that order
+ * (a like comes after its own post and after every earlier like).
+ */
 export interface LikedPost {
   post: PostFact;
   /** ms epoch. */

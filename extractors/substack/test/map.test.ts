@@ -76,6 +76,33 @@ describe('posts and notes', () => {
   });
 });
 
+describe('a post in full', () => {
+  test("its page brings the whole body as Markdown, the reader's furniture left out; a card never has it", () => {
+    const w = world(NOW);
+    const ctx = fresh();
+    const body =
+      '<p>Soil is <strong>alive</strong>, see <a href="/p/worms">worms</a>.</p>' +
+      '<h2 class="header-anchor-post">Roots<div class="header-anchor-parent"><button>#</button></div></h2>' +
+      '<div class="captioned-image-container"><figure><a class="image-link" href="https://substackcdn.com/image/full.png"><picture><img src="https://substackcdn.com/image/root.png" alt="a root"></picture><div class="image-link-expand"><button>Expand</button></div></a><figcaption class="image-caption">A root</figcaption></figure></div>' +
+      '<div class="subscription-widget-wrap"><p>Subscribe to ACME Notes</p><form><input type="email"></form></div>' +
+      '<blockquote><p>Dig gently.</p></blockquote><ul><li><p>water</p></li><li><p>wait</p></li></ul>';
+    const page = M.parsePostPage({ post: { ...w.myPost, body_html: body }, publication: MY_PUB }, ctx)!;
+    expect(page.article).toBe(
+      [
+        'Soil is **alive**, see [worms](https://acmenotes.substack.com/p/worms).',
+        '## Roots',
+        '[![a root](https://substackcdn.com/image/root.png)](https://substackcdn.com/image/full.png)',
+        '_A root_',
+        '> Dig gently.',
+        '- water\n- wait',
+      ].join('\n\n'),
+    );
+    expect(page.text).toBe('A short one\n\nSoil is alive.');
+    expect(M.postFact({ ...w.myPost, body_html: body }, ctx)!.article).toBeUndefined();
+    expect(M.parsePostPage({ post: { ...w.myPost, body_html: '' }, publication: MY_PUB }, ctx)!.article).toBeUndefined();
+  });
+});
+
 describe('home timelines', () => {
   test('the Inbox: newest posts first, with their publications; more only while Substack says there is', () => {
     const w = world(NOW);

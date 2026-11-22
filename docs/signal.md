@@ -245,7 +245,9 @@ that `addStickerPack` takes `uri` as a list over JSON-RPC, and that an Ogg Opus 
 
 `callStates` (src/calls.ts): what a linked device already receives, nothing asked. An offer is a call ringing you; the
 caller's hangup to your other devices says how it went (answered, declined or busy on another device, or missed), and
-once an answered call is hung up, how long it lasted. The offer's line is worded again as the call ends. dither-chat's
+once an answered call is hung up, how long it lasted. "Answered on another device" while Signal Desktop (the calls
+body, below) is in a call in that chat was answered here, through dither-chat: the call goes on, and ends answered,
+with its length, when Desktop's call ends or they hang up. The offer's line is worded again as the call ends. dither-chat's
 docs/calls.md "Ringing" has the hub's side.
 
 Not `subscribeCallEvents`, `rejectCall`, `startCall` or `acceptCall`: signal-cli 0.14.8 tracks a call only while

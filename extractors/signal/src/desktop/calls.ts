@@ -26,6 +26,8 @@ export interface CallsOptions {
   isPrimary: () => boolean;
   /** signal-cli's addDevice: link a device by the code it shows. */
   addDevice: (uri: string) => Promise<void>;
+  /** A call through Desktop in a chat ended (left, hung up, or Desktop gone), at `at`. */
+  left?: (conversation: string, at: number) => void;
 }
 
 export class DesktopCalls {
@@ -36,6 +38,19 @@ export class DesktopCalls {
   private rings = new Map<string, number>();
 
   constructor(private o: CallsOptions) {}
+
+  /** Whether Desktop is in a call in this chat now. */
+  inCall(conversation: string): boolean {
+    for (const c of this.calls.values()) if (c === conversation) return true;
+    return false;
+  }
+
+  private done(call: string) {
+    const conversation = this.calls.get(call);
+    if (conversation === undefined) return;
+    this.calls.delete(call);
+    this.o.left?.(conversation, Date.now());
+  }
 
   capabilities(): P.Capability[] {
     return this.o.host.ready ? CALL_CAPABILITIES : [];
@@ -84,7 +99,7 @@ export class DesktopCalls {
         try {
           await this.o.host.request('join', { call: cmd.call, target, ring: !!cmd.ring, muted: !!cmd.muted, deafened: !!cmd.deafened }, 40_000);
         } catch (e) {
-          this.calls.delete(cmd.call);
+          this.done(cmd.call);
           throw e;
         }
         return {};
@@ -92,7 +107,7 @@ export class DesktopCalls {
       case 'signal':
         return this.o.host.request('signal', { call: cmd.call, data: cmd.data });
       case 'leave':
-        this.calls.delete(cmd.call);
+        this.done(cmd.call);
         return this.o.host.request('leave', { call: cmd.call });
       case 'mute':
         return this.o.host.request('mute', { call: cmd.call, muted: cmd.muted, deafened: cmd.deafened });
@@ -108,7 +123,7 @@ export class DesktopCalls {
   /** Desktop went away (its window crashed or reloaded): every call through it is over, for the device too. */
   endAll(reason: string) {
     for (const call of [...this.calls.keys()]) {
-      this.calls.delete(call);
+      this.done(call);
       this.o.emit({ t: 'call', call, ended: reason });
     }
   }
@@ -124,7 +139,7 @@ export class DesktopCalls {
         this.o.emit({ t: 'call', call: ev.call, state: { conversation, ...rest } });
       }
       if (ev.ended !== undefined) {
-        this.calls.delete(ev.call);
+        this.done(ev.call);
         this.o.emit({ t: 'call', call: ev.call, ended: ev.ended });
       }
       return;

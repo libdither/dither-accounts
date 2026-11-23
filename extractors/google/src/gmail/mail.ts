@@ -219,12 +219,28 @@ export interface RawNetwork {
   ms: number;
   got: number;
   online: boolean | null;
+  /**
+   * Failed before any answer: what the same request said when asked once more without following redirects. 'redirect'
+   * (Gmail sent the download elsewhere, where the page may not read it), 'network' (the connection failed again),
+   * 'timeout', or the status Gmail answered this time.
+   */
+  then?: 'redirect' | 'network' | 'timeout' | number;
 }
 /** One line on a download the browser gave up on: counts and names only. */
 export function rawNetworkText(n: RawNetwork | undefined): string {
   if (!n) return 'the browser could not fetch it';
   const at = n.stage === 'body' ? `while its body came in (${n.got} bytes in)` : 'before any answer';
-  return `the browser could not fetch it, ${at}, after ${(n.ms / 1000).toFixed(1)} s${n.online === false ? ', with the browser offline' : ''}`;
+  const then =
+    n.then === undefined
+      ? ''
+      : n.then === 'redirect'
+        ? ' (asked again, Gmail sent it elsewhere: a redirect the page may not follow)'
+        : n.then === 'network'
+          ? ' (asked again, the connection failed again)'
+          : n.then === 'timeout'
+            ? ' (asked again, no answer in 5 s)'
+            : ` (asked again, Gmail answered ${n.then})`;
+  return `the browser could not fetch it, ${at}, after ${(n.ms / 1000).toFixed(1)} s${n.online === false ? ', with the browser offline' : ''}${then}`;
 }
 type Answer = { status: number; json?: unknown; bytes?: Buffer; page?: PageKind | null; error?: string; type?: string | null };
 interface Job {

@@ -1199,6 +1199,12 @@ function writeError(e: unknown): StatusError {
 }
 
 /** The Gmail tab, as GmailMail needs it: every call through the hook in that page (docs/google.md, "Gmail mail"). */
+/** The hook's second try at a download that failed before any answer (RawNetwork.then), if it said one. */
+function rawThen(v: unknown): { then?: 'redirect' | 'network' | 'timeout' | number } {
+  if (v === 'redirect' || v === 'network' || v === 'timeout') return { then: v };
+  if (typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 1000) return { then: v };
+  return {};
+}
 const gmailTransport: Transport = {
   async info() {
     const r = await pageRequest<{ sync?: unknown; headers?: unknown; ik?: unknown; history?: unknown }>('gmail', { kind: 'gmail.syncInfo' });
@@ -1209,9 +1215,9 @@ const gmailTransport: Transport = {
     return { ...r, page: pageKindOf(r?.page) };
   },
   async raw(hex, max) {
-    const r = await pageRequest<{ status?: number; token?: string; size?: number; tooBig?: number; type?: string | null; error?: string; page?: unknown; stage?: unknown; ms?: unknown; got?: unknown; online?: unknown }>('gmail', { kind: 'gmail.raw', hex, max }, RAW_ANSWER_MS);
+    const r = await pageRequest<{ status?: number; token?: string; size?: number; tooBig?: number; type?: string | null; error?: string; page?: unknown; stage?: unknown; ms?: unknown; got?: unknown; online?: unknown; then?: unknown }>('gmail', { kind: 'gmail.raw', hex, max }, RAW_ANSWER_MS);
     const status = typeof r?.status === 'number' ? r.status : 0;
-    if (r?.error === 'network') return { status: 0, error: 'network', net: { stage: r.stage === 'body' ? 'body' : 'headers', ms: Number(r.ms) || 0, got: Number(r.got) || 0, online: typeof r.online === 'boolean' ? r.online : null } };
+    if (r?.error === 'network') return { status: 0, error: 'network', net: { stage: r.stage === 'body' ? 'body' : 'headers', ms: Number(r.ms) || 0, got: Number(r.got) || 0, online: typeof r.online === 'boolean' ? r.online : null, ...rawThen(r.then) } };
     if (typeof r?.token !== 'string') return { status, tooBig: typeof r?.tooBig === 'number' ? r.tooBig : undefined, type: r?.type ?? null, error: r?.error, page: pageKindOf(r?.page) };
     const size = Number(r.size);
     try {

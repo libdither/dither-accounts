@@ -11,6 +11,7 @@ import { StatusError } from '@dither-accounts/link';
 import { type ApiRequest, ProtonApi, template, type Transport } from '../extractors/proton/src/api.ts';
 import { fold, ProtonMail, type Seen, stateOf } from '../extractors/proton/src/mail.ts';
 import { KeyError, localDecryptor, openpgp, type ProtonAddress, type ProtonUser, type Unlocked, unlockKeys } from '../extractors/proton/src/pgp.ts';
+import { Skips } from '@dither-accounts/link/records';
 import { contactEmailsOf, LIST_MS, normalize, ProtonContacts, protonLabel, suggestFrom } from '../extractors/proton/src/contacts.ts';
 import { checkOutgoing, checkPageSend, pickFrom, SEND_CAP, SETTINGS_REFUSAL, send, sendingAddresses } from '../extractors/proton/src/send.ts';
 import { openSessionBlob, sealSessionBlob } from '../extractors/proton/src/session.ts';
@@ -575,9 +576,13 @@ describe("mail.contacts: what Proton's composer suggests, from your contacts' ad
     expect(suggestFrom(many, 'person', 20).at(-1)!.email).toBe('p19@example.com');
   });
 
-  test('the list as the store keeps it: by Order, entries without an address left out; none that is one is no list', () => {
-    expect(contactEmailsOf([C('b@x.test', 'B', 0, 2), { Name: 'no address' }, C('a@x.test', 'A', 0, 1)])!.map((c) => c.Email)).toEqual(['a@x.test', 'b@x.test']);
-    expect(contactEmailsOf([{ Name: 'no address' }])).toBeNull();
+  test('the list as the store keeps it: by Order, entries without an address left out and counted; most of them so is no list', () => {
+    const skips = new Skips();
+    expect(contactEmailsOf([C('b@x.test', 'B', 0, 2), { Name: 'no address' }, C('a@x.test', 'A', 0, 1), null], skips)!.map((c) => c.Email)).toEqual(['a@x.test', 'b@x.test']);
+    expect(skips.summary()).toBe('proton.contacts: an address 1, proton.contacts: a contact email 1');
+    // One or two odd entries are entries, not a layout (packages/link records.ts looksChanged); three of them, and more than were read, are.
+    expect(contactEmailsOf([{ Name: 'no address' }])).toEqual([]);
+    expect(contactEmailsOf([{ Name: 'a' }, { Name: 'b' }, { Name: 'c' }, C('a@x.test', 'A', 0, 1)])).toBeNull();
     expect(contactEmailsOf({})).toBeNull();
     expect(contactEmailsOf([])).toEqual([]);
   });
@@ -618,8 +623,8 @@ describe("mail.contacts: what Proton's composer suggests, from your contacts' ad
       ]);
       expect((await c.suggest({ query: 'quiet' })).contacts).toEqual([{ email: 'quiet@example.com', name: 'quiet' }]);
       expect([pages, fake.contactLists, c.from]).toEqual([[0], 1, 'api, 4']);
-      // A store whose list is not laid out as known: 502, nothing returned.
-      const odd = new ProtonContacts({ store: async () => [{ Mail: 'x' }], page: async () => ({}) });
+      // A store whose list is not laid out as known (every entry's address under another name): 502, nothing returned.
+      const odd = new ProtonContacts({ store: async () => [{ Mail: 'x' }, { Mail: 'y' }, { Mail: 'z' }], page: async () => ({}) });
       expect(((await odd.suggest({ query: 'x' }).catch((x) => x)) as StatusError).status).toBe(502);
     } finally {
       fake.stop();

@@ -16,6 +16,7 @@
  */
 import type { MailContact } from '@dither-accounts/interfaces';
 import { StatusError } from '@dither-accounts/link';
+import { LayoutChanged, readEach, RecordError, Skips } from '@dither-accounts/link/records';
 
 /** A contact email as the store and the API keep it: only what the composer's suggestions use. */
 export interface ProtonContactEmail {
@@ -44,21 +45,32 @@ export const normalize = (v: string) =>
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '');
 
+/** What the skips of a contact email are counted under (packages/link records.ts). */
+export const CONTACTS_WHAT = 'proton.contacts';
+
 /**
- * The list as the store has it, from whatever the page or the API gave: entries without an address are left out, a
- * missing name is '' and a missing time 0; sorted by Order (stable). Null when not one entry is a contact email.
+ * The list as the store has it, from whatever the page or the API gave: a missing name is '' and a missing time 0;
+ * sorted by Order (stable). An entry that is not an object or has no address is left out and counted in `skips`
+ * (readEach). Null when it is not a list, or when most of its entries are so (looksChanged: the layout changed).
  */
-export function contactEmailsOf(raw: unknown): ProtonContactEmail[] | null {
+export function contactEmailsOf(raw: unknown, skips?: Skips | null): ProtonContactEmail[] | null {
   if (!Array.isArray(raw)) return null;
-  const out: ProtonContactEmail[] = [];
-  for (const c of raw) {
-    if (!c || typeof c !== 'object') continue;
-    const x = c as Record<string, unknown>;
-    if (typeof x.Email !== 'string' || !x.Email) continue;
-    out.push({ Email: x.Email, Name: typeof x.Name === 'string' ? x.Name : '', LastUsedTime: typeof x.LastUsedTime === 'number' && Number.isFinite(x.LastUsedTime) ? x.LastUsedTime : 0, Order: typeof x.Order === 'number' && Number.isFinite(x.Order) ? x.Order : 0 });
+  try {
+    const r = readEach(
+      raw,
+      (c, i) => {
+        if (!c || typeof c !== 'object' || Array.isArray(c)) throw new RecordError(`[${i}]`, 'a contact email', c === null ? 'null' : Array.isArray(c) ? 'a list' : typeof c);
+        const x = c as Record<string, unknown>;
+        if (typeof x.Email !== 'string' || !x.Email) throw new RecordError(`[${i}].Email`, 'an address', x.Email === '' ? 'an empty string' : x.Email === null ? 'null' : typeof x.Email);
+        return { Email: x.Email, Name: typeof x.Name === 'string' ? x.Name : '', LastUsedTime: typeof x.LastUsedTime === 'number' && Number.isFinite(x.LastUsedTime) ? x.LastUsedTime : 0, Order: typeof x.Order === 'number' && Number.isFinite(x.Order) ? x.Order : 0 };
+      },
+      { what: CONTACTS_WHAT, skips },
+    );
+    return r.items.sort((a, b) => a.Order - b.Order);
+  } catch (e) {
+    if (e instanceof LayoutChanged) return null;
+    throw e;
   }
-  if (raw.length && !out.length) return null;
-  return out.sort((a, b) => a.Order - b.Order);
 }
 
 /** The composer's suggestions for a query (trimmed, not empty), at most `limit`, each address once. */
@@ -113,8 +125,13 @@ export class ProtonContacts {
 
   constructor(
     private source: ContactsSource,
-    private opts: { ready?: () => string | null; now?: () => number } = {},
-  ) {}
+    private opts: { ready?: () => string | null; now?: () => number; log?: (level: 'debug' | 'info' | 'warn' | 'error', msg: string) => void } = {},
+  ) {
+    this.skips = new Skips({ log: opts.log, now: opts.now });
+  }
+
+  /** Contact emails left out of lists that were read (an entry not laid out as known), by kind: the status's `contactsSkipped`. */
+  readonly skips: Skips;
 
   private now() {
     return this.opts.now ? this.opts.now() : Date.now();
@@ -142,7 +159,7 @@ export class ProtonContacts {
   private async load(): Promise<ProtonContactEmail[]> {
     const raw = await this.source.store();
     let from: 'store' | 'api' = 'store';
-    let emails = raw === null ? null : contactEmailsOf(raw);
+    let emails = raw === null ? null : contactEmailsOf(raw, this.skips);
     if (raw !== null && emails === null) throw new StatusError("Proton's contact emails in the page are not laid out as this extractor knows them; nothing was returned rather than possibly wrong people", 502);
     if (emails === null) {
       from = 'api';
@@ -154,7 +171,7 @@ export class ProtonContacts {
         const total = typeof r.Total === 'number' ? r.Total : null;
         if (r.ContactEmails.length < PAGE || (total !== null && all.length >= total)) break;
       }
-      emails = contactEmailsOf(all);
+      emails = contactEmailsOf(all, this.skips);
       if (emails === null) throw new StatusError("Proton's contact emails (contacts/v4/contacts/emails) answered in a layout this extractor does not know", 502);
     }
     this.list = { at: this.now(), from, emails };

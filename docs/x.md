@@ -610,10 +610,11 @@ sits beside `fetchUserTweets` in one factory). `count` is 20 unless asked (1 to 
 `LikesPage` is `{ items, more, top }`, each item `{ post, likedAt? }`, mapped by `parseLikes` in `src/feed.ts`:
 
 - each `tweet-<id>` entry is a liked post, as everywhere; a post already on the page is not repeated;
-- `likedAt` is when it was liked. X gives no time for a like, but sorts the Likes tab by each like's own snowflake id,
-  which is the entry's `sortIndex`: its top bits are the ms since X's epoch (`likedAtOf`). A sort index that is no
-  snowflake, or that would put the like more than a minute before the post or more than a day after now, gives no time
-  (`likes.no-like-time`);
+- no item has `likedAt`: X gives no time for a like. The entries' `sortIndex` looks like a snowflake id, but its time
+  is the read's own (every entry of every page names the moment of the request; only the low bits count down), so it
+  says nothing about the like. The order is the like order, newest first, so a reader can bound each like from below:
+  it came after its own post and after every like below it, so no earlier than the newest post time at or below it.
+  On a real account most likes are of fresh posts, and that bound is within two days of the post for nine in ten;
 - a video's or GIF's length is `durationMs` on its `PostMedia` (`video_info.duration_millis`, copied out with
   `video_info` and `duration_millis` in FEED_KEYS); every post's media carry it, not only liked ones;
 - left out and counted in `feed.dropped`: ads (`likes.promoted`), gone posts (`likes.tombstone`), items that are

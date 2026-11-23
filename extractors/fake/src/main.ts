@@ -77,7 +77,8 @@ const link = linkManager({
       case 'shout':
         return { text: String(cmd.text).toUpperCase() };
       case 'fail':
-        throw new StatusError(`failed with ${cmd.status}`, Number(cmd.status), typeof cmd.code === 'string' ? cmd.code : undefined);
+        // `kind` is passed as given, so a test can see that the manager drops one that is not a kind.
+        throw new StatusError(`failed with ${cmd.status}`, Number(cmd.status), typeof cmd.code === 'string' ? cmd.code : undefined, { kind: cmd.kind as any, retryAfterMs: cmd.retryAfterMs as number | undefined });
       case 'slow':
         await Bun.sleep(Number(cmd.ms));
         return { slept: cmd.ms };

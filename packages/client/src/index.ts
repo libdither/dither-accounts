@@ -18,7 +18,7 @@
  * restarts and removes accounts and reads their logs, and `liveViewUrl` is the socket that carries an account's live
  * view (its sandboxed browser's VNC stream) for the app to hand on to its own page.
  */
-import { type AccountView, type AdminAction, type AdminResult, type CallError, type ConsumerIn, type ConsumerOut, type Iface, type InputOf, liveViewPath, type OpName, type OutputOf } from '@dither-accounts/spec';
+import { type AccountView, type AdminAction, type AdminResult, type CallError, type ConsumerIn, type ConsumerOut, type FailureKind, failureKindOf, type Iface, type InputOf, liveViewPath, type OpName, type OutputOf, retryAfterOf } from '@dither-accounts/spec';
 import type { AccessRequest } from '@dither-accounts/manager/api-types';
 import { IFACES } from '@dither-accounts/interfaces';
 import { ManagerSocket, OPEN } from './socket.ts';
@@ -33,13 +33,24 @@ for (const i of Object.values(IFACES)) for (const [name, spec] of Object.entries
  */
 export const UNSURE = 'unsure';
 
+/**
+ * A failed call. `kind` says whether it is an answer (`expected`: not found, offline, not allowed), the world failing
+ * for a moment (`transient`: a network drop, a 503, a rate limit; try again after `retryAfterMs` when given) or a bug
+ * (spec FailureKind). The manager sends it; when it did not (an older manager), it is worked out here from the code
+ * and status the same way. Undefined: nobody knows (an extractor's plain error), so treat it as a bug.
+ * `transient` does not make a write safe to send again: `unsure` is transient too.
+ */
 export class CallFailed extends Error {
   readonly code: CallError['code'];
   readonly status?: number;
+  readonly kind?: FailureKind;
+  readonly retryAfterMs?: number;
   constructor(e: CallError) {
     super(e.message);
     this.code = e.code;
     this.status = e.status;
+    this.kind = failureKindOf(e);
+    this.retryAfterMs = retryAfterOf(e.retryAfterMs);
   }
 }
 
@@ -215,5 +226,5 @@ export async function self(url: string, app: string, token: string): Promise<any
 }
 
 export type { AccessRequest };
-export type { AccountView, AdminAction, AdminResult, CallError } from '@dither-accounts/spec';
+export type { AccountView, AdminAction, AdminResult, CallError, FailureKind } from '@dither-accounts/spec';
 export { liveViewPath } from '@dither-accounts/spec';

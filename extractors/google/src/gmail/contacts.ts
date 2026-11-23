@@ -192,19 +192,20 @@ export class GmailContacts {
     this.trouble = { at: this.now(), why };
     if (was !== why) this.opts.log('warn', `gmail contacts: ${why}`);
     this.opts.onChange?.();
-    return new StatusError(why, 502);
+    return new StatusError(why, 502, undefined, { kind: 'bug' });
   }
 
   /** What an answer that is not suggestions says: the page or Google not able to now (503), late (504), or broken (502). */
   private failure(r: ContactsAnswer): StatusError {
     const code = typeof r.code === 'number' ? `, code ${r.code}` : '';
     if (r.error === 'timeout') return new StatusError("Google's people suggestions did not answer in time", 504);
-    if (r.page === 'signin') return new StatusError("Google answered the people suggestions with a sign-in page; sign in in the live view", 503, 'unavailable');
-    if (r.page === 'challenge') return new StatusError("Google answered the people suggestions with a verification page; open the live view", 503, 'unavailable');
+    // A page that waits for the owner is the answer until they act, not the world failing for a moment.
+    if (r.page === 'signin') return new StatusError("Google answered the people suggestions with a sign-in page; sign in in the live view", 503, 'unavailable', { kind: 'expected' });
+    if (r.page === 'challenge') return new StatusError("Google answered the people suggestions with a verification page; open the live view", 503, 'unavailable', { kind: 'expected' });
     if (r.error === 'no-key') return this.broken(`no API key the Gmail page carries is taken by Google's people suggestions${r.status ? ` (the last answered ${r.status}${code})` : ''}`);
-    if (r.status === 401) return new StatusError("Google's people suggestions say the Gmail page is not signed in (401)", 503, 'unavailable');
-    if (r.status === 429 || r.status >= 500) return new StatusError(`Google's people suggestions are busy (${r.status}${code}); try again in a moment`, 503, 'unavailable');
-    if (r.error === 'network' || r.status === 0) return new StatusError("the Gmail page could not reach Google's people suggestions", 503, 'unavailable');
+    if (r.status === 401) return new StatusError("Google's people suggestions say the Gmail page is not signed in (401)", 503, 'unavailable', { kind: 'expected' });
+    if (r.status === 429 || r.status >= 500) return new StatusError(`Google's people suggestions are busy (${r.status}${code}); try again in a moment`, 503, 'unavailable', { kind: 'transient' });
+    if (r.error === 'network' || r.status === 0) return new StatusError("the Gmail page could not reach Google's people suggestions", 503, 'unavailable', { kind: 'transient' });
     if (r.status === 200) return this.broken("Gmail's people suggestions answered with something that is not JSON");
     return this.broken(`Google refused the people suggestions (${r.status}${code})`);
   }

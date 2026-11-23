@@ -812,7 +812,7 @@ async function tabLoading(p: Page): Promise<boolean | null> {
  */
 async function pageRequest<T>(role: Role, cmd: PageCmd, answerMs = PAGE_ANSWER_MS, lane = pages[role].lane): Promise<T> {
   const p = pages[role];
-  if (!bridge.connected) throw new StatusError('the sandbox browser is not attached', 503, 'unavailable');
+  if (!bridge.connected) throw new StatusError('the sandbox browser is not attached', 503, 'unavailable', { kind: 'transient' });
   const ms = Math.min(answerMs, remainingMs(answerMs));
   const silence = () => new StatusError(`the ${p.name} page did not answer in ${Math.max(1, Math.round(ms / 1000))} s`, 503);
   if (ms <= 0) throw new StatusError(`the ${p.name} page did not answer within this call's time (none of it was left for this request)`, 503);
@@ -1327,11 +1327,11 @@ const contacts = mailOn ? new GmailContacts(contactsTransport, { log, ready: con
 /** Why the Gmail tab cannot take a mail call now, or null: not attached, not open, signed out, not synced yet. */
 function gmailNotReady(): StatusError | null {
   if (!gmail) return new StatusError(cfg.mail === false ? 'this account reads no mail (mail: false in its config)' : 'this account has no Gmail tab', 501);
-  if (!bridge.connected) return new StatusError('the sandbox browser is not attached yet', 503, 'unavailable');
+  if (!bridge.connected) return new StatusError('the sandbox browser is not attached yet', 503, 'unavailable', { kind: 'transient' });
   const s = gm.hooked ? gm.session : null;
-  if (!s) return new StatusError('Gmail is not open in the sandbox yet', 503, 'unavailable');
-  if (!s.signedIn) return new StatusError('Google is not signed in; sign in in the live view', 401);
-  if (!gm.synced) return new StatusError('the Gmail page has not made a sync call of its own yet, so the headers it sends are not known; try again in a moment', 503, 'unavailable');
+  if (!s) return new StatusError('Gmail is not open in the sandbox yet', 503, 'unavailable', { kind: 'transient' });
+  if (!s.signedIn) return new StatusError('Google is not signed in; sign in in the live view', 401, undefined, { kind: 'expected' });
+  if (!gm.synced) return new StatusError('the Gmail page has not made a sync call of its own yet, so the headers it sends are not known; try again in a moment', 503, 'unavailable', { kind: 'transient' });
   return null;
 }
 /** Only a 503 passes by waiting (a page still coming up); 401 and 501 do not. */
@@ -1555,10 +1555,10 @@ function checkCanary() {
 // ---------------------------------------------------------------- calendar
 /** Why the Calendar page cannot take a call now, or null. */
 function calendarNotReady(): StatusError | null {
-  if (!bridge.connected) return new StatusError('the sandbox browser is not attached yet', 503, 'unavailable');
+  if (!bridge.connected) return new StatusError('the sandbox browser is not attached yet', 503, 'unavailable', { kind: 'transient' });
   const s = current();
-  if (!s) return new StatusError('Google Calendar is not open in the sandbox', 503, 'unavailable');
-  if (!s.signedIn) return new StatusError('Google is not signed in; sign in in the live view', 401);
+  if (!s) return new StatusError('Google Calendar is not open in the sandbox', 503, 'unavailable', { kind: 'transient' });
+  if (!s.signedIn) return new StatusError('Google is not signed in; sign in in the live view', 401, undefined, { kind: 'expected' });
   return null;
 }
 

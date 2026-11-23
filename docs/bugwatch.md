@@ -90,15 +90,19 @@ config. A file that appears later in a source it already reads (a new account's 
   { v: 1, at: <ms since the epoch>, app: 'hub' | 'web' | 'manager',
     source: 'uncaught' | 'rejection' | 'request' | 'job' | 'attempt' | 'client',
     where: <route template, span or job name>, name: <error class>, message: <one line, ≤ 300 characters>,
-    stack: [<≤ 10 frames, repo-relative paths>], status?: number, trace?: <32 hex>, version?: string,
-    extra?: { ids and short words }, count?: number }
+    stack: [<≤ 10 frames, repo-relative paths>], status?: number, kind?: 'expected' | 'transient' | 'bug',
+    trace?: <32 hex>, version?: string, extra?: { ids and short words }, count?: number }
   ```
 
-  `count` (the writer merged repeats) counts as that many occurrences. Lines that are not this are skipped.
+  `count` (the writer merged repeats) counts as that many occurrences. `kind` is what the writer knows the failure
+  is (spec `FailureKind`, below in "What is a bug"); a record without one, as an older writer's, is read as before.
+  Lines that are not this are skipped.
 - **`trace-ndjson`**: a span file (dither-chat's `hub.trace.ndjson`, the manager's `manager.trace.ndjson`; the format
   is `SpanRecord` in packages/manager/src/trace.ts): its spans with `status: 'error'`, `where` the span's name, the
-  error's class and message from its `error` (`SQLiteError: database is locked`), and its trace id. Expected refusals
-  are not bugs and are left out: a status under 500 (the hub's `http.status`; the manager's `call <op>` spans carry
+  error's class and message from its `error` (`SQLiteError: database is locked`), and its trace id. A span whose
+  attrs say its `kind` (the manager's `call <op>` spans do whenever the extractor, the manager's code or the status
+  tells it) is taken at its word: `expected` is left out, and the rest are kept whatever their status or words.
+  A span without one is judged as before. Expected refusals are not bugs and are left out: a status under 500 (the hub's `http.status`; the manager's `call <op>` spans carry
   `status`, the upstream status an extractor gave its refusal, as 410 for a stale sync token), the manager's own refusals (`outcome` `denied`, `limited`,
   `invalid`, `unknown-op`, `unknown-account`, `offline`), and an error that says 429, a 4xx status, a rate limit, a
   captcha, terms, or an abort. A failed span whose trace an `errors-ndjson` record named in the last hour is the same
@@ -124,6 +128,8 @@ The manager writes `<data>/traces/errors.ndjson` (packages/manager/src/errors.ts
 - failed calls are not repeated in it: they are failed `call <op>` spans in `manager.trace.ndjson`, read as a
   `trace-ndjson` source.
 
+Both of its kinds of record are crashes, so they say `kind: 'bug'`.
+
 The same error (source, where, name, message) within 10 s is one record with `count`; at most 30 records are written a
 minute, and the number a full minute dropped goes in the next record's `extra.dropped`. Frames are relative to the
 repository (`extractors/fake/src/main.ts:12:3`; a dependency's from its `node_modules/`). The file rotates at 2 MB,
@@ -146,6 +152,15 @@ numbers (with a unit: `250ms`) → `<n>`; at most 300 characters. A frame is in 
 fingerprint's id is the first 16 hex characters of its text's SHA-256.
 
 ## What is a bug
+
+A record's `kind`, when it has one, decides first. It is the error maker's own word, not a guess from the text:
+
+- `expected`: a refusal that is the right answer (not found, the account offline, not allowed, not signed in). Never
+  a bug: it is dropped before it is counted.
+- `transient`: the world failing for a moment (a network drop, a 503, a page reloading, a rate limit). It is counted,
+  but one is not news: a fingerprint whose records have all been transient is raised only by a spike (below), the
+  sustained rate being the signal. Its first record that is not transient raises it as new.
+- `bug`, or no kind: as follows.
 
 - **New**: a fingerprint not seen in the 14 days before.
 - **A spike**: in the last hour (in 10-minute buckets), at least max(20, 5 × its mean an hour over the 7 days before

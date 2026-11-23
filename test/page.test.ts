@@ -102,7 +102,8 @@ test('running an op from the page: input checked, counted as the page, dry run, 
   const dry = (await api<PageCallResult>(`/api/accounts/${id}/call`, 'POST', { op: 'shout', input: { text: 'x' }, dryRun: true })).body;
   expect(dry.result).toEqual({ dryRun: true });
   const up = (await api<PageCallResult>(`/api/accounts/${id}/call`, 'POST', { op: 'fail', input: { status: 404 } })).body;
-  expect(up.error).toEqual({ code: 'failed', message: 'failed with 404', status: 404 });
+  // A 404 is an answer, and says so (spec FailureKind).
+  expect(up.error).toEqual({ code: 'failed', message: 'failed with 404', status: 404, kind: 'expected' });
   expect((await api<PageCallResult>(`/api/accounts/${id}/call`, 'POST', { op: 'nope' })).body.error?.code).toBe('unknown-op');
   const d = (await api<AccountDetail>(`/api/accounts/${id}`)).body;
   expect(d.activity.find((r) => r.op === 'echo' && r.outcome === 'ok')?.app).toBe('page');

@@ -1731,7 +1731,7 @@
     }
    },
    "fail": {
-    "input": "{ status: number; code?: string }",
+    "input": "{ status: number; kind?: string; code?: string; retryAfterMs?: number }",
     "output": "unknown",
     "example": {
      "status": 0

@@ -17,7 +17,7 @@ import { createHmac } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { writeSecretFile } from '@dither-chat/protocol/secret-file';
-import { isExtractorCode } from '@dither-accounts/spec';
+import { type FailureKind, isExtractorCode, isFailureKind, retryAfterOf } from '@dither-accounts/spec';
 import { Handover, HandoverError } from '@dither-accounts/spec/handover';
 import type { Row, Store } from './db.ts';
 import { fingerprintEntry, sameCode } from './fingerprint.ts';
@@ -120,6 +120,9 @@ export class ExtractorError extends Error {
     /** The manager's offline, timeout or failed; or the extractor's own word for a refusal (spec isExtractorCode). */
     readonly code: 'offline' | 'timeout' | 'failed' | (string & {}),
     readonly status?: number,
+    /** The extractor's own kind for it (spec FailureKind) and how long it said to wait, when it said them. */
+    readonly kind?: FailureKind,
+    readonly retryAfterMs?: number,
   ) {
     super(message);
   }
@@ -1167,8 +1170,9 @@ export class Supervisor {
       if (!p || p.accountId !== id) return;
       this.settle(rid, p);
       if (ev.ok) p.resolve(ev.result);
-      // The extractor's own code passes only when it is not one of the manager's (it cannot say 'denied' for us).
-      else p.reject(new ExtractorError(String(ev.error), isExtractorCode(ev.code) ? ev.code : 'failed', typeof ev.status === 'number' ? ev.status : undefined));
+      // The extractor's own code passes only when it is not one of the manager's (it cannot say 'denied' for us). Its
+      // kind and retryAfterMs pass as it said them, when they are one (spec FailureKind) and a number of ms.
+      else p.reject(new ExtractorError(String(ev.error), isExtractorCode(ev.code) ? ev.code : 'failed', typeof ev.status === 'number' ? ev.status : undefined, isFailureKind(ev.kind) ? ev.kind : undefined, retryAfterOf(ev.retryAfterMs)));
       return;
     }
     if (ev.t === 'ask') {
@@ -1216,12 +1220,12 @@ export class Supervisor {
    */
   command(accountId: string, cmd: Record<string, unknown> & { t: string }, timeoutMs = 30_000, o: { repeatable?: boolean } = {}): Promise<unknown> {
     const h = this.line(accountId);
-    if (!this.running.get(accountId) || h.state === 'down') return Promise.reject(new ExtractorError('the account is not connected', 'offline'));
+    if (!this.running.get(accountId) || h.state === 'down') return Promise.reject(new ExtractorError('the account is not connected', 'offline', undefined, 'expected'));
     const deadline = Date.now() + timeoutMs;
     return h.run((ws, a) => this.send(accountId, ws, cmd, deadline, timeoutMs, a.signal), { deadline, repeatable: o.repeatable }).catch((e) => {
       if (!(e instanceof HandoverError)) throw e;
       // 'unsure' keeps the manager's 'offline', which apps already read as "it may have run".
-      throw e.code === 'retry' ? new ExtractorError(e.message, 'retry', 503) : new ExtractorError(e.message, 'offline');
+      throw e.code === 'retry' ? new ExtractorError(e.message, 'retry', 503, 'transient') : new ExtractorError(e.message, 'offline', undefined, 'expected');
     });
   }
 
@@ -1231,7 +1235,7 @@ export class Supervisor {
       const timer = setTimeout(() => {
         const p = this.pending.get(id);
         if (p) this.settle(id, p);
-        reject(new ExtractorError(`no answer to ${cmd.t} in ${Math.round(timeoutMs / 1000)} s`, 'timeout'));
+        reject(new ExtractorError(`no answer to ${cmd.t} in ${Math.round(timeoutMs / 1000)} s`, 'timeout', undefined, 'transient'));
       }, Math.max(1, deadline - Date.now()));
       this.pending.set(id, { resolve, reject, timer, accountId });
       // Cut (its process ended, its socket did not come back): the handover has refused it already.

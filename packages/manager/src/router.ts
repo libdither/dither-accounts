@@ -13,7 +13,7 @@
  */
 import type { ServerWebSocket } from 'bun';
 import { isAbsolute } from 'node:path';
-import { type AccountView, type AdminAction, type AppKind, type CallError, type ConsumerIn, type ConsumerOut, covers, type Iface, type Level, levelRank } from '@dither-accounts/spec';
+import { type AccountView, type AdminAction, type AppKind, type CallError, type ConsumerIn, type ConsumerOut, covers, failureKindOf, type Iface, type Level, levelRank, retryAfterOf } from '@dither-accounts/spec';
 import { addForm } from './addform.ts';
 import { accountDir, ExtractorError, releaseLock, type Supervisor, writeSecret } from './supervisor.ts';
 import { type GrantRow, newId, newToken, type Row, type Store } from './db.ts';
@@ -41,13 +41,22 @@ export interface Call {
 export type Next = (c: Call) => Promise<unknown>;
 export type Handler = (c: Call, next: Next) => Promise<unknown>;
 
+/**
+ * A call's failure as the app gets it. Its kind is filled in here when whoever threw it did not say one: from the
+ * manager's code or the status (spec failureKindOf), so every refusal of the manager's own has one.
+ */
 export class CallFailure extends Error {
-  constructor(readonly error: CallError) {
+  readonly error: CallError;
+  constructor(error: CallError) {
     super(error.message);
+    const kind = failureKindOf(error);
+    const retryAfterMs = retryAfterOf(error.retryAfterMs);
+    const { kind: _k, retryAfterMs: _r, ...rest } = error;
+    this.error = { ...rest, ...(kind ? { kind } : {}), ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) };
   }
 }
-const fail = (code: CallError['code'], message: string, status?: number): never => {
-  throw new CallFailure({ code, message, ...(status !== undefined ? { status } : {}) });
+const fail = (code: CallError['code'], message: string, status?: number, more: Pick<CallError, 'kind' | 'retryAfterMs'> = {}): never => {
+  throw new CallFailure({ code, message, ...(status !== undefined ? { status } : {}), ...more });
 };
 
 /** The manager's own page, as the app its calls are counted under. */
@@ -227,10 +236,17 @@ export class Router {
     try {
       return await this.callIn(appId, accountId, op, input, span);
     } catch (e) {
-      // The upstream status an extractor gave its refusal (410: a stale sync token), so a reader of the trace (bugwatch)
-      // can tell an expected refusal from a failure.
-      const status = e instanceof CallFailure ? e.error.status : undefined;
-      span.set({ outcome: e instanceof CallFailure ? e.error.code : 'failed', ...(typeof status === 'number' ? { status } : {}) }).fail(e);
+      // The upstream status an extractor gave its refusal (410: a stale sync token) and the failure's kind, so a reader
+      // of the trace (bugwatch) can tell an expected refusal or a passing failure from a bug without guessing.
+      const err = e instanceof CallFailure ? e.error : undefined;
+      span
+        .set({
+          outcome: err ? err.code : 'failed',
+          ...(typeof err?.status === 'number' ? { status: err.status } : {}),
+          ...(err?.kind ? { kind: err.kind } : {}),
+          ...(err?.retryAfterMs !== undefined ? { retryAfterMs: err.retryAfterMs } : {}),
+        })
+        .fail(e);
       throw e;
     } finally {
       span.end();
@@ -289,7 +305,8 @@ export class Router {
     this.buckets.set(key, b);
     if (b.tokens < 1) {
       this.count(c.app.id, c.account.id, c.op, 'limited');
-      return fail('limited', `too many ${c.level} calls to ${c.account.label}; at most ${rate} a second`);
+      // When the bucket has a whole token again.
+      return fail('limited', `too many ${c.level} calls to ${c.account.label}; at most ${rate} a second`, undefined, { retryAfterMs: ((1 - b.tokens) / rate) * 1000 });
     }
     b.tokens -= 1;
     return next(c);
@@ -325,7 +342,7 @@ export class Router {
       c.span?.event('the extractor answered');
       return r;
     } catch (e) {
-      if (e instanceof ExtractorError) return fail(e.code, e.message, e.status);
+      if (e instanceof ExtractorError) return fail(e.code, e.message, e.status, { ...(e.kind ? { kind: e.kind } : {}), ...(e.retryAfterMs !== undefined ? { retryAfterMs: e.retryAfterMs } : {}) });
       throw e;
     }
   }

@@ -91,6 +91,8 @@ export interface Bug {
   samples: Sample[];
   /** A process crash (an uncaught error) was among its records. */
   crash: boolean;
+  /** Every record of it so far said `transient` (readers.ts Rec.kind): it is raised only by a spike, never as new. */
+  transient?: boolean;
   notice?: { at: number; reason: Reason; unread: boolean; catchUp?: boolean };
   thread?: Thread;
   /** Waits for a thread since. */

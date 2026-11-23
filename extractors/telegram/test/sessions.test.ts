@@ -4,7 +4,7 @@
  * 777000, where login codes arrive) reaching the chat interface like any other.
  */
 import { afterAll, describe, expect, setDefaultTimeout, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as P from '@dither-chat/protocol';
@@ -12,12 +12,11 @@ import { readSecretFile, writeSecretFile } from '@dither-chat/protocol/secret-fi
 import { type Host, TelegramAdapter } from '../src/adapter.ts';
 import { FAKE_IDS, FakeTelegram } from '../src/fake.ts';
 import { HASH_CURRENT, HASH_MALFORMED, HASH_UNKNOWN, LINK_MALFORMED, NOT_SIGNED_IN, parseLoginLink, parseSessionHash, type SessionInfo, TOKEN_EXPIRED, TOKEN_UNKNOWN, TOKEN_USED, tooFreshMessage } from '../src/sessions.ts';
+import { harnesses, Waits } from './waits.ts';
 
 setDefaultTimeout(30_000);
 const dirs: string[] = [];
-afterAll(() => {
-  for (const d of dirs) rmSync(d, { recursive: true, force: true });
-});
+const track = harnesses<Harness>(dirs);
 const tmp = () => {
   const d = mkdtempSync(join(tmpdir(), 'dacc-tgs-'));
   dirs.push(d);
@@ -32,14 +31,23 @@ type Ev = P.AdapterEvent;
 class Harness {
   events: Ev[] = [];
   logs: string[] = [];
+  waits = new Waits();
   fake: FakeTelegram;
   adapter: TelegramAdapter;
   constructor(readonly dir: string) {
     if (!readSecretFile(join(dir, 'secret.json')).apiHash) writeSecretFile(join(dir, 'secret.json'), { apiHash: '0123456789abcdef0123456789abcdef' });
     this.fake = new FakeTelegram({ dir, qrMs: 60_000 });
+    this.fake.onCall = () => this.waits.changed();
+    track(this);
     const host: Host = {
-      emit: (e) => this.events.push(e),
-      log: (l, m) => this.logs.push(`[${l}] ${m}`),
+      emit: (e) => {
+        this.events.push(e);
+        this.waits.changed();
+      },
+      log: (l, m) => {
+        this.logs.push(`[${l}] ${m}`);
+        this.waits.changed();
+      },
       accountDir: dir,
       config: { apiId: '12345' },
       secret: () => readSecretFile(join(dir, 'secret.json')),
@@ -53,13 +61,9 @@ class Harness {
   of<K extends Ev['t']>(t: K): Extract<Ev, { t: K }>[] {
     return this.events.filter((e): e is Extract<Ev, { t: K }> => e.t === t);
   }
-  async until(f: () => unknown, what: string, ms = 4000) {
-    const end = Date.now() + ms;
-    while (Date.now() < end) {
-      if (f()) return;
-      await Bun.sleep(10);
-    }
-    throw new Error(`timed out waiting for ${what}`);
+  /** Until f() holds: looked at as each event, log line or call to the fake comes (waits.ts). */
+  until(f: () => unknown, what: string) {
+    return this.waits.until(f, what);
   }
   action(action: string, args?: unknown): Promise<any> {
     return this.adapter.command({ id: 'x', t: 'action', action, args } as P.AdapterCommand);

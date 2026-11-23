@@ -49,4 +49,5 @@ What an answer leaves out was not read, so nothing may be concluded from its abs
 - Gmail's sync, list and fetch answers (`extractors/google/src/gmail/protocol.ts`) keep their own `Tally`, with the
   same rule (`looksChanged`), named skips and the self-check's counts.
 - X, Reddit, Substack and Meta already drop and count records their own way (a `Drops` per extractor); moving them
-  onto `Skips` is listed in the issue that tracks this design, with the parsers that still refuse a whole answer.
+  onto `Skips` is listed in [#115](https://github.com/libdither/dither-accounts/issues/115), with the parsers that still
+  refuse a whole answer.

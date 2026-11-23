@@ -16,7 +16,7 @@
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { AppSandbox, type Download, type FileRequestRecord, type Network, pickFreeDisplay, resolveBin, type SandboxEvent } from '@dither-accounts/sandbox';
+import { AppSandbox, type Download, displayName, type FileRequestRecord, type FreeDisplay, type Network, pickFreeDisplay, resolveBin, type SandboxEvent } from '@dither-accounts/sandbox';
 import type { DesktopKey } from './backend.ts';
 import { keyFingerprint, readTdata, signedInAccount, TdataError } from './tdata.ts';
 
@@ -130,14 +130,14 @@ export class DesktopSession implements DesktopHost {
     const height = this.o.height ?? 800;
     const tried: number[] = [];
     for (let attempt = 0; attempt < 3 && !this.stopped; attempt++) {
-      let free: { display: number };
+      let free: FreeDisplay | null = null;
       try {
         free = await pickFreeDisplay(undefined, tried);
-        tried.push(free.display);
+        if (free.display !== null) tried.push(free.display);
         const { command, roBinds } = this.launch();
         this.sandbox = new AppSandbox({
           dir: this.dir,
-          display: free.display,
+          display: free,
           width,
           height,
           command,
@@ -155,8 +155,8 @@ export class DesktopSession implements DesktopHost {
         this.o.log('warn', `desktop sandbox failed: ${this.sandboxError}`);
         await this.sandbox?.stop().catch(() => {});
         this.sandbox = null;
-        // Another display only helps when the display was the trouble.
-        if (!/display|Xvfb/i.test(this.sandboxError)) break;
+        // Another display only helps when an X display was the trouble.
+        if (free?.backend !== 'x11' || !/display|Xvfb/i.test(this.sandboxError)) break;
       }
     }
     this.readSignIn();
@@ -378,7 +378,7 @@ export class DesktopSession implements DesktopHost {
   layers(needed: boolean): Layer[] {
     const info = this.sandbox?.info();
     const sandbox: Layer = info
-      ? { name: 'sandbox', state: 'ok', note: `display :${info.display}, live view ready, ${info.network === 'pasta' ? 'its own network' : info.network === 'none' ? 'no network' : "the host's network"}` }
+      ? { name: 'sandbox', state: 'ok', note: `display ${displayName(this.sandbox?.screen?.free)}, live view ready, ${info.network === 'pasta' ? 'its own network' : info.network === 'none' ? 'no network' : "the host's network"}` }
       : this.sandboxError
         ? { name: 'sandbox', state: 'failed', note: this.sandboxError }
         : { name: 'sandbox', state: 'waiting', note: 'starting' };
@@ -409,7 +409,7 @@ export class DesktopSession implements DesktopHost {
     const info = this.sandbox?.info();
     return {
       desktop: this.o.fake ? 'the fake Telegram Desktop' : (this.bin ?? 'not found'),
-      desktopDisplay: info ? `:${info.display}` : null,
+      desktopDisplay: info ? displayName(this.sandbox?.screen?.free) : null,
       desktopNetwork: info?.network ?? null,
       desktopApp: info?.app ?? (this.sandboxError ? 'sandbox failed' : 'starting'),
       desktopRestarts: info?.appExits ?? 0,

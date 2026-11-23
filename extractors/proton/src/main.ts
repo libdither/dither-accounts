@@ -20,7 +20,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BridgeServer, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, displayName, displayNote, type FreeDisplay, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
 import { SendOnce } from '@dither-accounts/link/once';
 import { type ApiAnswer, type ApiRequest, ProtonApi, ProtonError } from './api.ts';
@@ -95,7 +95,7 @@ const CONTACTS_MS = 8_000;
 
 // -------------------------------------------------------------------- state
 const eventsPath = join(link.accountDir, 'events.json');
-let display = 0;
+let display: FreeDisplay | null = null;
 let liveView: { vncSocket: string; width: number; height: number } | null = null;
 let sandbox: Sandbox | null = null;
 let sandboxError: string | null = null;
@@ -290,7 +290,7 @@ function details(): Record<string, string | number | boolean | null> {
     sendCap: SEND_CAP,
     maxRecipients: MAX_RECIPIENTS,
     email: self?.email ?? null,
-    display: liveView ? `:${display}` : null,
+    display: liveView ? displayName(display) : null,
     page: tab,
     extensionAttached: bridge.connected,
     mailPage: hookTabs > 0,
@@ -349,12 +349,12 @@ function layers(): Layer[] {
   const s = current();
   const browserFailed = !!sandboxError && /chromium/i.test(sandboxError);
   const screen: Layer = liveView
-    ? { name: 'display', state: 'ok', note: `Xvfb :${display}, live view ready` }
+    ? { name: 'display', state: 'ok', note: `${displayNote(display)}, live view ready` }
     : sandboxError && !browserFailed
       ? { name: 'display', state: 'failed', note: sandboxError }
       : browserFailed
         ? { name: 'display', state: 'off', note: 'not started' }
-        : { name: 'display', state: 'waiting', note: 'starting Xvfb' };
+        : { name: 'display', state: 'waiting', note: 'starting the display' };
   const browser: Layer = liveView
     ? sandbox?.browserAlive
       ? { name: 'browser', state: 'ok', note: tab ? `Chromium, on ${hostOf(tab) ?? tab}` : 'Chromium is running' }
@@ -802,18 +802,18 @@ async function boot() {
   status();
   const tried: number[] = [];
   for (let attempt = 0; attempt < 3; attempt++) {
-    let free: { display: number };
+    let free: FreeDisplay;
     try {
       free = await pickFreeDisplay(undefined, tried);
     } catch (e) {
       sandboxError = String((e as Error).message ?? e);
       break;
     }
-    tried.push(free.display);
-    display = free.display;
+    if (free.display !== null) tried.push(free.display);
+    display = free;
     sandbox = new Sandbox({
       accountDir: link.accountDir,
-      display: free.display,
+      display: free,
       width: WIDTH,
       height: HEIGHT,
       extensionSrc: join(import.meta.dir, 'extension'),
@@ -831,7 +831,7 @@ async function boot() {
       break;
     } catch (e) {
       sandboxError = String((e as Error).message ?? e).slice(0, 300);
-      log('warn', `sandbox on :${free.display} failed`, sandboxError);
+      log('warn', `sandbox on ${displayName(free)} failed`, sandboxError);
       await sandbox.stop();
       sandbox = null;
     }

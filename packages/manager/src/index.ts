@@ -61,6 +61,8 @@ export interface ManagerOpts {
   adoptConnectMs?: number;
   /** Tests only: how often adopted extractors are looked at in /proc (1 s). */
   watchMs?: number;
+  /** The display backend of accounts whose config names none (default x11; docs/browser.md "Display backends"). */
+  displayBackend?: 'x11' | 'wayland';
   /** Tests only: what a `scope` launch goes through instead of systemd-run. */
   systemdRun?: string;
   /** Tests only: how long a surviving extractor waits for a manager before it ends itself (1800 s). */
@@ -138,6 +140,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     repoRoot,
     dataDir: o.dataDir,
     launch: launch.launch,
+    displayBackend: o.displayBackend,
     fingerprint: o.fingerprint,
     restartPauseMs: o.restartPauseMs,
     adoptConnectMs: o.adoptConnectMs,

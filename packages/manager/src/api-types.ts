@@ -141,6 +141,8 @@ export interface AccountDetail {
     lastExit: { code: number | null; signal: string | null; at: number } | null;
     /** Started by an earlier manager and taken over by this one at its start (docs/supervisor.md). */
     adopted: boolean;
+    /** The screen its sandboxes draw on, as it was started (docs/browser.md "Display backends"); null when not running. */
+    displayBackend: 'x11' | 'wayland' | null;
     /** Who holds the directory's lock, from extractor.lock. */
     lock: { pid: number; owner: string; at: string | null } | null;
   };

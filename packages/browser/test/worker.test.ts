@@ -139,7 +139,7 @@ test.skipIf(!bins)(
       reports.length = 0;
       logs.length = 0;
       const free = await pickFreeDisplay();
-      const sb = new Sandbox({ accountDir: acc, display: free.display, width: 800, height: 600, extensionSrc: src, config: { origin }, startUrl: `${origin}/`, log: (_l, m) => logs.push(m) });
+      const sb = new Sandbox({ accountDir: acc, display: free, width: 800, height: 600, extensionSrc: src, config: { origin }, startUrl: `${origin}/`, log: (_l, m) => logs.push(m) });
       try {
         await sb.start();
         const end = Date.now() + 30_000;

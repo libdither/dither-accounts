@@ -15,7 +15,7 @@ import { copyFileSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFil
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server, ServerWebSocket } from 'bun';
-import { pickFreeDisplay, resolveBins, Sandbox } from '../packages/browser/src/index.ts';
+import { pickFreeXDisplay, resolveBins, Sandbox } from '../packages/browser/src/index.ts';
 import { expandIncludes } from '../packages/browser/src/markers.ts';
 
 const ROOT = join(import.meta.dir, '..');
@@ -65,7 +65,7 @@ function prepare(kind: Kind, to: string, port: number) {
 
 /** Commands streamed down while the port is replaced again and again; how many replies each one got. */
 async function stream(kind: Kind) {
-  const { display } = await pickFreeDisplay();
+  const { display } = await pickFreeXDisplay();
   const sb = new Sandbox({
     accountDir: join(dir, kind),
     display,

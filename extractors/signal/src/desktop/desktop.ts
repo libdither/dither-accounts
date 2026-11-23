@@ -9,7 +9,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { AppSandbox, type AudioDevices, type Network, pickFreeDisplay, resolveBin, runtimeDir } from '@dither-accounts/sandbox';
+import { AppSandbox, type AudioDevices, displayName, type Network, pickFreeDisplay, resolveBin, runtimeDir } from '@dither-accounts/sandbox';
 
 type Log = (level: 'debug' | 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
 type Layer = { name: string; state: 'ok' | 'waiting' | 'failed' | 'off'; note?: string };
@@ -154,7 +154,7 @@ export class SignalDesktop implements CallsHost {
       const free = await pickFreeDisplay();
       this.sandbox = new AppSandbox({
         dir: this.dir,
-        display: free.display,
+        display: free,
         width: this.o.width ?? 1280,
         height: this.o.height ?? 800,
         // --password-store=basic: no keyring in the sandbox (Signal would wait for one), so its database key is kept as
@@ -303,7 +303,7 @@ export class SignalDesktop implements CallsHost {
   details(): Record<string, string | number | boolean | null> {
     return {
       'calls body': this.ready ? 'Signal Desktop, linked' : this.app?.signedIn ? 'Signal Desktop, hook away' : 'Signal Desktop, not linked',
-      ...(this.sandbox ? { 'calls display': `:${this.sandbox.info().display}` } : {}),
+      ...(this.sandbox ? { 'calls display': displayName(this.sandbox.screen?.free) ?? 'starting' } : {}),
     };
   }
 }

@@ -31,6 +31,7 @@ import type { Kind } from './kinds.ts';
 import { localNotice, type Notices } from './notices.ts';
 import type { Provider } from './providers/index.ts';
 import { CallFailure, type ConsumerSocketData, type Router } from './router.ts';
+import { parseBackend } from './display-backend.ts';
 import { accountDir, type ExtractorSocketData, LOCK, type Supervisor, writeSecret } from './supervisor.ts';
 
 /** The page's live view: a browser WebSocket carried to the account's VNC, a Unix socket on this machine. */
@@ -631,6 +632,13 @@ export class Http {
           const known = new Map((this.kinds.get(a.kind)?.settings ?? []).map((x) => [x.key, x]));
           const cfg = parse<Record<string, unknown>>(a.config, {});
           for (const [k, v] of Object.entries(b.settings)) {
+            // Every kind's: the screen its sandboxes draw on (docs/browser.md "Display backends"); null is the manager's.
+            if (k === 'displayBackend') {
+              if (v === null) delete cfg[k];
+              else if (parseBackend(v)) cfg[k] = parseBackend(v);
+              else return bad('displayBackend is x11, wayland or null (the manager\'s default)');
+              continue;
+            }
             const info = known.get(k);
             if (!info) return bad(`${a.kind} accounts have no setting ${k}`);
             if (info.type === 'boolean' && typeof v !== 'boolean') return bad(`${k} is on or off (true or false)`);

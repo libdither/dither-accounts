@@ -11,6 +11,7 @@
  *     addMembers, groupInfo, typing, forward) each only take their own feature away.
  */
 import type * as P from '@dither-chat/protocol';
+import { displayName, displayNote, type FreeDisplay } from '@dither-accounts/browser';
 import type { FeedHookName, HookName, PageState, SelfTest } from './raw.ts';
 import { FEED_HOOK_NAMES, HOOK_NAMES } from './raw.ts';
 
@@ -21,7 +22,7 @@ export const ATTACH_MS = 30_000;
 
 export interface Facts {
   now: number;
-  sandbox: { started: boolean; error: string | null; browserAlive: boolean; display: number | null; liveView: boolean; startedAt: number };
+  sandbox: { started: boolean; error: string | null; browserAlive: boolean; display: FreeDisplay | number | null; liveView: boolean; startedAt: number };
   extensionAttached: boolean;
   hookTabs: number;
   tab: string | null;
@@ -189,12 +190,12 @@ export function compute(f: Facts): Computed {
   // ------------------------------------------------------------ layers
   const browserFailed = !!f.sandbox.error && /chromium/i.test(f.sandbox.error);
   const display: P.StatusLayer = f.sandbox.started
-    ? { name: 'display', state: 'ok', note: `Xvfb :${f.sandbox.display}, live view ready` }
+    ? { name: 'display', state: 'ok', note: `${displayNote(f.sandbox.display)}, live view ready` }
     : f.sandbox.error && !browserFailed
       ? { name: 'display', state: 'failed', note: f.sandbox.error }
       : browserFailed
         ? { name: 'display', state: 'off', note: 'not started' }
-        : { name: 'display', state: 'waiting', note: 'starting Xvfb' };
+        : { name: 'display', state: 'waiting', note: 'starting the display' };
   const browser: P.StatusLayer = f.sandbox.started
     ? f.sandbox.browserAlive
       ? { name: 'browser', state: 'ok', note: f.tab ? `Chromium, on ${hostOf(f.tab) ?? f.tab}` : 'Chromium is running' }
@@ -250,7 +251,7 @@ export function compute(f: Facts): Computed {
 
   // ------------------------------------------------------------ details
   const details: Record<string, string | number | boolean | null> = {
-    display: f.sandbox.display !== null ? `:${f.sandbox.display}` : null,
+    display: displayName(f.sandbox.display),
     page: f.page?.path ?? null,
     pageState: f.page?.state ?? null,
     pinMode: f.page?.pinMode ?? null,

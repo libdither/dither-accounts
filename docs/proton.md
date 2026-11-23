@@ -29,7 +29,8 @@ your keys open.
 
 ## What runs
 
-- **The sandbox** (packages/browser): a private Xvfb display (:80–:89, then :100–:159), Chromium with its profile in
+- **The sandbox** (packages/browser): a private Xvfb display (:80–:89, then :100–:159), or a headless sway on the wayland
+  display backend (docs/browser.md, "Display backends"), Chromium with its profile in
   `<data>/accounts/<id>/profile` (which keeps the sign-in), the extension copied to `<id>/extension` each start, and
   x11vnc on `<id>/vnc.sock` (no TCP port) for the live view. No CDP, no automation flags: the extension is the only instrument.
 - **Service workers**: Chromium goes on running the extension's service worker it first registered in a profile,

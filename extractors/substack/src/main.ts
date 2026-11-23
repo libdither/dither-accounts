@@ -19,7 +19,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BridgeServer, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, displayName, type FreeDisplay, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
 import type * as P from '@dither-chat/protocol';
 import { POST_ACTS } from '@dither-chat/protocol';
 import { linkHub } from '@dither-chat/protocol/client';
@@ -52,7 +52,7 @@ const drops = new M.Drops();
 /** What every answer taught: people, publications, posts, where comments sit. */
 const ctx = M.newCtx(drops, testOrigin);
 const feed = new FeedTracker(readKept().feed);
-let display: number | null = null;
+let display: FreeDisplay | null = null;
 let vncSocket: string | null = null;
 let sandbox: Sandbox | null = null;
 let sandboxError: string | null = null;
@@ -508,18 +508,18 @@ async function boot() {
   status();
   const tried: number[] = [];
   for (let attempt = 0; attempt < 3; attempt++) {
-    let free: { display: number };
+    let free: FreeDisplay;
     try {
       free = await pickFreeDisplay(undefined, tried);
     } catch (e) {
       sandboxError = String((e as Error).message ?? e);
       break;
     }
-    tried.push(free.display);
-    display = free.display;
+    if (free.display !== null) tried.push(free.display);
+    display = free;
     sandbox = new Sandbox({
       accountDir: hub.accountDir,
-      display: free.display,
+      display: free,
       width: WIDTH,
       height: HEIGHT,
       extensionSrc: join(import.meta.dir, 'extension'),
@@ -538,7 +538,7 @@ async function boot() {
       break;
     } catch (e) {
       sandboxError = String((e as Error).message ?? e).slice(0, 300);
-      log('warn', `sandbox on :${free.display} failed`, sandboxError);
+      log('warn', `sandbox on ${displayName(free)} failed`, sandboxError);
       await sandbox.stop();
       sandbox = null;
       display = null;

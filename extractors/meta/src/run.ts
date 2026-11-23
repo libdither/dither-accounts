@@ -15,7 +15,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BridgeServer, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, displayName, displayNote, type FreeDisplay, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
 import type * as P from '@dither-chat/protocol';
 import { linkHub } from '@dither-chat/protocol/client';
 import { type Ev, Mapper, parseMediaUrl } from './map.ts';
@@ -62,7 +62,7 @@ export async function run(siteId: SiteId) {
   let mapper = new Mapper(site.network);
   const learnedPath = join(hub.accountDir, 'learned.json');
   let learned: Record<string, unknown> = readJson(learnedPath) ?? {};
-  let display = 0;
+  let display: FreeDisplay | null = null;
   let liveView: { vncSocket: string; width: number; height: number } | null = null;
   let sandbox: Sandbox | null = null;
   let sandboxError: string | null = null;
@@ -167,7 +167,7 @@ export async function run(siteId: SiteId) {
   function details(): Record<string, string | number | boolean | null> {
     const d: Record<string, string | number | boolean | null> = {
       site: siteId === 'messenger' && cfg.site === 'facebook' ? 'facebook.com/messages' : siteId,
-      display: liveView ? `:${display}` : null,
+      display: liveView ? displayName(display) : null,
       page: tab,
       extensionAttached: bridge.connected,
       appPage: hookTabs > 0,
@@ -199,12 +199,12 @@ export async function run(siteId: SiteId) {
     const out: Layer[] = [];
     out.push(
       liveView
-        ? { name: 'display', state: 'ok', note: `Xvfb :${display}, live view ready` }
+        ? { name: 'display', state: 'ok', note: `${displayNote(display)}, live view ready` }
         : sandboxError && !browserFailed
           ? { name: 'display', state: 'failed', note: sandboxError }
           : browserFailed
             ? { name: 'display', state: 'off', note: 'not started' }
-            : { name: 'display', state: 'waiting', note: 'starting Xvfb' },
+            : { name: 'display', state: 'waiting', note: 'starting the display' },
     );
     out.push(
       liveView
@@ -563,18 +563,18 @@ export async function run(siteId: SiteId) {
     status();
     const tried: number[] = [];
     for (let attempt = 0; attempt < 3; attempt++) {
-      let free: { display: number };
+      let free: FreeDisplay;
       try {
         free = await pickFreeDisplay(undefined, tried);
       } catch (e) {
         sandboxError = String((e as Error).message ?? e);
         break;
       }
-      tried.push(free.display);
-      display = free.display;
+      if (free.display !== null) tried.push(free.display);
+      display = free;
       sandbox = new Sandbox({
         accountDir: hub.accountDir,
-        display: free.display,
+        display: free,
         width: WIDTH,
         height: HEIGHT,
         extensionSrc: join(import.meta.dir, 'extension'),
@@ -592,7 +592,7 @@ export async function run(siteId: SiteId) {
         break;
       } catch (e) {
         sandboxError = String((e as Error).message ?? e).slice(0, 300);
-        log('warn', `sandbox on :${free.display} failed`, sandboxError);
+        log('warn', `sandbox on ${displayName(free)} failed`, sandboxError);
         await sandbox.stop();
         sandbox = null;
       }

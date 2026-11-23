@@ -17,6 +17,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { displayName } from '@dither-accounts/browser';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
 import { NeedsYou, StatementsRunner, writeWhole } from '@dither-accounts/statements-common';
 import { BrowserOps } from '@dither-accounts/statements-common/browser-ops';
@@ -203,7 +204,7 @@ function status(force = false) {
   const s = base ?? statusOf(v);
   const known = Object.values(st.orders);
   const details = {
-    display: host.liveView ? `:${host.display}` : null,
+    display: host.liveView ? displayName(host.display) : null,
     page,
     extensionAttached: host.attached,
     signedIn: navSignedIn,

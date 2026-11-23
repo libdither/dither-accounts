@@ -3,7 +3,7 @@
  * session; apps (dither-chat, dither-calendar) ask for interfaces on accounts, you approve, and the manager routes
  * their calls and the accounts' events between them, keeping none of it.
  *
- *   bun packages/manager/src/main.ts [--data .data] [--port 8486] [--host 127.0.0.1] [--public-url http://localhost:8486] [--web-dist dir] [--trace 1] [--errors 1] [--launch auto]
+ *   bun packages/manager/src/main.ts [--data .data] [--port 8486] [--host 127.0.0.1] [--public-url http://localhost:8486] [--web-dist dir] [--trace 1] [--errors 1] [--launch auto] [--display-backend x11]
  *
  * Each setting comes from its flag, else DITHER_ACCOUNTS_<FLAG>, else the [manager] table of <data>/config.toml
  * (config.example.toml lists every key), else the default above. The data directory itself comes only from the flag,
@@ -12,6 +12,7 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { installProcessHandlers } from './errors.ts';
+import { parseBackend } from './display-backend.ts';
 import { createManager } from './index.ts';
 import { restartJob } from './procs.ts';
 
@@ -46,11 +47,14 @@ const on = (n: string) => !['0', 'false'].includes(opt(n, '1'));
 // as a systemd service, so a restart (a deploy) leaves them running and the next manager adopts them; else children.
 const launch = opt('launch', 'auto');
 if (!['auto', 'scope', 'detached', 'child'].includes(launch)) throw new Error(`launch must be auto, scope, detached or child, not "${launch}"`);
+// The screen sandboxes draw on when an account's config names none (docs/browser.md "Display backends").
+const displayBackend = parseBackend(opt('display-backend', 'x11'));
+if (!displayBackend) throw new Error(`display_backend must be x11 or wayland, not "${opt('display-backend', 'x11')}"`);
 // trace = 0 (DITHER_ACCOUNTS_TRACE=0) turns the trace files off (trace.ts); errors = 0 the error file (errors.ts).
-const m = await createManager({ dataDir, port, hostname: host, publicUrl, ...(webDist ? { webDist: resolve(webDist) } : {}), trace: on('trace'), errors: on('errors'), launch: launch as 'auto' });
+const m = await createManager({ dataDir, port, hostname: host, publicUrl, ...(webDist ? { webDist: resolve(webDist) } : {}), trace: on('trace'), errors: on('errors'), launch: launch as 'auto', displayBackend });
 // Its own uncaught exceptions and rejections into <data>/traces/errors.ndjson; it still ends as the crash would have.
 if (m.errors) installProcessHandlers(m.errors);
-console.log(`dither-accounts on ${m.url.replace('127.0.0.1', host)}  page=${publicUrl}  kinds=${[...m.kinds.keys()].join(',')}  data=${dataDir}  launch=${m.sup.launch}`);
+console.log(`dither-accounts on ${m.url.replace('127.0.0.1', host)}  page=${publicUrl}  kinds=${[...m.kinds.keys()].join(',')}  data=${dataDir}  launch=${m.sup.launch}  display=${displayBackend}`);
 // Why: a service whose extractors would not outlive a restart (child) says so plainly.
 console.log(`launch=${m.sup.launch}: ${m.launchWhy}`);
 

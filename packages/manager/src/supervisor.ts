@@ -20,6 +20,7 @@ import { writeSecretFile } from '@dither-chat/protocol/secret-file';
 import { isExtractorCode } from '@dither-accounts/spec';
 import type { Row, Store } from './db.ts';
 import { fingerprintEntry, sameCode } from './fingerprint.ts';
+import { type DisplayBackend, parseBackend } from './display-backend.ts';
 import { LOG } from './files.ts';
 import type { Kind } from './kinds.ts';
 import { allPids, cgroupMembers, cgroupOf, descendants, endAll, groupMembers, serviceOf, procAlive, procCmdline, procEnv, type ProcRef, procsWithEnv, procStartedAt, procStat, signalRef } from './procs.ts';
@@ -87,6 +88,8 @@ interface Running {
   survives?: boolean;
   /** The fingerprint of the code it runs (fingerprint.ts), as it was when it started. */
   fingerprint?: string;
+  /** The display backend it was started with (DITHER_DISPLAY_BACKEND). */
+  backend?: DisplayBackend;
   /** An adopted process that has not connected by then is started afresh. */
   connectBy?: number;
   /** adapter.log's size when it started: a failed exit's last lines are read from there. */
@@ -299,6 +302,8 @@ interface Found {
   accountId: string;
   token: string;
   fingerprint: string;
+  /** The display backend it was started with (DITHER_DISPLAY_BACKEND; none: x11). */
+  backend: DisplayBackend;
 }
 
 /** Restarts for changed code since this manager started, for /api/health (only counts) and the deployer. */
@@ -362,6 +367,8 @@ export class Supervisor {
       dataDir: string;
       /** How extractors are started (default `child`). */
       launch?: Launch;
+      /** The display backend of accounts whose config names none (default x11). */
+      displayBackend?: DisplayBackend;
       /** The command a `scope` launch goes through (default systemd-run; tests give a stand-in). */
       systemdRun?: string;
       /** The fingerprint of a kind's code (default fingerprint.ts over repoRoot); tests give their own. */
@@ -420,6 +427,7 @@ export class Supervisor {
       starts: r?.starts ?? 0,
       lastExit: r?.lastExit ?? null,
       adopted: !!r?.adopted,
+      displayBackend: r?.pid ? (r.backend ?? null) : null,
     };
   }
 
@@ -452,6 +460,15 @@ export class Supervisor {
   }
 
   /** The fingerprint of the code a kind's extractor would run if started now. */
+  /** The display backend an account's sandboxes use: its config's displayBackend, else the manager's default (x11). */
+  backendOf(acc: Row): DisplayBackend {
+    let own: unknown;
+    try {
+      own = (JSON.parse(acc.config || '{}') as { displayBackend?: unknown }).displayBackend;
+    } catch {}
+    return parseBackend(own) ?? this.opts.displayBackend ?? 'x11';
+  }
+
   fingerprintOf(kind: Kind): string {
     if (this.opts.fingerprint) return this.opts.fingerprint(kind);
     try {
@@ -486,7 +503,7 @@ export class Supervisor {
       if (!isExtractorCmd(pid)) continue;
       const st = procStat(pid);
       if (!st || st.state === 'Z') continue;
-      found.push({ pid, start: st.start, accountId: env.DITHER_ACCOUNT_ID, token: env.DITHER_ADAPTER_TOKEN ?? '', fingerprint: env.DITHER_EXTRACTOR_FINGERPRINT ?? '' });
+      found.push({ pid, start: st.start, accountId: env.DITHER_ACCOUNT_ID, token: env.DITHER_ADAPTER_TOKEN ?? '', fingerprint: env.DITHER_EXTRACTOR_FINGERPRINT ?? '', backend: parseBackend(env.DITHER_DISPLAY_BACKEND) ?? 'x11' });
     }
     this.scan = { at: Date.now(), found };
     return found;
@@ -660,13 +677,16 @@ export class Supervisor {
       r.adopted = true;
       r.survives = true;
       r.fingerprint = f!.fingerprint;
+      r.backend = f!.backend;
       r.lastStart = procStartedAt(f!.start) ?? Date.now();
       r.connectBy = r.ws ? undefined : Date.now() + (this.opts.adoptConnectMs ?? ADOPT_CONNECT_MS);
       const changed = !sameCode(f!.fingerprint, this.fingerprintOf(kind));
-      appendFileSync(log, `--- ${new Date().toISOString()} dither-accounts took over the running ${acc.kind} extractor (pid ${f!.pid})${changed ? '; its code changed, so it restarts soon' : ''}\n`);
+      // A display backend changed (the account's or the manager's default) restarts it the same way as changed code.
+      const moved = f!.backend !== this.backendOf(acc);
+      appendFileSync(log, `--- ${new Date().toISOString()} dither-accounts took over the running ${acc.kind} extractor (pid ${f!.pid})${changed ? '; its code changed, so it restarts soon' : moved ? `; its display backend is now ${this.backendOf(acc)}, so it restarts soon` : ''}\n`);
       r.logFrom = fileSize(log);
       this.watch();
-      if (changed) this.queueRestart(id);
+      if (changed || moved) this.queueRestart(id);
       // Back already (it connected before startAll got to it): what it said on its return counts now.
       if (r.resumedHeld !== undefined) this.opts.onResumed?.(id, r.resumedHeld);
       this.opts.onChange(id);
@@ -703,6 +723,7 @@ export class Supervisor {
       entry = realpathSync(entry);
     } catch {}
     const fingerprint = this.fingerprintOf(kind);
+    const backend = this.backendOf(acc);
     const launch = this.launch;
     appendFileSync(log, `\n--- ${new Date().toISOString()} dither-accounts starting ${acc.kind} extractor\n`);
     r.logFrom = fileSize(log);
@@ -722,6 +743,8 @@ export class Supervisor {
           DITHER_ADAPTER_TOKEN: acc.token,
           DITHER_ACCOUNT_DIR: acc.dir,
           DITHER_ACCOUNT_CONFIG: acc.config,
+          // The screen its sandboxes draw on (docs/browser.md "Display backends"): the account's, else the manager's.
+          DITHER_DISPLAY_BACKEND: backend,
           DITHER_ACCOUNT_LABEL: acc.label,
           DITHER_MARKER_KEY: pageMarkerKey(this.store, acc.id),
           // What a later manager reads in /proc to know it as one of its own, and whether its code is still current.
@@ -750,6 +773,7 @@ export class Supervisor {
     r.adopted = false;
     r.survives = launch !== 'child';
     r.fingerprint = fingerprint;
+    r.backend = backend;
     r.connectBy = undefined;
     // Its scope exists once systemd-run has made it, just before it runs the extractor.
     if (launch === 'scope') {
@@ -945,7 +969,7 @@ export class Supervisor {
   }
 
   /**
-   * Adopted extractors whose code changed restart one at a time per kind (a pause before each, each waited for until it
+   * Adopted extractors whose code (or display backend) changed restart one at a time per kind (a pause before each, each waited for until it
    * is online again, or a minute); different kinds go side by side. Never every account at once, and never two of one
    * network together, which is what looks like a bot to it.
    */
@@ -963,7 +987,8 @@ export class Supervisor {
         const acc = this.store.account(id);
         const k = acc && this.kinds.get(acc.kind);
         if (!r?.adopted || !r.pid || r.stopping || !acc?.enabled || !k || this.halted.has(id)) continue;
-        if (sameCode(r.fingerprint, this.fingerprintOf(k))) continue;
+        const sameScreen = r.backend === this.backendOf(acc);
+        if (sameCode(r.fingerprint, this.fingerprintOf(k)) && sameScreen) continue;
         this.rollingNow.add(id);
         try {
           // Connected first, so it hears a shutdown and ends as it would at a stop (the watch restarts one that never does).
@@ -973,7 +998,7 @@ export class Supervisor {
           // The calls it is answering now get their answers first: a deploy should not fail an app's call.
           await this.drain(id, RESTART_DRAIN_MS);
           if (this.closing || !r.pid || this.running.get(id) !== r || this.halted.has(id)) continue;
-          appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} its code changed since it started: restarting it\n`);
+          appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} its ${sameScreen ? 'code' : 'display backend'} changed since it started: restarting it\n`);
           await this.stopProcess(id);
           // Stopped on purpose meanwhile (the page, an app): it stays stopped.
           if (this.halted.has(id) || this.closing) continue;

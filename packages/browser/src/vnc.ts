@@ -1,5 +1,6 @@
 /**
- * A sandbox's live view: x11vnc on a Unix socket in the account's own directory, and on no TCP port at all.
+ * A sandbox's live view: x11vnc (or, on the wayland backend, wayvnc: wayland.ts) on a Unix socket in the account's own
+ * directory, and on no TCP port at all.
  *
  * It used to listen on 127.0.0.1:5900+display with -nopw, which let anything on this machine in: any local process, and
  * any web page open in a browser here, since libvncserver also takes a WebSocket upgrade on that port from any Origin.
@@ -59,11 +60,11 @@ export function prepareVncSocket(socket: string) {
   rmSync(socket, { force: true });
 }
 
-/** Wait until x11vnc listens on the socket, then make the socket 0600; fail at once if x11vnc gave up. */
-export async function waitForVncSocket(socket: string, x11vnc: Subprocess, timeoutMs: number) {
+/** Wait until the VNC server (x11vnc, wayvnc) listens on the socket, then make the socket 0600; fail at once if it gave up. */
+export async function waitForVncSocket(socket: string, server: Subprocess, timeoutMs: number, name = 'x11vnc') {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (x11vnc.exitCode !== null) throw new Error(`x11vnc exited (${x11vnc.exitCode}) before its live view socket came up`);
+    if (server.exitCode !== null || server.signalCode) throw new Error(`${name} exited (${server.signalCode ?? server.exitCode}) before its live view socket came up`);
     try {
       if (lstatSync(socket).isSocket()) {
         chmodSync(socket, 0o600);
@@ -74,6 +75,6 @@ export async function waitForVncSocket(socket: string, x11vnc: Subprocess, timeo
     }
     await Bun.sleep(50);
   }
-  throw new Error(`x11vnc's live view socket did not come up within ${timeoutMs}ms`);
+  throw new Error(`${name}'s live view socket did not come up within ${timeoutMs}ms`);
 }
 

@@ -41,7 +41,7 @@ on its socket and SIGTERM, then SIGKILL after 8 s. Then whatever is left of it i
 its descendants, every process carrying its account and this data directory in its environment (Chromium and its
 zygotes, signal-cli, the WhatsApp bridge inherit it, whatever process group or session they moved to), and what a
 native-app sandbox of the account records in its `sandbox.json` (packages/sandbox: bubblewrap clears the environment,
-so Telegram Desktop's or Haveno's Xvfb, x11vnc, dbus-daemon, pasta and the app carry no account id; the record names
+so Telegram Desktop's or Haveno's Xvfb, x11vnc (or sway, wayvnc), dbus-daemon, pasta and the app carry no account id; the record names
 each by pid and start time). The same happens after an extractor crashes, before the next one starts, and before any
 start that finds such leftovers: a browser or signal-cli left behind would be a second session on one account.
 
@@ -135,6 +135,13 @@ answers (up to 30 s), so a deploy does not fail an app's call midway. Different 
 to either network; every account at once, or two of one network together, is. One stopped on purpose meanwhile stays
 stopped (so does one stopped while a Restart waits for its stop). One whose code did not change keeps running, across
 any number of deploys.
+
+The display backend restarts the same way. Each extractor is started with `DITHER_DISPLAY_BACKEND` (`x11` or
+`wayland`: its account's `displayBackend`, else the manager's `display_backend`; docs/browser.md, "Display
+backends"), and an adopted one started with another than its account now wants is restarted in the same queue, one
+at a time per kind. So a new default reaches every account without moving them all at once, and an account that names
+its own backend is not touched by it. `DITHER_DISPLAY_BACKEND` is per account, so it is not part of the fingerprint;
+the manager's own setting (`DITHER_ACCOUNTS_DISPLAY_BACKEND`) is not either, as no `DITHER_ACCOUNTS_*` is.
 
 `/api/health` says how that goes, in counts only: `codeRestarts: {queued, active, restarted, online, crashed}`
 (`active`: restarts under way now), where `crashed` counts only restarted extractors that ended on their own with a

@@ -5,12 +5,13 @@
  * kind's signed-in layer has).
  */
 import type * as P from '@dither-chat/protocol';
+import { displayName, type FreeDisplay } from '@dither-accounts/browser';
 
 export type PageState = 'loading' | 'login' | 'ready';
 
 export interface Facts {
   now: number;
-  sandbox: { started: boolean; error: string | null; browserAlive: boolean; display: number | null; liveView: boolean; startedAt: number };
+  sandbox: { started: boolean; error: string | null; browserAlive: boolean; display: FreeDisplay | number | null; liveView: boolean; startedAt: number };
   extensionAttached: boolean;
   /** The tab the browser shows (origin and path). */
   tab: string | null;
@@ -47,9 +48,9 @@ export function compute(f: Facts): Computed {
     attention = { kind: 'unknown', message: `The sandbox failed to start: ${s.error}`, liveView: false };
     layers.push({ name: 'display', state: 'failed', note: s.error });
   } else if (!s.started) {
-    layers.push({ name: 'display', state: 'waiting', note: 'starting Xvfb, the browser and the live view' });
+    layers.push({ name: 'display', state: 'waiting', note: 'starting the display, the browser and the live view' });
   } else {
-    layers.push({ name: 'display', state: 'ok', note: `:${s.display}${s.liveView ? ', live view on' : ''}` });
+    layers.push({ name: 'display', state: 'ok', note: `${displayName(s.display)}${s.liveView ? ', live view on' : ''}` });
     if (!s.browserAlive) {
       status = 'error';
       layers.push({ name: 'browser', state: 'failed', note: 'Chromium exited' });

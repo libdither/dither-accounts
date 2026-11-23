@@ -1,8 +1,9 @@
 /**
  * A native app in a sandbox the extractor owns (docs/native-sandbox.md). Per account:
  *
- *   display    a private Xvfb (path socket only, no abstract one), and x11vnc as the live view: on <dir>/vnc.sock
- *              (0600, in the 0700 directory) and no TCP port, outside everything the app is shown
+ *   display    a private screen (packages/browser screen.ts): Xvfb (path socket only, no abstract one) with x11vnc, or
+ *              a headless sway of its own with wayvnc, whose Wayland socket alone is shown to the app. The live view
+ *              is on <dir>/vnc.sock (0600, in the 0700 directory) and no TCP port, outside everything the app is shown
  *   bus        a private dbus-daemon whose desktop services are ours (services.ts): notifications, portals, xdg-open
  *   files      HOME is <dir>/home; /nix/store and a handful of /etc files read-only; nothing else of the host
  *   PATH       our shims first (xdg-open and its aliases report to us over the bus), then coreutils
@@ -11,15 +12,15 @@
  *   downloads  <dir>/home/Downloads, watched: a file that has stopped changing is announced
  *
  * The app runs under bubblewrap with every namespace unshared but the network one pasta made. It never sees the
- * user's home, X server or session bus. What it hands to the desktop arrives as SandboxEvents.
+ * user's home, X server, compositor or session bus. What it hands to the desktop arrives as SandboxEvents.
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import type { Subprocess } from 'bun';
-import { displayIsOurs, prepareVncSocket, vncSocketPath, waitForVncSocket, x11vncArgs } from '@dither-accounts/browser';
-import { type Log, type SandboxBins, sandboxBins } from './bins.ts';
+import { cleanEnv, type FreeDisplay, makeScreen, type Screen, vncSocketPath } from '@dither-accounts/browser';
+import { BINS, type Log, type SandboxBins, sandboxBins, tryBin } from './bins.ts';
 import { DBusConnection } from './dbus.ts';
 import { DesktopServices, type FileRequest, fileUri, type Notification } from './services.ts';
 
@@ -54,9 +55,10 @@ export interface FileRequestRecord {
 }
 
 export interface AppSandboxOptions {
-  /** The sandbox's directory (in the account directory): home/, bin/, etc/, sandbox.json, vnc.sock (the live view). */
+  /** The sandbox's directory (in the account directory): home/, bin/, etc/, sandbox.json, vnc.sock (the live view), wl/. */
   dir: string;
-  display: number;
+  /** The display pickFreeDisplay gave (x11 or wayland), or an X display number. */
+  display: number | FreeDisplay;
   width: number;
   height: number;
   /** The app and its arguments; the program must be under /nix/store or in roBinds. */
@@ -71,7 +73,7 @@ export interface AppSandboxOptions {
   binds?: { src: string; dest: string }[];
   /** Default pasta (falling back to the host's network when it cannot be had). */
   network?: Network;
-  /** A window name (xdotool regex) to keep fitted to the display: there is no window manager to maximize it. */
+  /** A window name (a regex) to keep fitted to the display: on X there is no window manager to maximize it. */
   fitWindow?: string;
   /** A download is announced once it has not changed for this long. */
   settleMs?: number;
@@ -133,10 +135,11 @@ export class AppSandbox {
   readonly downloads: string;
   readonly outbox: string;
   readonly run: string;
-  /** The live view: x11vnc's Unix socket. Not under home/ or bin/, so the app never sees it. */
+  /** The live view: the VNC server's Unix socket. Not under home/ or bin/, so the app never sees it. */
   readonly vncSocket: string;
   network: Network;
   private bins!: SandboxBins;
+  private screen_: Screen | null = null;
   private procs: Proc[] = [];
   private app: Proc | null = null;
   private bus: DBusConnection | null = null;
@@ -164,20 +167,26 @@ export class AppSandbox {
 
   async start() {
     this.killStale();
-    this.bins = sandboxBins(this.o.log, { pasta: this.network === 'pasta', xdotool: !!this.o.fitWindow, pulseaudio: !!this.o.audio });
+    this.bins = sandboxBins(this.o.log, { pasta: this.network === 'pasta', pulseaudio: !!this.o.audio });
     if (this.network === 'pasta' && !this.bins.pasta) {
       this.network = 'host';
       this.o.log('warn', 'pasta is not available: the app shares the host network (and its abstract sockets)');
     }
     this.prepareFiles();
-    const d = `:${this.o.display}`;
 
-    // The display: only its path socket, which is the one bound into the sandbox.
-    const xvfb = this.spawn('Xvfb', [this.bins.xvfb, d, '-screen', '0', `${this.o.width}x${this.o.height}x24`, '-nolisten', 'tcp', '-nolisten', 'local', '-nocursor', '-dpi', '96'], d);
-    await this.waitForDisplay(xvfb, 8000, `Xvfb on ${d}`);
-    prepareVncSocket(this.vncSocket);
-    const vnc = this.spawn('x11vnc', x11vncArgs(this.bins.x11vnc, d, this.vncSocket), `-unixsock ${this.vncSocket}`);
-    await waitForVncSocket(this.vncSocket, vnc, 10_000);
+    // The display: only its path socket (X) or its Wayland socket, which is the one bound into the sandbox.
+    const screen = makeScreen({
+      display: this.o.display,
+      dir: this.o.dir,
+      vncSocket: this.vncSocket,
+      width: this.o.width,
+      height: this.o.height,
+      pathSocketOnly: true,
+      spawn: (name, cmd, o) => this.spawn(name, cmd, o.match, undefined, o.env),
+      log: this.o.log,
+    });
+    this.screen_ = screen;
+    await screen.start();
 
     // The bus, and our services on it before the app looks for them.
     const conf = join(this.run, 'bus.conf');
@@ -208,8 +217,10 @@ export class AppSandbox {
 
     this.scanDownloads(true);
     this.timers.push(setInterval(() => this.scanDownloads(false), 1000));
-    if (this.o.fitWindow && this.bins.xdotool) this.timers.push(setInterval(() => void this.fit(), 3000));
-    this.o.log('info', `sandbox up: display ${d}, vnc on ${this.vncSocket}, network ${this.network}`);
+    // No window manager on X: keep the app's main window the size of the display. On Wayland sway tiles it; the same
+    // call makes sure the window that matches is the one tiled.
+    if (this.o.fitWindow && (screen.backend === 'wayland' || tryBin(BINS.xdotool, this.o.log))) this.timers.push(setInterval(() => void this.fit(), 3000));
+    this.o.log('info', `sandbox up: ${screen.backend === 'wayland' ? 'sway (Wayland)' : `display :${screen.display}`}, vnc on ${this.vncSocket}, network ${this.network}`);
     this.startApp();
   }
 
@@ -283,7 +294,7 @@ export class AppSandbox {
     this.stopped = true;
     for (const t of this.timers) clearInterval(t);
     this.bus?.close();
-    for (const name of ['app', 'x11vnc', 'dbus-daemon', 'pulseaudio', 'Xvfb']) {
+    for (const name of ['app', 'dbus-daemon', 'pulseaudio', ...(this.screen_?.procNames ?? [])]) {
       for (const p of this.procs.filter((x) => x.name === name)) {
         try {
           p.proc.kill('SIGTERM');
@@ -300,6 +311,7 @@ export class AppSandbox {
     await Promise.all(this.procs.map((p) => p.proc.exited.catch(() => {})));
     clearTimeout(killer);
     this.procs = [];
+    await this.screen_?.stop().catch(() => {});
     rmSync(join(this.o.dir, 'sandbox.json'), { force: true });
     rmSync(this.vncSocket, { force: true });
     rmSync(this.run, { recursive: true, force: true });
@@ -310,9 +322,17 @@ export class AppSandbox {
     return !!this.app && this.app.proc.exitCode === null;
   }
 
+  /** The screen it runs on (input, pictures, windows); null before start. */
+  get screen(): Screen | null {
+    return this.screen_;
+  }
+
   info() {
+    const free = this.screen_?.free ?? (typeof this.o.display === 'number' ? { backend: 'x11' as const, display: this.o.display } : this.o.display);
     return {
-      display: this.o.display,
+      /** The X display number; null on Wayland. */
+      display: free.display,
+      backend: free.backend,
       vncSocket: this.vncSocket,
       width: this.o.width,
       height: this.o.height,
@@ -373,7 +393,7 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
     const uid = process.getuid?.() ?? 1000;
     const gid = process.getgid?.() ?? 100;
     const run = `/run/user/${uid}`;
-    const d = this.o.display;
+    const screen = this.screen_!;
     const a = [this.bins.bwrap, '--unshare-all', ...(this.network === 'none' ? [] : ['--share-net']), '--uid', String(uid), '--gid', String(gid), '--hostname', 'sandbox'];
     a.push('--die-with-parent', '--new-session', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp');
     a.push('--ro-bind', '/nix/store', '/nix/store');
@@ -385,8 +405,10 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
     }
     const etc = join(this.o.dir, 'etc');
     a.push('--ro-bind', join(etc, 'passwd'), '/etc/passwd', '--ro-bind', join(etc, 'group'), '/etc/group', '--ro-bind', join(etc, 'machine-id'), '/etc/machine-id');
-    a.push('--dir', '/tmp/.X11-unix', '--bind', `/tmp/.X11-unix/X${d}`, `/tmp/.X11-unix/X${d}`);
+    // The display's one socket: X's path socket, or the compositor's Wayland socket at a path of the app's own.
+    if (screen.backend === 'x11') a.push('--dir', '/tmp/.X11-unix', '--bind', screen.socket, screen.socket);
     a.push('--dir', run, '--chmod', '0700', run, '--bind', join(this.run, 'bus'), `${run}/bus`);
+    if (screen.backend === 'wayland') a.push('--bind', screen.socket, `${run}/wayland-0`);
     if (this.o.audio) a.push('--dir', `${run}/pulse`, '--bind', this.pulseSocket, `${run}/pulse/native`);
     a.push('--bind', this.home, HOME, '--ro-bind', join(this.o.dir, 'bin'), BIN);
     a.push('--symlink', this.bins.sh, '/bin/sh', '--symlink', join(this.bins.coreutils, 'env'), '/usr/bin/env');
@@ -399,7 +421,7 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
       LOGNAME: 'user',
       SHELL: '/bin/sh',
       PATH: `${BIN}:${this.bins.coreutils}`,
-      DISPLAY: `:${d}`,
+      ...displayEnv(screen, run),
       XDG_RUNTIME_DIR: run,
       DBUS_SESSION_BUS_ADDRESS: `unix:path=${run}/bus`,
       XDG_CONFIG_HOME: `${HOME}/.config`,
@@ -409,7 +431,6 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
       LANG: 'en_US.UTF-8',
       BROWSER: `${BIN}/xdg-open`,
       // Qt's file dialogs through the FileChooser portal (ours); GLib's link opening through OpenURI (ours).
-      QT_QPA_PLATFORM: 'xcb',
       QT_QPA_PLATFORMTHEME: 'xdgdesktopportal',
       GTK_USE_PORTAL: '1',
       GIO_USE_PORTALS: '1',
@@ -519,27 +540,11 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
 
   // ---------------------------------------------------------------- the window
 
-  /** No window manager maximizes anything here: keep the app's main window the size of the display. */
+  /** Keep the app's main window (fitWindow) the size of the display (screen.ts: X has no window manager to). */
   private async fit() {
-    if (!this.bins.xdotool || !this.appAlive) return;
-    const run = async (args: string[]) => {
-      const p = Bun.spawn([this.bins.xdotool!, ...args], { env: { DISPLAY: `:${this.o.display}` }, stdout: 'pipe', stderr: 'ignore' });
-      const out = await new Response(p.stdout).text();
-      await p.exited;
-      return out;
-    };
+    if (!this.screen_ || !this.appAlive) return;
     try {
-      const ids = (await run(['search', '--onlyvisible', '--name', this.o.fitWindow!])).split('\n').filter(Boolean);
-      let best: { id: string; x: number; y: number; w: number; h: number } | null = null;
-      for (const id of ids) {
-        const g = Object.fromEntries((await run(['getwindowgeometry', '--shell', id])).split('\n').filter(Boolean).map((l) => l.split('=')));
-        const w = Number(g.WIDTH);
-        const h = Number(g.HEIGHT);
-        if (w < 200 || h < 200) continue;
-        if (!best || w * h > best.w * best.h) best = { id, x: Number(g.X), y: Number(g.Y), w, h };
-      }
-      if (!best || (best.x === 0 && best.y === 0 && best.w === this.o.width && best.h === this.o.height)) return;
-      await run(['windowmove', best.id, '0', '0', 'windowsize', best.id, String(this.o.width), String(this.o.height)]);
+      await this.screen_.fit(this.o.fitWindow!);
     } catch (e) {
       this.o.log('debug', `fitting the window: ${(e as Error).message}`);
     }
@@ -547,16 +552,16 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
 
   // ---------------------------------------------------------------- processes
 
-  private spawn(name: string, cmd: string[], match: string, onExit?: (code: number | null, signal: string | null) => void, extraEnv?: Record<string, string>): Subprocess {
+  private spawn(name: string, cmd: string[], match: string, onExit?: (code: number | null, signal: string | null) => void, extraEnv?: Record<string, string | undefined>): Subprocess {
     this.o.log('debug', `spawn ${name}`, cmd.slice(0, 3).join(' '));
     // A small environment: the extractor's own (its manager token among it) stays out of every child, so not even
     // bubblewrap's init inside the sandbox carries it.
     const keep = ['PATH', 'HOME', 'LANG', 'TZ', 'XDG_RUNTIME_DIR', 'LOCALE_ARCHIVE'];
-    const env: Record<string, string> = { DISPLAY: `:${this.o.display}` };
+    const env: Record<string, string | undefined> = {};
     for (const k of keep) if (process.env[k]) env[k] = process.env[k]!;
     Object.assign(env, extraEnv);
     const proc = Bun.spawn(cmd, {
-      env,
+      env: cleanEnv(env),
       stdout: 'pipe',
       stderr: 'pipe',
       onExit: (_p, code, signal) => {
@@ -622,21 +627,10 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
     rmSync(file, { force: true });
   }
 
-  /** Our Xvfb's display is up: its socket there and its lock naming it (a dead server's socket stays until then). */
-  private async waitForDisplay(xvfb: Subprocess, ms: number, what: string) {
-    const deadline = Date.now() + ms;
-    while (Date.now() < deadline) {
-      if (xvfb.exitCode !== null) throw new Error(`${what} exited (${xvfb.exitCode}); is the display taken?`);
-      if (displayIsOurs(this.o.display, xvfb.pid)) return;
-      await Bun.sleep(50);
-    }
-    throw new Error(`${what} did not come up within ${ms} ms`);
-  }
-
   private async waitFor(path: string, proc: Subprocess, ms: number, what: string) {
     const deadline = Date.now() + ms;
     while (Date.now() < deadline) {
-      if (proc.exitCode !== null) throw new Error(`${what} exited (${proc.exitCode})${what.startsWith('Xvfb') ? '; is the display taken?' : ''}`);
+      if (proc.exitCode !== null) throw new Error(`${what} exited (${proc.exitCode})`);
       if (existsSync(path)) return;
       await Bun.sleep(50);
     }
@@ -645,6 +639,23 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
 }
 
 // ---------------------------------------------------------------- helpers
+
+/**
+ * How the app finds its display inside: X's DISPLAY, or the compositor's socket at `<run>/wayland-0` and every toolkit
+ * told to use it (Qt, GTK, SDL; Electron and Chromium by the session type and their own hint). Qt on X stays on xcb.
+ */
+export function displayEnv(screen: Pick<Screen, 'backend' | 'display'>, run: string): Record<string, string> {
+  if (screen.backend === 'x11') return { DISPLAY: `:${screen.display}`, QT_QPA_PLATFORM: 'xcb' };
+  return {
+    WAYLAND_DISPLAY: `${run}/wayland-0`,
+    XDG_SESSION_TYPE: 'wayland',
+    QT_QPA_PLATFORM: 'wayland',
+    GDK_BACKEND: 'wayland',
+    SDL_VIDEODRIVER: 'wayland',
+    ELECTRON_OZONE_PLATFORM_HINT: 'wayland',
+    NIXOS_OZONE_WL: '1',
+  };
+}
 
 function realOrNull(p: string): string | null {
   try {

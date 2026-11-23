@@ -15,6 +15,9 @@ import fakeManifest from '../extractors/fake/manifest.ts';
 import { cutMidCall, type CutTransport } from './cut-mid-call.ts';
 
 const ROOT = resolve(import.meta.dir, '..');
+// Account ids are machine-wide: a manager will not start an account some live process already runs, from any data
+// directory (acquireLock). This file can run in several checkouts at once, so its ids carry this run's pid.
+const RUN = process.pid.toString(36);
 const dirs: string[] = [];
 const managers: Manager[] = [];
 
@@ -69,7 +72,7 @@ async function world(name: string) {
   const dir = mkdtempSync(join(tmpdir(), `dacc-swap-${name}-`));
   dirs.push(dir);
   const m = await manager(dir);
-  const id = `acc-swap-${name}`;
+  const id = `acc-swap-${name}-${RUN}`;
   const accDir = insertAccount(m.store, dir, id);
   m.sup.start(id);
   await until(() => m.sup.state(id).online, 15_000, 'online');

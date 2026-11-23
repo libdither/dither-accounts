@@ -5,7 +5,7 @@
  * brings the QR back. Nothing reaches Google or a phone.
  */
 import type { UnixSocketListener } from 'bun';
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -14,6 +14,10 @@ import { AccountsClient, register } from '@dither-accounts/client';
 import { chat } from '@dither-accounts/interfaces';
 import { createManager, kindOf, type Manager } from '@dither-accounts/manager';
 import manifest from '../extractors/gmessages/manifest.ts';
+
+// These tests start real extractor processes, and under load one start can take seconds. A test's limit is longer
+// than the waits inside it, so one that hangs fails saying what it waited for, not with bun's bare 5 s timeout.
+setDefaultTimeout(30_000);
 
 const ROOT = resolve(import.meta.dir, '..');
 const SESSION = { browser: { sourceID: 'browser-1' }, mobile: { sourceID: 'phone-1' }, tachyon_token: 'dG9rZW4=', request_crypto: { aes_key: 'a', hmac_key: 'b' }, refresh_key: {} };

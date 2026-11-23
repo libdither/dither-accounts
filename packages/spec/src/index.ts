@@ -185,9 +185,11 @@ export function isExtractorCode(code: unknown): code is string {
  * word of its own, that word (isExtractorCode), with the extractor's `status`. The interface documents its words (mail:
  * Proton's mail.send says 'from', 'recipients' or 'settings' with 422). An extractor's error without one is 'failed'.
  *
- * Two words mean the same wherever they come from: `unsure` (504), a write that may or may not have happened and was
- * not tried again (the app's client says it of a write in flight when its socket dropped; mail.send of a repeated
- * idempotencyKey whose first send's outcome is unknown); and `duplicate` (409), a write already done under that key.
+ * Three words mean the same wherever they come from: `retry` (503), the call was never sent and may be sent again
+ * (it waited for a channel being replaced, an extractor or a page, and its time ran out first: handover.ts);
+ * `unsure` (504), a write that may or may not have happened and was not tried again (the app's client says it of a
+ * write in flight when its socket dropped; mail.send of a repeated idempotencyKey whose first send's outcome is
+ * unknown; a page reloaded while it had the call); and `duplicate` (409), a write already done under that key.
  * A call sent again with the same call id is run once by the manager: the repeat gets the first's answer.
  */
 export interface CallError {

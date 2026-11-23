@@ -32,6 +32,9 @@ A failed call says why in `CallError.code`: the manager's own words (`denied`, `
 named its reason (`new StatusError(message, 422, 'recipients')` in packages/link), that word with the extractor's
 `status`. The interface documents its words (Proton's `mail.send`: `from`, `recipients`, `settings`, in
 packages/interfaces/src/mail.ts). An extractor cannot use one of the manager's words: those arrive as `failed`.
+Three words mean the same wherever they come from (packages/spec `CallError`): `retry` (503), the call was never
+sent and may be sent again (it waited for an extractor or a page being replaced, and its time ran out first);
+`unsure` (504), a write that may or may not have happened; and `duplicate` (409).
 
 ### A call runs once
 

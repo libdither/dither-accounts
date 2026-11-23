@@ -17,10 +17,17 @@
  * An app that manages an account (an `accounts` grant at manage for its kind) also runs it: `admin` creates, changes,
  * restarts and removes accounts and reads their logs, and `liveViewUrl` is the socket that carries an account's live
  * view (its sandboxed browser's VNC stream) for the app to hand on to its own page.
+ *
+ * With `remember`, a read that failed is not sent again until it is due (spec memory.ts, docs/manager.md "A failed
+ * read is remembered"): a repeat fails at once with the same error, `remembered` set and `retryAfterMs` the time left.
+ * A transient failure backs off (honouring its retryAfterMs), an expected one is kept until the account changes (or 10
+ * minutes), a bug backs off longer. A success, a write to the account, the account's state changing, or `forget`
+ * clears it. Only failures the manager answered are remembered, never the client's own (a timeout, a dropped socket).
  */
 import { type AccountView, type AdminAction, type AdminResult, type CallError, type ConsumerIn, type ConsumerOut, type FailureKind, failureKindOf, type Iface, type InputOf, liveViewPath, type OpName, type OutputOf, retryAfterOf } from '@dither-accounts/spec';
 import type { AccessRequest } from '@dither-accounts/manager/api-types';
 import { IFACES } from '@dither-accounts/interfaces';
+import { FailureMemory, type MemoryOpts, type Remembered } from '@dither-accounts/spec/memory';
 import { ManagerSocket, OPEN } from './socket.ts';
 
 /** Each op's level, by name (op names are unique across interfaces): which calls may be sent again. */
@@ -45,12 +52,18 @@ export class CallFailed extends Error {
   readonly status?: number;
   readonly kind?: FailureKind;
   readonly retryAfterMs?: number;
-  constructor(e: CallError) {
+  /**
+   * Set when this is a remembered answer (ClientOpts.remember): the call was not sent. When it failed last, how many
+   * times in a row, and how many times it was asked again since. An app logs it as a repeat, not as a new failure.
+   */
+  readonly remembered?: { at: number; failures: number; repeats: number };
+  constructor(e: CallError, remembered?: Pick<Remembered, 'at' | 'failures' | 'repeats'>) {
     super(e.message);
     this.code = e.code;
     this.status = e.status;
     this.kind = failureKindOf(e);
     this.retryAfterMs = retryAfterOf(e.retryAfterMs);
+    if (remembered) this.remembered = { at: remembered.at, failures: remembered.failures, repeats: remembered.repeats };
   }
 }
 
@@ -67,10 +80,12 @@ export interface ClientOpts {
   onConnection?: (connected: boolean) => void;
   /** Default call timeout, ms (each op's own is longer when the interface says so). Default 60 s. */
   timeoutMs?: number;
+  /** Remember failed reads and answer repeats from memory until they are due (spec memory.ts). Off by default. */
+  remember?: boolean | MemoryOpts;
 }
 
 /** `read`: safe to send again. `sent`: it went out on a socket. */
-type Waiting = { msg: string; read: boolean; sent: boolean; resolve: (v: unknown) => void; reject: (e: Error) => void; timer: Timer };
+type Waiting = { msg: string; read: boolean; sent: boolean; resolve: (v: unknown) => void; reject: (e: Error) => void; timer: Timer; answered?: (error: CallError | null) => void };
 
 export class AccountsClient {
   accounts: AccountView[] = [];
@@ -80,9 +95,27 @@ export class AccountsClient {
   private attempt = 0;
   private waiting = new Map<string, Waiting>();
   private ping?: Timer;
+  /** Failed reads remembered (`remember`), else null. */
+  readonly memory: FailureMemory | null;
+  /** What each account looked like when last told, as far as it bears on a remembered failure. */
+  private seen = new Map<string, string>();
 
   constructor(private opts: ClientOpts) {
+    this.memory = opts.remember ? new FailureMemory(opts.remember === true ? {} : opts.remember) : null;
     this.connect();
+  }
+
+  /** Forget remembered failures: an account's (all, or one op's), or all of them; the next call of each is sent. */
+  forget(account?: string, op?: string) {
+    this.memory?.forget(account, op);
+  }
+
+  /** An account whose state changed (online, running, enabled, an error, its grants) has its remembered failures forgotten. */
+  private accountsChanged(accounts: AccountView[]) {
+    if (!this.memory) return;
+    const now = new Map(accounts.map((a) => [a.id, JSON.stringify([a.running, a.online, a.enabled, a.error, a.grants])]));
+    for (const [id, was] of this.seen) if (now.get(id) !== was) this.memory.forget(id);
+    this.seen = now;
   }
 
   private connect() {
@@ -111,6 +144,7 @@ export class AccountsClient {
         return;
       }
       if (m.t === 'accounts') {
+        this.accountsChanged(m.accounts);
         this.accounts = m.accounts;
         this.opts.onAccounts?.(m.accounts);
       } else if (m.t === 'events') this.opts.onEvents?.(m.account, m.events);
@@ -120,6 +154,7 @@ export class AccountsClient {
         if (!w) return;
         this.waiting.delete(m.id);
         clearTimeout(w.timer);
+        w.answered?.(m.ok ? null : m.error);
         if (m.ok) w.resolve(m.result);
         else w.reject(new CallFailed(m.error));
       }
@@ -141,7 +176,7 @@ export class AccountsClient {
     ws.onerror = () => {};
   }
 
-  private send(build: (id: string) => ConsumerIn, timeoutMs: number, read: boolean): Promise<unknown> {
+  private send(build: (id: string) => ConsumerIn, timeoutMs: number, read: boolean, answered?: Waiting['answered']): Promise<unknown> {
     const id = crypto.randomUUID();
     const msg = JSON.stringify(build(id));
     return new Promise((resolve, reject) => {
@@ -149,7 +184,7 @@ export class AccountsClient {
         this.waiting.delete(id);
         reject(new CallFailed({ code: 'timeout', message: this.connected ? 'the manager did not answer' : 'the manager is not reachable' }));
       }, timeoutMs);
-      const w: Waiting = { msg, read, sent: false, resolve, reject, timer };
+      const w: Waiting = { msg, read, sent: false, resolve, reject, timer, answered };
       this.waiting.set(id, w);
       if (this.connected) {
         this.ws!.send(msg);
@@ -169,7 +204,23 @@ export class AccountsClient {
    * knows is taken for a write: it is not sent again after a dropped socket.
    */
   callRaw(account: string, op: string, input: Record<string, unknown> = {}, timeoutMs = this.opts.timeoutMs ?? 60_000, o: { trace?: string } = {}): Promise<unknown> {
-    return this.send((id) => ({ t: 'call', id, account, op, input, ...(o.trace ? { trace: o.trace } : {}) }), timeoutMs, OP_LEVEL.get(op) === 'read');
+    const read = OP_LEVEL.get(op) === 'read';
+    const mem = this.memory;
+    if (!mem) return this.send((id) => ({ t: 'call', id, account, op, input, ...(o.trace ? { trace: o.trace } : {}) }), timeoutMs, read);
+    if (!read) {
+      // A write may change what the account's reads answer: what was remembered of it is asked again.
+      return this.send((id) => ({ t: 'call', id, account, op, input, ...(o.trace ? { trace: o.trace } : {}) }), timeoutMs, read, (error) => {
+        if (!error) mem.forget(account);
+      });
+    }
+    const key = mem.key(account, op, input);
+    const hit = mem.check(key);
+    if (hit) return Promise.reject(new CallFailed({ ...hit.error, retryAfterMs: mem.dueInMs(hit) }, hit));
+    const repeats = mem.take(key);
+    return this.send((id) => ({ t: 'call', id, account, op, input, ...(o.trace ? { trace: o.trace } : {}), ...(repeats ? { repeats } : {}) }), timeoutMs, read, (error) => {
+      if (error) mem.failed(key, account, op, error);
+      else mem.succeeded(key);
+    });
   }
 
   /** Create, change, start, stop, remove accounts of the kinds this app manages, or read their logs. */

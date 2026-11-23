@@ -279,8 +279,12 @@ export interface AccountView {
 }
 
 export type ConsumerIn =
-  /** `trace`: the app's W3C traceparent, so the manager's span for the call (and the extractor's) join its trace. */
-  | { t: 'call'; id: string; account: string; op: string; input?: Record<string, unknown>; trace?: string }
+  /**
+   * `trace`: the app's W3C traceparent, so the manager's span for the call (and the extractor's) join its trace.
+   * `repeats`: how many times the app asked this same call again since it last failed, answered from its own memory of
+   * that failure and not sent (memory.ts); the manager puts it on the call's span.
+   */
+  | { t: 'call'; id: string; account: string; op: string; input?: Record<string, unknown>; trace?: string; repeats?: number }
   | { t: 'admin'; id: string; action: AdminAction }
   | { t: 'ping' };
 

@@ -218,24 +218,55 @@ function Chain({ layers }: { layers: StatusLayer[] }) {
   );
 }
 
-/** Its kind's own settings (the manifest's `settings`), each a switch; changing one restarts the extractor to take it. */
+/**
+ * Its kind's own settings (the manifest's `settings`): a switch, or a line of text saved with its button; changing one
+ * restarts the extractor to take it.
+ */
 function Settings({ a, reload }: { a: AccountInfo; reload: () => void }) {
-  const flip = async (key: string, label: string, value: boolean) => {
-    if (await act(`/api/accounts/${a.id}`, { method: 'PATCH', body: { settings: { [key]: value } } }, `${label} ${value ? 'on' : 'off'}: restarting it`)) reload();
+  const save = async (key: string, value: boolean | string, done: string) => {
+    if (await act(`/api/accounts/${a.id}`, { method: 'PATCH', body: { settings: { [key]: value } } }, `${done}: restarting it`)) reload();
   };
   return (
     <section class="pane-section" data-settings>
       <h4>Settings</h4>
-      {a.settings.map((x) => (
-        <div key={x.key} data-setting={x.key}>
-          <label class="row nowrap small">
-            <input type="checkbox" checked={x.value} onChange={(e) => void flip(x.key, x.label, (e.target as HTMLInputElement).checked)} />
-            <span>{x.label}</span>
-          </label>
-          <p class="muted small">{x.note}</p>
-        </div>
-      ))}
+      {a.settings.map((x) =>
+        x.type === 'text' ? (
+          <TextSetting key={x.key} x={x} save={save} />
+        ) : (
+          <div key={x.key} data-setting={x.key}>
+            <label class="row nowrap small">
+              <input type="checkbox" checked={x.value} onChange={(e) => void save(x.key, (e.target as HTMLInputElement).checked, `${x.label} ${(e.target as HTMLInputElement).checked ? 'on' : 'off'}`)} />
+              <span>{x.label}</span>
+            </label>
+            <p class="muted small">{x.note}</p>
+          </div>
+        ),
+      )}
     </section>
+  );
+}
+
+function TextSetting({ x, save }: { x: { key: string; label: string; note: string; value: string; placeholder?: string }; save: (key: string, value: string, done: string) => Promise<void> }) {
+  const [draft, setDraft] = useState(x.value);
+  useEffect(() => setDraft(x.value), [x.value]);
+  const changed = draft.trim() !== x.value;
+  return (
+    <div data-setting={x.key}>
+      <form
+        class="row nowrap small"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (changed) void save(x.key, draft.trim(), draft.trim() ? `${x.label}: ${draft.trim()}` : `${x.label} cleared`);
+        }}
+      >
+        <span>{x.label}</span>
+        <input type="text" value={draft} placeholder={x.placeholder} maxLength={200} onInput={(e) => setDraft((e.target as HTMLInputElement).value)} />
+        <button type="submit" class="btn sm" disabled={!changed}>
+          Save
+        </button>
+      </form>
+      <p class="muted small">{x.note}</p>
+    </div>
   );
 }
 

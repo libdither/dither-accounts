@@ -39,9 +39,22 @@ export interface Manifest {
 export interface SettingInfo {
   key: string;
   label: string;
-  type: 'boolean';
+  /** A switch, or a line of text (empty clears it: the kind's default). */
+  type: 'boolean' | 'text';
   /** What it does, in a sentence, for the page and the CLI. */
   note: string;
+  /** A text setting's rule (a regular expression the whole value must match), and what the box shows when empty. */
+  pattern?: string;
+  placeholder?: string;
+}
+
+/** A text setting's value as kept: trimmed, at most 200 characters, matching its pattern; '' clears it. Else the reason. */
+export function textSetting(info: SettingInfo, v: unknown): { value: string } | { error: string } {
+  if (typeof v !== 'string') return { error: `${info.key} is a line of text` };
+  const value = v.trim();
+  if (value.length > 200) return { error: `${info.key} is at most 200 characters` };
+  if (value && info.pattern && !new RegExp(info.pattern).test(value)) return { error: `${info.key} does not look right: ${info.note}` };
+  return { value };
 }
 
 export interface Kind extends Manifest {

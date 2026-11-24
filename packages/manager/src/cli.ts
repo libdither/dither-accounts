@@ -125,11 +125,14 @@ async function main() {
       return;
     }
     case 'set': {
-      const [id, key, value] = rest;
-      if (!id || !key || !value || !['on', 'off', 'true', 'false'].includes(value)) die('set <account> <setting> on|off');
+      // A switch takes on or off; a text setting takes the rest of the line ('' clears it).
+      const [id, key, ...words] = rest;
+      const value = words.join(' ');
+      if (!id || !key || words.length === 0) die('set <account> <setting> on|off, or set <account> <setting> <text> ("" clears it)');
       if (!up) die(`the manager is not running at ${url}`);
-      await call('PATCH', `/api/accounts/${encodeURIComponent(id)}`, { settings: { [key]: value === 'on' || value === 'true' } });
-      console.log(`${id}: ${key} ${value === 'on' || value === 'true' ? 'on' : 'off'} (its extractor restarts to take it)`);
+      const flag = ['on', 'off', 'true', 'false'].includes(value);
+      await call('PATCH', `/api/accounts/${encodeURIComponent(id)}`, { settings: { [key]: flag ? value === 'on' || value === 'true' : value } });
+      console.log(`${id}: ${key} ${flag ? (value === 'on' || value === 'true' ? 'on' : 'off') : value ? `= ${value}` : 'cleared'} (its extractor restarts to take it)`);
       return;
     }
     case 'import-dither-chat':

@@ -18,6 +18,7 @@ same wire as before: dither-chat's adapter protocol, copied as `packages/chat-pr
 | `lesswrong` | `extractors/lesswrong` | a ForumMagnum site's GraphQL endpoint (LessWrong, the EA Forum) with plain fetch: posts and comments only, notifications as a feed, nothing marked read ([lesswrong.md](lesswrong.md)): no adapter in dither-chat |
 | `bluesky` | `extractors/bluesky` | the AT Protocol's HTTP API (XRPC) on the account's own server with plain fetch: posts only, notifications as a feed ([bluesky.md](bluesky.md)): no adapter in dither-chat |
 | `zulip` | `extractors/zulip` | a Zulip server's REST API and event queue with plain fetch: channels as forums, topics as threads ([zulip.md](zulip.md)) |
+| `luma` | `extractors/luma` | luma.com signed in in a sandboxed browser, its web app's own calls: events as posts (Explore by city, your events, who is going), notifications as a feed, blasts and chats ([luma.md](luma.md)): no adapter in dither-chat |
 | `chat-fake` | `extractors/chat-fake` | a fake for tests: you and Alice in one DM |
 
 ## The `chat` interface

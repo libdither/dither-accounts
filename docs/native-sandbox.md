@@ -28,6 +28,32 @@ the app sees `wayland-0` and no X socket, the compositor's own directory and the
 window, RFB clicks and keys reach it as X events, grim pictures it, and its X sockets are in neither the machine's
 `/tmp/.X11-unix` nor the machine's network namespace.
 
+### Its compositor draws in software
+
+On the wayland backend a native app's sway renders with pixman, on the CPU (`AppSandboxOptions.gpu`, default
+false), where a browser sandbox's renders with gles2 on the machine's render node. The app has no render node inside
+its sandbox (`--dev /dev` holds none), so it draws in software on either; only the compositor would use the GPU, and
+loading the GPU driver is most of what a GPU-backed sway costs. Each app was checked under pixman: it draws its first
+screen as under gles2 and on x11, input reaches it, and its own output has nothing new about GL or the GPU (Telegram
+Desktop's Mesa warnings about having no render device come up the same under both). `scripts/bench-native.ts`, each
+app with no network to its first screen, three repetitions, medians:
+
+| | x11 | wayland, gles2 | wayland, pixman |
+|---|---|---|---|
+| Signal Desktop: sandbox up / first picture | 208 ms / 14.9 s | 336 ms / 13.1 s | 280 ms / 12.4 s |
+| Signal Desktop: screen stack, whole sandbox (PSS) | 23, 502 MB | 55, 527 MB | 40, 515 MB |
+| Telegram Desktop: sandbox up / first picture | 157 ms / 3.6 s | 510 ms / 9.1 s | 291 ms / 3.4 s |
+| Telegram Desktop: screen stack, whole sandbox | 19, 304 MB | 52, 364 MB | 39, 356 MB |
+| Haveno (X app; xwayland-satellite on wayland): sandbox up / first picture | 157 ms / 3.8 s | 310 ms / 3.5 s | 261 ms / 3.6 s |
+| Haveno: screen stack, whole sandbox | 19, 397 MB | 74, 478 MB | 62, 433 MB |
+
+The screen stack is the display and its live view: Xvfb and x11vnc, or sway and wayvnc (and for Haveno
+xwayland-satellite with its Xwayland, about 24 MB of it). sway itself is 41–45 MB under gles2 and 28–32 MB under
+pixman, and a sandbox with it is up 50–220 ms sooner. The first picture is the app's own start, which varies by
+seconds between runs of one configuration (Telegram Desktop 2.7–10 s on each), so it shows only that none is held
+back. Idle CPU is the app's own and the same on every configuration (Signal and Haveno about 2% of a core; Telegram
+Desktop, which with no network keeps redrawing its reconnecting spinner, 150–190%).
+
 ## The routing policy
 
 Simple, and the same for every app:

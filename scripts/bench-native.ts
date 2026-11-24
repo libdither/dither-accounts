@@ -38,7 +38,9 @@ const CONFIGS = [
   { name: 'gles2', backend: 'wayland' as const, gpu: true },
   { name: 'pixman', backend: 'wayland' as const, gpu: false },
 ];
-const SCREEN_PROCS = new Set(['Xvfb', 'x11vnc', 'sway', 'wayvnc', 'xwayland-satellite', 'Xwayland']);
+const SCREEN_PROCS = ['Xvfb', 'x11vnc', 'sway', 'wayvnc', 'xwayland-satellite', 'Xwayland'];
+/** A program of the screen stack, by its name in /proc, which the kernel cuts to 15 characters (xwayland-satel). */
+const screenProc = (name: string) => SCREEN_PROCS.some((p) => p.startsWith(name) && name.length >= Math.min(p.length, 14));
 const GPU_LINE = /\b(EGL|GLX|GLES|OpenGL|gbm|DRI\d?|dri|GPU|gpu_|vaapi|libva|ContextLost|context lost|swrast|llvmpipe|zink|vulkan|Vulkan|SwiftShader|ANGLE|viz|Skia)\b/;
 
 type App = { name: string; opts: (dir: string) => Partial<AppSandboxOptions> & Pick<AppSandboxOptions, 'command'>; click?: [number, number] };
@@ -119,7 +121,7 @@ async function one(app: App, key: string, cfg: (typeof CONFIGS)[number], rep: nu
     const all = tree(roots());
     const byName: Record<string, number> = {};
     for (const p of all) byName[progName(p)] = (byName[progName(p)] ?? 0) + memory([p]).pssMB;
-    const screenPss = Object.entries(byName).filter(([n]) => SCREEN_PROCS.has(n)).reduce((a, [, v]) => a + v, 0);
+    const screenPss = Object.entries(byName).filter(([n]) => screenProc(n)).reduce((a, [, v]) => a + v, 0);
     out.idle = { cpu: cpu.total, cpuByName: cpu.byName, pssMB: memory(all).pssMB, screenPssMB: screenPss, appPssMB: memory(all).pssMB - screenPss, pssByName: byName };
     // Input.
     const before = Buffer.from(await sb.screen!.screenshot());

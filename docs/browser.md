@@ -134,34 +134,83 @@ ScreenCast may be asked there (a Chromium given that bus, as before, is seen the
 works). Two wayland sandboxes run at once, and each one's capture decodes as its own page.
 
 **Measured side by side.** `scripts/bench-display.ts` runs one browser sandbox per backend through the same pages
-and input and writes JSON; `scripts/bench-display-report.ts` turns that into a page with charts. On a 16-thread desktop
-CPU with a mid-range AMD GPU, 1280×800, five repetitions (backend order alternating, 1-minute load 2.8–6.2), medians:
+and input and writes JSON; `scripts/bench-display-report.ts` turns that into a page with charts (with
+`scripts/bench-native.ts`'s native apps and `scripts/bench-link.ts`'s slow links beside it). On a 16-thread desktop
+CPU with a mid-range AMD GPU, 1280×800, five repetitions (backend order alternating, 1-minute load 4–7.7, one x11
+repetition at 36), medians:
 
 | | x11 | wayland |
 |---|---|---|
-| start → live view up / first page ran | 138 / 551 ms | 325 / 853 ms |
-| idle: CPU, PSS of every process | 3.2%, 204 MB | 3.0%, 240 MB |
-| idle: PSS of all but Chromium | 22 MB (Xvfb 16, x11vnc 6) | 54 MB (sway 44, wayvnc 9) |
-| live view, full-screen animation: frames/s, server CPU | 39.5, 14% | 29.8, 36% (wayvnc's default cap of 30; at `-f 60`: 58.9, 70%) |
-| live view, page scrolling: frames/s, bytes/s | 28.4, 1.6 MB/s | 29.8, 2.7 MB/s |
-| live view, 720p video: frames/s, server CPU | 20.3, 54% | 28.2, 33% |
-| RFB press → page handler / click to photon | 8.6 / 72 ms | 0.9 / 27 ms |
+| start → live view up / first page ran | 180 / 707 ms | 589 / 1,246 ms (warm starts 360–590 / 810–1,250) |
+| idle: CPU, PSS of every process | 3.7%, 188 MB | 3.8%, 225 MB |
+| idle: PSS of all but Chromium | 22 MB (Xvfb 16, x11vnc 6) | 54 MB (sway 43, wayvnc 9) |
+| live view, full-screen animation: frames/s, server CPU | 39.0, 16% | 58.1, 78% (wayvnc's default `-f 30`: 29.6, 45%) |
+| live view, page scrolling: frames/s, bytes/s | 27.8, 1.6 MB/s | 58.7, 5.1 MB/s |
+| live view, 720p video: frames/s, server CPU | 19.2, 54% | 28.0, 34% |
+| live view, a still page with a viewer: server CPU | 1.4% | 0% (at 30 too) |
+| RFB press → page handler / click to photon | 7.2 / 74 ms | 1.0 / 32 ms |
 | typing, each backend's own way (35 ms a key) | 28 chars/s | 17 chars/s |
-| screen share: frames/s, drawn → decoded, CPU | 25.5, 69 ms, 135% | 26.7, 127 ms, 104% |
-| 720p VP9 video in Chromium: dropped, CPU | 0%, 55% | 4.6%, 26% |
-| WebGL (60 Hz display): frames/s, CPU | 60, 83% | 61, 23% |
-| screenshot (import / grim) | 93 ms | 34 ms |
-| 10 sandboxes at once: all started, PSS each | 4.4 s, 182 MB | 2.2 s, 204 MB |
-| 20 sandboxes at once | failed (below) | 5.2 s, 198 MB, 62% idle CPU in all |
+| screen share: frames/s, drawn → decoded, CPU | 25.3, 83 ms, 152% | 26.0, 119 ms, 102% |
+| 720p VP9 video in Chromium: dropped, CPU | 0.3%, 60% | 5.0%, 32% |
+| WebGL (60 Hz display): frames/s, CPU | 60, 106% | 61, 31% |
+| screenshot (import / grim) | 99 ms | 37 ms |
+| 5 sandboxes at once: all started, PSS each | 6.3 s, 190 MB | 2.5 s, 207 MB |
+| 10 / 20 sandboxes at once | failed (below) | 2.6 s, 204 MB / 6.1 s, 197 MB, 57% idle CPU in all |
 
-So: wayland costs about 30 MB more per sandbox (sway), starts a little slower alone and not slower many at a time,
-answers input far sooner, and draws GPU work and video with a third to a half of X's CPU (nothing is read back into
-Xvfb); its live view sends 30 frames a second unless wayvnc is told more, and its screen share is slower to its first
-frame and to each frame (PipeWire through the portal) than Chromium reading Xvfb. The x11 run of 20 at once failed
-because x11vnc could not get System V shared memory (`shmget: No space left on device`): each x11 sandbox holds about
-40 segments while it runs, the kernel allows `kernel.shmmni` (4096 by default) on the whole machine, and segments left
-by processes killed without cleaning up count against it too. Wayland sandboxes hold none. wayvnc's Open H.264 (`-g`,
-VA-API) did not deliver a frame on that machine: the encoder took the first frame and never finished it.
+So: wayland costs about 30 MB more per browser sandbox (sway on the GPU), starts slower alone and not slower many at
+a time, answers input far sooner, and draws GPU work and video with a third to a half of X's CPU (nothing is read back
+into Xvfb). Its live view now sends up to 60 frames a second (`-f 60`): twice the frames of wayvnc's default for 1.7
+times its CPU while something moves, nothing more while the screen is still. Its screen share is slower to each frame
+(PipeWire through the portal) than Chromium reading Xvfb. The x11 runs of 10 and 20 at once failed because x11vnc
+could not get System V shared memory (`shmget: No space left on device`): each x11 sandbox holds about 40 segments
+while it runs, the kernel allows `kernel.shmmni` (4096 by default) on the whole machine, and segments left by
+processes killed without cleaning up count against it too. Wayland sandboxes hold none. wayvnc's `-g` (its GPU
+features) changed nothing with ZRLE (58 frames a second at 78% either way), and its Open H.264 still delivers no frame
+on that machine: the encoder takes the first frame and never finishes it, wayvnc at 100% of a core. So the sandbox's
+wayvnc runs without `-g`; it then never offers H.264, even to noVNC, which asks for it first.
+
+**The live view over a slow link.** `scripts/bench-link.ts` puts a link between a viewer and the live view's
+socket, shaped with tc in a network namespace of its own (`scripts/bench-shaper.ts`: netem for delay and loss, tbf
+for bandwidth with a 50 ms queue; each link measured before use), and a CPU quota on the display processes alone (a
+systemd scope). The viewer asks for what the manager's page (noVNC 1.7) asks for: Tight first after Open H.264, quality
+6, compression 2, continuous updates and fences. Both servers answer with Tight; x11vnc waits for each request,
+wayvnc takes continuous updates and pushes frames as they come. Three repetitions, medians (frames a second of the
+full-screen animation / of the video, then click to photon):
+
+| link | x11 | wayland |
+|---|---|---|
+| unlimited | 35 / 35 fps, 81 ms | 59 / 28 fps, 8 ms |
+| 20 Mbit/s | 20 / 17 fps, 48 ms | 11 / 22 fps, 50 ms |
+| 5 Mbit/s | 7.3 / 5.7 fps, 55 ms | 2.8 / 4.1 fps, 193 ms |
+| 1 Mbit/s | 2.1 / 1.8 fps, 95 ms | 0.6 / 0.8 fps, 1.2 s |
+| 20 ms round trip | 24 / 23 fps, 86 ms | 59 / 28 fps, 29 ms |
+| 50 ms | 14 / 14 fps, 147 ms | 59 / 28 fps, 58 ms |
+| 150 ms | 11 / 5.7 fps, 198 ms | 52 / 26 fps, 159 ms |
+| 5 Mbit/s, 50 ms | 5.5 / 4.1 fps, 147 ms | 2.0 / 2.8 fps, 301 ms |
+| 1 Mbit/s, 150 ms | 1.8 / 1.4 fps, 250 ms | 0.4 / 0.6 fps, 1.6 s |
+| 20 Mbit/s, 50 ms, 1% loss | 3.9 / 2.9 fps, 147 ms | 1.4 / 1.8 fps, 288 ms |
+| display at 50% of a core | 35 / 35 fps, 48 ms | 59 / 28 fps, 8 ms |
+| display at 20% of a core | 17 / 14 fps, 49 ms | 25 / 28 fps, 9 ms |
+
+- Delay alone: wayland wins, and by more the farther away. Continuous updates do not wait a round trip per frame, so
+  it holds 52–59 frames a second at 150 ms, where x11vnc's request and answer fall to 11.
+- Bandwidth: x11 wins wherever the link is the limit. wayvnc's Tight is two and a half to five times the bytes of
+  x11vnc's (a still page of text, the first whole screen: 270 KB against 103 KB; the animation about 215 KB a frame
+  against 80), as it sends every changed 64×64 tile as JPEG where x11vnc sends flat areas as fills and palettes. At
+  5 Mbit/s and below a click on wayland takes 0.2–1.6 s to come back against x11's 0.05–0.25 s. Video, which JPEG
+  suits, is the exception at 20 Mbit/s. With ZRLE asked for instead, wayvnc sends the animation at 58 frames a second
+  in 0.5 MB/s, even at 5 Mbit/s and 50 ms (x11vnc 12), for more of its CPU (78% of a core); noVNC asks for Tight
+  first, so the page gets Tight.
+- Loss: TCP's own slowdown (1% loss at 50 ms leaves about 2.3 Mbit/s), so the same as bandwidth: x11 ahead.
+- A small CPU: wayland ahead. At 20% of a core x11 draws 17 frames a second and wayland 25, video 14 against 28, and
+  a click comes back in 49 ms against 9.
+- wayvnc's Open H.264 (with `-g`, asked for first as noVNC does) still sends nothing at any of these.
+- The manager's bridge (packages/manager/src/http.ts) now stops reading the VNC socket while the page's WebSocket is
+  backed up. Before, it read on regardless: x11vnc never noticed, as it sends only when asked, but wayvnc's output
+  piled up in the manager (10 MB at 5 Mbit/s and 50 ms) and at 1 Mbit/s and 150 ms passed Bun's 16 MB limit, past
+  which Bun drops what is sent (38 MB in the run), which breaks the RFB stream. Paced, wayvnc sees a full socket and
+  sends fewer frames; the frames a second are the same, the stream stays whole and the manager holds at most a few
+  hundred KB.
 
 **Limits.** Discord's extension port is picked free on wayland (on x11 it comes from the display number). No
 clipboard tool is used on either backend. An extractor killed outright leaves its compositor's directory (its config
@@ -207,4 +256,7 @@ config and flags), then a real headless sway and wayvnc (RFB on the socket and n
 socket, the seat's pointer and keyboard, grim's PNG), then Chromium on it: a click, Shift-held capitals, é, € and an
 emoji typed into a field arrive as trusted input with the right `code`s, and the page has a fine pointer and hover.
 `packages/sandbox/test/sandbox-wayland.test.ts` runs a native app on it and checks it sees only `wayland-0`, no X.
-Both skip without sway, wayvnc and grim (and Chromium for the last part), as on CI's runners.
+Both skip without sway, wayvnc and grim (and Chromium for the last part), as on CI's runners. Both check the
+compositor's renderer: gles2 where there is a render node for a browser, pixman for a native app.
+`test/liveview-pace.test.ts` checks the live view's pacing: a stand-in VNC server sends 64 MB to a page that reads
+nothing at first; it is held back meanwhile, and every byte arrives in order once the page reads.

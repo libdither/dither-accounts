@@ -10,14 +10,18 @@
  * ready); its output size needs another tool; and it exits when its one app does, where the native-app sandbox restarts
  * the app on a running display. sway with `xwayland disable` listens only on its socket and its IPC socket, both here.
  *
- *   sway     WLR_BACKENDS=headless and no input devices (WLR_LIBINPUT_NO_DEVICES); renderer gles2 on the machine's
- *            render node (Chromium's GPU buffers need it: under pixman its WebGL loses its context or hangs), pixman
- *            without one. Config written here: one output at the sandbox's size, no borders or title bars, no
- *            Xwayland, no swaybg or swaynag. The app's main window is tiled, so it fills the output (what the x11
- *            backend's fit loop does by hand); one that opens beside it floats at its own size, centered, as a
- *            dialog does.
+ *   sway     WLR_BACKENDS=headless and no input devices (WLR_LIBINPUT_NO_DEVICES). Its renderer (swayRenderer): gles2
+ *            on the machine's render node for a browser sandbox (Chromium's GPU buffers need it: under pixman its
+ *            WebGL loses its context or hangs); pixman, drawing in software, for a native app (ScreenOptions.gpu
+ *            false), which has no render node inside its sandbox and so draws in software anyway, and for a machine
+ *            without one. The GPU driver is what a GPU-backed sway costs: about 30 MB more and 75 ms longer to
+ *            start than pixman (docs/native-sandbox.md). Config written here: one output at the sandbox's size, no
+ *            borders or title bars, no Xwayland, no swaybg or swaynag. The app's main window is tiled, so it fills the
+ *            output (what the x11 backend's fit loop does by hand); one that opens beside it floats at its own size,
+ *            centered, as a dialog does.
  *   wayvnc   on the same socket path x11vnc used (vnc.ts), so the manager's live view carries it unchanged. Its flags,
  *            checked with `ss -lxp` and `ss -ltnup` in a fresh network namespace (wayvnc 0.10.2):
+ *              -f 60         up to 60 frames a second (its default is 30), as a desktop's screen shows them
  *              -u <path>     listen on that Unix socket, not on TCP (without -u the address is a host:port)
  *              -C <empty>    a config file of its own, so no user's ~/.config/wayvnc is read (none: no password, no TLS)
  *              -R            viewers cannot resize the output
@@ -89,8 +93,12 @@ focus_on_window_activation focus
  */
 export const devDri = () => process.env.DITHER_DEV_DRI || '/dev/dri';
 
-/** gles2 where the machine has a render node (Chromium's GPU buffers need it), else pixman. */
-export function swayRenderer(devDri_ = devDri()): 'gles2' | 'pixman' {
+/**
+ * gles2 when the sandbox's app renders on the GPU (Chromium: its GPU buffers need it) and the machine has a render node,
+ * else pixman (a native app, which has no render node inside its sandbox: see the header).
+ */
+export function swayRenderer(gpu = true, devDri_ = devDri()): 'gles2' | 'pixman' {
+  if (!gpu) return 'pixman';
   try {
     return readdirSync(devDri_).some((n) => n.startsWith('renderD')) ? 'gles2' : 'pixman';
   } catch {
@@ -98,9 +106,12 @@ export function swayRenderer(devDri_ = devDri()): 'gles2' | 'pixman' {
   }
 }
 
+/** The live view's frame rate (wayvnc's own default is 30). */
+export const WAYVNC_MAX_FPS = 60;
+
 /** wayvnc on its Unix socket only (see above). */
 export function wayvncArgs(wayvnc: string, socket: string, dir: string): string[] {
-  return [wayvnc, '-C', join(dir, 'wayvnc.conf'), '-u', '-R', '-k', 'us', '-S', join(dir, 'wayvnc.sock'), socket];
+  return [wayvnc, '-C', join(dir, 'wayvnc.conf'), '-u', '-R', '-f', String(WAYVNC_MAX_FPS), '-k', 'us', '-S', join(dir, 'wayvnc.sock'), socket];
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -151,7 +162,7 @@ export class WaylandScreen implements Screen {
     const wayvnc = resolveBin(DISPLAY_BINS.wayvnc, this.o.log);
     this.prepareDir();
     const conf = join(this.dir, 'sway.conf');
-    const renderer = swayRenderer();
+    const renderer = swayRenderer(this.o.gpu ?? true);
     const proc = this.o.spawn('sway', [sway, '-c', conf], {
       match: conf,
       env: {

@@ -47,6 +47,12 @@ export interface ScreenOptions {
   vncSocket?: string;
   width: number;
   height: number;
+  /**
+   * wayland: whether the app renders on the GPU, so the compositor should too (gles2 on the render node; default true,
+   * as for Chromium). False for an app that draws in software (a native app, which has no render node inside its
+   * sandbox): the compositor draws in software too (pixman), without loading the GPU driver (wayland.ts).
+   */
+  gpu?: boolean;
   /** x11: no abstract X socket either (-nolisten local), for a sandbox that is shown only the path socket. */
   pathSocketOnly?: boolean;
   spawn: ScreenSpawn;

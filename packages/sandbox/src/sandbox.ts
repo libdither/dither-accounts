@@ -81,6 +81,12 @@ export interface AppSandboxOptions {
    * the sandbox takes an X display (Xvfb) instead, as it does when xwayland-satellite cannot be had.
    */
   x11App?: boolean;
+  /**
+   * On the wayland backend, a compositor that renders on the GPU (gles2). Default false: the app has no render node
+   * inside its sandbox (`--dev /dev` holds none), so it draws in software, and so does its compositor (pixman), which
+   * spares the GPU driver's memory and start-up (docs/native-sandbox.md, "Its compositor draws in software").
+   */
+  gpu?: boolean;
   /** A window name (a regex) to keep fitted to the display: on X there is no window manager to maximize it. */
   fitWindow?: string;
   /** A download is announced once it has not changed for this long. */
@@ -207,6 +213,7 @@ export class AppSandbox {
       width: this.o.width,
       height: this.o.height,
       pathSocketOnly: true,
+      gpu: this.o.gpu ?? false,
       spawn: (name, cmd, o) => this.spawn(name, cmd, o.match, undefined, o.env),
       log: this.o.log,
     });

@@ -94,6 +94,12 @@ it("the app sees the compositor's socket alone, as wayland-0, and no X at all", 
   expect(r.vnc).toBe('hidden');
 });
 
+it('its compositor draws in software (pixman): the app has no render node inside', () => {
+  const sway = (sb as unknown as { procs: { name: string; proc: { pid: number } }[] }).procs.find((p) => p.name === 'sway')!;
+  const env = readFileSync(`/proc/${sway.proc.pid}/environ`, 'utf8').split('\0');
+  expect(env).toContain('WLR_RENDERER=pixman');
+});
+
 it('a picture of the screen is a PNG at its size', async () => {
   const png = await sb.screen!.screenshot();
   expect(png.subarray(1, 4).toString()).toBe('PNG');

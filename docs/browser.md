@@ -79,8 +79,10 @@ its one app does. sway with `xwayland disable` listens on its Wayland socket and
 
 - The same: `navigator.platform` (Linux x86_64), the user agent (Chromium still says X11 in it), client hints, the
   screen (the sandbox's size), device pixel ratio, colour depth, fonts, and the unmasked WebGL renderer (the GPU's,
-  through ANGLE on Vulkan). sway renders with gles2 on the machine's render node for that: under pixman Chromium's
-  GPU process loses WebGL or hangs, so pixman is used only where there is no render node.
+  through ANGLE on Vulkan). A browser sandbox's sway renders with gles2 on the machine's render node for that: under
+  pixman Chromium's GPU process loses WebGL or hangs, so a browser gets pixman only where there is no render node.
+  A native app's sway always draws in software (pixman): the app has no render node inside its sandbox and draws in
+  software anyway, and the GPU driver is most of what a GPU-backed sway costs (docs/native-sandbox.md).
 - Made the same: a fine pointer, hover and `document.hasFocus()`. Without a pointer and keyboard on the seat a
   Wayland page has none of them; wayvnc makes them only while a client is connected, so the sandbox keeps its own
   connected for as long as it runs.

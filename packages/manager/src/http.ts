@@ -210,6 +210,10 @@ export class Http {
             else d.queue.push(buf);
           } else void self.router.message(ws as any, msg as any);
         },
+        drain(ws) {
+          // The page has taken what was queued for it: read the live view's socket again (openLiveView).
+          if (ws.data.kind === 'liveview') ws.data.vnc?.resume();
+        },
         close(ws) {
           const d = ws.data;
           if (d.kind === 'extractor') self.sup.detach(ws as any);
@@ -239,8 +243,14 @@ export class Http {
           for (const b of d.queue) sock.write(b);
           d.queue = [];
         },
-        data(_sock, data) {
-          ws.sendBinary(data);
+        data(sock, data) {
+          // Paced by the page: while the WebSocket is backed up, the VNC server's socket is not read, so a slow link
+          // reaches the server as a full socket and it sends fewer frames. wayvnc pushes frames on its own (continuous
+          // updates, which noVNC turns on); read without pause, its output piled up here until Bun dropped some of it
+          // at its backpressure limit, which breaks the RFB stream (docs/browser.md, "The live view over a slow link").
+          const sent = ws.sendBinary(data);
+          if (sent === -1) sock.pause();
+          else if (sent === 0) ws.close(1011, 'the live view fell behind');
         },
         close() {
           if (!d.closed) ws.close(1000, 'the live view ended');

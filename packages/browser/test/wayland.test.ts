@@ -19,7 +19,7 @@ import { resolveChromium, Sandbox, screenFlags, screenPrefs } from '../src/sandb
 import { displayName, displayNote, makeScreen } from '../src/screen.ts';
 import { IPC, ipcMessage, SwayIpc, views, type SwayNode } from '../src/swayipc.ts';
 import { SOCKET_PATH_MAX } from '../src/vnc.ts';
-import { swayConfig, waylandDir, WaylandScreen, wayvncArgs } from '../src/wayland.ts';
+import { swayConfig, swayRenderer, waylandDir, WaylandScreen, wayvncArgs } from '../src/wayland.ts';
 import { inetSockets, unixSockets } from './inet.ts';
 
 process.env.DITHER_DISPLAY_CLAIMS = mkdtempSync(join(tmpdir(), 'display-claims-wl-'));
@@ -94,7 +94,19 @@ test("sway's config: one output at the size, no Xwayland, nothing drawn around w
   expect(c).toContain('default_border none');
   expect(c).not.toMatch(/^exec/m);
   const a = wayvncArgs('/bin/wayvnc', '/a/vnc.sock', '/a/wl');
-  expect(a).toEqual(['/bin/wayvnc', '-C', '/a/wl/wayvnc.conf', '-u', '-R', '-k', 'us', '-S', '/a/wl/wayvnc.sock', '/a/vnc.sock']);
+  expect(a).toEqual(['/bin/wayvnc', '-C', '/a/wl/wayvnc.conf', '-u', '-R', '-f', '60', '-k', 'us', '-S', '/a/wl/wayvnc.sock', '/a/vnc.sock']);
+});
+
+test("sway's renderer: gles2 for an app on the GPU where there is a render node; pixman for one drawing in software, or without one", () => {
+  const withNode = tmp('dri');
+  writeFileSync(join(withNode, 'card0'), '');
+  writeFileSync(join(withNode, 'renderD128'), '');
+  const cardOnly = tmp('dri-card');
+  writeFileSync(join(cardOnly, 'card0'), '');
+  expect(swayRenderer(true, withNode)).toBe('gles2');
+  expect(swayRenderer(false, withNode)).toBe('pixman');
+  expect(swayRenderer(true, cardOnly)).toBe('pixman');
+  expect(swayRenderer(true, join(cardOnly, 'missing'))).toBe('pixman');
 });
 
 test("the compositor's directory: wl in the account's, or one named for it in the runtime directory when too long", () => {
@@ -189,9 +201,11 @@ test('the RFB client: the 3.8 handshake with no authentication as a shared clien
   }
 });
 
+const envs = new Map<Subprocess, Record<string, string | undefined>>();
 const spawn = (_name: string, cmd: string[], o: { env?: Record<string, string | undefined> }) => {
   const p = Bun.spawn(cmd, { env: cleanEnv({ ...process.env, ...(o.env ?? {}) }), stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' });
   procs.push(p);
+  envs.set(p, o.env ?? {});
   return p;
 };
 const pngSize = (b: Buffer) => (b.subarray(1, 4).toString() === 'PNG' ? [b.readUInt32BE(16), b.readUInt32BE(20)] : null);
@@ -207,6 +221,8 @@ describe.skipIf(!why('sway, wayvnc and grim', wayland))('a real headless sway an
       try {
         await screen.start();
         const [sway, vnc] = procs.slice(start);
+        // A browser's screen (gpu by default): on the GPU where the machine has a render node.
+        expect(envs.get(sway!)?.WLR_RENDERER).toBe(swayRenderer(true));
         expect(screen.vncSocket).toBe(join(dir, 'vnc.sock'));
         expect(statSync(join(dir, 'wl')).mode & 0o777).toBe(0o700);
         expect(screen.socket).toMatch(new RegExp(`^${join(dir, 'wl')}/wayland-\\d+$`));

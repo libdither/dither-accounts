@@ -3,21 +3,41 @@
  * The page for scripts/bench-display.ts's numbers: one HTML file, the results inside it, charts drawn by the page
  * itself (no network), light and dark.
  *
- *   bun scripts/bench-display-report.ts <results.json> <out dir>
+ *   bun scripts/bench-display-report.ts <results.json> <out dir> [--native native.json] [--link link.json]
  *
- * Writes <out dir>/index.html and a copy of the results as <out dir>/results.json.
+ * Writes <out dir>/index.html and a copy of each input beside it (results.json, native.json, link.json). The native
+ * apps' numbers come from scripts/bench-native.ts, the constrained link's from scripts/bench-link.ts. The native runs'
+ * log lines (the apps' own output) are left out of the page and its copy.
  */
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const [input, outDir] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const opt = (name: string) => {
+  const i = args.indexOf(`--${name}`);
+  if (i < 0) return null;
+  const v = args[i + 1]!;
+  args.splice(i, 2);
+  return v;
+};
+const nativeIn = opt('native');
+const linkIn = opt('link');
+const [input, outDir] = args;
 if (!input || !outDir) {
-  console.error('usage: bun scripts/bench-display-report.ts <results.json> <out dir>');
+  console.error('usage: bun scripts/bench-display-report.ts <results.json> <out dir> [--native native.json] [--link link.json]');
   process.exit(2);
 }
 const results = JSON.parse(readFileSync(input, 'utf8'));
 mkdirSync(outDir, { recursive: true });
 copyFileSync(input, join(outDir, 'results.json'));
+const native = nativeIn ? JSON.parse(readFileSync(nativeIn, 'utf8')) : null;
+if (native) {
+  for (const r of native.runs) delete r.gpuLines;
+  writeFileSync(join(outDir, 'native.json'), JSON.stringify(native, null, 2));
+}
+const link = linkIn ? JSON.parse(readFileSync(linkIn, 'utf8')) : null;
+if (link) copyFileSync(linkIn!, join(outDir, 'link.json'));
+const json = (v: unknown) => JSON.stringify(v).replace(/</g, '\\u003c');
 
 const page = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -27,21 +47,21 @@ const page = `<!doctype html>
   color-scheme: light;
   --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
   --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,0.10);
-  --x11: #2a78d6; --wayland: #eb6834;
+  --x11: #2a78d6; --wayland: #eb6834; --pixman: #1baf7a;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
     --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
     --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
-    --x11: #3987e5; --wayland: #d95926;
+    --x11: #3987e5; --wayland: #d95926; --pixman: #199e70;
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
   --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
   --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
-  --x11: #3987e5; --wayland: #d95926;
+  --x11: #3987e5; --wayland: #d95926; --pixman: #199e70;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -58,6 +78,7 @@ h2 { font-size: 17px; margin: 32px 0 4px; font-weight: 600; }
 .card h3 { font-size: 13px; font-weight: 600; margin: 0; }
 .card .how { color: var(--muted); font-size: 12px; margin: 0 0 6px; }
 .wide { grid-column: 1 / -1; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr)); gap: 12px; }
 svg { display: block; width: 100%; overflow: visible; }
 svg text { fill: var(--ink-2); font-size: 12px; }
 svg .val { fill: var(--ink); font-weight: 600; }
@@ -82,14 +103,18 @@ code { font-size: 12px; }
 <div class="sub" id="sub"></div>
 <div class="legend" aria-label="legend"><span><i class="sw" style="background:var(--x11)"></i>x11: Xvfb, x11vnc, xdotool, import</span><span><i class="sw" style="background:var(--wayland)"></i>wayland: sway, wayvnc, RFB input, grim</span></div>
 <div id="sections"></div>
-<h2>Every number</h2>
+<div id="native"></div>
+<div id="link"></div>
+<h2>Every number: one browser sandbox</h2>
 <p class="note">Median over the repetitions, and the lowest and highest. Each repetition is a fresh sandbox; the order of the two backends alternates between repetitions.</p>
 <div class="tablewrap"><table id="table"><thead><tr><th>Measure</th><th>x11 median</th><th>x11 range</th><th>wayland median</th><th>wayland range</th><th>Better</th></tr></thead><tbody></tbody></table></div>
 <h2>Notes</h2>
 <ul class="notes" id="notes"></ul>
 <div id="tip" role="status"></div>
 </main>
-<script type="application/json" id="data">${JSON.stringify(results).replace(/</g, '\\u003c')}</script>
+<script type="application/json" id="data">${json(results)}</script>
+<script type="application/json" id="native-data">${json(native)}</script>
+<script type="application/json" id="link-data">${json(link)}</script>
 <script>
 const R = JSON.parse(document.getElementById('data').textContent);
 const B = ['x11', 'wayland'];
@@ -128,7 +153,8 @@ const SECTIONS = [
     { label: 'Display stack memory (PSS, all but Chromium)', unit: 'MB', better: 'lower', get: (r) => r.idle.pssMB - (r.idle.memByName.chromium?.pssMB ?? 0) },
     { label: 'Processes', unit: '', better: 'lower', get: (r) => r.idle.processes },
   ] },
-  { title: 'The live view (VNC)', note: 'A viewer of our own on the live view’s socket asks for every frame (ZRLE first), for 5 s. The sandbox’s wayvnc holds itself to 30 frames a second; x11vnc has no such cap.', metrics: [
+  { title: 'The live view (VNC)', note: 'A viewer of our own on the live view’s socket asks for every frame (ZRLE first), for 5 s. The sandbox’s wayvnc sends up to 60 frames a second (wayvnc’s own default is 30); x11vnc has no cap.', metrics: [
+    { label: 'Still page: VNC server CPU with a viewer', unit: '% of one core', better: 'lower', get: (r) => r.vnc.idle.serverCpu },
     { label: 'Full-screen animation: frames delivered', unit: 'per s', better: 'higher', get: (r) => r.vnc.anim.fps },
     { label: 'Full-screen animation: bytes', unit: 'MB/s', better: 'lower', get: (r) => r.vnc.anim.bytesPerS / 1e6 },
     { label: 'Full-screen animation: VNC server CPU', unit: '% of one core', better: 'lower', get: (r) => r.vnc.anim.serverCpu },
@@ -276,14 +302,154 @@ function lineCard(parent, m, rows) {
   hit.addEventListener('pointerleave', off); hit.addEventListener('blur', off);
 }
 
+// Grouped bars: a row per group (an app, a condition), a bar per series in it. vals: group -> series -> numbers.
+function groupCard(parent, m, groups, series) {
+  const card = h('div', 'card', undefined, parent);
+  h('h3', '', m.label, card);
+  h('p', 'how', (m.unit ? m.unit + ' · ' : '') + m.better + ' is better' + (m.how ? ' · ' + m.how : ''), card);
+  const barH = 14, gap = 2, groupGap = 8, headH = 16, padL = 62, padR = 56, W = 460;
+  const rows = groups.length * (series.length * (barH + gap) + headH + groupGap);
+  const H = rows + 20;
+  const all = groups.flatMap((g) => series.flatMap((s) => g.vals[s.key] || []));
+  const max = Math.max(...all, 0) || 1;
+  const x = (v) => padL + (v / max) * (W - padL - padR);
+  const svg = el('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': m.label, style: 'max-width:' + W + 'px' }, card);
+  let y = 4;
+  for (const g of groups) {
+    const t = el('text', { x: 0, y: y + 11 }, svg); t.textContent = g.label;
+    y += headH;
+    for (const s of series) {
+      const v = g.vals[s.key] || [];
+      const lab = el('text', { x: padL - 8, y: y + barH - 3, 'text-anchor': 'end', class: 'ax' }, svg); lab.textContent = s.short || s.key;
+      if (!v.length) { const n = el('text', { x: padL + 6, y: y + barH - 3, class: 'ax' }, svg); n.textContent = g.why && g.why[s.key] ? g.why[s.key] : 'no data'; y += barH + gap; continue; }
+      const mv = med(v), w = Math.max(1, x(mv) - padL), r = Math.min(4, w);
+      const hit = el('rect', { x: padL, y: y - 1, width: W - padL, height: barH + 2, class: 'hit', tabindex: 0 }, svg);
+      el('path', { class: 'bar', d: 'M' + padL + ',' + y + ' H' + (padL + w - r) + ' Q' + (padL + w) + ',' + y + ' ' + (padL + w) + ',' + (y + r) + ' V' + (y + barH - r) + ' Q' + (padL + w) + ',' + (y + barH) + ' ' + (padL + w - r) + ',' + (y + barH) + ' H' + padL + ' Z', fill: 'var(--' + s.key + ')' }, svg);
+      if (v.length > 1) {
+        const lo = x(Math.min(...v)), hi = x(Math.max(...v));
+        el('line', { x1: lo, x2: hi, y1: y + barH / 2, y2: y + barH / 2, stroke: 'var(--ink)', 'stroke-width': 1, opacity: 0.55 }, svg);
+      }
+      const vl = el('text', { x: Math.max(x(mv), v.length > 1 ? x(Math.max(...v)) : 0) + 6, y: y + barH - 3, class: 'val' }, svg); vl.textContent = fmt(mv);
+      const show = (ev) => showTip(ev, g.label + ': ' + m.label, [['var(--' + s.key + ')', fmt(mv) + (m.unit ? ' ' + m.unit : ''), s.label + ', median of ' + v.length + (v.length > 1 ? ' (' + fmt(Math.min(...v)) + '–' + fmt(Math.max(...v)) + ')' : '')]]);
+      hit.addEventListener('pointermove', show); hit.addEventListener('focus', show);
+      hit.addEventListener('pointerleave', hideTip); hit.addEventListener('blur', hideTip);
+      y += barH + gap;
+    }
+    y += groupGap;
+  }
+
+  const a0 = el('text', { x: padL, y: H - 2, class: 'ax' }, svg); a0.textContent = '0';
+  const a1 = el('text', { x: W - padR, y: H - 2, class: 'ax', 'text-anchor': 'end' }, svg); a1.textContent = fmt(max);
+}
+const legend = (parent, series) => { const l = h('div', 'legend', undefined, parent); for (const s of series) { const sp = h('span', '', undefined, l); const sw = h('i', 'sw', undefined, sp); sw.style.background = 'var(--' + s.key + ')'; sp.append(s.label); } };
+const val = (f) => (r) => { try { const v = f(r); return typeof v === 'number' && Number.isFinite(v) ? v : undefined; } catch { return undefined; } };
+const smallTable = (parent, head, rows) => { const w = h('div', 'tablewrap', undefined, parent); const t = h('table', '', undefined, w); const tr = h('tr', '', undefined, h('thead', '', undefined, t)); for (const c of head) h('th', '', c, tr); const tb = h('tbody', '', undefined, t); for (const r of rows) { const row = h('tr', '', undefined, tb); r.forEach((c, i) => h('td', i ? 'n' : '', c, row)); } };
+
+// The native apps.
+const NAT = JSON.parse(document.getElementById('native-data').textContent);
+if (NAT && NAT.runs.length) {
+  const root = document.getElementById('native');
+  const S = [{ key: 'x11', label: 'x11: Xvfb, x11vnc', short: 'x11' }, { key: 'wayland', label: 'wayland, sway on the GPU (gles2)', short: 'gles2' }, { key: 'pixman', label: 'wayland, sway in software (pixman): what they get', short: 'pixman' }];
+  const CFG = { x11: 'x11', wayland: 'gles2', pixman: 'pixman' };
+  const APPN = { signal: 'Signal Desktop', telegram: 'Telegram Desktop', haveno: 'Haveno (X app; satellite on wayland)' };
+  h('h2', '', 'Native apps: Signal Desktop, Telegram Desktop, Haveno', root);
+  h('p', 'note', 'Each in its sandbox (packages/sandbox) with no network and a fresh home, never signed in: to its first screen. ' + NAT.reps + ' repetitions, configurations in alternating order. The app has no render node inside its sandbox, so it draws in software on every configuration; only the compositor differs. “Screen stack” is the display and live view: Xvfb and x11vnc, or sway and wayvnc (and xwayland-satellite with its Xwayland for Haveno).', root);
+  legend(root, S);
+  const grid = h('div', 'grid2', undefined, root);
+  const apps = [...new Set(NAT.runs.map((r) => r.app))];
+  const M = [
+    { label: 'Sandbox up (screen, bus, sound)', unit: 'ms', better: 'lower', get: (r) => r.sandboxMs },
+    { label: 'Start → the app’s first picture', unit: 'ms', better: 'lower', get: (r) => r.firstPictureMs },
+    { label: 'Screen stack memory (PSS)', unit: 'MB', better: 'lower', get: (r) => r.idle.screenPssMB },
+    { label: 'Whole sandbox memory (PSS)', unit: 'MB', better: 'lower', get: (r) => r.idle.pssMB },
+    { label: 'Idle CPU, whole sandbox', unit: '% of one core', better: 'lower', get: (r) => r.idle.cpu },
+  ];
+  const rows = [];
+  for (const m of M) {
+    const groups = apps.map((a) => ({ label: APPN[a] || a, vals: Object.fromEntries(S.map((s) => [s.key, NAT.runs.filter((r) => r.app === a && r.config === CFG[s.key] && !r.error).map(val(m.get)).filter((v) => v !== undefined)])) }));
+    groupCard(grid, m, groups, S);
+    for (const g of groups) rows.push([g.label + ': ' + m.label + ' (' + m.unit + ')', ...S.map((s) => fmt(med(g.vals[s.key])))]);
+  }
+  for (const a of apps) rows.push([(APPN[a] || a) + ': input reached it (screens that changed)', ...S.map((s) => { const rs = NAT.runs.filter((r) => r.app === a && r.config === CFG[s.key] && r.input); return rs.filter((r) => r.input.changedPixels > 0).length + ' of ' + rs.length; })]);
+  h('h3', '', 'Native apps: every median', root).style.margin = '16px 0 6px';
+  smallTable(root, ['Measure', ...S.map((s) => s.short)], rows);
+  const failed = NAT.runs.filter((r) => r.error);
+  for (const r of failed) h('p', 'note', r.app + ' on ' + r.config + ' (repetition ' + (r.rep + 1) + ') failed: ' + r.error, root);
+}
+
+// The live view over a constrained link and CPU.
+const LNK = JSON.parse(document.getElementById('link-data').textContent);
+if (LNK && LNK.runs.length) {
+  const root = document.getElementById('link');
+  const S = [{ key: 'x11', label: 'x11: x11vnc', short: 'x11' }, { key: 'wayland', label: 'wayland: wayvnc', short: 'wayland' }];
+  h('h2', '', 'The live view over a slow link, and with little CPU', root);
+  h('p', 'note', 'A viewer asking for what the manager’s live view (noVNC) asks for: Tight first, quality 6, compression 2, continuous updates and fences where the server has them (wayvnc does, x11vnc does not). Between it and the VNC server, a link shaped with tc in a network namespace of its own (netem for delay and loss, tbf for bandwidth with a 50 ms queue), with the manager’s side paced as the manager now paces it. The CPU conditions put the display processes alone (Xvfb and x11vnc, or sway and wayvnc) in a systemd scope with a CPU quota; Chromium is not limited. ' + LNK.reps + ' repetitions; each number is a median.', root);
+  legend(root, S);
+  const conds = LNK.conditions.filter((c) => !c.bridge || c.bridge === 'paced');
+  const runs = LNK.runs.filter((r) => !r.error);
+  const grid = h('div', 'grid2', undefined, root);
+  const LM = [
+    { label: 'Full-screen animation: frames delivered', unit: 'per s', better: 'higher', get: (r) => r.anim.fps, how: 'the page draws 60' },
+    { label: 'Page scrolling: frames delivered', unit: 'per s', better: 'higher', get: (r) => r.scroll.fps },
+    { label: '720p video: frames delivered', unit: 'per s', better: 'higher', get: (r) => r.video.fps, how: 'the video has 30' },
+    { label: 'Click to photon through the link', unit: 'ms', better: 'lower', get: (r) => r.click.clickToPhoton.median },
+    { label: 'Connect → the whole screen (a still page of text)', unit: 'ms', better: 'lower', get: (r) => r.first.ms },
+    { label: 'Full-screen animation: bytes', unit: 'MB/s', better: 'lower', get: (r) => r.anim.bytesPerS / 1e6 },
+    { label: 'Full-screen animation: display processes’ CPU', unit: '% of one core', better: 'lower', get: (r) => r.anim.cpu },
+  ];
+  const rows = [];
+  for (const m of LM) {
+    const groups = conds.map((c) => ({ label: c.label, vals: Object.fromEntries(S.map((s) => [s.key, runs.filter((r) => r.condition === c.name && r.backend === s.key).map(val(m.get)).filter((v) => v !== undefined)])) }));
+    groupCard(grid, m, groups, S);
+  }
+  for (const c of conds) {
+    const by = (b, f) => fmt(med(runs.filter((r) => r.condition === c.name && r.backend === b).map(val(f)).filter((v) => v !== undefined)));
+    rows.push([c.label, ...S.flatMap((s) => [by(s.key, (r) => r.anim.fps), by(s.key, (r) => r.scroll.fps), by(s.key, (r) => r.video.fps), by(s.key, (r) => r.click.clickToPhoton.median), by(s.key, (r) => r.first.ms), by(s.key, (r) => r.first.bytes / 1e3)])]);
+  }
+  h('h3', '', 'Every median', root).style.margin = '16px 0 6px';
+  smallTable(root, ['Condition', ...S.flatMap((s) => [s.short + ' anim fps', 'scroll fps', 'video fps', 'click→photon ms', 'whole screen ms', 'its KB'])], rows);
+
+  h('h3', '', 'The links, measured', root).style.margin = '16px 0 6px';
+  h('p', 'note', 'Each shaped link checked before use, through the same shaper to a test server: TCP goodput over 3 s and the round trip of one byte. Both directions share the bandwidth (the viewer’s side sends only requests, input and acknowledgements).', root);
+  smallTable(root, ['Condition', 'goodput Mbit/s', 'round trip ms (median)', 'p90'], LNK.checks.filter((k) => !k.error).map((k) => [(LNK.conditions.find((c) => c.name === k.name) || {}).label || k.name, fmt(k.goodputMbit), fmt(k.rttMs), fmt(k.rttP90)]));
+
+  const eager = LNK.conditions.filter((c) => c.bridge === 'eager');
+  if (eager.length) {
+    h('h3', '', 'Before the manager paced its live view', root).style.margin = '16px 0 6px';
+    h('p', 'note', 'The same conditions with the manager’s side as it was: every chunk read from the VNC socket passed on at once, its WebSocket buffering without limit until Bun drops what is past 16 MB. Dropped bytes break the RFB stream: the page’s viewer would fail or show garbage.', root);
+    smallTable(root, ['Condition', 'backend', 'largest buffer MB', 'dropped MB', 'anim fps', 'click→photon ms'], eager.flatMap((c) => S.map((s) => { const rs = runs.filter((r) => r.condition === c.name && r.backend === s.key); return [c.label, s.short, fmt(med(rs.map((r) => (r.link?.maxBuffered ?? NaN) / 1e6))), fmt(med(rs.map((r) => (r.link?.dropped ?? NaN) / 1e6))), fmt(med(rs.map(val((r) => r.anim.fps)).filter((v) => v !== undefined))), fmt(med(rs.map(val((r) => r.click.clickToPhoton.median)).filter((v) => v !== undefined)))]; })));
+  }
+  const encRuns = runs.filter((r) => r.enc);
+  if (encRuns.length) {
+    h('h3', '', 'Other encodings, full-screen animation', root).style.margin = '16px 0 6px';
+    h('p', 'note', 'Tight is what noVNC asks for first (after Open H.264, which neither server sends as set up). ZRLE alone asked for instead; on wayland also a second wayvnc with -g (its GPU features), asked for Open H.264 first as noVNC would.', root);
+    const rowsE = [];
+    for (const c of LNK.conditions.filter((c) => c.encodings)) for (const s of S) {
+      const rs = runs.filter((r) => r.condition === c.name && r.backend === s.key);
+      const line = (name) => {
+        const of = (r) => (name === 'tight' ? r.anim : r.enc && r.enc[name]);
+        const pick = (f) => rs.map(val((r) => (of(r) && !of(r).error ? f(of(r)) : undefined))).filter((x) => x !== undefined);
+        const fps = pick((o) => o.fps);
+        return fps.length ? [c.label, s.short, name, fmt(med(fps)), fmt(med(pick((o) => o.bytesPerS / 1e6))), fmt(med(pick((o) => o.cpu)))] : null;
+      };
+      for (const l of [line('tight'), line('zrle'), s.key === 'wayland' ? line('h264') : null]) if (l) rowsE.push(l);
+      if (s.key === 'wayland') for (const r of rs) if (r.enc?.h264?.error) rowsE.push([c.label, s.short, 'h264', r.enc.h264.error, '', '']);
+    }
+    smallTable(root, ['Condition', 'backend', 'encoding', 'frames/s', 'MB/s', 'display CPU %'], rowsE);
+  }
+}
+
 // What the numbers do not say on their own.
 const notes = document.getElementById('notes');
-const w60 = pick('wayland', (r) => r.vnc.anim60.fps), w60cpu = pick('wayland', (r) => r.vnc.anim60.serverCpu);
+const w30 = pick('wayland', (r) => r.vnc.anim30.fps), w30cpu = pick('wayland', (r) => r.vnc.anim30.serverCpu), w60 = pick('wayland', (r) => r.vnc.anim.fps), w60cpu = pick('wayland', (r) => r.vnc.anim.serverCpu);
+const i30 = pick('wayland', (r) => r.vnc.idle30.serverCpu), i60 = pick('wayland', (r) => r.vnc.idle.serverCpu);
+const gpu = pick('wayland', (r) => r.vnc.animGpu.fps), gpuCpu = pick('wayland', (r) => r.vnc.animGpu.serverCpu);
 const h264 = runs.filter((r) => r.backend === 'wayland').map((r) => r.vnc?.animH264).filter(Boolean);
 const toEvent = pick('x11', (r) => r.input.toEvent.median);
 const renderer = runs.find((r) => r.webgl?.renderer)?.webgl.renderer;
 const N = [
-  w60.length && \`wayvnc told to send up to 60 frames a second (a second wayvnc on the same compositor, -f 60) delivered a median \${fmt(med(w60))} frames a second of the full-screen animation, at \${fmt(med(w60cpu))}% of one core: the 30 above is wayvnc’s default cap, not a limit of the backend.\`,
+  w30.length && \`The sandbox’s wayvnc (-f 60) delivered a median \${fmt(med(w60))} frames a second of the full-screen animation at \${fmt(med(w60cpu))}% of one core; a second wayvnc on the same compositor at its own default (-f 30), \${fmt(med(w30))} at \${fmt(med(w30cpu))}%. On a still page with a viewer connected: \${fmt(med(i60))}% at 60, \${fmt(med(i30))}% at 30 (it sends only what changed).\`,
+  gpu.length && \`wayvnc with -g (its GPU features) and ZRLE: \${fmt(med(gpu))} frames a second at \${fmt(med(gpuCpu))}% of one core, against \${fmt(med(w60))} at \${fmt(med(w60cpu))}% without.\`,
   h264.length && (h264.every((x) => !x.fps) ? \`wayvnc’s Open H.264 (-g, VA-API through FFmpeg) delivered nothing here: the encoder took the first frame and never finished it, with wayvnc at 100% of a core (\${(h264[0].serverSaid ?? []).slice(-1)[0] ?? 'no message'}). Not usable on this machine as it stands.\` : \`wayvnc’s Open H.264 (-g): \${fmt(med(h264.map((x) => x.fps)))} frames a second, \${fmt(med(h264.map((x) => x.bytesPerS / 1e6)))} MB/s.\`),
   toEvent.length && \`On X, Chromium stamps a pointer event with the X server’s millisecond clock, so its event time can come out before the press was sent (median press → event time \${fmt(med(toEvent))} ms on x11). The handler’s own time is used above.\`,
   renderer && \`WebGL ran on \${renderer} on both backends; both hold the display’s 60 frames a second, so the frame rate shows only that neither falls short.\`,

@@ -101,7 +101,7 @@ const HISTORY: Record<string, M.HistoryVisibility> = {
 export function safeMediaType(mime: unknown): string {
   if (typeof mime !== 'string') return 'application/octet-stream';
   const m = mime.split(';')[0].trim().toLowerCase();
-  if (/^(image\/(png|jpeg|gif|webp|avif|bmp)|video\/(mp4|webm|ogg|quicktime)|audio\/[\w.+-]+|text\/plain|application\/pdf)$/.test(m)) return m;
+  if (/^(image\/(png|jpeg|gif|webp|avif|jxl|bmp)|video\/(mp4|webm|ogg|quicktime)|audio\/[\w.+-]+|text\/plain|application\/pdf)$/.test(m)) return m;
   return 'application/octet-stream';
 }
 

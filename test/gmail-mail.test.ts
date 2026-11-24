@@ -959,6 +959,59 @@ test("a download the browser could not fetch: a 503 saying where and after how l
   expect(mail.layer().state).not.toBe('failed');
 });
 
+test('downloads Gmail keeps sending elsewhere stop the background lane (refused) for a while, doubling, kept across a restart; the foreground goes on and a good download ends it', async () => {
+  let now = Date.now();
+  const file = join(tmp, 'reads-refused.json');
+  let redirect = true;
+  const raws: string[] = [];
+  const base = transport();
+  const t: Transport = {
+    ...base,
+    raw: (h, max) => {
+      raws.push(h);
+      return redirect ? Promise.resolve({ status: 0, error: 'network', net: { stage: 'headers', ms: 400, got: 0, online: true, then: 'redirect' } }) : base.raw(h, max);
+    },
+  };
+  const rules = { backoffMinMs: 0, backoffMaxMs: 0, refusedAfter: 3, refusedMinMs: 60_000, refusedMaxMs: 150_000 };
+  const mail = laneMail({ t, rules, now: () => now, file });
+  const read = readOnes().slice(0, 6);
+  // One or two are messages Gmail will not hand over: the lane goes on.
+  for (const m of read.slice(0, 2)) expect(codeOf(await mail.raw({ id: m.id, background: true }).catch((x) => x))).toEqual([503, 'unavailable']);
+  expect(mail.background().stopped).toBeNull();
+  // The third in a row is the route: that call and every background one after it answer 503 paused, and none reaches Gmail.
+  const e = await mail.raw({ id: read[2]!.id, background: true }).catch((x) => x);
+  expect(codeOf(e)).toEqual([503, 'paused']);
+  expect(e.message).toContain('Gmail keeps sending message downloads elsewhere');
+  expect(e.message).toContain('it tries again at ');
+  expect(e.kind).toBe('transient');
+  expect(e.retryAfterMs).toBe(60_000);
+  expect(mail.background().stopped).toBe('refused');
+  expect(mail.backgroundLayer()).toMatchObject({ state: 'failed' });
+  expect(mail.backgroundLayer().note).toStartWith('stopped (refused): ');
+  const n = raws.length;
+  await expect(mail.raw({ id: read[3]!.id, background: true })).rejects.toMatchObject({ status: 503, callCode: 'paused' });
+  await expect(mail.list({ mailboxId: '^i', limit: 1, background: true })).rejects.toMatchObject({ status: 503, callCode: 'paused' });
+  expect(raws.length).toBe(n);
+  // Kept across a restart.
+  const again = laneMail({ t, rules, now: () => now, file });
+  expect(again.background().stopped).toBe('refused');
+  // Past the pause the next download tries again; sent elsewhere once more, it stops for twice as long, to the most.
+  now += 60_001;
+  expect(again.background().stopped).toBeNull();
+  expect(codeOf(await again.raw({ id: read[3]!.id, background: true }).catch((x) => x))).toEqual([503, 'paused']);
+  expect(raws.length).toBe(n + 1);
+  expect(JSON.parse(readFileSync(file, 'utf8')).refused).toMatchObject({ row: 4, ms: 120_000, until: now + 120_000 });
+  now += 120_001;
+  await again.raw({ id: read[3]!.id, background: true }).catch((x) => x);
+  expect(JSON.parse(readFileSync(file, 'utf8')).refused.ms).toBe(150_000);
+  // The owner's own download goes on meanwhile, and when it comes, the pause ends at once.
+  redirect = false;
+  expect((await again.raw({ id: read[4]!.id })).size).toBeGreaterThan(0);
+  expect(again.background().stopped).toBeNull();
+  expect(JSON.parse(readFileSync(file, 'utf8')).refused).toBeUndefined();
+  expect((await again.raw({ id: read[5]!.id, background: true })).size).toBeGreaterThan(0);
+});
+
 test('the unread guard, not tripped: an unread message read here is looked at again (fd) and is still unread; nothing else changes', async () => {
   const file = join(tmp, 'reads-guard-0.json');
   const mail = laneMail({ file });

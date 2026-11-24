@@ -67,4 +67,7 @@ jobs:
       - name: Tests that need Nix
         env:
           DITHER_TESTS_NEED_ALL: '1'
+          # The sandbox tests check that nothing of the user's home shows inside; their temporary directories must not
+          # be under it (install-nix-action points TMPDIR into the workspace, under /home/runner).
+          TMPDIR: /tmp
         run: bun test packages/sandbox packages/browser test/haveno.test.ts test/telegram-desktop.test.ts

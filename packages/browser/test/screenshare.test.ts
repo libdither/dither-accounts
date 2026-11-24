@@ -170,6 +170,8 @@ test.skipIf(!ok)('the stand-in bus watch works: a client that connects there is 
 
 interface Probe {
   sb: Sandbox;
+  /** What the sandbox's processes said (the portal's, PipeWire's, Chromium's), for a failure's message. */
+  logs: string[];
   reports: any[];
   server: ReturnType<typeof Bun.serve>;
   page: () => any;
@@ -192,10 +194,11 @@ async function probe(name: string, display: Awaited<ReturnType<typeof pickFreeDi
   const src = join(acc, 'src');
   mkdirSync(src, { recursive: true });
   writeFileSync(join(src, 'manifest.json'), JSON.stringify({ manifest_version: 3, name: 'probe', version: '1.0.0' }));
-  const sb = new Sandbox({ accountDir: acc, display, width: w, height: h, extensionSrc: src, config: {}, startUrl: `http://127.0.0.1:${server.port}/`, screenShare: true, flags, log: () => {} });
+  const logs: string[] = [];
+  const sb = new Sandbox({ accountDir: acc, display, width: w, height: h, extensionSrc: src, config: {}, startUrl: `http://127.0.0.1:${server.port}/`, screenShare: true, flags, log: (_l, m) => logs.push(m) });
   await sb.start();
   await until(`${name}'s page`, () => reports.some((r) => r.ev === 'page'));
-  return { sb, reports, server, page: () => reports.find((r) => r.ev === 'page') };
+  return { sb, logs, reports, server, page: () => reports.find((r) => r.ev === 'page') };
 }
 
 /** Click the page (a user gesture) and wait for that session's numbers. */
@@ -221,7 +224,7 @@ async function share(p: Probe, session: number): Promise<ShareStats> {
   await until(`getDisplayMedia answered for session ${session}`, () => p.reports.some((r) => (r.ev === 'shared' && r.session === session) || r.ev === 'error'), 30_000);
   await until(`session ${session}'s numbers`, () => p.reports.some((r) => (r.ev === 'stats' && r.session === session) || r.ev === 'error'), 60_000);
   const err = p.reports.find((r) => r.ev === 'error');
-  if (err) throw new Error(`getDisplayMedia: ${err.name}: ${err.message}`);
+  if (err) throw new Error(`getDisplayMedia: ${err.name}: ${err.message}\n${p.logs.filter((l) => /portal|pipewire|wireplumber|screencast|capture|pw[._]|xdpw/i.test(l)).slice(-60).join('\n')}`);
   await until(`session ${session} stopped`, () => p.reports.some((r) => r.ev === 'stopped' && r.session === session));
   const s = p.reports.find((r) => r.ev === 'stats' && r.session === session) as ShareStats;
   if (process.env.SHARE_VERBOSE) console.log(`share ${session}: ${s.width}x${s.height} ${s.fps.toFixed(1)} fps, ${s.distinct} frames (${s.bad} unreadable), latency p50 ${s.latency.p50.toFixed(0)} p95 ${s.latency.p95.toFixed(0)} ms, first frame ${s.firstFrameMs} ms`);
@@ -381,8 +384,12 @@ describe.skipIf(!electron)('an Electron app on wayland', () => {
     async () => {
       const d = tmp('electron');
       const procs: Subprocess[] = [];
+      const logs: string[] = [];
       const spawn = (name: string, cmd: string[], o: { env?: Record<string, string | undefined> }) => {
-        const p = Bun.spawn(cmd, { env: cleanEnv({ ...process.env, ...o.env }), stdout: 'ignore', stderr: 'ignore' });
+        const p = Bun.spawn(cmd, { env: cleanEnv({ ...process.env, ...o.env }), stdout: 'ignore', stderr: 'pipe' });
+        void (async () => {
+          for await (const c of p.stderr as ReadableStream<Uint8Array>) logs.push(`[${name}] ${new TextDecoder().decode(c).trim().slice(0, 400)}`);
+        })();
         procs.push(p);
         return p;
       };
@@ -410,7 +417,7 @@ describe.skipIf(!electron)('an Electron app on wayland', () => {
           env: { ...screen.clientEnv(), ...sh.clientEnv(), PROBE_URL: `http://127.0.0.1:${server.port}/`, HOME: join(d, 'home'), XDG_CONFIG_HOME: join(d, 'config'), ELECTRON_ENABLE_LOGGING: undefined },
         });
         await until('the page', () => reports.some((r) => r.ev === 'page'));
-        const p: Probe = { sb: { screen } as unknown as Sandbox, reports, server, page: () => reports.find((r) => r.ev === 'page') };
+        const p: Probe = { sb: { screen } as unknown as Sandbox, logs, reports, server, page: () => reports.find((r) => r.ev === 'page') };
         expectGood(await share(p, 1), 1024, 700);
         for (let i = 0; i < 200 && (await videoSources(join(screen.dir, 'share'))) > 0; i++) await Bun.sleep(50);
         expect(await videoSources(join(screen.dir, 'share'))).toBe(0);

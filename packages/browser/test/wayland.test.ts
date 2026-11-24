@@ -303,6 +303,14 @@ describe.skipIf(!chromium)('Chromium on the wayland backend', () => {
         const screen = sb.screen!;
         // The page is the bottom innerHeight of the screen, below Chromium's own bar.
         const top = 700 - (full()!.h as number);
+        // A page's script can run before its window is on the screen (a slow machine without a GPU draws its first
+        // frame late): click once sway shows the window.
+        const mapped = await SwayIpc.connect(join(waylandDir(acc), 'ipc.sock'));
+        for (let end = Date.now() + 30_000; !views(await mapped.tree()).some((v) => v.rect.width === 1024 && v.rect.height === 700); ) {
+          if (Date.now() > end) throw new Error('the window never filled the screen');
+          await Bun.sleep(50);
+        }
+        mapped.close();
         await screen.click(250, top + 120);
         await until('mousedown', () => reports.some((r) => r.ev === 'mousedown'));
         expect(reports.find((r) => r.ev === 'mousedown')).toMatchObject({ trusted: true, x: 250, y: 120 });

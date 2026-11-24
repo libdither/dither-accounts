@@ -83,10 +83,16 @@ focus_on_window_activation focus
 `;
 }
 
+/**
+ * Where render nodes are looked for: /dev/dri, or DITHER_DEV_DRI (a path with none in it tries a machine without a
+ * GPU, as CI's runners are).
+ */
+export const devDri = () => process.env.DITHER_DEV_DRI || '/dev/dri';
+
 /** gles2 where the machine has a render node (Chromium's GPU buffers need it), else pixman. */
-export function swayRenderer(devDri = '/dev/dri'): 'gles2' | 'pixman' {
+export function swayRenderer(devDri_ = devDri()): 'gles2' | 'pixman' {
   try {
-    return readdirSync(devDri).some((n) => n.startsWith('renderD')) ? 'gles2' : 'pixman';
+    return readdirSync(devDri_).some((n) => n.startsWith('renderD')) ? 'gles2' : 'pixman';
   } catch {
     return 'pixman';
   }

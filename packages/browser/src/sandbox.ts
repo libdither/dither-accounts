@@ -22,6 +22,7 @@ import { markerKey, stampExtension } from './markers.ts';
 import { ChromiumNoise } from './noise.ts';
 import { makeScreen, type Screen } from './screen.ts';
 import { browserShare, type ScreenShare } from './screenshare.ts';
+import { devDri } from './wayland.ts';
 import { vncSocketPath } from './vnc.ts';
 import { refreshWorker } from './worker.ts';
 
@@ -87,7 +88,7 @@ export function resolveBins(log: Log): Bins {
 export function gpuFlags(): string[] {
   let render = false;
   try {
-    render = readdirSync('/dev/dri').some((n) => n.startsWith('renderD'));
+    render = readdirSync(devDri()).some((n) => n.startsWith('renderD'));
   } catch {
     /* no /dev/dri at all */
   }

@@ -14,7 +14,7 @@ import type { Network } from './ontology.ts';
 export type EventStatus = 'scheduled' | 'active' | 'completed' | 'cancelled';
 
 /** Where it happens: one of the server's voice or stage channels, or a place outside it (words, often a link). */
-export type EventPlace = { kind: 'voice' | 'stage'; conversation: string } | { kind: 'external'; location: string };
+export type ServerEventPlace = { kind: 'voice' | 'stage'; conversation: string } | { kind: 'external'; location: string };
 
 /** One occurrence of a repeating event that differs from the rule: moved, or called off. */
 export interface EventException {
@@ -40,7 +40,7 @@ export interface ScheduledEventFact {
   start: number;
   end?: number;
   status: EventStatus;
-  place?: EventPlace;
+  place?: ServerEventPlace;
   /** Its cover picture. */
   imageUrl?: MediaUrl;
   /** How many said they are interested, when the network said. */

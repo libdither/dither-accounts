@@ -63,6 +63,7 @@ const KIND_MARK: Record<string, Mark> = {
   bluesky: { brand: 'bluesky' },
   zulip: { brand: 'zulip' },
   lesswrong: { glyph: 'book' },
+  partiful: { glyph: 'ticket' },
   bugwatch: { glyph: 'bell' },
   t3: { glyph: 'terminal' },
   njalla: { glyph: 'server' },
@@ -225,6 +226,7 @@ const SERVICES: Service[] = [
       { id: 'token', label: 'Login token', glyph: 'cookie', kind: 'lesswrong', hide: ['username', 'password'], need: ['token'], tip: 'For accounts that sign in with Google or GitHub: paste the loginToken cookie from your browser.' },
     ],
   },
+  { id: 'partiful', name: 'Partiful', mark: { glyph: 'ticket' }, category: 'chat', line: 'Parties near you, your invites, who is going, comments and chats, signed in in a sandboxed browser', ways: [BROWSER('partiful', "Partiful's web app")] },
   {
     id: 'gmessages',
     name: 'Google Messages',

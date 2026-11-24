@@ -39,9 +39,16 @@ export interface Manifest {
 export interface SettingInfo {
   key: string;
   label: string;
-  type: 'boolean';
+  /** A switch, or a line of text ('' takes it away, and the kind's default applies). */
+  type: 'boolean' | 'text';
   /** What it does, in a sentence, for the page and the CLI. */
   note: string;
+  /** text: what an empty box shows. */
+  placeholder?: string;
+  /** text: a regular expression the whole value must match (an empty value always may). */
+  pattern?: string;
+  /** text: at most this many characters (200 when not said). */
+  max?: number;
 }
 
 export interface Kind extends Manifest {

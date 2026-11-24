@@ -15,7 +15,7 @@
  * (persons, folders, notification rules, triage) are never written back.
  */
 
-export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' | 'gmessages' | 'messenger' | 'instagram' | 'x' | 'reddit' | 'email' | 'calendar' | 't3' | 'substack' | 'mastodon' | 'lemmy' | 'bluesky' | 'zulip' | 'lesswrong';
+export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' | 'gmessages' | 'messenger' | 'instagram' | 'x' | 'reddit' | 'email' | 'calendar' | 't3' | 'substack' | 'mastodon' | 'lemmy' | 'bluesky' | 'zulip' | 'lesswrong' | 'luma' | 'partiful';
 /**
  * The chat networks this hub offers. telegram, gmessages (Google Messages: SMS and RCS), messenger, instagram and x
  * (X's direct messages) run only in dither-accounts, and so does reddit (a Reddit account's front page, inbox and
@@ -32,8 +32,11 @@ export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' 
  * direct messages.
  * `lesswrong` is LessWrong (and the other ForumMagnum forums): posts and comments, notifications as a feed
  * (dither-accounts' docs/lesswrong.md), no direct messages.
+ * `luma` and `partiful` are event sites (docs/events.md): chats like X's (their own chats, a read-only `feed` of
+ * notifications, one conversation per event you are in) and a feed of events, the city's listing (`explore`) and your
+ * own; they too run only in dither-accounts.
  */
-export const NETWORKS: readonly Network[] = ['discord', 'signal', 'matrix', 'whatsapp', 'telegram', 'gmessages', 'messenger', 'instagram', 'x', 'reddit', 'calendar', 't3', 'substack', 'mastodon', 'lemmy', 'bluesky', 'zulip', 'lesswrong'];
+export const NETWORKS: readonly Network[] = ['discord', 'signal', 'matrix', 'whatsapp', 'telegram', 'gmessages', 'messenger', 'instagram', 'x', 'reddit', 'calendar', 't3', 'substack', 'mastodon', 'lemmy', 'bluesky', 'zulip', 'lesswrong', 'luma', 'partiful'];
 
 /** Where a conversation sits in the social structure, independent of network. */
 export type Shape =
@@ -195,6 +198,10 @@ export const REACTION_RULES: Record<Network, ReactionRules> = {
   zulip: { exclusive: false, freeText: false },
   // Posts and comments only: a karma vote is a postAct, not a reaction.
   lesswrong: { exclusive: true, freeText: false, maxDistinct: 0 },
+  // Luma's chat takes any emoji, one each; its events have no comments to react to.
+  luma: { exclusive: true, freeText: false },
+  // Partiful: reactions on an event's comments and in its chats (Stream Chat), several per person.
+  partiful: { exclusive: false, freeText: false },
 };
 
 export function discordEmojiUrl(id: string, animated?: boolean): string {
@@ -274,6 +281,9 @@ export const ATTACHMENT_LIMITS: Record<Network, { bytes: number; files: number }
   zulip: { bytes: 25 * 1024 * 1024, files: 10 },
   // No messages to send files with.
   lesswrong: { bytes: 0, files: 0 },
+  // Event sites: words only from here (a photo album is the site's own; docs/events.md).
+  luma: { bytes: 0, files: 0 },
+  partiful: { bytes: 0, files: 0 },
 };
 
 /**
@@ -312,4 +322,7 @@ export const NETWORK_META: Record<Network, { name: string; color: string; spaceN
   bluesky: { name: 'Bluesky', color: '#0085FF', spaceNoun: 'feed', sectionNoun: 'section' },
   zulip: { name: 'Zulip', color: '#6492FE', spaceNoun: 'organization', sectionNoun: 'folder' },
   lesswrong: { name: 'LessWrong', color: '#5F9B65', spaceNoun: 'forum', sectionNoun: 'section' },
+  // Event sites have no communities: a space, if one were made, would be a calendar (Luma's word) or a host's page.
+  luma: { name: 'Luma', color: '#E0399F', spaceNoun: 'calendar', sectionNoun: 'section' },
+  partiful: { name: 'Partiful', color: '#7C3AED', spaceNoun: 'host', sectionNoun: 'section' },
 };

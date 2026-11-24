@@ -634,6 +634,15 @@ export class Http {
             const info = known.get(k);
             if (!info) return bad(`${a.kind} accounts have no setting ${k}`);
             if (info.type === 'boolean' && typeof v !== 'boolean') return bad(`${k} is on or off (true or false)`);
+            if (info.type === 'text') {
+              if (typeof v !== 'string') return bad(`${k} is a line of text`);
+              const t = v.trim();
+              if (t.length > (info.max ?? 200) || /[\r\n]/.test(t)) return bad(`${k} is one line of at most ${info.max ?? 200} characters`);
+              if (t && info.pattern && !new RegExp(`^(?:${info.pattern})$`).test(t)) return bad(`${k} does not look right`);
+              if (t) cfg[k] = t;
+              else delete cfg[k];
+              continue;
+            }
             cfg[k] = v;
           }
           s.run('UPDATE account SET config = ?, updated_at = ? WHERE id = ?', JSON.stringify(cfg), Date.now(), a.id);
@@ -735,7 +744,12 @@ export class Http {
       ownDir: ownDir(this.dataDir, a.id, a.dir),
       createdBy: a.created_by,
       createdAt: a.created_at,
-      settings: (this.kinds.get(a.kind)?.settings ?? []).map((x) => ({ key: x.key, label: x.label, note: x.note, value: parse<Record<string, unknown>>(a.config, {})[x.key] === true })),
+      settings: (this.kinds.get(a.kind)?.settings ?? []).map((x) => {
+        const v = parse<Record<string, unknown>>(a.config, {})[x.key];
+        return x.type === 'text'
+          ? { key: x.key, label: x.label, note: x.note, value: false, type: 'text' as const, text: typeof v === 'string' ? v : '', ...(x.placeholder ? { placeholder: x.placeholder } : {}) }
+          : { key: x.key, label: x.label, note: x.note, value: v === true };
+      }),
     };
   }
 

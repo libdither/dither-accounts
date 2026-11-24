@@ -45,6 +45,30 @@ fills it in from its own code, else the status (a 4xx other than 408 and 429, or
 transient). A 500, a 502 or a plain error stays without one: not known. The call's span carries the same `kind`, for
 bugwatch. `transient` does not make a write safe to send again: `unsure` is transient too.
 
+### A failed read is remembered (when the app asks for it)
+
+An app that asks again on every poll, watch or page open, about something that failed, would ask the manager again
+each time; the manager's trace and bugwatch would then count its loop, not how bad the failure is. With
+`new AccountsClient({ ..., remember: true })` (spec `memory.ts`, `FailureMemory`), the client keeps the last failure
+of each read, keyed by the account, the op and the input (its JSON with keys sorted), and answers a repeat from it
+until it is due, without sending it: the same error, with `remembered` (when it failed, how many times in a row, how
+many repeats since) and `retryAfterMs` the time left.
+
+- **When it is due**: a `transient` failure after 5 s, doubling to 5 minutes, and never before its own `retryAfterMs`;
+  a `bug` (or one of no known kind) after a minute, doubling to 30; an `expected` one after 10 minutes, or sooner when
+  something relevant changes.
+- **What clears it**: the same call answering; a write this client made to the account answering (it may change what
+  the reads answer); the account's state changing (running, online, enabled, its error, its grants); `forget(account?,
+  op?)`, for an app that knows better (a person asked to refresh). Another input is another call, asked at once (a new
+  sync token).
+- **What is never remembered**: writes, and failures the manager did not answer (the client's own timeout, a dropped
+  socket, `unsure`).
+- **Counted, not sent**: the call sent once it is due carries `repeats`, how many times it was answered from memory
+  since it last failed, and the manager puts it on the call's span (`attrs.repeats`). Kept to 500 calls, the oldest
+  failure dropped first.
+
+It is off by default: an app turns it on when it treats a remembered answer as it would the failure.
+
 ### A call runs once
 
 An app's client resends what it was waiting for when its socket drops and comes back (a deploy restarts the manager,

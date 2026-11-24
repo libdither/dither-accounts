@@ -965,11 +965,14 @@ someone known only by address; the account id is there only for Google accounts)
   Suggestion calls have a lane of their own beside the Gmail page's (at most two in flight): keystrokes never wait
   behind mail, the watch or the background lane, and those never wait behind keystrokes. A suggestion call the page
   leaves unanswered counts toward reloading the Gmail tab, as any.
-- **Read strictly** (`readContacts`): every suggestion's people are read as persons (a group's too, so that another
-  nesting cannot pass for a group); an address not where it belongs (or not an address), a profile or a name of another
-  kind, or an answer in which no suggestion has an address is **502**: "Gmail's people suggestions answer is not laid
-  out as this extractor knows it (at json[0][0][0][0][0][1][0]: expected an address, got a list of 2); nothing was
-  returned rather than possibly wrong people".
+- **Read strictly, one suggestion at a time** (`readContacts`, through [records.md](records.md)'s `readEach`): every
+  suggestion's people are read as persons (a group's too, so that another nesting cannot pass for a group). A
+  suggestion whose address is not where it belongs (or not an address), or whose profile or name is of another kind,
+  is left out and counted (`details.contactsSkipped`, by what was expected; a log line per kind, at most hourly); the
+  rest are answered. The whole answer is **502** when its own layout is off, when no suggestion read has an address,
+  or when most of its suggestions are off (at least 3, and more than were read: the layout changed): "Gmail's people
+  suggestions answer is not laid out as this extractor knows it (at json[0][0][0][0][0][1][0]: expected an address,
+  got a list of 2, and 7 of 7 suggestions failed); nothing was returned rather than possibly wrong people".
 - **What it answers**: the people in Gmail's order, each address once (without regard to case; the first kept), `name`
   the display name with its spaces made one, or null when there is none or it is only the address again; groups and
   people without an address are left out. At most `limit` (8 by default, at most 20); Gmail is asked for 8, or for

@@ -226,7 +226,7 @@ const contacts = new ProtonContacts(
     },
     page: (page, size) => api.call({ method: 'GET', path: 'contacts/v4/contacts/emails', query: { Page: page, PageSize: size } }),
   },
-  { ready: contactsUnavailable },
+  { ready: contactsUnavailable, log },
 );
 
 /** mail.contacts, answered within CONTACTS_MS: Proton not able to now (signed out, a human check, busy) is 503 'unavailable'. */
@@ -327,6 +327,8 @@ function details(): Record<string, string | number | boolean | null> {
     contacts: contactsUnavailable() === null,
     contactsNote: contactsUnavailable(),
     contactsFrom: contacts.from,
+    // Contact emails left out of the lists read (packages/link records.ts), by kind and count; null when none.
+    contactsSkipped: contacts.skips.summary(),
   };
 }
 

@@ -230,9 +230,12 @@ export class Router {
 
   // ---------------------------------------------------------------- calls
 
-  async call(appId: string, accountId: string, op: string, input: Record<string, unknown> = {}, trace?: string): Promise<unknown> {
-    // A span for every call from an app (trace.ts), a child of the app's when it sent its traceparent.
-    const span = new Span(`call ${op}`, { app: appId, account: accountId, op }, parseTraceparent(trace));
+  async call(appId: string, accountId: string, op: string, input: Record<string, unknown> = {}, trace?: string, repeats?: unknown): Promise<unknown> {
+    // A span for every call from an app (trace.ts), a child of the app's when it sent its traceparent. `repeats`: the
+    // times the app answered this call from its memory of the last failure since then (spec memory.ts), so a reader of
+    // the trace counts the app's loop once, with its size, rather than as so many failures.
+    const asked = typeof repeats === 'number' && Number.isInteger(repeats) && repeats > 0 ? Math.min(repeats, 1_000_000) : 0;
+    const span = new Span(`call ${op}`, { app: appId, account: accountId, op, ...(asked ? { repeats: asked } : {}) }, parseTraceparent(trace));
     try {
       return await this.callIn(appId, accountId, op, input, span);
     } catch (e) {
@@ -693,7 +696,7 @@ export class Router {
     }
     const answer = (async (): Asked['answer'] => {
       try {
-        const result = m.t === 'call' ? await this.call(appId, m.account, m.op, m.input, m.trace) : await this.admin(appId, m.action);
+        const result = m.t === 'call' ? await this.call(appId, m.account, m.op, m.input, m.trace, m.repeats) : await this.admin(appId, m.action);
         return { ok: true, result };
       } catch (e) {
         return { ok: false, error: e instanceof CallFailure ? e.error : { code: 'failed', message: String((e as Error)?.message ?? e) } };

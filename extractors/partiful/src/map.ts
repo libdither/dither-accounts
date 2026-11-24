@@ -11,6 +11,7 @@
  * looked at, kept or passed on. The hook drops those fields from every getGuests answer before it leaves the page, too.
  */
 import type * as P from '@dither-chat/protocol';
+import { withoutHiddenGuests } from '@dither-chat/protocol';
 
 export const SITE = 'https://partiful.com';
 /** The notifications conversation (read-only). */
@@ -366,7 +367,8 @@ export function eventPost(v: unknown, ctx: Ctx, opts: EventOpts = {}): P.PostFac
     ...(tags.length ? { tags } : {}),
   };
   const text = str(ev.description) ?? '';
-  return {
+  // withoutHiddenGuests: the contract's second line of defence; nothing above names a guest of a hidden list anyway.
+  return withoutHiddenGuests({
     id: ev.id,
     url: eventUrl(ev.id),
     ts: pfTime(ev.publishedAt) ?? pfTime(ev.createdAt) ?? start,
@@ -376,7 +378,7 @@ export function eventPost(v: unknown, ctx: Ctx, opts: EventOpts = {}): P.PostFac
     ...(image ? { media: [{ kind: 'image' as const, url: image.url, ...(image.width ? { width: image.width } : {}), ...(image.height ? { height: image.height } : {}) }] } : {}),
     ...(opts.comments !== undefined ? { counts: { replies: opts.comments } } : {}),
     event,
-  };
+  });
 }
 
 /**

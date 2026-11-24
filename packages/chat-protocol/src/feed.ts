@@ -131,6 +131,28 @@ export interface EventRsvpArgs {
 export type EventRsvpChoice = 'going' | 'maybe' | 'declined' | 'interested';
 export const EVENT_RSVP_CHOICES: readonly EventRsvpChoice[] = ['going', 'maybe', 'declined', 'interested'];
 
+/** Whether a site showed this viewer who is coming by name (a guest list, whole or in part). */
+export const guestsNamed = (e: Pick<EventFact, 'guestsShown'>): boolean => e.guestsShown === 'all' || e.guestsShown === 'sample';
+
+/**
+ * A post with no guest named on a hidden guest list (docs/events.md "Who is going"): when `guestsShown` is 'count' or
+ * 'hidden' its `guests` go, here and in the posts it holds. The extractors send none then; the hub drops them again
+ * before anything is kept, as a second line of defence. The same post back when there was nothing to drop.
+ */
+export function withoutHiddenGuests(p: PostFact): PostFact {
+  const e = p.event;
+  const drop = !!e && !guestsNamed(e) && e.guests !== undefined;
+  const repostOf = p.repostOf && withoutHiddenGuests(p.repostOf);
+  const quoteOf = p.quoteOf && withoutHiddenGuests(p.quoteOf);
+  if (!drop && repostOf === p.repostOf && quoteOf === p.quoteOf) return p;
+  const out: PostFact = { ...p, ...(repostOf ? { repostOf } : {}), ...(quoteOf ? { quoteOf } : {}) };
+  if (drop) {
+    const { guests: _gone, ...rest } = e!;
+    out.event = rest;
+  }
+  return out;
+}
+
 /** An event conversation's native id (docs/events.md "Conversations"), and back. */
 export const eventConvNativeId = (eventId: string) => `event:${eventId}`;
 export const eventOfConv = (nativeId: string) => (nativeId.startsWith('event:') ? nativeId.slice(6) : null);

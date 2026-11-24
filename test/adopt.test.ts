@@ -4,7 +4,7 @@
  * strays of disabled or removed accounts, and still stops an account's extractor when asked. Launched `detached` here
  * (no systemd in tests); the `scope` launch differs only in the systemd-run prefix.
  */
-import { afterAll, expect, test } from 'bun:test';
+import { afterAll, expect, setDefaultTimeout, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -14,7 +14,15 @@ import { newToken, Store } from '../packages/manager/src/db.ts';
 import { procAlive, procStat } from '../packages/manager/src/procs.ts';
 import fakeManifest from '../extractors/fake/manifest.ts';
 
+// These tests start and stop real extractor processes, several in a test, and under load one start can take
+// seconds. A test's limit is longer than the waits inside it (up to 30 s for a restart), so one that hangs fails
+// saying what it waited for, not with bun's bare 5 s timeout.
+setDefaultTimeout(60_000);
+
 const ROOT = resolve(import.meta.dir, '..');
+// Account ids are machine-wide: a manager will not start an account some live process already runs, from any data
+// directory (acquireLock). This file can run in several checkouts at once, so its ids carry this run's pid.
+const RUN = process.pid.toString(36);
 const dirs: string[] = [];
 const managers: Manager[] = [];
 const pids: number[] = [];
@@ -82,7 +90,7 @@ async function world(name: string, opts: { code?: string; config?: Record<string
   const dir = mkdtempSync(join(tmpdir(), `dacc-adopt-${name}-`));
   dirs.push(dir);
   const m1 = await manager(dir, opts);
-  const id = `acc-${name}-1`;
+  const id = `acc-${name}-1-${RUN}`;
   const accDir = addAccount(m1, dir, id, opts.config);
   m1.sup.start(id);
   await until(() => online(m1, id), 15_000, 'the extractor online');
@@ -120,7 +128,7 @@ test('a manager that stops leaving its extractors keeps them running; the next o
 
 test('an adopted extractor whose code changed restarts; one at a time', async () => {
   const { dir, m1, id, pid, port } = await world('changed', { code: 'v1' });
-  const id2 = 'acc-changed-2';
+  const id2 = `acc-changed-2-${RUN}`;
   addAccount(m1, dir, id2);
   m1.sup.start(id2);
   await until(() => online(m1, id2), 15_000, 'the second extractor online');
@@ -192,12 +200,12 @@ test('a restart for changed code waits for the calls the extractor is answering'
   pids.push(n);
   expect(n).not.toBe(pid);
   await m2.stop();
-}, 30_000);
+});
 
 test("strays of an account disabled or removed while no manager ran are stopped; the enabled one's is adopted", async () => {
   const { dir, m1, id, pid, port } = await world('stray');
-  const gone = 'acc-stray-2';
-  const off = 'acc-stray-3';
+  const gone = `acc-stray-2-${RUN}`;
+  const off = `acc-stray-3-${RUN}`;
   for (const x of [gone, off]) {
     addAccount(m1, dir, x);
     m1.sup.start(x);
@@ -259,10 +267,10 @@ test('without leaveExtractors, and with the child launch, a stopping manager sto
   dirs.push(dir);
   const m = await createManager({ openPage: true, dataDir: dir, port: 0, kinds: kinds() });
   managers.push(m);
-  addAccount(m, dir, 'acc-child-1');
-  m.sup.start('acc-child-1');
-  await until(() => online(m, 'acc-child-1'), 15_000, 'online');
-  const p = await pidOf(m, 'acc-child-1');
+  addAccount(m, dir, `acc-child-1-${RUN}`);
+  m.sup.start(`acc-child-1-${RUN}`);
+  await until(() => online(m, `acc-child-1-${RUN}`), 15_000, 'online');
+  const p = await pidOf(m, `acc-child-1-${RUN}`);
   pids.push(p);
   await m.stop({ leaveExtractors: true });
   expect(procAlive(p)).toBe(false);

@@ -863,12 +863,33 @@
    * body came in, with how much had come), after how long, and whether the browser thought it was online. Names and
    * counts only. (2026-11-22: a bulk read saw bursts of bare "Failed to fetch" that said none of this.)
    */
-  function rawNetwork(stage, t0, got) {
+  function rawNetwork(stage, t0, got, then) {
     let online = null;
     try {
       online = navigator.onLine === true ? true : navigator.onLine === false ? false : null;
     } catch (e) {}
-    return { status: 0, error: 'network', stage, ms: Date.now() - t0, got, online };
+    const r = { status: 0, error: 'network', stage, ms: Date.now() - t0, got, online };
+    if (then !== undefined) r.then = then;
+    return r;
+  }
+  /**
+   * After a download failed before any answer: the same request once more, not following redirects, to tell the two
+   * causes apart. 'redirect' means Gmail answered by sending the download elsewhere (somewhere the page may not read,
+   * which is what failed); 'network' means the connection itself failed again; a number is the status Gmail answered
+   * this time. Its body, if any, is never read. (2026-11-22: bursts of these came about hourly on one account, each
+   * failing in 0.4 s while the page's own calls went on working, and nothing said which it was.)
+   */
+  async function rawProbe(url) {
+    const cut = cutoff(5000);
+    try {
+      const res = await cloak.apply(nativeFetch, window, [url, { credentials: 'include', cache: 'no-store', redirect: 'manual', signal: cut.signal }]);
+      if (res.body) quiet(res.body.cancel());
+      return res.type === 'opaqueredirect' ? 'redirect' : res.status;
+    } catch (e) {
+      return cut.aborted() ? 'timeout' : 'network';
+    } finally {
+      cut.done();
+    }
   }
   async function rawFetch(hex, max) {
     if (typeof hex !== 'string' || !/^[0-9a-f]{1,16}$/.test(hex)) throw new Error('gmail.raw: not a message id');
@@ -884,7 +905,9 @@
     } catch (e) {
       cut.done();
       if (cut.aborted()) return { status: 0, error: 'timeout' };
-      return rawNetwork('headers', t0, 0);
+      const ms = Date.now() - t0;
+      const then = await rawProbe(url);
+      return { ...rawNetwork('headers', t0, 0, then), ms };
     }
     cut.extend(RAW_MS - fetchMs());
     const type = learn.mediaType(res.headers.get('content-type'));

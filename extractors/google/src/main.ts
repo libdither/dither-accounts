@@ -32,6 +32,7 @@ import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync }
 import { join } from 'node:path';
 import { BridgeServer, diagnoseSilence, displayName, displayNote, type FreeDisplay, pickFreeDisplay, type Reached, Sandbox } from '@dither-accounts/browser';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
+import { Handover, HandoverError } from '@dither-accounts/spec/handover';
 import type { OutgoingMail } from '@dither-accounts/interfaces';
 import { type ContactsAnswer, GmailContacts } from './gmail/contacts.ts';
 import { GmailMail, type PageKind, stateOf, type SyncAnswer, type Transport } from './gmail/mail.ts';
@@ -76,8 +77,9 @@ const LONG_KINDS = new Set(['gmail.raw', 'gmail.upload']);
 const TAB_STATE_MS = 5_000;
 /**
  * A request made while its page's tab is being reloaded waits up to this (within its own time) for the new page's
- * hook, rather than going to the old page, which drops it as it unloads ("Failed to fetch"). Past it, the request is
- * sent as before: a reload that never brings the hook back still shows up as silence, and leads to the next reload.
+ * hook, rather than going to the old page, which drops it as it unloads ("Failed to fetch"). A page's hook is up a
+ * second or two after its load. Past it, requests are sent to the tab as it is: a reload that never brings the hook
+ * back still shows up as silence, and leads to the next reload.
  */
 const RELOAD_SETTLE_MS = 15_000;
 /** This many unanswered requests in a row to one page, and its tab is reloaded. */
@@ -293,6 +295,12 @@ interface Page {
   silent: number;
   /** Bumped by each reload: an older request's silence is the old page's, and no longer counts. */
   generation: number;
+  /**
+   * The page as a channel that a reload replaces (packages/spec handover.ts): requests wait while its tab is being
+   * reloaded, and those the old page had when it was reloaded run again on the new one (reads and label changes) or
+   * fail 'unsure'.
+   */
+  line: Handover<null>;
   answeredAt: number;
   /** When its hook last said it is up. */
   hookAt: number;
@@ -306,6 +314,11 @@ interface Page {
   /** Its hook said the page made a sync call of its own (Gmail): mail calls can be made. */
   synced: boolean;
 }
+const upLine = (name: string) => {
+  const h = new Handover<null>({ name });
+  h.open(null);
+  return h;
+};
 const newPage = (role: Role, name: string, url: string | null, lane: Lane): Page => ({
   role,
   name,
@@ -319,6 +332,7 @@ const newPage = (role: Role, name: string, url: string | null, lane: Lane): Page
   lane,
   silent: 0,
   generation: 0,
+  line: upLine(`the ${name} page`),
   answeredAt: 0,
   hookAt: 0,
   reloading: false,
@@ -661,6 +675,7 @@ function onBridge(msg: Up) {
       pages[roleOf(msg)].synced = false;
       pages[roleOf(msg)].hookAt = Date.now();
       log('debug', `${roleOf(msg)} page hook up`, { page: msg.page });
+      settled(pages[roleOf(msg)]);
       break;
     case 'session': {
       const p = pages[roleOf(msg)];
@@ -741,6 +756,11 @@ async function reloadPage(p: Page) {
   p.silent = 0;
   p.reloads++;
   p.lastReload = { at: Date.now(), how: null };
+  // 2026-11-18: calls made between a reload's order and the old page unloading reached the old page, whose fetch the
+  // unload cut ("Failed to fetch", a 503). Requests now wait for the new page; past RELOAD_SETTLE_MS they go to the
+  // tab as it is. What the old page has is lost with it: reads run again on the new page, the rest fail 'unsure'.
+  p.line.opening('its tab is being reloaded', { ms: RELOAD_SETTLE_MS, late: () => p.line.open(null) });
+  p.line.cut('its tab was reloaded');
   if (p.role === 'calendar') recheck = true;
   // A reloaded Gmail page may answer what it did not: no request stays held for failing alike before (mail.ts REPEAT).
   if (p.role === 'gmail') gmail?.clearHolds();
@@ -759,17 +779,17 @@ async function reloadPage(p: Page) {
     log('warn', `the ${p.name} tab could not be reloaded`, p.lastReload.error);
   } finally {
     p.reloading = false;
+    settled(p);
     status();
     readiness.changed();
   }
 }
 
-/** Why a request to this page should wait: its tab is being reloaded, and the new page's hook is not up yet. */
-function reloadUnsettled(p: Page): string | null {
-  if (p.reloading) return 'its tab is being reloaded';
+/** The page's hook is up again since its reload (or the reload failed, and the tab is as it was): requests go to it. */
+function settled(p: Page) {
+  if (p.reloading || p.line.state !== 'opening') return;
   const r = p.lastReload;
-  if (r && !r.error && p.hookAt <= r.at && Date.now() - r.at < RELOAD_SETTLE_MS) return 'its hook is not up again since the reload';
-  return null;
+  if (!r || r.error || p.hookAt > r.at) p.line.open(null);
 }
 
 /** Whether the page's tab is loading as Chromium sees it (the worker's tab.state), or null when it did not say. */
@@ -792,19 +812,26 @@ async function tabLoading(p: Page): Promise<boolean | null> {
  */
 async function pageRequest<T>(role: Role, cmd: PageCmd, answerMs = PAGE_ANSWER_MS, lane = pages[role].lane): Promise<T> {
   const p = pages[role];
-  if (!bridge.connected) throw new StatusError('the sandbox browser is not attached', 503, 'unavailable');
+  if (!bridge.connected) throw new StatusError('the sandbox browser is not attached', 503, 'unavailable', { kind: 'transient' });
   const ms = Math.min(answerMs, remainingMs(answerMs));
   const silence = () => new StatusError(`the ${p.name} page did not answer in ${Math.max(1, Math.round(ms / 1000))} s`, 503);
   if (ms <= 0) throw new StatusError(`the ${p.name} page did not answer within this call's time (none of it was left for this request)`, 503);
   const deadline = Date.now() + ms;
-  // 2026-11-18: calls made in the moment between a reload's order and the old page unloading reached the old page,
-  // whose fetch the unload cut ("Failed to fetch", a 503). They wait for the new page instead.
-  if (reloadUnsettled(p)) {
-    const r = p.lastReload;
-    await readiness.until(() => reloadUnsettled(p), Math.min(deadline - Date.now(), r ? r.at + RELOAD_SETTLE_MS - Date.now() : RELOAD_SETTLE_MS));
-    if (Date.now() >= deadline) throw new StatusError(`the ${p.name} page is being reloaded, and the new page was not up within this request's time, so it was not sent`, 503, 'unavailable');
-  }
   if (!(await lane.take(deadline))) throw new StatusError(`the ${p.name} page is busy: ${lane.max} of its requests ahead of this one did not finish within ${Math.max(1, Math.round(ms / 1000))} s, so this one was not sent`, 503, 'unavailable');
+  try {
+    // The page's tab may be being reloaded: then the request waits for the new page (Page.line).
+    return await p.line.run(() => toPage<T>(p, role, cmd, deadline, silence), { deadline, repeatable: resendable(cmd) });
+  } catch (e) {
+    if (!(e instanceof HandoverError)) throw e;
+    if (e.code === 'retry') throw new StatusError(`the ${p.name} page is being reloaded, and the new page was not up within this request's time, so it was not sent`, 503, 'retry');
+    throw new StatusError(`the ${p.name} page was reloaded while it had this request: it may or may not have happened, and it was not sent again`, 504, 'unsure');
+  } finally {
+    lane.give();
+  }
+}
+
+/** One request to the page as it is now, answered within `deadline`; its silence counts against the page. */
+async function toPage<T>(p: Page, role: Role, cmd: PageCmd, deadline: number, silence: () => StatusError): Promise<T> {
   const generation = p.generation;
   const sentAt = Date.now();
   try {
@@ -815,8 +842,6 @@ async function pageRequest<T>(role: Role, cmd: PageCmd, answerMs = PAGE_ANSWER_M
     const msg = String((e as Error).message ?? e);
     if (!msg.startsWith('hook timed out')) {
       answered(p, false);
-      // One that was in the page when its tab was reloaded: the unload cut it, and the log should say so.
-      if (generation !== p.generation) throw new StatusError(`the ${p.name} page was reloaded while it had this request (${msg})`, 503);
       throw new StatusError(msg, 503);
     }
     // One cut short (by its wait in the lane, or its op's time) is not the page's silence; one sent to a page since
@@ -827,8 +852,6 @@ async function pageRequest<T>(role: Role, cmd: PageCmd, answerMs = PAGE_ANSWER_M
     const working = reached === 'page' && LONG_KINDS.has(cmd.kind);
     if (generation === p.generation && given >= SILENCE_COUNTS_MS && !working) unanswered(p, cmd, reached, given);
     throw silence();
-  } finally {
-    lane.give();
   }
 }
 
@@ -1199,6 +1222,12 @@ function writeError(e: unknown): StatusError {
 }
 
 /** The Gmail tab, as GmailMail needs it: every call through the hook in that page (docs/google.md, "Gmail mail"). */
+/** The hook's second try at a download that failed before any answer (RawNetwork.then), if it said one. */
+function rawThen(v: unknown): { then?: 'redirect' | 'network' | 'timeout' | number } {
+  if (v === 'redirect' || v === 'network' || v === 'timeout') return { then: v };
+  if (typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 1000) return { then: v };
+  return {};
+}
 const gmailTransport: Transport = {
   async info() {
     const r = await pageRequest<{ sync?: unknown; headers?: unknown; ik?: unknown; history?: unknown }>('gmail', { kind: 'gmail.syncInfo' });
@@ -1209,9 +1238,9 @@ const gmailTransport: Transport = {
     return { ...r, page: pageKindOf(r?.page) };
   },
   async raw(hex, max) {
-    const r = await pageRequest<{ status?: number; token?: string; size?: number; tooBig?: number; type?: string | null; error?: string; page?: unknown; stage?: unknown; ms?: unknown; got?: unknown; online?: unknown }>('gmail', { kind: 'gmail.raw', hex, max }, RAW_ANSWER_MS);
+    const r = await pageRequest<{ status?: number; token?: string; size?: number; tooBig?: number; type?: string | null; error?: string; page?: unknown; stage?: unknown; ms?: unknown; got?: unknown; online?: unknown; then?: unknown }>('gmail', { kind: 'gmail.raw', hex, max }, RAW_ANSWER_MS);
     const status = typeof r?.status === 'number' ? r.status : 0;
-    if (r?.error === 'network') return { status: 0, error: 'network', net: { stage: r.stage === 'body' ? 'body' : 'headers', ms: Number(r.ms) || 0, got: Number(r.got) || 0, online: typeof r.online === 'boolean' ? r.online : null } };
+    if (r?.error === 'network') return { status: 0, error: 'network', net: { stage: r.stage === 'body' ? 'body' : 'headers', ms: Number(r.ms) || 0, got: Number(r.got) || 0, online: typeof r.online === 'boolean' ? r.online : null, ...rawThen(r.then) } };
     if (typeof r?.token !== 'string') return { status, tooBig: typeof r?.tooBig === 'number' ? r.tooBig : undefined, type: r?.type ?? null, error: r?.error, page: pageKindOf(r?.page) };
     const size = Number(r.size);
     try {
@@ -1298,11 +1327,11 @@ const contacts = mailOn ? new GmailContacts(contactsTransport, { log, ready: con
 /** Why the Gmail tab cannot take a mail call now, or null: not attached, not open, signed out, not synced yet. */
 function gmailNotReady(): StatusError | null {
   if (!gmail) return new StatusError(cfg.mail === false ? 'this account reads no mail (mail: false in its config)' : 'this account has no Gmail tab', 501);
-  if (!bridge.connected) return new StatusError('the sandbox browser is not attached yet', 503, 'unavailable');
+  if (!bridge.connected) return new StatusError('the sandbox browser is not attached yet', 503, 'unavailable', { kind: 'transient' });
   const s = gm.hooked ? gm.session : null;
-  if (!s) return new StatusError('Gmail is not open in the sandbox yet', 503, 'unavailable');
-  if (!s.signedIn) return new StatusError('Google is not signed in; sign in in the live view', 401);
-  if (!gm.synced) return new StatusError('the Gmail page has not made a sync call of its own yet, so the headers it sends are not known; try again in a moment', 503, 'unavailable');
+  if (!s) return new StatusError('Gmail is not open in the sandbox yet', 503, 'unavailable', { kind: 'transient' });
+  if (!s.signedIn) return new StatusError('Google is not signed in; sign in in the live view', 401, undefined, { kind: 'expected' });
+  if (!gm.synced) return new StatusError('the Gmail page has not made a sync call of its own yet, so the headers it sends are not known; try again in a moment', 503, 'unavailable', { kind: 'transient' });
   return null;
 }
 /** Only a 503 passes by waiting (a page still coming up); 401 and 501 do not. */
@@ -1526,10 +1555,10 @@ function checkCanary() {
 // ---------------------------------------------------------------- calendar
 /** Why the Calendar page cannot take a call now, or null. */
 function calendarNotReady(): StatusError | null {
-  if (!bridge.connected) return new StatusError('the sandbox browser is not attached yet', 503, 'unavailable');
+  if (!bridge.connected) return new StatusError('the sandbox browser is not attached yet', 503, 'unavailable', { kind: 'transient' });
   const s = current();
-  if (!s) return new StatusError('Google Calendar is not open in the sandbox', 503, 'unavailable');
-  if (!s.signedIn) return new StatusError('Google is not signed in; sign in in the live view', 401);
+  if (!s) return new StatusError('Google Calendar is not open in the sandbox', 503, 'unavailable', { kind: 'transient' });
+  if (!s.signedIn) return new StatusError('Google is not signed in; sign in in the live view', 401, undefined, { kind: 'expected' });
   return null;
 }
 

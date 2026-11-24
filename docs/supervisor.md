@@ -46,8 +46,23 @@ each by pid and start time). The same happens after an extractor crashes, before
 start that finds such leftovers: a browser or signal-cli left behind would be a second session on one account.
 
 One stop of an account at a time, and a start asked for while one is under way waits for it, so a stop never ends or
-forgets the extractor of the start that followed it. A call to an extractor being stopped fails at once (`offline`), and so does every call
-waiting on a socket that closes, rather than after its timeout.
+forgets the extractor of the start that followed it.
+
+### Calls while an extractor starts, restarts or reconnects
+
+Each account's connection to its extractor follows one rule for being replaced (packages/spec/src/handover.ts):
+
+- While its extractor starts (a start, the page's Restart, a restart for changed code), a call waits for it to
+  connect, for at most 20 s (`START_OPEN_MS`) and within the call's own time, then runs. One that could not be sent by
+  then fails `retry` (503): it never reached an extractor, so it is safe to send again.
+- When its socket drops while its process runs, its link connects again within a second or so and sends the answers it
+  made meanwhile: calls wait (at most 10 s, `RECONNECT_OPEN_MS`), and the ones it had are answered on the new socket.
+- A call the extractor had when it ended (a crash, a stop, a Restart) fails at once, `offline`, not after its timeout:
+  it may have run. A read is run again on the new process instead, once, when a Restart is under way.
+- A call to an account with no extractor running, or one stopped on purpose, fails at once (`offline`).
+
+`test/extractor-swap.test.ts` cuts the connection in each of these ways with calls on it, and checks that each call is
+answered exactly once or refused with one of those words (test/cut-mid-call.ts).
 
 A whole stop of the manager takes at most about 15 s (SIGKILL at 8 s, 2 + 1 s for what is left, `list-jobs` bounded to
 3 s), inside the unit's `TimeoutStopSec` (30 s on this setup; keep it at 20 s or more).
@@ -130,8 +145,9 @@ The same computation over the new release gives the new manager's fingerprint. A
 counts as changed. An adopted extractor whose fingerprint differs is restarted, gracefully and **one at a time per
 kind**: 20 s after the manager starts, then the next of that kind 20 s after the previous one is online again (or a
 minute; one not online by then stops its kind's restarts, so the rest of that kind keep their old code, and the
-deployer rolls the deploy back). Before it stops one, it waits until the calls that extractor is answering have their
-answers (up to 30 s), so a deploy does not fail an app's call midway. Different kinds restart side by side: a Discord and a Telegram account at once is not what looks like a bot
+deployer rolls the deploy back). From the moment its turn comes, calls wait for the new process, and before it stops
+the old one, it waits until the calls that one already has are answered (up to 30 s, `RESTART_DRAIN_MS`), so a deploy
+does not fail an app's call midway, and an app that polls without pause cannot hold the restart up. Different kinds restart side by side: a Discord and a Telegram account at once is not what looks like a bot
 to either network; every account at once, or two of one network together, is. One stopped on purpose meanwhile stays
 stopped (so does one stopped while a Restart waits for its stop). One whose code did not change keeps running, across
 any number of deploys.

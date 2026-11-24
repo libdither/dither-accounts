@@ -185,15 +185,72 @@ export function isExtractorCode(code: unknown): code is string {
  * word of its own, that word (isExtractorCode), with the extractor's `status`. The interface documents its words (mail:
  * Proton's mail.send says 'from', 'recipients' or 'settings' with 422). An extractor's error without one is 'failed'.
  *
- * Two words mean the same wherever they come from: `unsure` (504), a write that may or may not have happened and was
- * not tried again (the app's client says it of a write in flight when its socket dropped; mail.send of a repeated
- * idempotencyKey whose first send's outcome is unknown); and `duplicate` (409), a write already done under that key.
+ * Three words mean the same wherever they come from: `retry` (503), the call was never sent and may be sent again
+ * (it waited for a channel being replaced, an extractor or a page, and its time ran out first: handover.ts);
+ * `unsure` (504), a write that may or may not have happened and was not tried again (the app's client says it of a
+ * write in flight when its socket dropped; mail.send of a repeated idempotencyKey whose first send's outcome is
+ * unknown; a page reloaded while it had the call); and `duplicate` (409), a write already done under that key.
  * A call sent again with the same call id is run once by the manager: the repeat gets the first's answer.
  */
 export interface CallError {
   message: string;
   code: ManagerCallCode | (string & {});
   status?: number;
+  /** Whether it is an answer, the world failing, or a bug (FailureKind). Absent: nobody said, so it is not known. */
+  kind?: FailureKind;
+  /** When the call may work if sent again: how long to wait first (a rate limit, a back-off), when that is known. */
+  retryAfterMs?: number;
+}
+
+/**
+ * What kind of failure an error is, so that no reader has to guess it from the words:
+ *
+ * - `expected`: a refusal that is the right answer (no such message, the account is offline, not allowed, bad input).
+ *   Nothing is broken; the caller shows it or waits for the state to change.
+ * - `transient`: the world failed for a moment (a network drop, a 503, a page reloading, a rate limit, a restart). The
+ *   same call may work later, after `retryAfterMs` when given. One is no bug; a lasting run of them may be. It does not
+ *   say a write is safe to send again: `unsure` (504) is transient too, and a write that failed so may have happened.
+ * - `bug`: something is wrong in code (ours or an upstream's): it will not go away by waiting.
+ *
+ * The maker of an error says it (`new StatusError(message, 503, 'unavailable', { kind: 'transient' })`); the manager
+ * fills it in from its own code or the status when the maker did not (failureKindOf). It travels unchanged from the
+ * extractor to the app (CallError.kind), into the manager's trace spans (`kind`) and into errors.ndjson records.
+ */
+export const FAILURE_KINDS = ['expected', 'transient', 'bug'] as const;
+export type FailureKind = (typeof FAILURE_KINDS)[number];
+export const isFailureKind = (k: unknown): k is FailureKind => typeof k === 'string' && (FAILURE_KINDS as readonly string[]).includes(k);
+
+/** The kind each of the manager's own codes is. `failed` is whatever the extractor threw: not known from the code. */
+const CODE_KINDS: Partial<Record<string, FailureKind>> = {
+  denied: 'expected',
+  invalid: 'expected',
+  'unknown-op': 'expected',
+  'unknown-account': 'expected',
+  offline: 'expected',
+  limited: 'transient',
+  timeout: 'transient',
+  unsure: 'transient',
+};
+
+/**
+ * A failure's kind: the one its maker said, else the one its manager code means, else what its status says (a 4xx
+ * other than 408 and 429, or a 501, is a refusal; 408, 429, 503 and 504 are the world for a moment). Else undefined:
+ * a 500 or 502, or no status, may be anything, so the old guesses still apply to it.
+ */
+export function failureKindOf(e: { code?: string; status?: number; kind?: unknown }): FailureKind | undefined {
+  if (isFailureKind(e.kind)) return e.kind;
+  const byCode = e.code ? CODE_KINDS[e.code] : undefined;
+  if (byCode) return byCode;
+  const s = e.status;
+  if (typeof s !== 'number') return undefined;
+  if (s === 408 || s === 429 || s === 503 || s === 504) return 'transient';
+  if ((s >= 400 && s < 500) || s === 501) return 'expected';
+  return undefined;
+}
+
+/** A retryAfterMs worth sending: a finite, non-negative number of ms, whole, at most a day. */
+export function retryAfterOf(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.min(86_400_000, Math.ceil(v)) : undefined;
 }
 
 /** An account as an app sees it: only those its grants name. */

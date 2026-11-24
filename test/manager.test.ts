@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +6,11 @@ import { AccountsClient, CallFailed, register } from '@dither-accounts/client';
 import { testEcho } from '@dither-accounts/interfaces';
 import { createManager, type Manager } from '@dither-accounts/manager';
 import { BUFFER, LIMITS } from '../packages/manager/src/router.ts';
+import { setTraceSink } from '../packages/manager/src/trace.ts';
+
+// These tests start real extractor processes, and under load one start can take seconds. A test's limit is longer
+// than the waits inside it, so one that hangs fails saying what it waited for, not with bun's bare 5 s timeout.
+setDefaultTimeout(30_000);
 
 let m: Manager;
 let dir: string;
@@ -146,6 +151,58 @@ test('errors: upstream status, bad input, unknown op, timeout', async () => {
   expect(bad.message).toContain('input.text');
   expect(((await c.callRaw(account, 'nope').catch((x: any) => x)) as any).code).toBe('unknown-op');
   expect(((await c.call(testEcho, account, 'slow', { ms: 2000 }).catch((x: any) => x)) as any).code).toBe('timeout');
+});
+
+test("errors carry their kind to the app and into the call's span: the extractor's, else the code's or the status's", async () => {
+  const c = clients[0];
+  const spans: any[] = [];
+  setTraceSink((r) => spans.push(r));
+  const fail = (input: Record<string, unknown>) => c.call(testEcho, account, 'fail', input as any).then(() => null, (x: CallFailed) => x);
+  try {
+    // The extractor said it: it reaches the app as said, with its wait.
+    const said = (await fail({ status: 502, kind: 'transient', retryAfterMs: 1500 }))!;
+    expect([said.kind, said.retryAfterMs, said.status]).toEqual(['transient', 1500, 502]);
+    // It did not: the status says it where it can (a 4xx is an answer, a 503 the world), and a 500 is not known.
+    expect((await fail({ status: 404 }))!.kind).toBe('expected');
+    expect((await fail({ status: 503, code: 'unavailable' }))!.kind).toBe('transient');
+    const unknown = (await fail({ status: 500 }))!;
+    expect([unknown.kind, unknown.retryAfterMs]).toEqual([undefined, undefined]);
+    // Something that is not a kind is dropped on the way, not passed on.
+    expect((await fail({ status: 500, kind: 'fine' }))!.kind).toBeUndefined();
+    // The manager's own refusals have theirs.
+    expect(((await c.callRaw(account, 'echo', { text: 5 }).catch((x: any) => x)) as CallFailed).kind).toBe('expected');
+    expect(((await c.callRaw(account, 'nope').catch((x: any) => x)) as CallFailed).kind).toBe('expected');
+    expect(((await c.call(testEcho, account, 'slow', { ms: 2000 }).catch((x: any) => x)) as CallFailed).kind).toBe('transient');
+    // The span of the first call says what the app was told.
+    const span = spans.find((s) => s.name === 'call fail' && s.attrs?.status === 502);
+    expect(span).toMatchObject({ status: 'error', attrs: { outcome: 'failed', status: 502, kind: 'transient', retryAfterMs: 1500 } });
+    expect(spans.find((s) => s.name === 'call fail' && s.attrs?.status === 500 && s.status === 'error')!.attrs.kind).toBeUndefined();
+  } finally {
+    setTraceSink(null);
+  }
+});
+
+test('an account that is not connected is an expected refusal; a rate limit is transient and says when to come back', async () => {
+  const c = clients[0];
+  const made = await c.admin({ do: 'create', kind: 'fake', label: 'Stopped', enabled: false });
+  await until(() => c.accounts.some((a) => a.id === made.id), 4000, 'the stopped account visible');
+  const off = (await c.call(testEcho, made.id, 'echo', { text: 'x' }).catch((x: any) => x)) as CallFailed;
+  expect([off.code, off.kind]).toEqual(['offline', 'expected']);
+  await c.admin({ do: 'delete', account: made.id, purge: true });
+
+  const before = LIMITS.read;
+  LIMITS.read = [0.5, 1];
+  try {
+    const outcomes = await Promise.all(Array.from({ length: 3 }, () => c.call(testEcho, account, 'echo', { text: 'r' }).then(() => null, (e: CallFailed) => e)));
+    const limited = outcomes.find((e) => e?.code === 'limited')!;
+    expect(limited.kind).toBe('transient');
+    // At 0.5 a second, a whole token is at most 2 s away.
+    expect(limited.retryAfterMs).toBeGreaterThan(0);
+    expect(limited.retryAfterMs).toBeLessThanOrEqual(2000);
+  } finally {
+    LIMITS.read = before;
+    (m.router as any).buckets.clear();
+  }
 });
 
 test('rate limits per app, account and level', async () => {

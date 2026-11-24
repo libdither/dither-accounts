@@ -162,8 +162,8 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
       const block = errorBlocks(exit.stderr, repoRoot).at(-1);
       const extra = { kind, account: id, code: exit.code, signal: exit.signal };
       const where = `extractor ${kind}`;
-      if (block) errors?.record({ source: 'uncaught', where, name: block.name, message: block.message, stack: block.frames, extra });
-      else errors?.record({ source: 'uncaught', where, name: 'Exit', message: exit.signal ? `ended by signal ${exit.signal}` : `exited with code ${exit.code}`, extra });
+      if (block) errors?.record({ source: 'uncaught', where, name: block.name, message: block.message, stack: block.frames, extra, kind: 'bug' });
+      else errors?.record({ source: 'uncaught', where, name: 'Exit', message: exit.signal ? `ended by signal ${exit.signal}` : `exited with code ${exit.code}`, extra, kind: 'bug' });
     },
     onExit: (id) => router?.processGone(id),
     // An adopted extractor back after a handover that did not name it: a gap only if it says it did not hold its events.

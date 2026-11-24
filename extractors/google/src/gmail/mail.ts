@@ -219,12 +219,28 @@ export interface RawNetwork {
   ms: number;
   got: number;
   online: boolean | null;
+  /**
+   * Failed before any answer: what the same request said when asked once more without following redirects. 'redirect'
+   * (Gmail sent the download elsewhere, where the page may not read it), 'network' (the connection failed again),
+   * 'timeout', or the status Gmail answered this time.
+   */
+  then?: 'redirect' | 'network' | 'timeout' | number;
 }
 /** One line on a download the browser gave up on: counts and names only. */
 export function rawNetworkText(n: RawNetwork | undefined): string {
   if (!n) return 'the browser could not fetch it';
   const at = n.stage === 'body' ? `while its body came in (${n.got} bytes in)` : 'before any answer';
-  return `the browser could not fetch it, ${at}, after ${(n.ms / 1000).toFixed(1)} s${n.online === false ? ', with the browser offline' : ''}`;
+  const then =
+    n.then === undefined
+      ? ''
+      : n.then === 'redirect'
+        ? ' (asked again, Gmail sent it elsewhere: a redirect the page may not follow)'
+        : n.then === 'network'
+          ? ' (asked again, the connection failed again)'
+          : n.then === 'timeout'
+            ? ' (asked again, no answer in 5 s)'
+            : ` (asked again, Gmail answered ${n.then})`;
+  return `the browser could not fetch it, ${at}, after ${(n.ms / 1000).toFixed(1)} s${n.online === false ? ', with the browser offline' : ''}${then}`;
 }
 type Answer = { status: number; json?: unknown; bytes?: Buffer; page?: PageKind | null; error?: string; type?: string | null };
 interface Job {
@@ -631,14 +647,21 @@ export class GmailMail {
     return null;
   }
 
+  /**
+   * A spent budget passes by itself at a known time (transient); a sign-in or verification page waits for the owner
+   * (expected: the account cannot read until then, and that is the answer).
+   */
   private paused(cause: StopCause): StatusError {
-    const why = cause === 'quota' ? `${STOP_SENTENCE.quota}; it resumes at ${hms(this.quotaFreeAt() ?? this.now())}` : STOP_SENTENCE[cause];
-    return new StatusError(`Gmail background reading is paused: ${why}`, 503, 'paused');
+    const freeAt = cause === 'quota' ? (this.quotaFreeAt() ?? this.now()) : null;
+    const why = freeAt !== null ? `${STOP_SENTENCE.quota}; it resumes at ${hms(freeAt)}` : STOP_SENTENCE[cause];
+    return new StatusError(`Gmail background reading is paused: ${why}`, 503, 'paused', freeAt !== null ? { kind: 'transient', retryAfterMs: Math.max(0, freeAt - this.now()) } : { kind: 'expected' });
   }
 
+  /** Backed off after slow or refused answers: the world, for a while; it ends at backoff.until. */
   private late(): StatusError {
-    const until = this.backoff.until > this.now() ? ` (backed off until ${hms(this.backoff.until)} after a slow or refused answer)` : '';
-    return new StatusError(`Gmail background reading could not take this call within ${Math.round(this.rules.waitMs / 1000)} s${until}; try again later`, 503, 'backoff');
+    const now = this.now();
+    const until = this.backoff.until > now ? ` (backed off until ${hms(this.backoff.until)} after a slow or refused answer)` : '';
+    return new StatusError(`Gmail background reading could not take this call within ${Math.round(this.rules.waitMs / 1000)} s${until}; try again later`, 503, 'backoff', { kind: 'transient', ...(this.backoff.until > now ? { retryAfterMs: this.backoff.until - now } : {}) });
   }
 
   /** What an answer says of Gmail: a block stops the background; a slow, 429 or 5xx one backs it off; good ones undo both. */
@@ -815,7 +838,7 @@ export class GmailMail {
     }
     if (r.json === undefined) {
       this.note(ep, false, 'the answer is not JSON after its prefix');
-      throw this.stopFor(lane) ?? new StatusError(`Gmail's ${ENDPOINT_NAMES[ep]} answer is not JSON; nothing was returned rather than possibly wrong mail`, 502);
+      throw this.stopFor(lane) ?? new StatusError(`Gmail's ${ENDPOINT_NAMES[ep]} answer is not JSON; nothing was returned rather than possibly wrong mail`, 502, undefined, { kind: 'bug' });
     }
     let out: T;
     try {
@@ -826,7 +849,8 @@ export class GmailMail {
       this.fp[ep].firstShape ??= shape(r.json);
       const message = `Gmail's ${ENDPOINT_NAMES[ep]} answer is not laid out as this extractor knows it (${e.message}); nothing was returned rather than possibly wrong mail`;
       this.repeated(ep, key, e.where, message);
-      throw new StatusError(message, 502);
+      // Gmail changed what it sends, or the parser is wrong: either way the code needs a change.
+      throw new StatusError(message, 502, undefined, { kind: 'bug' });
     }
     this.repeats.delete(key);
     this.note(ep, true);
@@ -1291,7 +1315,8 @@ export class GmailMail {
       // Not noted against the endpoint: the route is fine, the connection was not; the back-off covers a run of them.
       const why = rawNetworkText(r.net);
       this.o.log('warn', `gmail raw: ${why}`);
-      throw new StatusError(`Gmail's message download failed: ${why}; try again in a moment`, 503, 'unavailable');
+      // The connection, not Gmail or this code: the same download may work in a moment.
+      throw new StatusError(`Gmail's message download failed: ${why}; try again in a moment`, 503, 'unavailable', { kind: 'transient' });
     }
     if (r.status === 0) throw new StatusError(r.error === 'no-ik' ? 'the Gmail page has not shown its account key yet; try again in a moment' : `the Gmail page could not download the message (${String(r.error ?? 'no reason').slice(0, 80)})`, 503, r.error === 'no-ik' ? 'unavailable' : undefined);
     if (r.page) {
@@ -1598,7 +1623,7 @@ export class GmailMail {
       if (!(e instanceof WriteLayoutError)) throw e;
       this.note('write', false, e.message);
       this.fp.write.firstShape ??= shape(r.json);
-      throw new StatusError(`Gmail's answer to a ${what} call is not laid out as this extractor knows it (${e.message}); it may have made the change`, 502);
+      throw new StatusError(`Gmail's answer to a ${what} call is not laid out as this extractor knows it (${e.message}); it may have made the change`, 502, undefined, { kind: 'bug' });
     }
   }
 

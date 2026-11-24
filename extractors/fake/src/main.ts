@@ -1,5 +1,5 @@
 /** A fake account for the manager's tests: the `test.echo` interface over the real extractor wire. */
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { linkManager, StatusError } from '@dither-accounts/link';
 
@@ -77,10 +77,16 @@ const link = linkManager({
       case 'shout':
         return { text: String(cmd.text).toUpperCase() };
       case 'fail':
-        throw new StatusError(`failed with ${cmd.status}`, Number(cmd.status), typeof cmd.code === 'string' ? cmd.code : undefined);
+        // `kind` is passed as given, so a test can see that the manager drops one that is not a kind.
+        throw new StatusError(`failed with ${cmd.status}`, Number(cmd.status), typeof cmd.code === 'string' ? cmd.code : undefined, { kind: cmd.kind as any, retryAfterMs: cmd.retryAfterMs as number | undefined });
       case 'slow':
         await Bun.sleep(Number(cmd.ms));
         return { slept: cmd.ms };
+      case 'mark':
+        // Call `i` (the cut-mid-call test): each run is a line in runs.log, kept across restarts; answers after `ms`, saying which process ran it.
+        appendFileSync(join(link.accountDir, 'runs.log'), `${Number(cmd.i)}\n`);
+        await Bun.sleep(Number(cmd.ms ?? 0));
+        return { i: Number(cmd.i), pid: process.pid };
       case 'pid':
         return { pid: process.pid, children };
       case 'exit':

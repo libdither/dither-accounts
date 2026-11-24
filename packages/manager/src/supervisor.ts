@@ -17,7 +17,8 @@ import { createHmac } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { writeSecretFile } from '@dither-chat/protocol/secret-file';
-import { isExtractorCode } from '@dither-accounts/spec';
+import { type FailureKind, isExtractorCode, isFailureKind, retryAfterOf } from '@dither-accounts/spec';
+import { Handover, HandoverError } from '@dither-accounts/spec/handover';
 import type { Row, Store } from './db.ts';
 import { fingerprintEntry, sameCode } from './fingerprint.ts';
 import { type DisplayBackend, parseBackend } from './display-backend.ts';
@@ -113,7 +114,8 @@ interface Running {
 /** How many of an extractor's last log lines are kept for a crash record. */
 const CRASH_LINES = 60;
 
-type Pending = { resolve: (v: unknown) => void; reject: (e: ExtractorError) => void; timer: Timer; ws: ServerWebSocket<ExtractorSocketData> };
+type Pending = { resolve: (v: unknown) => void; reject: (e: ExtractorError) => void; timer: Timer; accountId: string };
+type Socket = ServerWebSocket<ExtractorSocketData>;
 
 export class ExtractorError extends Error {
   constructor(
@@ -121,6 +123,9 @@ export class ExtractorError extends Error {
     /** The manager's offline, timeout or failed; or the extractor's own word for a refusal (spec isExtractorCode). */
     readonly code: 'offline' | 'timeout' | 'failed' | (string & {}),
     readonly status?: number,
+    /** The extractor's own kind for it (spec FailureKind) and how long it said to wait, when it said them. */
+    readonly kind?: FailureKind,
+    readonly retryAfterMs?: number,
   ) {
     super(message);
   }
@@ -140,8 +145,27 @@ const ADOPT_CONNECT_MS = 60_000;
 const RESTART_ONLINE_MS = 60_000;
 /** Between two restarts for changed code, and before the first. */
 const RESTART_PAUSE_MS = 20_000;
-/** How long a restart for changed code waits for the calls already sent to the extractor to be answered. */
+/**
+ * How long a restart for changed code waits for the calls the old extractor already has (calls that come meanwhile wait
+ * for the new one, so an app that polls without pause cannot keep it waiting): an app's poll is answered within a
+ * second or two. Past it, the extractor is stopped anyway, and the calls it still has fail 'offline'.
+ */
 const RESTART_DRAIN_MS = 30_000;
+/**
+ * How long a call waits for an extractor that is starting (a start, the page's Restart, a restart for changed code)
+ * before it is refused 'retry' (503: never sent). The new process's link connects a second or two after it starts,
+ * before any browser is up; a stop before it takes at most its 8 s grace and 2 s to kill. Past this, the start is going
+ * wrong (RESTART_ONLINE_MS stops a kind's restarts at 60 s), and the caller still has time to try again or to show the
+ * account as restarting. Calls after that fail at once 'offline', until it connects.
+ */
+const START_OPEN_MS = 20_000;
+/**
+ * How long calls wait for an extractor whose socket dropped while its process runs: its link tries again after 250 ms
+ * and never waits more than 5 s between tries (outlive.ts reconnectDelay), and sends the answers it made meanwhile.
+ * Past this, waiting calls are refused 'retry', and the calls it had fail 'offline' (it may have run them): their
+ * answers could only come on a socket it does not seem to open.
+ */
+const RECONNECT_OPEN_MS = 10_000;
 /** An extractor that outlives its manager ends itself after this long without one (its link, DITHER_MANAGER_GONE_EXIT_S). */
 const MANAGER_GONE_EXIT_S = 1800;
 /** How long a going manager waits for its extractors to say they hold their events. */
@@ -325,8 +349,13 @@ export class Supervisor {
   /** What a stop forgets but the account pane still shows: how often it started, how it last ended. */
   private history = new Map<string, Pick<Running, 'starts' | 'lastExit'>>();
   private pending = new Map<string, Pending>();
-  /** Accounts waiting for their last call to be answered (a restart for changed code), told when it is. */
-  private drained = new Map<string, () => void>();
+  /**
+   * Each account's connection to its extractor, through restarts and reconnects (packages/spec handover.ts): calls wait
+   * while one starts or reconnects, the old one answers what it has, and a call that could not be sent says so.
+   */
+  private lines = new Map<string, Handover<Socket>>();
+  /** Fires when the manager closes: a restart's drain stops waiting. */
+  private closingCtrl = new AbortController();
   /** Accounts the manager answers itself (the built-in `notices`): never started, always online. */
   readonly inProcess = new Set<string>();
   readonly launch: Launch;
@@ -650,7 +679,7 @@ export class Supervisor {
       return;
     }
     const acc = this.store.account(id);
-    if (!acc || !acc.enabled) return;
+    if (!acc || !acc.enabled) return void this.line(id).down(acc ? 'the account is disabled' : 'the account is gone');
     const cur = this.running.get(id);
     if (cur && !cur.stopping && (cur.pid || cur.cleaning)) return;
     const r: Running = cur ?? { restarts: 0, stopping: false, lastStart: 0, ...this.history.get(id) };
@@ -685,6 +714,7 @@ export class Supervisor {
       const moved = f!.backend !== this.backendOf(acc);
       appendFileSync(log, `--- ${new Date().toISOString()} dither-accounts took over the running ${acc.kind} extractor (pid ${f!.pid})${changed ? '; its code changed, so it restarts soon' : moved ? `; its display backend is now ${this.backendOf(acc)}, so it restarts soon` : ''}\n`);
       r.logFrom = fileSize(log);
+      if (!r.ws) this.starting(id);
       this.watch();
       if (changed || moved) this.queueRestart(id);
       // Back already (it connected before startAll got to it): what it said on its return counts now.
@@ -697,6 +727,7 @@ export class Supervisor {
     // (Not right after this manager ended what the last one left: that look at every process's environment is slow.)
     const left = Date.now() - (this.cleanedAt.get(id) ?? 0) < 2000 ? [] : this.leftovers(id);
     if (left.length) {
+      this.starting(id);
       r.cleaning = true;
       void this.endLeft(id, undefined, left).finally(() => {
         r.cleaning = false;
@@ -775,6 +806,7 @@ export class Supervisor {
     r.fingerprint = fingerprint;
     r.backend = backend;
     r.connectBy = undefined;
+    this.starting(id);
     // Its scope exists once systemd-run has made it, just before it runs the extractor.
     if (launch === 'scope') {
       const cg = () => {
@@ -786,7 +818,26 @@ export class Supervisor {
     this.opts.onChange(id);
   }
 
+  /** The account's connection to its extractor, made on first use (down until a start). */
+  private line(id: string): Handover<Socket> {
+    let h = this.lines.get(id);
+    if (!h) this.lines.set(id, (h = new Handover<Socket>({ name: "the account's extractor" })));
+    return h;
+  }
+
+  /** A process of the account is on its way: calls wait for it to connect (START_OPEN_MS), unless a restart already said so. */
+  private starting(id: string) {
+    const h = this.line(id);
+    if (h.state !== 'opening') h.opening('its extractor is starting', { ms: START_OPEN_MS });
+  }
+
+  /** The calls the account's extractor had are lost with it: each fails at once ('offline'), not after its timeout. */
+  private lost(id: string, why: string) {
+    this.lines.get(id)?.cut(why, Infinity);
+  }
+
   private fail(id: string, r: Running, error: string) {
+    this.line(id).down(error);
     r.error = error;
     console.error(`[${id}] ${error}`);
     this.opts.onChange(id);
@@ -835,6 +886,9 @@ export class Supervisor {
     r.adopted = false;
     r.connectBy = undefined;
     r.lastExit = { code, signal: sig, at: Date.now() };
+    this.lost(id, `its extractor exited (code ${code}, signal ${sig})`);
+    // A stop under way (a restart) decides what comes next; otherwise nothing is coming until a start.
+    if (!r.stopping) this.line(id).down('its extractor exited');
     if (log) appendFileSync(log, `--- exited code=${code} signal=${sig}\n`);
     this.opts.onExit?.(id);
     this.opts.onChange(id);
@@ -865,6 +919,7 @@ export class Supervisor {
   async stop(id: string) {
     this.halted.add(id);
     this.startAfter.delete(id);
+    this.line(id).down('it was stopped');
     await this.stopProcess(id);
   }
 
@@ -877,6 +932,9 @@ export class Supervisor {
     if (!r) return;
     r.stopping = true;
     clearTimeout(r.retry);
+    // A plain stop (the manager closing): nothing is coming. A restart said `opening` before, and keeps it.
+    const h = this.line(id);
+    if (h.state === 'up') h.down('it is being stopped');
     for (const q of this.outdated.values()) if (q.includes(id)) q.splice(q.indexOf(id), 1);
     if (r.ws) {
       try {
@@ -885,6 +943,7 @@ export class Supervisor {
     }
     if (r.pid) await this.end(id, { pid: r.pid, start: r.pstart, proc: r.proc, cgroup: r.cgroup });
     else await this.endLeft(id, r.cgroup);
+    this.lost(id, 'it was stopped');
     if (this.running.get(id) === r) this.running.delete(id);
     this.history.set(id, { starts: r.starts, lastExit: r.lastExit });
     const acc = this.store.account(id);
@@ -908,7 +967,7 @@ export class Supervisor {
       p.done();
     }
     this.pauses.clear();
-    for (const done of [...this.drained.values()]) done();
+    this.closingCtrl.abort();
     const ids = [...this.running.keys()];
     for (const id of ids) clearTimeout(this.running.get(id)!.retry);
     const left = ids.filter((id) => o.leave && this.running.get(id)?.survives && this.running.get(id)?.pid);
@@ -945,6 +1004,8 @@ export class Supervisor {
    */
   async restart(id: string) {
     this.halted.delete(id);
+    // Calls from now on wait for the new process; the old one's are cut when it stops (a read runs again on the new one).
+    this.line(id).opening('it is restarting', { ms: START_OPEN_MS });
     await this.stopProcess(id);
     // Apps hear it went before the next one's start takes the event loop.
     await Bun.sleep(1);
@@ -995,9 +1056,16 @@ export class Supervisor {
           const by = Date.now() + (this.opts.adoptConnectMs ?? ADOPT_CONNECT_MS);
           while (!this.closing && !r.ws && r.pid && Date.now() < by) await Bun.sleep(250);
           if (this.closing || !r.pid || this.running.get(id) !== r || this.halted.has(id)) continue;
-          // The calls it is answering now get their answers first: a deploy should not fail an app's call.
-          await this.drain(id, RESTART_DRAIN_MS);
-          if (this.closing || !r.pid || this.running.get(id) !== r || this.halted.has(id)) continue;
+          // Calls from now on wait for the new process, and the ones the old one has get their answers first: a
+          // deploy should not fail an app's call.
+          const h = this.line(id);
+          h.opening(`its ${sameScreen ? 'code' : 'display backend'} changed since it started: restarting it`, { ms: START_OPEN_MS });
+          await h.drain(RESTART_DRAIN_MS, this.closingCtrl.signal);
+          if (this.closing || !r.pid || this.running.get(id) !== r || this.halted.has(id)) {
+            // Not restarted after all: what waited goes to the process that is still there.
+            if (r.ws && h.state === 'opening' && this.running.get(id) === r) h.open(r.ws);
+            continue;
+          }
           appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} its ${sameScreen ? 'code' : 'display backend'} changed since it started: restarting it\n`);
           await this.stopProcess(id);
           // Stopped on purpose meanwhile (the page, an app): it stays stopped.
@@ -1023,31 +1091,10 @@ export class Supervisor {
     }
   }
 
-  private inFlight(accountId: string) {
-    for (const p of this.pending.values()) if (p.ws.data.accountId === accountId) return true;
-    return false;
-  }
-
-  /** Until no call to the account waits for its answer (or `ms`, or the manager closes). */
-  private drain(accountId: string, ms: number) {
-    if (!this.inFlight(accountId)) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      const done = () => {
-        clearTimeout(timer);
-        if (this.drained.get(accountId) === done) this.drained.delete(accountId);
-        resolve();
-      };
-      const timer = setTimeout(done, ms);
-      this.drained.set(accountId, done);
-    });
-  }
-
-  /** A call answered, failed or timed out: forget it, and tell a drain waiting on its account when it was the last. */
+  /** A call answered, failed, timed out or cut: forget it. */
   private settle(rid: string, p: Pending) {
     this.pending.delete(rid);
     clearTimeout(p.timer);
-    const accountId = p.ws.data.accountId;
-    if (this.drained.has(accountId) && !this.inFlight(accountId)) this.drained.get(accountId)!();
   }
 
   // ---------------------------------------------------------- socket
@@ -1070,6 +1117,9 @@ export class Supervisor {
     r.onlineSince = Date.now();
     r.connectBy = undefined;
     this.running.set(ws.data.accountId, r);
+    // The new socket is the account's connection now: what waited for it goes. Calls still out on an older socket of
+    // the same process stay out: its link sends their answers on this one.
+    this.line(ws.data.accountId).open(ws);
     this.sendConfig(ws.data.accountId);
     this.opts.onChange(ws.data.accountId);
   }
@@ -1093,15 +1143,29 @@ export class Supervisor {
   }
 
   detach(ws: ServerWebSocket<ExtractorSocketData>) {
-    const r = this.running.get(ws.data.accountId);
-    if (r?.ws === ws) r.ws = undefined;
-    // What was asked of it on that socket gets no answer now: said at once, not after the call's timeout.
-    for (const [id, p] of this.pending) {
-      if (p.ws !== ws) continue;
-      this.settle(id, p);
-      p.reject(new ExtractorError('the account went offline', 'offline'));
+    const id = ws.data.accountId;
+    const r = this.running.get(id);
+    // An older socket, replaced by a newer one of the same process: the calls it had are answered on the new one.
+    if (r?.ws && r.ws !== ws) return void this.opts.onChange(id);
+    if (r) r.ws = undefined;
+    const h = this.line(id);
+    if (r?.pid && !r.stopping && !this.closing && h.state === 'up') {
+      // Its process runs: its link connects again within seconds and sends what it answered meanwhile. Calls wait.
+      const why = 'its connection to the manager dropped';
+      h.opening(why, {
+        ms: RECONNECT_OPEN_MS,
+        late: () => {
+          const gone = `${why} and was not back within ${RECONNECT_OPEN_MS / 1000} s`;
+          this.lost(id, gone);
+          h.down(gone);
+        },
+      });
+    } else {
+      // Stopping, ended, or the manager closing: what was asked of it gets no answer now, said at once, not after the
+      // call's timeout.
+      this.lost(id, 'the account went offline');
     }
-    this.opts.onChange(ws.data.accountId);
+    this.opts.onChange(id);
   }
 
   receive(ws: ServerWebSocket<ExtractorSocketData>, raw: string | Buffer) {
@@ -1128,11 +1192,12 @@ export class Supervisor {
     if (ev.t === 'reply') {
       const rid = (ev.rid ?? ev.id) as string;
       const p = this.pending.get(rid);
-      if (!p) return;
+      if (!p || p.accountId !== id) return;
       this.settle(rid, p);
       if (ev.ok) p.resolve(ev.result);
-      // The extractor's own code passes only when it is not one of the manager's (it cannot say 'denied' for us).
-      else p.reject(new ExtractorError(String(ev.error), isExtractorCode(ev.code) ? ev.code : 'failed', typeof ev.status === 'number' ? ev.status : undefined));
+      // The extractor's own code passes only when it is not one of the manager's (it cannot say 'denied' for us). Its
+      // kind and retryAfterMs pass as it said them, when they are one (spec FailureKind) and a number of ms.
+      else p.reject(new ExtractorError(String(ev.error), isExtractorCode(ev.code) ? ev.code : 'failed', typeof ev.status === 'number' ? ev.status : undefined, isFailureKind(ev.kind) ? ev.kind : undefined, retryAfterOf(ev.retryAfterMs)));
       return;
     }
     if (ev.t === 'ask') {
@@ -1171,21 +1236,49 @@ export class Supervisor {
     } catch {}
   }
 
-  command(accountId: string, cmd: Record<string, unknown> & { t: string }, timeoutMs = 30_000): Promise<unknown> {
-    const r = this.running.get(accountId);
+  /**
+   * A call to the account's extractor, answered within `timeoutMs` in all (a wait for it to start counts). While it
+   * starts, restarts or reconnects, the call waits for it (START_OPEN_MS, RECONNECT_OPEN_MS); one that could not be
+   * sent fails 'retry' (503), and is safe to send again. One its extractor had when it ended fails 'offline' (it may
+   * have run), unless it is `repeatable` (a read) and a new process is on its way: then it runs again there, once.
+   * With no extractor running, or one stopped on purpose, a call fails at once 'offline'.
+   */
+  command(accountId: string, cmd: Record<string, unknown> & { t: string }, timeoutMs = 30_000, o: { repeatable?: boolean } = {}): Promise<unknown> {
+    const h = this.line(accountId);
+    if (!this.running.get(accountId) || h.state === 'down') return Promise.reject(new ExtractorError('the account is not connected', 'offline', undefined, 'expected'));
+    const deadline = Date.now() + timeoutMs;
+    return h.run((ws, a) => this.send(accountId, ws, cmd, deadline, timeoutMs, a.signal), { deadline, repeatable: o.repeatable }).catch((e) => {
+      if (!(e instanceof HandoverError)) throw e;
+      // 'unsure' keeps the manager's 'offline', which apps already read as "it may have run".
+      throw e.code === 'retry' ? new ExtractorError(e.message, 'retry', 503, 'transient') : new ExtractorError(e.message, 'offline', undefined, 'expected');
+    });
+  }
+
+  private send(accountId: string, ws: Socket, cmd: Record<string, unknown> & { t: string }, deadline: number, timeoutMs: number, signal: AbortSignal): Promise<unknown> {
     const id = crypto.randomUUID();
     return new Promise((resolve, reject) => {
-      // Not connected, or being stopped (it heard `shutdown`): it would never answer.
-      if (!r?.ws || r.stopping) return reject(new ExtractorError('the account is not connected', 'offline'));
       const timer = setTimeout(() => {
         const p = this.pending.get(id);
         if (p) this.settle(id, p);
-        reject(new ExtractorError(`no answer to ${cmd.t} in ${Math.round(timeoutMs / 1000)} s`, 'timeout'));
-      }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer, ws: r.ws });
+        reject(new ExtractorError(`no answer to ${cmd.t} in ${Math.round(timeoutMs / 1000)} s`, 'timeout', undefined, 'transient'));
+      }, Math.max(1, deadline - Date.now()));
+      this.pending.set(id, { resolve, reject, timer, accountId });
+      // Cut (its process ended, its socket did not come back): the handover has refused it already.
+      signal.addEventListener(
+        'abort',
+        () => {
+          const p = this.pending.get(id);
+          if (p) this.settle(id, p);
+        },
+        { once: true },
+      );
       // The call's own id travels as `rid`, so an op input named `id` (mail.get, cal.delete…) reaches the extractor
       // as it was sent. Inputs without one also get it as `id`, which chat adapters (dither-chat's protocol) answer by.
-      r.ws.send(JSON.stringify({ ...cmd, ...(cmd.id === undefined ? { id } : {}), rid: id }));
+      // 0: dropped, the socket is closing (its close is on its way): never sent.
+      if (ws.send(JSON.stringify({ ...cmd, ...(cmd.id === undefined ? { id } : {}), rid: id })) === 0) {
+        this.settle(id, this.pending.get(id)!);
+        reject(new HandoverError("the account's extractor's socket was closing, so this was not sent", 'retry', 0));
+      }
     });
   }
 }

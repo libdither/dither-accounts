@@ -168,9 +168,13 @@ only that one`, then `the Gmail tab was sent back to its start page` or `… was
 (`calendarReloads`, `gmailReloads`). Requests sent to a page before its reload do not count against the new page,
 nor does one cut short by its wait in the lane or by its op's time (given less than 12.5 s), nor a download or
 upload the page said it has (it is working on it; the hook cuts Gmail off at 80 s, more than `mail.get`'s 60 s). After a Calendar reload, one `calendarList` call shows it answers
-again; Gmail makes no call of its own, so its hook coming back up is its answer. A request made while a page's tab is
-being reloaded waits (up to 15 s, within its own time) for the new page's hook, instead of reaching the old page, whose
-unload would cut its fetch ("Failed to fetch"); past that it is sent as before. A dead Chromium still exits for a
+again; Gmail makes no call of its own, so its hook coming back up is its answer. A reload replaces the page the way
+every channel is replaced (packages/spec/src/handover.ts): a request made while a page's tab is being reloaded waits
+(up to 15 s, `RELOAD_SETTLE_MS`, within its own time) for the new page's hook, instead of reaching the old page, whose
+unload would cut its fetch ("Failed to fetch"); past 15 s requests go to the tab as it is, so a page that never comes
+back still counts as silent and is reloaded again. One whose own time runs out first fails `retry` (503: not sent).
+What the old page had when the reload was ordered is lost with it: reads and label changes are sent again to the new
+page, once; anything else (a send, a draft, a Calendar write) fails `unsure` (504): it may or may not have happened. A dead Chromium still exits for a
 supervised restart, as before.
 
 **Each unanswered request is told apart in the log, before any reload**, so the cause of a silence can be found from
@@ -457,6 +461,12 @@ What is known of the protocol comes from the shapes the learn run recorded on th
 never values; `gmail-shapes.json`, above). Positions that the shapes cannot explain are marked as guesses below; the
 self-check (next section) settles most of them on the live account without reading anything private.
 
+What kind of failure each refusal is (`CallError.kind`, docs/manager.md) is said where it is made, not left to the
+status: a download the browser could not fetch, the sandbox browser or Gmail page not up yet, a back-off and a spent
+day's budget are `transient` (the back-off and the budget with `retryAfterMs`, until they end); a signed-out or
+verification page is `expected` (it waits for you); an answer not laid out as the extractor knows it, or not JSON,
+is a `bug`. People suggestions say the same of theirs.
+
 ### How a call is made
 
 - **What the hook learns from the page** (in the Gmail tab only, kept in the page, never sent up): from the page's own
@@ -714,6 +724,9 @@ one call already under way. The rules (`BACKGROUND` in `mail.ts`):
   refused) is an answer from the hook, not a throw: 503 `unavailable`, `Gmail's message download failed: the browser
   could not fetch it, before any answer | while its body came in (N bytes in), after S s[, with the browser offline]`,
   and the same words in the log (`gmail raw: …`). It counts as trouble for the back-off, not against the download route.
+  One that failed before any answer is asked once more without following redirects (its body never read), and the
+  line ends with what that said: `(asked again, Gmail sent it elsewhere: a redirect the page may not follow)`, `(asked
+  again, the connection failed again)`, `(asked again, no answer in 5 s)` or `(asked again, Gmail answered N)`.
 - **Stops**: a **challenge** (an answer that reads as a sign-in or verification page; any other 200 that is not what
   was asked for: no JSON from `bv`, `fd` or `s`, an HTML page from the download route; or a 403), the page **signed
   out** (the Gmail page's own signed-in state, or a 401), or the day's **quota** spent. From then on every background

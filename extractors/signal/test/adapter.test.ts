@@ -436,11 +436,11 @@ describe('signal adapter against a fake signal-cli', () => {
     expect(calls('send').at(-1).params.quoteMention).toBeUndefined();
   });
 
-  test('a send some of a group did not get says who, on the message', async () => {
+  test('a send some of a group did not get says who, on the message; someone gone from Signal is left out', async () => {
     const mark = events.length;
     const res = (await cmd({ t: 'send', conversation: GROUP, body: 'PARTIAL' })) as { nativeId: string };
     const echo = of('message', mark).find((e) => e.message.nativeId === res.nativeId)!.message;
-    expect(echo.extra).toEqual({ failed: [{ who: SAM, number: '+15550161', reason: 'unregistered' }] });
+    expect(echo.extra).toEqual({ failed: [{ who: SAM, number: '+15550161', reason: 'identity' }] });
   });
 
   test("your phone's settings: typing, viewed receipts and link previews follow them; unknown sends nothing new", async () => {

@@ -1,7 +1,8 @@
 # Typecheck (the services and the page), the page's build, and tests on each push to master and each pull request.
-# Everything runs against fakes and stand-ins. Tests that need what only a Nix machine has skip in `check`: the
+# Everything runs against fakes and stand-ins. Tests that need what only a Nix machine has skip in `unit`: the
 # sandboxed browsers (Xvfb, Chromium, x11vnc), the native-app sandbox, both display backends, screen sharing, and
-# Radicale and Dovecot from nixpkgs (test/needs.ts). The `nix` job runs those, with Nix.
+# Radicale and Dovecot from nixpkgs (test/needs.ts). The `nix` job runs those, with Nix, beside it. `check`, the
+# status a pull request needs, passes only when both did.
 name: CI
 
 on:
@@ -14,7 +15,7 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  unit:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -85,3 +86,14 @@ jobs:
           name: test-shots
           path: /tmp/test-shots
           if-no-files-found: ignore
+
+  # The one status pull requests need. A job whose needs failed would be skipped, and a skipped job counts as passed,
+  # so this one always runs and fails unless both succeeded.
+  check:
+    needs: [unit, nix]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "unit: ${{ needs.unit.result }}, nix: ${{ needs.nix.result }}"
+          test "${{ needs.unit.result }}" = success && test "${{ needs.nix.result }}" = success

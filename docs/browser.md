@@ -131,6 +131,36 @@ watching it and `XDG_RUNTIME_DIR/bus` pointing at it too: nothing from a wayland
 ScreenCast may be asked there (a Chromium given that bus, as before, is seen there within a second, so the watch
 works). Two wayland sandboxes run at once, and each one's capture decodes as its own page.
 
+**Measured side by side.** `scripts/bench-display.ts` runs one browser sandbox per backend through the same pages
+and input and writes JSON; `scripts/bench-display-report.ts` turns that into a page with charts. On a 16-thread desktop
+CPU with a mid-range AMD GPU, 1280×800, five repetitions (backend order alternating, 1-minute load 2.8–6.2), medians:
+
+| | x11 | wayland |
+|---|---|---|
+| start → live view up / first page ran | 138 / 551 ms | 325 / 853 ms |
+| idle: CPU, PSS of every process | 3.2%, 204 MB | 3.0%, 240 MB |
+| idle: PSS of all but Chromium | 22 MB (Xvfb 16, x11vnc 6) | 54 MB (sway 44, wayvnc 9) |
+| live view, full-screen animation: frames/s, server CPU | 39.5, 14% | 29.8, 36% (wayvnc's default cap of 30; at `-f 60`: 58.9, 70%) |
+| live view, page scrolling: frames/s, bytes/s | 28.4, 1.6 MB/s | 29.8, 2.7 MB/s |
+| live view, 720p video: frames/s, server CPU | 20.3, 54% | 28.2, 33% |
+| RFB press → page handler / click to photon | 8.6 / 72 ms | 0.9 / 27 ms |
+| typing, each backend's own way (35 ms a key) | 28 chars/s | 17 chars/s |
+| screen share: frames/s, drawn → decoded, CPU | 25.5, 69 ms, 135% | 26.7, 127 ms, 104% |
+| 720p VP9 video in Chromium: dropped, CPU | 0%, 55% | 4.6%, 26% |
+| WebGL (60 Hz display): frames/s, CPU | 60, 83% | 61, 23% |
+| screenshot (import / grim) | 93 ms | 34 ms |
+| 10 sandboxes at once: all started, PSS each | 4.4 s, 182 MB | 2.2 s, 204 MB |
+| 20 sandboxes at once | failed (below) | 5.2 s, 198 MB, 62% idle CPU in all |
+
+So: wayland costs about 30 MB more per sandbox (sway), starts a little slower alone and not slower many at a time,
+answers input far sooner, and draws GPU work and video with a third to a half of X's CPU (nothing is read back into
+Xvfb); its live view sends 30 frames a second unless wayvnc is told more, and its screen share is slower to its first
+frame and to each frame (PipeWire through the portal) than Chromium reading Xvfb. The x11 run of 20 at once failed
+because x11vnc could not get System V shared memory (`shmget: No space left on device`): each x11 sandbox holds about
+40 segments while it runs, the kernel allows `kernel.shmmni` (4096 by default) on the whole machine, and segments left
+by processes killed without cleaning up count against it too. Wayland sandboxes hold none. wayvnc's Open H.264 (`-g`,
+VA-API) did not deliver a frame on that machine: the encoder took the first frame and never finished it.
+
 **Limits.** Discord's extension port is picked free on wayland (on x11 it comes from the display number). No
 clipboard tool is used on either backend. An extractor killed outright leaves its compositor's directory (its config
 and wayvnc's control socket); the next start on that account empties it.

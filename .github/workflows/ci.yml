@@ -71,7 +71,16 @@ jobs:
         env:
           DITHER_TESTS_NEED_ALL: '1'
           DITHER_SHARE_DEBUG: '1'
+          # The native apps' own output in the sandboxes' logs (stand-ins only here), and pictures of a failed click.
+          DITHER_SANDBOX_APP_LOG: '1'
+          DITHER_TEST_SHOTS: /tmp/test-shots
           # The sandbox tests check that nothing of the user's home shows inside; their temporary directories must not
           # be under it (install-nix-action points TMPDIR into the workspace, under /home/runner).
           TMPDIR: /tmp
         run: bun test packages/sandbox packages/browser test/haveno.test.ts test/telegram-desktop.test.ts
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-shots
+          path: /tmp/test-shots
+          if-no-files-found: ignore

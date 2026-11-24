@@ -203,6 +203,28 @@ async function probe(name: string, display: Awaited<ReturnType<typeof pickFreeDi
   return { sb, logs, reports, server, page: () => reports.find((r) => r.ev === 'page') };
 }
 
+/**
+ * For a click that went nowhere: the screen's windows (on X), and its picture saved under DITHER_TEST_SHOTS when set
+ * (the nix job keeps that directory when it fails).
+ */
+async function whatIsOnScreen(p: Probe): Promise<string> {
+  const screen = p.sb.screen!;
+  let out = '';
+  if (screen.display !== null) {
+    const xdotool = resolveBin(DISPLAY_BINS.xdotool, () => {});
+    const r = Bun.spawnSync([xdotool, 'search', '--onlyvisible', '--name', '.*', 'getwindowname', '%@', 'getwindowgeometry', '--shell', '%@'], { env: cleanEnv({ ...process.env, DISPLAY: `:${screen.display}` }) });
+    out += `\nvisible X windows: ${r.stdout.toString().replace(/\n/g, ' ')}`;
+  }
+  const dir = process.env.DITHER_TEST_SHOTS;
+  if (dir) {
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, `share-${screen.backend}-${Date.now()}.png`);
+    writeFileSync(file, await screen.screenshot());
+    out += `\nthe screen: ${file}`;
+  }
+  return out;
+}
+
 /** Click the page (a user gesture) and wait for that session's numbers. */
 async function share(p: Probe, session: number): Promise<ShareStats> {
   const pg = p.page();
@@ -234,7 +256,11 @@ async function share(p: Probe, session: number): Promise<ShareStats> {
     }
   }
   await screen.click(200, pg.sh - pg.h + 300);
-  await until(`the click for session ${session}`, () => p.reports.filter((r) => r.ev === 'click').length > clicks, 10_000);
+  try {
+    await until(`the click for session ${session}`, () => p.reports.filter((r) => r.ev === 'click').length > clicks, 10_000);
+  } catch (e) {
+    throw new Error(`${(e as Error).message}${await whatIsOnScreen(p)}`);
+  }
   await until(`getDisplayMedia answered for session ${session}`, () => p.reports.some((r) => (r.ev === 'shared' && r.session === session) || r.ev === 'error'), 30_000);
   await until(`session ${session}'s numbers`, () => p.reports.some((r) => (r.ev === 'stats' && r.session === session) || r.ev === 'error'), 60_000);
   const err = p.reports.find((r) => r.ev === 'error');

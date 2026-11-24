@@ -142,8 +142,11 @@ export const SEND_LIMITS = { upload: 60_000, draft: 80_000, send: 90_000 };
 /** Which lane a call goes in: the foreground (default) or the background (`background: true`). */
 export type LaneName = 'fg' | 'bg';
 type Kind = 'list' | 'message';
-/** Why the background lane stopped: Gmail showed a challenge, the page is signed out, or the day's budget is spent. */
-export type StopCause = 'challenge' | 'signedOut' | 'quota';
+/**
+ * Why the background lane stopped: Gmail showed a challenge, the page is signed out, the day's budget is spent, or Gmail
+ * keeps sending message downloads elsewhere (refused).
+ */
+export type StopCause = 'challenge' | 'signedOut' | 'quota' | 'refused';
 /** The background lane's rules (docs/google.md, "The background lane"); tests pass smaller ones. */
 export interface BackgroundRules {
   /** At most one list, search, fetch or sync call per this many ms. */
@@ -162,6 +165,13 @@ export interface BackgroundRules {
   waitMs: number;
   /** The lane counts as running this long after its last call. */
   idleMs: number;
+  /**
+   * Downloads Gmail sent elsewhere in a row (the hook's second try saw a redirect), with no good download between them,
+   * that stop the background lane ('refused') for refusedMinMs, doubling each time it stops again to refusedMaxMs.
+   */
+  refusedAfter: number;
+  refusedMinMs: number;
+  refusedMaxMs: number;
 }
 export const BACKGROUND: BackgroundRules = {
   listMs: 3000,
@@ -174,11 +184,20 @@ export const BACKGROUND: BackgroundRules = {
   goodToReset: 5,
   waitMs: 20_000,
   idleMs: 30_000,
+  // Three, not one: a single message Gmail will not hand over should not stop the archive; three different ones in a
+  // row is the download route. An hour first: the short throttles seen before lasted about ten minutes, and a long one
+  // (2026-11-23: over a day of redirects after a bulk read) is probed once an hour, then less often, rather than every
+  // 5 minutes by the back-off. Past the pause, the first download tries again; one more redirect stops it for twice as
+  // long. The owner's own downloads (foreground) are never stopped, and a good one ends the pause at once.
+  refusedAfter: 3,
+  refusedMinMs: 3600_000,
+  refusedMaxMs: 24 * 3600_000,
 };
 const STOP_SENTENCE: Record<StopCause, string> = {
   challenge: 'Gmail answered with a sign-in or verification page (or refused the page); it resumes once the Gmail page is signed in and answers a call again',
   signedOut: 'the Gmail page is signed out; it resumes once the page is signed in and answers a call again',
   quota: "the day's download budget is spent",
+  refused: 'Gmail keeps sending message downloads elsewhere (a redirect the page may not follow), which reads as a limit on downloads',
 };
 const hms = (at: number) => `${new Date(at).toISOString().slice(11, 19)} UTC`;
 
@@ -456,9 +475,12 @@ export class GmailMail {
   private bgLast = 0;
   private bgInFlight = false;
   private backoff = { ms: 0, until: 0, good: 0 };
-  private blocked: Exclude<StopCause, 'quota'> | null = null;
+  private blocked: Exclude<StopCause, 'quota' | 'refused'> | null = null;
   private signedIn: boolean | null = null;
   private quotaWas = false;
+  /** Downloads sent elsewhere in a row, the last pause's length, and when it ends (kept in stateFile). */
+  private refused = { row: 0, ms: 0, until: 0 };
+  private refusedWas = false;
   private refresh = new Map<string, unknown>();
   /** Requests whose answers failed the same way twice in a row: held until `until` (call, REPEAT). */
   private repeats = new Map<string, { where: string; message: string; until: number; ms: number }>();
@@ -503,6 +525,8 @@ export class GmailMail {
     try {
       const v = JSON.parse(readFileSync(f, 'utf8'));
       if (Array.isArray(v?.fetched)) this.fetched = v.fetched.filter((e: unknown) => Array.isArray(e) && Number.isFinite(e[0]) && Number.isFinite(e[1]) && e[1] >= 0).map((e: number[]) => [e[0]!, e[1]!]);
+      const rf = v?.refused;
+      if (rf && [rf.row, rf.ms, rf.until].every((n) => Number.isFinite(n) && n >= 0)) this.refused = { row: rf.row, ms: rf.ms, until: rf.until };
       if (v?.unreadGuard === 'tripped') this.guard = { tripped: true, at: Number.isFinite(v.unreadGuardAt) ? v.unreadGuardAt : null };
       // Left out and not read since; and recovered ones a caller may not have heard of yet (by id only: asked again).
       for (const e of Array.isArray(v?.pending) ? v.pending.slice(0, RETRY.max) : []) {
@@ -523,7 +547,7 @@ export class GmailMail {
       const now = this.now();
       // Ids only, never what a message says: a recovered message not yet old enough to be heard of is kept as pending.
       const pending = [...this.pending.values(), ...this.recovered.filter((r) => now - r.at < 10 * 60_000).map((r) => ({ id: r.item.m.id, thread: r.item.row.thread, since: r.at, tries: 0, next: 0 }))].map((e) => ({ id: e.id, thread: e.thread, since: e.since, tries: e.tries }));
-      const v = { fetched: this.fetched, ...(this.guard.tripped ? { unreadGuard: 'tripped', unreadGuardAt: this.guard.at } : {}), ...(pending.length ? { pending } : {}) };
+      const v = { fetched: this.fetched, ...(this.guard.tripped ? { unreadGuard: 'tripped', unreadGuardAt: this.guard.at } : {}), ...(pending.length ? { pending } : {}), ...(this.refused.row ? { refused: this.refused } : {}) };
       writeFileSync(`${f}.tmp`, JSON.stringify(v), { mode: 0o600 });
       renameSync(`${f}.tmp`, f);
     } catch (e) {
@@ -652,8 +676,8 @@ export class GmailMail {
    * (expected: the account cannot read until then, and that is the answer).
    */
   private paused(cause: StopCause): StatusError {
-    const freeAt = cause === 'quota' ? (this.quotaFreeAt() ?? this.now()) : null;
-    const why = freeAt !== null ? `${STOP_SENTENCE.quota}; it resumes at ${hms(freeAt)}` : STOP_SENTENCE[cause];
+    const freeAt = cause === 'quota' ? (this.quotaFreeAt() ?? this.now()) : cause === 'refused' ? this.refused.until : null;
+    const why = freeAt !== null ? `${STOP_SENTENCE[cause]}; it ${cause === 'refused' ? 'tries again' : 'resumes'} at ${hms(freeAt)}` : STOP_SENTENCE[cause];
     return new StatusError(`Gmail background reading is paused: ${why}`, 503, 'paused', freeAt !== null ? { kind: 'transient', retryAfterMs: Math.max(0, freeAt - this.now()) } : { kind: 'expected' });
   }
 
@@ -694,7 +718,35 @@ export class GmailMail {
     }
   }
 
-  private block(cause: Exclude<StopCause, 'quota'>, why: string) {
+  /**
+   * A download Gmail sent elsewhere (main.ts: the hook's second try saw a redirect). One is a message; refusedAfter in a
+   * row, with no good download between, is the route: the background stops ('refused') until the pause ends.
+   */
+  private redirected() {
+    const r = this.refused;
+    r.row++;
+    const now = this.now();
+    if (r.row >= this.rules.refusedAfter && r.until <= now) {
+      r.ms = r.ms ? Math.min(r.ms * 2, this.rules.refusedMaxMs) : this.rules.refusedMinMs;
+      r.until = now + r.ms;
+      this.o.log('warn', `gmail background: stopped (refused): ${r.row} downloads in a row sent elsewhere; tries again at ${hms(r.until)}`);
+      this.tick('refused', r.until + 10);
+    }
+    this.save();
+    this.stopped();
+  }
+
+  /** A download that came: Gmail hands them over, so no pause for redirects stands. */
+  private downloaded() {
+    if (!this.refused.row) return;
+    const was = this.refused.until > this.now();
+    this.refused = { row: 0, ms: 0, until: 0 };
+    this.save();
+    if (was) this.o.log('info', 'gmail background: a download came; resumed (it had stopped: refused)');
+    this.stopped();
+  }
+
+  private block(cause: Exclude<StopCause, 'quota' | 'refused'>, why: string) {
     if (this.blocked) return;
     this.blocked = cause;
     this.o.log('warn', `gmail background: stopped (${cause}): ${why}; background calls answer 503 paused until it clears`);
@@ -749,7 +801,13 @@ export class GmailMail {
       } else this.o.log('info', 'gmail background: the download budget has room again; resumed');
       this.o.onChange?.();
     }
-    return this.blocked ?? (full ? 'quota' : null);
+    const refused = this.refused.until > this.now();
+    if (refused !== this.refusedWas) {
+      this.refusedWas = refused;
+      if (!refused && this.refused.row) this.o.log('info', 'gmail background: the pause after redirected downloads is over; the next download tries again');
+      this.o.onChange?.();
+    }
+    return this.blocked ?? (full ? 'quota' : refused ? 'refused' : null);
   }
 
   /** A background call refused before it starts while the lane is stopped (main.ts asks before the page's own checks). */
@@ -786,7 +844,7 @@ export class GmailMail {
   backgroundLayer(): { name: string; state: 'ok' | 'waiting' | 'failed'; note: string } {
     const name = 'Gmail background';
     const b = this.background();
-    if (b.stopped) return { name, state: 'failed', note: `stopped (${b.stopped}): ${b.stopped === 'quota' ? `${STOP_SENTENCE.quota}; resumes at ${hms(this.quotaFreeAt() ?? this.now())}` : STOP_SENTENCE[b.stopped]}` };
+    if (b.stopped) return { name, state: 'failed', note: `stopped (${b.stopped}): ${b.stopped === 'quota' ? `${STOP_SENTENCE.quota}; resumes at ${hms(this.quotaFreeAt() ?? this.now())}` : b.stopped === 'refused' ? `${STOP_SENTENCE.refused}; tries again at ${hms(this.refused.until)}` : STOP_SENTENCE[b.stopped]}` };
     if (b.backedOffUntil) return { name, state: 'waiting', note: `backed off until ${hms(b.backedOffUntil)} after a slow or refused answer` };
     return { name, state: 'ok', note: b.running ? 'running' : 'idle' };
   }
@@ -1315,6 +1373,11 @@ export class GmailMail {
       // Not noted against the endpoint: the route is fine, the connection was not; the back-off covers a run of them.
       const why = rawNetworkText(r.net);
       this.o.log('warn', `gmail raw: ${why}`);
+      if (r.net?.then === 'redirect') {
+        this.redirected();
+        const stop = this.stopFor(lane);
+        if (stop) throw stop;
+      }
       // The connection, not Gmail or this code: the same download may work in a moment.
       throw new StatusError(`Gmail's message download failed: ${why}; try again in a moment`, 503, 'unavailable', { kind: 'transient' });
     }
@@ -1333,6 +1396,7 @@ export class GmailMail {
       throw this.stopFor(lane) ?? new StatusError(r.type && /^text\/html\b/i.test(r.type) ? "Gmail's message download answered an HTML page, not a message; nothing was returned rather than possibly wrong mail" : `Gmail answered ${r.status} to the message download`, 502);
     }
     this.count(r.bytes.length);
+    this.downloaded();
     let bad = notAMessage(r.bytes, r.type);
     // A blank line first is a message with no headers when Gmail's own listing has it with no sender: then it is taken.
     if (bad && notAMessage(r.bytes, r.type, { headerless: true }) === null && (await this.listedWithoutSender(id, lane))) bad = null;

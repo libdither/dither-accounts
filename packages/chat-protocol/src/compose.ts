@@ -4,6 +4,7 @@
  * composer draws every network from these rules: X's ring that fills and counts down from 20, Reddit's 10,000
  * characters of Markdown. Pure, so the hub checks a post with the same count the page shows.
  */
+import type { HomeFeed } from './feed.ts';
 
 export interface PostRules {
   /** The network's words: its button, its placeholder, a reply's. */
@@ -34,6 +35,10 @@ export interface PostRules {
    * Who reposted is public where reposts are.
    */
   likersVisible: 'author' | 'all' | 'none';
+  /** What the account's home timelines are called there (HomeFeed 'following' and 'foryou'; an event site's 'explore'). */
+  timelines?: { following: string; foryou: string; explore?: string };
+  /** The home timelines it has, in the order Tune lists them: Following and For you unless it says (event sites). */
+  feeds?: readonly HomeFeed[];
 }
 
 const X_RULES: PostRules = {
@@ -61,9 +66,33 @@ export const REDDIT_RULES: PostRules = {
   likersVisible: 'none',
 };
 
+/**
+ * An event site's (Luma, Partiful; docs/events.md): its posts are events, read on the Feed page and never written from
+ * it. Nothing is liked, reposted, quoted or replied to as a post: a comment on a Partiful party goes in the party's
+ * conversation, an RSVP through the event's own buttons. Its timelines are Explore (the city's listing) and Your events
+ * (going, hosting, invited: upcoming first, then past), in the site's own order.
+ */
+export const EVENT_RULES: PostRules = {
+  words: { post: 'Post', reply: 'Comment', quote: 'Quote', placeholder: '', replyPlaceholder: 'Write a comment', quotePlaceholder: '' },
+  timelines: { following: 'Your events', foryou: 'For you', explore: 'Explore' },
+  feeds: ['explore', 'following'],
+  maxLength: 0,
+  count: 'chars',
+  urlLength: 0,
+  counter: 'text',
+  warnAt: 0,
+  markdown: false,
+  actions: { like: false, repost: false, quote: false, reply: false },
+  likersVisible: 'none',
+};
+
 /** The rules of each network that has posts. */
-export const POST_RULES: Readonly<Record<string, PostRules>> = { x: X_RULES, reddit: REDDIT_RULES };
+export const POST_RULES: Readonly<Record<string, PostRules>> = { x: X_RULES, reddit: REDDIT_RULES, luma: EVENT_RULES, partiful: EVENT_RULES };
 export const postRulesFor = (network: string): PostRules | null => POST_RULES[network] ?? null;
+export const timelineName = (network: string, feed: HomeFeed): string => postRulesFor(network)?.timelines?.[feed] ?? (feed === 'following' ? 'Following' : feed === 'explore' ? 'Explore' : 'For you');
+
+/** The home timelines a network has: Following and For you, or what its rules say (an event site's Explore and Your events). */
+export const homeFeedsOf = (network: string): readonly HomeFeed[] => postRulesFor(network)?.feeds ?? ['following', 'foryou'];
 
 // twitter-text v3: code points in these ranges weigh 100 (one), all others 200 (two); scale 100.
 const LIGHT: readonly [number, number][] = [

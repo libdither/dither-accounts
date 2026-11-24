@@ -513,6 +513,8 @@ function details(): Record<string, string | number | boolean | null | string[]> 
     // Suggesting people as Gmail's To field does (mail.contacts): now, or why not.
     contacts: contactsNote() === null,
     contactsNote: contactsNote(),
+    // Suggestions left out of answers that were read (packages/link records.ts), by kind and count; null when none.
+    contactsSkipped: contacts?.skips.summary() ?? null,
     gmailWatch: !mailOn ? null : !pollMs ? 'off' : !watchOn ? 'starts with the first mail call' : watchInfo.error ? `failed at ${hhmm(watchInfo.at)}: ${watchInfo.error}` : watchInfo.at ? `looked at ${hhmm(watchInfo.at)}` : 'starting',
     gmailSelfCheckAt: gmailSelfCheck ? new Date(gmailSelfCheck.at).toISOString() : null,
     gmailSelfCheck: gmailSelfCheck?.summary ?? null,

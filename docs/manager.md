@@ -45,6 +45,30 @@ fills it in from its own code, else the status (a 4xx other than 408 and 429, or
 transient). A 500, a 502 or a plain error stays without one: not known. The call's span carries the same `kind`, for
 bugwatch. `transient` does not make a write safe to send again: `unsure` is transient too.
 
+### A failed read is remembered (when the app asks for it)
+
+An app that asks again on every poll, watch or page open, about something that failed, would ask the manager again
+each time; the manager's trace and bugwatch would then count its loop, not how bad the failure is. With
+`new AccountsClient({ ..., remember: true })` (spec `memory.ts`, `FailureMemory`), the client keeps the last failure
+of each read, keyed by the account, the op and the input (its JSON with keys sorted), and answers a repeat from it
+until it is due, without sending it: the same error, with `remembered` (when it failed, how many times in a row, how
+many repeats since) and `retryAfterMs` the time left.
+
+- **When it is due**: a `transient` failure after 5 s, doubling to 5 minutes, and never before its own `retryAfterMs`;
+  a `bug` (or one of no known kind) after a minute, doubling to 30; an `expected` one after 10 minutes, or sooner when
+  something relevant changes.
+- **What clears it**: the same call answering; a write this client made to the account answering (it may change what
+  the reads answer); the account's state changing (running, online, enabled, its error, its grants); `forget(account?,
+  op?)`, for an app that knows better (a person asked to refresh). Another input is another call, asked at once (a new
+  sync token).
+- **What is never remembered**: writes, and failures the manager did not answer (the client's own timeout, a dropped
+  socket, `unsure`).
+- **Counted, not sent**: the call sent once it is due carries `repeats`, how many times it was answered from memory
+  since it last failed, and the manager puts it on the call's span (`attrs.repeats`). Kept to 500 calls, the oldest
+  failure dropped first.
+
+It is off by default: an app turns it on when it treats a remembered answer as it would the failure.
+
 ### A call runs once
 
 An app's client resends what it was waiting for when its socket drops and comes back (a deploy restarts the manager,
@@ -159,4 +183,4 @@ import). The live view of an account it manages is a WebSocket on its own token,
 | `packages/link` | an extractor's side (the same wire as dither-chat's adapter client) |
 | `packages/chat-protocol` | dither-chat's protocol, copied under its old name so the chat extractors did not change |
 | `apps/desk-signer` | the laptop's approver device: pairs, keeps its link, signs an approval after fprintd reports your finger ([apps/desk-signer/README.md](../apps/desk-signer/README.md)) |
-| `extractors/*` | chat: `discord`, `signal`, `matrix`, `whatsapp` (moved from dither-chat), `telegram`, `gmessages` (Google Messages: SMS and RCS through your phone), `x` (X's direct messages, legacy DMs and encrypted XChat, from the real x.com client in a sandboxed browser: [docs/x.md](x.md)), `reddit` (a Reddit account's front page, inbox and comment threads as posts and a feed, from old.reddit.com signed in in a sandboxed browser: [docs/reddit.md](reddit.md)), `t3` (T3 Code's coding threads as chats, each a conversation with its agent: [docs/t3.md](t3.md)), `substack` (a Substack reader's Inbox, Notes, Activity and threads for the Feed page, from substack.com in a sandboxed browser: [docs/substack.md](substack.md)); `google` (a browser sign-in: Calendar, and Gmail read through its own page as `mail`), `google-api` (an OAuth client); `dav` (CalDAV and CardDAV), `ics` (read-only feeds); `imap` (mail, with a Proton Bridge preset); `proton` (Proton Mail signed in in a sandboxed browser, decrypted here: [docs/proton.md](proton.md)); `messenger` and `instagram` (Meta's web apps in a sandboxed browser, read and driven through their own modules; shared code in `meta`: [docs/messenger.md](messenger.md)); `privacy` (Privacy.com in a sandboxed browser whose extension carries its own passkey, signing itself in for its `statements`: [docs/privacy.md](privacy.md)); finance: `simplefin` (SimpleFIN Bridge: [docs/simplefin.md](simplefin.md)), `monero` (a view-only wallet: [docs/monero.md](monero.md)), `venmo`, `amazon` and `schwab` (statements, order history and Schwab's History and Realized Gain/Loss exports from sandboxed browsers, extension only: [docs/venmo.md](venmo.md), [docs/amazon.md](amazon.md), [docs/schwab.md](schwab.md)), all `statements` with shared code in `statements-common` ([docs/statements.md](statements.md)); `github` (notifications); `bugwatch` (your own services' error files and logs as notices, each new bug handed to a T3 coding thread: [docs/bugwatch.md](bugwatch.md)); `njalla` (DNS records as `dns`: [docs/njalla.md](njalla.md)); `fake`/`chat-fake` for tests |
+| `extractors/*` | chat: `discord`, `signal`, `matrix`, `whatsapp` (moved from dither-chat), `telegram`, `gmessages` (Google Messages: SMS and RCS through your phone), `x` (X's direct messages, legacy DMs and encrypted XChat, from the real x.com client in a sandboxed browser: [docs/x.md](x.md)), `reddit` (a Reddit account's front page, inbox and comment threads as posts and a feed, from old.reddit.com signed in in a sandboxed browser: [docs/reddit.md](reddit.md)), `t3` (T3 Code's coding threads as chats, each a conversation with its agent: [docs/t3.md](t3.md)), `substack` (a Substack reader's Inbox, Notes, Activity and threads for the Feed page, from substack.com in a sandboxed browser: [docs/substack.md](substack.md)), `partiful` (Partiful's events by city and your own, who is going, comments and chats, from partiful.com in a sandboxed browser: [docs/partiful.md](partiful.md)); `google` (a browser sign-in: Calendar, and Gmail read through its own page as `mail`), `google-api` (an OAuth client); `dav` (CalDAV and CardDAV), `ics` (read-only feeds); `imap` (mail, with a Proton Bridge preset); `proton` (Proton Mail signed in in a sandboxed browser, decrypted here: [docs/proton.md](proton.md)); `messenger` and `instagram` (Meta's web apps in a sandboxed browser, read and driven through their own modules; shared code in `meta`: [docs/messenger.md](messenger.md)); `privacy` (Privacy.com in a sandboxed browser whose extension carries its own passkey, signing itself in for its `statements`: [docs/privacy.md](privacy.md)); finance: `simplefin` (SimpleFIN Bridge: [docs/simplefin.md](simplefin.md)), `monero` (a view-only wallet: [docs/monero.md](monero.md)), `venmo`, `amazon` and `schwab` (statements, order history and Schwab's History and Realized Gain/Loss exports from sandboxed browsers, extension only: [docs/venmo.md](venmo.md), [docs/amazon.md](amazon.md), [docs/schwab.md](schwab.md)), all `statements` with shared code in `statements-common` ([docs/statements.md](statements.md)); `github` (notifications); `bugwatch` (your own services' error files and logs as notices, each new bug handed to a T3 coding thread: [docs/bugwatch.md](bugwatch.md)); `njalla` (DNS records as `dns`: [docs/njalla.md](njalla.md)); `fake`/`chat-fake` for tests |

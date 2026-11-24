@@ -115,12 +115,15 @@ export function stickerRef(id: string): { packId: string; stickerId: number } | 
   return m ? { packId: m[1].toLowerCase(), stickerId: Number(m[2]) } : null;
 }
 
-/** A send result's failures in words the hub shows (extra.ts SendFailureFact). */
+/**
+ * A send result's failures in words the hub shows (extra.ts SendFailureFact). Someone who left Signal is left out, as
+ * Signal's apps leave them out: they are gone for good, so every message to their group would say so again.
+ */
 export function sendFailures(results: SigSendResult['results']): P.SendFailureFact[] {
   const reason = (type: string): P.SendFailureReason =>
     type === 'UNREGISTERED_FAILURE' ? 'unregistered' : type === 'IDENTITY_FAILURE' ? 'identity' : type === 'RATE_LIMIT_FAILURE' ? 'rateLimit' : type === 'NETWORK_FAILURE' ? 'network' : type === 'INVALID_PRE_KEY_FAILURE' ? 'keys' : 'other';
   return (results ?? [])
-    .filter((r) => r.type !== 'SUCCESS')
+    .filter((r) => r.type !== 'SUCCESS' && r.type !== 'UNREGISTERED_FAILURE')
     .map((r) => ({ who: lc(r.recipientAddress?.uuid) ?? null, ...(r.recipientAddress?.number ? { number: r.recipientAddress.number } : {}), reason: reason(r.type) }));
 }
 const ANSWERS: P.RequestAnswer[] = ['accept', 'decline', 'block'];

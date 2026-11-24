@@ -484,8 +484,9 @@ made one, or null when it is empty or only the address again. At most `limit` (8
 - **When it can**: `details.contacts` is true while the page is attached and signed in; `details.contactsNote` says why
   not. Errors: 503 `unavailable` when the page cannot answer now (not attached, still loading, signed out; or Proton
   answering 401, a human check, 429 or 5xx to the API's list), 504 when the page or the list did not come within 8 s,
-  502 when the store's list or the API's is not laid out as known (no entry with an address), 400 for a query over 300
-  characters. An empty query is `{ contacts: [] }`, asking nothing, signed in or not.
+  502 when the store's list or the API's is not laid out as known (not a list, or most entries without an address: at
+  least 3, and more than have one; [records.md](records.md)), 400 for a query over 300 characters. One or two entries
+  without an address are left out and counted in `details.contactsSkipped`. An empty query is `{ contacts: [] }`, asking nothing, signed in or not.
 - Nothing of it is logged: no query, no address, no name.
 
 ## A command the page does not answer

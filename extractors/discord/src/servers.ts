@@ -126,7 +126,7 @@ export function mapEvent(e: RawEvent | null | undefined): P.ScheduledEventFact |
   const start = isoToMs(e.scheduled_start_time);
   if (!start) return null;
   const end = isoToMs(e.scheduled_end_time);
-  const place: P.EventPlace | undefined =
+  const place: P.ServerEventPlace | undefined =
     e.entity_type === 3 ? (e.location ? { kind: 'external', location: e.location } : undefined) : e.channel_id && (e.entity_type === 1 || e.entity_type === 2) ? { kind: e.entity_type === 1 ? 'stage' : 'voice', conversation: e.channel_id } : undefined;
   const rrule = rruleOf(e.recurrence_rule);
   const exceptions: P.EventException[] = (e.exceptions ?? [])

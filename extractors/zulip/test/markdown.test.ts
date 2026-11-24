@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { Ids, linkedMessage, narrowLink } from '../src/ids.ts';
-import { editedContent, fromZulip, plainText, replyQuote, toZulip, type MdCtx } from '../src/markdown.ts';
+import { editedContent, fromZulip, mimeOf, plainText, replyQuote, toZulip, type MdCtx } from '../src/markdown.ts';
 
 const ids = new Ids('chat.example.org');
 const base = 'https://chat.example.org';
@@ -120,4 +120,10 @@ test('an edit keeps the reply quote, the uploads and silent mentions it had', ()
 
 test("a channel's description reads as words", () => {
   expect(plainText('The **new site**, see [the plan](https://example.com/p) and `code`; ask @**Ann Lee|9** in #**general**')).toBe('The new site, see the plan (https://example.com/p) and code; ask @Ann Lee in #general');
+});
+
+test('an upload is typed by its extension, a JPEG XL as one', () => {
+  expect(mimeOf('photo.JXL')).toBe('image/jxl');
+  expect(mimeOf('photo.avif')).toBe('image/avif');
+  expect(mimeOf('notes.unknown')).toBe('application/octet-stream');
 });

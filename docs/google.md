@@ -727,12 +727,19 @@ one call already under way. The rules (`BACKGROUND` in `mail.ts`):
   One that failed before any answer is asked once more without following redirects (its body never read), and the
   line ends with what that said: `(asked again, Gmail sent it elsewhere: a redirect the page may not follow)`, `(asked
   again, the connection failed again)`, `(asked again, no answer in 5 s)` or `(asked again, Gmail answered N)`.
+- **Downloads sent elsewhere**: when that second try saw a redirect, three downloads in a row (either lane, with no
+  good download between them) stop the background lane for **1 hour** (`backgroundStopped: 'refused'`), doubling
+  each time it stops again, up to **24 hours**; kept in `gmail-reads.json`, so a restart does not end it. Background
+  calls answer 503 `paused` meanwhile (kind transient, `retryAfterMs` the pause's end). Past the pause the next
+  download tries again: one more redirect stops it for twice as long. The foreground is never stopped by it, and a
+  good download from either lane ends it at once. (2026-11-23: after a bulk read, Gmail redirected nearly every
+  download for over a day; the 5-minute back-off alone asked it again every 5 minutes all that time.)
 - **Stops**: a **challenge** (an answer that reads as a sign-in or verification page; any other 200 that is not what
   was asked for: no JSON from `bv`, `fd` or `s`, an HTML page from the download route; or a 403), the page **signed
   out** (the Gmail page's own signed-in state, or a 401), or the day's **quota** spent. From then on every background
   call answers **503 with code `paused`** (`StatusError(…, 503, 'paused')`: "Gmail background reading is paused: …"),
   queued ones included, and **none reaches Gmail**: nothing is retried into a stop. `details.backgroundStopped` is
-  `'challenge'`, `'signedOut'` or `'quota'` until the cause clears: the quota when the 24 h window has room again;
+  `'challenge'`, `'signedOut'`, `'quota'` or `'refused'` (above) until the cause clears: the quota when the 24 h window has room again;
   a challenge or a sign-out when the page is signed in and a (foreground) call is answered well again (the watch's
   look counts). Foreground calls go on as usual while Gmail answers them (a challenge page is a 502 to them).
 - **Too long a wait**: a background call that cannot start within 50 s (backed off past that, or behind a long queue)
@@ -967,11 +974,14 @@ someone known only by address; the account id is there only for Google accounts)
   Suggestion calls have a lane of their own beside the Gmail page's (at most two in flight): keystrokes never wait
   behind mail, the watch or the background lane, and those never wait behind keystrokes. A suggestion call the page
   leaves unanswered counts toward reloading the Gmail tab, as any.
-- **Read strictly** (`readContacts`): every suggestion's people are read as persons (a group's too, so that another
-  nesting cannot pass for a group); an address not where it belongs (or not an address), a profile or a name of another
-  kind, or an answer in which no suggestion has an address is **502**: "Gmail's people suggestions answer is not laid
-  out as this extractor knows it (at json[0][0][0][0][0][1][0]: expected an address, got a list of 2); nothing was
-  returned rather than possibly wrong people".
+- **Read strictly, one suggestion at a time** (`readContacts`, through [records.md](records.md)'s `readEach`): every
+  suggestion's people are read as persons (a group's too, so that another nesting cannot pass for a group). A
+  suggestion whose address is not where it belongs (or not an address), or whose profile or name is of another kind,
+  is left out and counted (`details.contactsSkipped`, by what was expected; a log line per kind, at most hourly); the
+  rest are answered. The whole answer is **502** when its own layout is off, when no suggestion read has an address,
+  or when most of its suggestions are off (at least 3, and more than were read: the layout changed): "Gmail's people
+  suggestions answer is not laid out as this extractor knows it (at json[0][0][0][0][0][1][0]: expected an address,
+  got a list of 2, and 7 of 7 suggestions failed); nothing was returned rather than possibly wrong people".
 - **What it answers**: the people in Gmail's order, each address once (without regard to case; the first kept), `name`
   the display name with its spaces made one, or null when there is none or it is only the address again; groups and
   people without an address are left out. At most `limit` (8 by default, at most 20); Gmail is asked for 8, or for

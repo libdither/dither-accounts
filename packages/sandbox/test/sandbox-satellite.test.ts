@@ -23,6 +23,8 @@ const root = mkdtempSync(join(tmpdir(), 'dacc-sat-'));
 const dir = join(root, 'acct', 'app');
 let sb: AppSandbox;
 let ipc: SwayIpc;
+/** What the sandbox said (its programs' output among it), for a timeout's message. */
+const said: string[] = [];
 const log = () => join(sb.home, 'xev.log');
 
 beforeAll(async () => {
@@ -33,7 +35,7 @@ beforeAll(async () => {
   mkdirSync(appDir);
   // xev, line-buffered into a file; WAYLAND_DISPLAY written down first, to show the app was not given it.
   writeFileSync(join(appDir, 'app.sh'), `echo "wayland=\${WAYLAND_DISPLAY:-none} display=$DISPLAY" > "$HOME/env.txt"\nexec stdbuf -oL ${xev} -name sat-xev -event keyboard -event button > "$HOME/xev.log"\n`);
-  sb = new AppSandbox({ dir, display: { backend: 'wayland', display: null }, width: 800, height: 600, command: [sh, join(appDir, 'app.sh')], roBinds: [appDir], x11App: true, log: () => {}, onEvent: () => {} });
+  sb = new AppSandbox({ dir, display: { backend: 'wayland', display: null }, width: 800, height: 600, command: [sh, join(appDir, 'app.sh')], roBinds: [appDir], x11App: true, log: (l, m) => said.push(`${l} ${m}`), onEvent: () => {} });
   await sb.start();
   ipc = await SwayIpc.connect(join(dir, 'wl', 'ipc.sock'));
 }, 120_000);
@@ -51,7 +53,7 @@ async function until<T>(get: () => T | Promise<T>, ms = 30_000): Promise<NonNull
   for (;;) {
     const v = await get();
     if (v) return v as NonNullable<T>;
-    if (Date.now() > end) throw new Error(`not there within ${ms} ms`);
+    if (Date.now() > end) throw new Error(`not there within ${ms} ms; the sandbox said:\n${said.slice(-40).join('\n')}`);
     await Bun.sleep(50);
   }
 }

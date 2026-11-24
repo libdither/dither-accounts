@@ -17,7 +17,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync,
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Subprocess } from 'bun';
-import { cleanEnv, resolveBin, tryBin } from '../src/bins.ts';
+import { cleanEnv, DISPLAY_BINS, resolveBin, tryBin } from '../src/bins.ts';
 import { pickFreeDisplay } from '../src/display.ts';
 import { makeScreen } from '../src/screen.ts';
 import { busConf, ScreenShare, SHARE_BINS, wireplumberConf, wlrConfig } from '../src/screenshare.ts';
@@ -220,6 +220,18 @@ async function share(p: Probe, session: number): Promise<ShareStats> {
     } finally {
       ipc.close();
     }
+  } else if (screen.display !== null) {
+    // On X the same: a page can load before Chromium's window is mapped. xdotool lists only mapped windows (--onlyvisible).
+    const xdotool = resolveBin(DISPLAY_BINS.xdotool, () => {});
+    const end = Date.now() + 30_000;
+    for (;;) {
+      const r = Bun.spawnSync([xdotool, 'search', '--onlyvisible', '--class', 'chromium', 'getwindowgeometry', '--shell', '%@'], { env: cleanEnv({ ...process.env, DISPLAY: `:${screen.display}` }) });
+      const out = r.stdout.toString();
+      // A pixel short of the screen on X, as in every Chromium window there (docs/browser.md, the fingerprint).
+      if (Number(/WIDTH=(\d+)/.exec(out)?.[1]) >= pg.sw - 1 && Number(/HEIGHT=(\d+)/.exec(out)?.[1]) >= pg.sh - 1) break;
+      if (Date.now() > end) throw new Error(`Chromium's window never filled the X screen: ${out.replace(/\n/g, ' ').trim() || 'no mapped window'} ${r.stderr.toString().trim()}`);
+      await Bun.sleep(50);
+    }
   }
   await screen.click(200, pg.sh - pg.h + 300);
   await until(`the click for session ${session}`, () => p.reports.filter((r) => r.ev === 'click').length > clicks, 10_000);
@@ -351,11 +363,12 @@ describe.skipIf(!ok)('x11 parity', () => {
       } finally {
         await p.sb.stop();
         p.server.stop(true);
+        // An x11 sandbox's Chromium still has the machine's session bus (unchanged here: docs/browser.md), so it was
+        // there; its capture is X's own and asked no portal. Its connections are counted as known from here on, pass
+        // or fail, so the Electron test below sees only its own.
+        await flushHostBus();
+        ownNames = new Set([...ownNames, ...strangersOnHostBus()]);
       }
-      // An x11 sandbox's Chromium still has the machine's session bus (unchanged here: docs/browser.md), so it was
-      // there; its capture is X's own and asked no portal. Its connections are counted as known from here on.
-      await flushHostBus();
-      ownNames = new Set([...ownNames, ...strangersOnHostBus()]);
     },
     180_000,
   );

@@ -1,6 +1,7 @@
 # Typecheck (the services and the page), the page's build, and tests on each push to master and each pull request.
-# Everything runs against fakes and stand-ins. Tests that need what only a Nix machine has skip here: the sandboxed
-# browsers (Xvfb, Chromium, x11vnc), the native-app sandbox, and Radicale and Dovecot from nixpkgs (test/needs.ts).
+# Everything runs against fakes and stand-ins. Tests that need what only a Nix machine has skip in `check`: the
+# sandboxed browsers (Xvfb, Chromium, x11vnc), the native-app sandbox, both display backends, screen sharing, and
+# Radicale and Dovecot from nixpkgs (test/needs.ts). The `nix` job runs those, with Nix.
 name: CI
 
 on:
@@ -37,3 +38,33 @@ jobs:
       # Flaky tests are fixed, not retried: the test files a pull request adds or changes run five times each.
       - if: github.event_name == 'pull_request'
         run: bun scripts/flake-check.ts origin/${{ github.base_ref }}
+
+  # The tests that need Nix: the sandboxes on both display backends (Xvfb and x11vnc; sway, wayvnc and grim),
+  # Chromium on them, the native-app sandbox (bubblewrap, pasta), X apps through xwayland-satellite, and screen
+  # sharing (PipeWire, WirePlumber, the portals, Chromium and Electron). Everything comes from nixpkgs.
+  nix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      # Ubuntu lets no unprivileged program make a user namespace by default; bubblewrap, pasta and Chromium's
+      # sandbox each need one.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # On PATH ahead of Ubuntu's own, so the sandboxes run /nix/store programs only (sh and env among them); the rest
+      # is fetched here, once, instead of inside a test's time limit.
+      - name: Programs from nixpkgs
+        run: |
+          nix profile install nixpkgs#bash nixpkgs#coreutils nixpkgs#dbus
+          nix build --no-link nixpkgs#{bubblewrap,passt,xvfb,x11vnc,xdotool,imagemagick,pulseaudio,sway-unwrapped,wayvnc,grim,chromium,pipewire,wireplumber,xdg-desktop-portal,xdg-desktop-portal-wlr,xwayland-satellite,xorg.xev,electron}
+      # DITHER_TESTS_NEED_ALL: a test that would skip for a missing program fails instead (test/needs.ts).
+      - name: Tests that need Nix
+        env:
+          DITHER_TESTS_NEED_ALL: '1'
+        run: bun test packages/sandbox packages/browser test/haveno.test.ts test/telegram-desktop.test.ts

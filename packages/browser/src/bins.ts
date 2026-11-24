@@ -20,6 +20,8 @@ export interface BinSpec {
   candidates?: string[];
   /** False when the copy on PATH is not the one to run (NixOS's sway is wrapped in dbus-run-session). Default true. */
   path?: boolean;
+  /** The directory of the nix output it is in, when not bin/ (portals live in libexec/). */
+  sub?: string;
 }
 
 const cache = new Map<string, string>();
@@ -56,10 +58,10 @@ export function resolveBin(spec: BinSpec, log: Log): string {
     const out = spawnSync('nix', ['build', `nixpkgs#${spec.nix}`, '--no-link', '--print-out-paths'], { encoding: 'utf8' });
     if (out.status !== 0) throw new Error(`cannot find ${spec.name}: set ${spec.env}, put it on PATH, or make nix available (${(out.stderr ?? out.error?.message ?? '').slice(0, 200)})`);
     for (const store of out.stdout.trim().split('\n').reverse()) {
-      const bin = join(store.trim(), 'bin', spec.name);
+      const bin = join(store.trim(), spec.sub ?? 'bin', spec.name);
       if (existsSync(bin)) return bin;
     }
-    throw new Error(`nix built ${spec.nix} but it has no bin/${spec.name}`);
+    throw new Error(`nix built ${spec.nix} but it has no ${spec.sub ?? 'bin'}/${spec.name}`);
   })();
   cache.set(key, found);
   return found;

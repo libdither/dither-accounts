@@ -97,6 +97,40 @@ that, and the native sandbox's fit loop). A window that opens while a tiled one 
 a dialog does. That is decided once per window as it opens: a sway `for_window` rule would run again on every title
 change (a chat's unread count) and float the main window too.
 
+**Screen sharing, and the machine's session bus.** On wayland a browser sandbox's Chromium gets a session bus of its
+own (`packages/browser/src/screenshare.ts`), never the machine's. The machine's session bus has the owner's portal
+on it, and a Chromium given it (as it was, through the manager's environment) asks that portal for a screen when a
+page calls getDisplayMedia: it could share the owner's real screen. A sandbox that shares its screen (Discord's, and
+any `Sandbox` with `screenShare`) gets on that bus its own PipeWire, WirePlumber (every device monitor off: no sound
+card, camera or Bluetooth of the machine), xdg-desktop-portal and xdg-desktop-portal-wlr, the last told the sway
+socket alone with `chooser_type=none` and `output_name=HEADLESS-1`: the sandbox's one output is the only thing it can
+share, and the portal asks nothing. Chromium runs with its PipeWire capturer; its own picker still asks (Entire
+Screen, then Share, in the live view) unless a flag answers it: `--use-fake-ui-for-media-stream` does in tests, and
+it is not used in the product, since it also says yes to every camera and microphone request. The other sandboxes
+get only the empty bus. Everything is under `<compositor's directory>/share`, in nothing of the machine's.
+
+On x11 Chromium captures its Xvfb itself, with no portal (`--auto-select-desktop-capture-source=Entire screen`
+answers its picker there). An x11 sandbox's Chromium still has the manager's session bus, as before: it uses it at
+start (the portal's appearance settings), and its notifications and media keys would reach the machine's desktop.
+Moving x11 sandboxes onto a bus of their own too is the next step, left out here so x11 does not change under the
+accounts that run on it.
+
+What Discord's Go Live sends is still the device's screen through the bridge when the device shares one
+(docs/chat.md, "Video"); only when it does not does the client's own getDisplayMedia reach Chromium, and with it this
+portal. Native apps (Signal Desktop, Telegram Desktop) answer the portal's FileChooser, OpenURI and Settings from our
+own services on their bus (docs/native-sandbox.md) and have no ScreenCast yet: giving them one means forwarding
+`org.freedesktop.portal.ScreenCast` from those services to xdg-desktop-portal-wlr on the same bus, with the PipeWire
+remote's descriptor passed back, which the bus code here does not carry yet.
+
+`packages/browser/test/screenshare.test.ts` checks it end to end: a page draws an animated pattern of counters,
+shares the screen, and sends it over WebRTC to a second page that decodes every frame (each one must be a counter
+the page drew, at the screen's size, at more than 8 fps, under 500 ms median from drawing to decoding); sharing
+stops (the portal's stream leaves PipeWire) and starts again; the same for an Electron app (desktopCapturer's
+screen) and on x11. It runs under a stand-in for the machine's session bus, with a portal on it, a dbus-monitor
+watching it and `XDG_RUNTIME_DIR/bus` pointing at it too: nothing from a wayland sandbox may connect there, and no
+ScreenCast may be asked there (a Chromium given that bus, as before, is seen there within a second, so the watch
+works). Two wayland sandboxes run at once, and each one's capture decodes as its own page.
+
 **Limits.** Discord's extension port is picked free on wayland (on x11 it comes from the display number). No
 clipboard tool is used on either backend. An extractor killed outright leaves its compositor's directory (its config
 and wayvnc's control socket); the next start on that account empties it.

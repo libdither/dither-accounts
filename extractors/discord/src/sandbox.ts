@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { markerKey, stampExtension } from '@dither-accounts/browser/markers';
 import type { Subprocess } from 'bun';
 import {
+  browserShare,
   claimDisplay,
   cleanEnv,
   type DisplayBackend,
@@ -35,6 +36,7 @@ import {
   refreshWorker,
   resolveChromium,
   type Screen,
+  type ScreenShare,
   screenFlags,
   screenPrefs,
   vncSocketPath,
@@ -66,6 +68,7 @@ export class Sandbox {
   /** The live view: the VNC server's Unix socket (vnc.sock in the account directory). */
   readonly vncSocket: string;
   private screen_: Screen | null = null;
+  private share: ScreenShare | null = null;
 
   constructor(private opts: SandboxOptions) {
     this.profileDir = join(opts.accountDir, 'profile');
@@ -161,6 +164,11 @@ export class Sandbox {
     });
     this.screen_ = screen;
     await screen.start();
+    // On wayland a session bus of its own (never the machine's: its portal could share the owner's real screen), with
+    // a portal and PipeWire that share this sandbox's screen alone, for a Go Live that is not the device's
+    // (packages/browser/src/screenshare.ts). Chromium's picker asks which, in the live view.
+    const shared = await browserShare(screen, { capture: true, spawn: (name, cmd, o) => this.spawn(name, cmd, o.env), log: this.opts.log });
+    this.share = shared.share;
 
     // 2. The browser (ordinary window, persistent profile, our extension).
     const flags = [
@@ -183,9 +191,9 @@ export class Sandbox {
       // Calls: the client's audio feeds the bridge without anyone clicking first.
       '--autoplay-policy=no-user-gesture-required',
     ];
-    flags.push(...gpuFlags(), ...screenFlags(screen));
+    flags.push(...gpuFlags(), ...screenFlags(screen), ...shared.flags);
     if (this.opts.noSandbox) flags.push('--no-sandbox');
-    this.spawn('chromium', [chromium, ...mergeFeatureFlags(flags), this.opts.startUrl], screen.clientEnv());
+    this.spawn('chromium', [chromium, ...mergeFeatureFlags(flags), this.opts.startUrl], { ...screen.clientEnv(), ...this.share?.clientEnv() });
 
     this.opts.log('info', `sandbox up: ${screen.backend === 'wayland' ? 'sway (Wayland)' : `display :${screen.display}`}, vnc on ${this.vncSocket}`, { chromium });
     return { chromium };
@@ -195,7 +203,7 @@ export class Sandbox {
     if (this.stopped) return;
     this.stopped = true;
     // Kill in reverse-ish order: browser and vnc first, display last.
-    const order = ['chromium', ...(this.screen_?.procNames ?? [])];
+    const order = ['chromium', ...(this.share?.procNames ?? []), ...(this.screen_?.procNames ?? [])];
     for (const name of order) {
       for (const p of this.procs.filter((x) => x.name === name)) {
         try {
@@ -214,6 +222,7 @@ export class Sandbox {
     await Promise.all(this.procs.map((p) => p.proc.exited.catch(() => {})));
     clearTimeout(killer);
     this.procs = [];
+    await this.share?.stop();
     await this.screen_?.stop();
     rmSync(this.vncSocket, { force: true });
     this.opts.log('info', 'sandbox stopped');

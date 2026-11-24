@@ -21,6 +21,7 @@ import { MEMORY_DISABLED_FEATURES, mergeFeatureFlags } from './flags.ts';
 import { markerKey, stampExtension } from './markers.ts';
 import { ChromiumNoise } from './noise.ts';
 import { makeScreen, type Screen } from './screen.ts';
+import { browserShare, type ScreenShare } from './screenshare.ts';
 import { vncSocketPath } from './vnc.ts';
 import { refreshWorker } from './worker.ts';
 
@@ -47,6 +48,13 @@ export interface SandboxOptions {
   flags?: string[];
   /** Set if the chromium suid sandbox is unavailable. */
   noSandbox?: boolean;
+  /**
+   * On wayland: the sandbox's own portal and PipeWire (screenshare.ts), so getDisplayMedia can share this sandbox's
+   * screen and nothing else. Chromium's own picker still asks (its Entire Screen tab, then Share) unless the flags say
+   * otherwise. Without it a wayland sandbox's Chromium still gets a session bus of its own, an empty one: never the
+   * machine's, where the owner's portal could share the owner's real screen. On x11 Chromium captures its Xvfb.
+   */
+  screenShare?: boolean;
   log: Log;
 }
 
@@ -117,6 +125,7 @@ export class Sandbox {
   /** The live view: the VNC server's Unix socket, for the status's liveView.vncSocket. */
   readonly vncSocket: string;
   private screen_: Screen | null = null;
+  private share: ScreenShare | null = null;
 
   constructor(private opts: SandboxOptions) {
     this.profileDir = join(opts.accountDir, 'profile');
@@ -213,6 +222,9 @@ export class Sandbox {
     });
     this.screen_ = screen;
     await screen.start();
+    // On wayland a session bus of its own, with the screen share's portal on it when asked for (screenshare.ts).
+    const shared = await browserShare(screen, { capture: !!this.opts.screenShare, spawn: (name, cmd, o) => this.spawn(name, cmd, o.env), log: this.opts.log });
+    this.share = shared.share;
 
     // 2. The browser: an ordinary window, persistent profile, our extension.
     const flags = [
@@ -234,10 +246,11 @@ export class Sandbox {
       '--window-position=0,0',
       ...gpuFlags(),
       ...screenFlags(screen),
+      ...shared.flags,
       ...(this.opts.flags ?? []),
     ];
     if (this.opts.noSandbox) flags.push('--no-sandbox');
-    this.spawn('chromium', [chromium, ...mergeFeatureFlags(flags), this.opts.startUrl], screen.clientEnv());
+    this.spawn('chromium', [chromium, ...mergeFeatureFlags(flags), this.opts.startUrl], { ...screen.clientEnv(), ...this.share?.clientEnv() });
 
     this.opts.log('info', `sandbox up: ${screen.backend === 'wayland' ? 'sway (Wayland)' : `display :${screen.display}`}, vnc on ${this.vncSocket}`);
     return { chromium };
@@ -247,7 +260,7 @@ export class Sandbox {
     if (this.stopped) return;
     this.stopped = true;
     // Browser and vnc first, display last.
-    for (const name of ['chromium', ...(this.screen_?.procNames ?? [])]) {
+    for (const name of ['chromium', ...(this.share?.procNames ?? []), ...(this.screen_?.procNames ?? [])]) {
       for (const p of this.procs.filter((x) => x.name === name)) {
         try {
           p.proc.kill('SIGTERM');
@@ -267,6 +280,7 @@ export class Sandbox {
     this.procs = [];
     const said = this.noise.summary(Date.now(), true);
     if (said) this.opts.log('debug', `[chromium] ${said}`);
+    await this.share?.stop();
     await this.screen_?.stop();
     rmSync(this.vncSocket, { force: true });
     this.opts.log('info', 'sandbox stopped');

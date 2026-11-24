@@ -13,4 +13,5 @@ export { type Bins, gpuFlags, type Log, resolveBins, resolveChromium, Sandbox, t
 export { displayName, displayNote, makeScreen, type Screen, type ScreenInput, type ScreenOptions, type ScreenSpawn } from './screen.ts';
 export { prepareVncSocket, SOCKET_PATH_MAX, VNC_SOCKET, vncSocketPath, waitForVncSocket, x11vncArgs } from './vnc.ts';
 export { swayConfig, waylandDir, WaylandScreen, wayvncArgs } from './wayland.ts';
+export { browserShare, busConf, portalsConf, SHARE_BINS, SHARE_DIR, SHARE_OUTPUT, ScreenShare, type ScreenShareOptions, wireplumberConf, wlrConfig } from './screenshare.ts';
 export { importedScripts, profileHolder, refreshWorker, WORKER_HASH, WORKER_STORAGE, workerHash, type WorkerRefresh } from './worker.ts';

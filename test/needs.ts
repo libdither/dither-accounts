@@ -46,7 +46,12 @@ export const satellite = (() => {
   }
 })();
 
+/**
+ * Says why a test skips. Where the machine must have everything (CI's `nix` job sets DITHER_TESTS_NEED_ALL=1), a
+ * missing program fails the file instead, so that job cannot pass by skipping.
+ */
 export function why(what: string, ok: boolean) {
+  if (!ok && process.env.DITHER_TESTS_NEED_ALL === '1') throw new Error(`${what} is not available here, and DITHER_TESTS_NEED_ALL=1`);
   if (!ok) console.warn(`skipped: ${what} is not available here`);
   return ok;
 }

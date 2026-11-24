@@ -218,20 +218,34 @@ function Chain({ layers }: { layers: StatusLayer[] }) {
   );
 }
 
-/** Its kind's own settings (the manifest's `settings`), each a switch; changing one restarts the extractor to take it. */
+/**
+ * Its kind's own settings (the manifest's `settings`), each a switch or a line of text (kept when the box is left);
+ * changing one restarts the extractor to take it.
+ */
 function Settings({ a, reload }: { a: AccountInfo; reload: () => void }) {
   const flip = async (key: string, label: string, value: boolean) => {
     if (await act(`/api/accounts/${a.id}`, { method: 'PATCH', body: { settings: { [key]: value } } }, `${label} ${value ? 'on' : 'off'}: restarting it`)) reload();
+  };
+  const save = async (key: string, label: string, was: string, value: string) => {
+    if (value.trim() === was) return;
+    if (await act(`/api/accounts/${a.id}`, { method: 'PATCH', body: { settings: { [key]: value.trim() } } }, `${label} ${value.trim() ? 'set' : 'cleared'}: restarting it`)) reload();
   };
   return (
     <section class="pane-section" data-settings>
       <h4>Settings</h4>
       {a.settings.map((x) => (
         <div key={x.key} data-setting={x.key}>
-          <label class="row nowrap small">
-            <input type="checkbox" checked={x.value} onChange={(e) => void flip(x.key, x.label, (e.target as HTMLInputElement).checked)} />
-            <span>{x.label}</span>
-          </label>
+          {x.type === 'text' ? (
+            <label class="row nowrap small">
+              <span>{x.label}</span>
+              <input type="text" value={x.text ?? ''} placeholder={x.placeholder} onChange={(e) => void save(x.key, x.label, x.text ?? '', (e.target as HTMLInputElement).value)} />
+            </label>
+          ) : (
+            <label class="row nowrap small">
+              <input type="checkbox" checked={x.value} onChange={(e) => void flip(x.key, x.label, (e.target as HTMLInputElement).checked)} />
+              <span>{x.label}</span>
+            </label>
+          )}
           <p class="muted small">{x.note}</p>
         </div>
       ))}

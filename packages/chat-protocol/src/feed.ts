@@ -66,7 +66,74 @@ export interface PostFact {
   article?: string;
   /** Who may reply, when the author limited it (X's "who can reply", Bluesky's thread gates). */
   replies?: ReplyGate;
+  /** An event (Luma, Partiful; docs/events.md): when, where, who hosts, who is going as the site shows it. */
+  event?: EventFact;
 }
+
+/** What a viewer who has not RSVP'd is shown about who is coming. */
+export type EventGuestsShown = 'all' | 'sample' | 'count' | 'hidden';
+export const EVENT_GUESTS_SHOWN: readonly EventGuestsShown[] = ['all', 'sample', 'count', 'hidden'];
+
+export type EventRsvp = 'going' | 'maybe' | 'interested' | 'waitlist' | 'pending' | 'declined' | 'invited';
+export const EVENT_RSVPS: readonly EventRsvp[] = ['going', 'maybe', 'interested', 'waitlist', 'pending', 'declined', 'invited'];
+
+export interface EventPlace {
+  name?: string;
+  address?: string;
+  city?: string;
+  lat?: number;
+  lng?: number;
+  /** A map or venue link. */
+  url?: string;
+}
+
+export interface EventFact {
+  /** ms since epoch. */
+  start: number;
+  end?: number;
+  /** IANA zone the event was made in. */
+  timeZone?: string;
+  /** Absent when the site hides the address until you RSVP. */
+  place?: EventPlace;
+  online?: boolean;
+  /** Native identity ids of the hosts (identity facts sent first). */
+  hosts: string[];
+  /** Guests counted, as the site shows the count (going only). */
+  going?: number;
+  /** Native identity ids of guests the site showed this viewer, in the site's order. */
+  guests?: string[];
+  guestsShown: EventGuestsShown;
+  /** "Free", "$20", "Sold out"… as the site words it. */
+  price?: string;
+  /** The account's own RSVP, null when none. */
+  rsvp?: EventRsvp | null;
+  /** The account is a host. */
+  hosting?: boolean;
+  /** The event's conversation, when the account can see one (comments, blasts, chat): its nativeId. */
+  conversation?: string;
+  /** A public .ics for the event. */
+  ics?: string;
+  /** Tags or categories as the site names them. */
+  tags?: string[];
+}
+
+/**
+ * An RSVP sent from here (the kind's chat interface, `{ t: 'action', action: 'rsvp', args }`): visible to the host and the
+ * guests, so it is a `manage` write in dither-accounts and the page asks first. reply.result: the event's PostFact as it
+ * now stands, or {}.
+ */
+export interface EventRsvpArgs {
+  eventId: string;
+  status: EventRsvpChoice;
+  note?: string;
+}
+/** What can be sent as an RSVP. */
+export type EventRsvpChoice = 'going' | 'maybe' | 'declined' | 'interested';
+export const EVENT_RSVP_CHOICES: readonly EventRsvpChoice[] = ['going', 'maybe', 'declined', 'interested'];
+
+/** An event conversation's native id (docs/events.md "Conversations"), and back. */
+export const eventConvNativeId = (eventId: string) => `event:${eventId}`;
+export const eventOfConv = (nativeId: string) => (nativeId.startsWith('event:') ? nativeId.slice(6) : null);
 
 /** Who may reply to a new post: everyone, people the author follows, people mentioned in it, verified accounts. */
 export type ReplyGate = 'everyone' | 'following' | 'mentioned' | 'verified';
@@ -133,8 +200,13 @@ export interface PostThread {
   more: string | null;
 }
 
-/** Which of an account's home timelines: X's Following (newest first) or For you (X's own ranking). */
-export type HomeFeed = 'following' | 'foryou';
+/**
+ * Which of an account's home timelines: X's Following (newest first) or For you (X's own ranking); `explore`, an event
+ * site's default listing for the account's city (Luma, Partiful: docs/events.md), whose `following` is the events you
+ * are going to, hosting or invited to.
+ */
+export type HomeFeed = 'following' | 'foryou' | 'explore';
+export const HOME_FEEDS: readonly HomeFeed[] = ['following', 'foryou', 'explore'];
 /** Why a post is in a home timeline beyond following its author: the network's social-context line. */
 export interface HomeReason {
   /** The network's own words ("Ann Lee liked", "Followed by Ann Lee and 2 others", "Popular in Rust"). */

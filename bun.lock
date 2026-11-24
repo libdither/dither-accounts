@@ -258,6 +258,17 @@
         "@dither-accounts/manager": "workspace:*",
       },
     },
+    "extractors/partiful": {
+      "name": "@dither-accounts/extractor-partiful",
+      "dependencies": {
+        "@dither-accounts/browser": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+      "devDependencies": {
+        "@dither-accounts/client": "workspace:*",
+      },
+    },
     "extractors/privacy": {
       "name": "@dither-accounts/extractor-privacy",
       "dependencies": {
@@ -556,6 +567,8 @@
     "@dither-accounts/extractor-monero": ["@dither-accounts/extractor-monero@workspace:extractors/monero"],
 
     "@dither-accounts/extractor-njalla": ["@dither-accounts/extractor-njalla@workspace:extractors/njalla"],
+
+    "@dither-accounts/extractor-partiful": ["@dither-accounts/extractor-partiful@workspace:extractors/partiful"],
 
     "@dither-accounts/extractor-privacy": ["@dither-accounts/extractor-privacy@workspace:extractors/privacy"],
 

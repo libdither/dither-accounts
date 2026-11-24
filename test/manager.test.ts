@@ -80,7 +80,10 @@ test('an approved admin app makes an account; its extractor runs and reports in'
 
 test("a kind's own settings: only its declared keys and values, kept in the config, and the extractor restarted to take them", async () => {
   const info = async () => ((await (await api('/api/state')).json()) as any).accounts.find((a: any) => a.id === account);
-  expect((await info()).settings).toEqual([{ key: 'loud', label: 'Loud', note: 'A setting for tests: it does nothing.', value: false }]);
+  expect((await info()).settings).toEqual([
+    { key: 'loud', label: 'Loud', note: 'A setting for tests: it does nothing.', value: false },
+    { key: 'motto', label: 'Motto', note: 'A line of text for tests: it does nothing.', value: false, type: 'text', text: '', placeholder: 'a few words' },
+  ]);
   expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { nope: true } })).status).toBe(400);
   expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { loud: 'yes' } })).status).toBe(400);
   expect((await info()).settings[0].value).toBe(false);
@@ -89,6 +92,16 @@ test("a kind's own settings: only its declared keys and values, kept in the conf
   await until(async () => (await info()).online, 10_000, 'the extractor back online');
   expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { loud: false } })).status).toBe(200);
   expect((await info()).settings[0].value).toBe(false);
+  await until(async () => (await info()).online, 10_000, 'the extractor back online');
+  // A line of text: a string that fits its pattern and length, kept trimmed; '' takes it away.
+  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { motto: true } })).status).toBe(400);
+  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { motto: 'NOT LOWER' } })).status).toBe(400);
+  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { motto: 'much too long for twenty' } })).status).toBe(400);
+  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { motto: ' be kind ' } })).status).toBe(200);
+  expect((await info()).settings[1].text).toBe('be kind');
+  await until(async () => (await info()).online, 10_000, 'the extractor back online');
+  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { motto: '' } })).status).toBe(200);
+  expect((await info()).settings[1].text).toBe('');
   await until(async () => (await info()).online, 10_000, 'the extractor back online');
 });
 

@@ -66,13 +66,13 @@ test('an RSVP below manage is refused by the manager, and the account is never a
 }, 30_000);
 
 test('the City is a text setting: shown with its value, checked, changed, and cleared by an empty value', async () => {
-  expect((await info()).settings).toEqual([{ key: 'city', label: 'City', note: expect.any(String), type: 'text', value: 'exampletown', placeholder: 'nyc' }]);
+  expect((await info()).settings).toEqual([{ key: 'city', label: 'City', note: expect.any(String), value: false, type: 'text', text: 'exampletown', placeholder: 'nyc' }]);
   expect((await api(`/api/accounts/${acc}`, 'PATCH', { settings: { city: 'not/a city' } })).status).toBe(400);
   expect((await api(`/api/accounts/${acc}`, 'PATCH', { settings: { city: true } })).status).toBe(400);
   expect((await api(`/api/accounts/${acc}`, 'PATCH', { settings: { city: 'x'.repeat(300) } })).status).toBe(400);
-  expect((await info()).settings[0].value).toBe('exampletown');
+  expect((await info()).settings[0].text).toBe('exampletown');
   expect((await api(`/api/accounts/${acc}`, 'PATCH', { settings: { city: '  othertown ' } })).status).toBe(200);
-  expect((await info()).settings[0].value).toBe('othertown');
+  expect((await info()).settings[0].text).toBe('othertown');
   expect((await api(`/api/accounts/${acc}`, 'PATCH', { settings: { city: '' } })).status).toBe(200);
-  expect((await info()).settings[0].value).toBe('');
+  expect((await info()).settings[0].text).toBe('');
 });

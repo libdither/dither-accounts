@@ -27,7 +27,7 @@ import type { Approvers, ApproverSocketData } from './approvers.ts';
 import { Auth, CLI_HEADER, cookieOf, fromOwnPage, loginPage, safeNext, sessionCookie } from './auth.ts';
 import { hashToken, newId, newToken, type Row, type Store } from './db.ts';
 import { listDir, LOG, logTail, ownDir } from './files.ts';
-import { type Kind, textSetting } from './kinds.ts';
+import type { Kind } from './kinds.ts';
 import { localNotice, type Notices } from './notices.ts';
 import type { Provider } from './providers/index.ts';
 import { CallFailure, type ConsumerSocketData, type Router } from './router.ts';
@@ -635,9 +635,11 @@ export class Http {
             if (!info) return bad(`${a.kind} accounts have no setting ${k}`);
             if (info.type === 'boolean' && typeof v !== 'boolean') return bad(`${k} is on or off (true or false)`);
             if (info.type === 'text') {
-              const t = textSetting(info, v);
-              if ('error' in t) return bad(t.error);
-              if (t.value) cfg[k] = t.value;
+              if (typeof v !== 'string') return bad(`${k} is a line of text`);
+              const t = v.trim();
+              if (t.length > (info.max ?? 200) || /[\r\n]/.test(t)) return bad(`${k} is one line of at most ${info.max ?? 200} characters`);
+              if (t && info.pattern && !new RegExp(`^(?:${info.pattern})$`).test(t)) return bad(`${k} does not look right`);
+              if (t) cfg[k] = t;
               else delete cfg[k];
               continue;
             }
@@ -745,7 +747,7 @@ export class Http {
       settings: (this.kinds.get(a.kind)?.settings ?? []).map((x) => {
         const v = parse<Record<string, unknown>>(a.config, {})[x.key];
         return x.type === 'text'
-          ? { key: x.key, label: x.label, note: x.note, type: 'text' as const, value: typeof v === 'string' ? v : '', ...(x.placeholder ? { placeholder: x.placeholder } : {}) }
+          ? { key: x.key, label: x.label, note: x.note, value: false, type: 'text' as const, text: typeof v === 'string' ? v : '', ...(x.placeholder ? { placeholder: x.placeholder } : {}) }
           : { key: x.key, label: x.label, note: x.note, value: v === true };
       }),
     };

@@ -68,7 +68,7 @@ config.toml) is the default for every account, `x11` unless set. An account's co
 or `{ "settings": { "displayBackend": "wayland" } }` in a PATCH of `/api/accounts/<id>`. The account's extractor
 restarts to take it. The extractor gets the result as `DITHER_DISPLAY_BACKEND`, and the account's detail shows it
 (`process.displayBackend`). A manager that adopts extractors started with another backend restarts them one at a time,
-as it does for changed code (docs/supervisor.md). Haveno stays on x11 whatever is chosen: JavaFX draws only through X.
+as it does for changed code (docs/supervisor.md). Haveno follows it too: JavaFX draws only through X, so on wayland it gets an Xwayland of its own inside its sandbox (xwayland-satellite: docs/native-sandbox.md).
 
 **Why sway, not cage.** cage 0.3 as nixpkgs builds it always starts Xwayland, which takes a global X display number
 and an abstract socket, the two things this backend is for getting rid of. It also has no IPC (to close a window as a

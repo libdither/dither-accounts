@@ -16,6 +16,8 @@ export interface SwayNode {
   type: 'root' | 'output' | 'workspace' | 'con' | 'floating_con';
   name: string | null;
   app_id?: string | null;
+  /** How the window reached sway: xdg_shell (every Wayland app, X apps through xwayland-satellite too) or xwayland. */
+  shell?: string;
   pid?: number;
   rect: { x: number; y: number; width: number; height: number };
   focused?: boolean;

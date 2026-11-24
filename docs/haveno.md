@@ -16,14 +16,17 @@ The node and the app must never run at once on the data: the daemon's unit and t
 on `<data>/.instance.lock`, the launcher waiting for it. **openApp** stops the node through its API (a clean stop), and
 the app's launcher waits for the lock. When the app quits, the node's service manager should bring it back (restart
 after any exit) as soon as the lock is free, and the extractor opens the account again.
-**closeApp** sends the app's window the close request a window manager would (WM_DELETE_WINDOW through libX11, since
-the sandbox has no window manager): Haveno quits at once on its login screen and asks in the live view when trades or
+**closeApp** sends the app's window the close request a window manager would (on x11 WM_DELETE_WINDOW through libX11,
+since that sandbox has no window manager; on wayland sway's close, which xwayland-satellite turns into the same): Haveno quits at once on its login screen and asks in the live view when trades or
 offers are open. Its Ctrl+Q works too, but only after login. **closeApp {force: true}** kills it: the wallet survives
 that, but it is a last resort, and it is what stopping the manager does to an app left open.
 
 In the sandbox the app gets the data dir, read-only `/lib64` (nix-ld's shim: Haveno unpacks prebuilt `tor` and
 `monero-wallet-rpc` and runs them; on NixOS the launcher points nix-ld at store paths, since `/run/current-system` is
-not there) and pasta's network (out only).
+not there) and pasta's network (out only). It runs on the account's display backend: Haveno is a JavaFX app, which draws only through
+X, so on wayland it gets an Xwayland of its own inside its sandbox (xwayland-satellite: docs/native-sandbox.md), and on
+x11, or without pasta, an Xvfb. Tried on wayland with Haveno 1.12.0 on a fresh data directory: its window fills the
+screen from its first frame, clicks and keys from the live view reach it, and closeApp quits it cleanly (exit 0).
 
 ## The account password
 

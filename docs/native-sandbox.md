@@ -24,7 +24,9 @@ account's calls body (docs/signal.md, "Calls through Signal Desktop"), is its se
 home, its display, its bus; not the user's home, not the host's abstract X sockets, not `DITHER_*` anywhere, not its
 own live view's socket), RFB on that socket (0600) from an x11vnc that holds no TCP or UDP socket, a link through the
 shim and a download announced. `packages/sandbox/test/sandbox-wayland.test.ts` does the same on the wayland backend:
-the app sees `wayland-0` and no X socket, the compositor's own directory and the live view's socket stay hidden.
+the app sees `wayland-0` and no X socket, the compositor's own directory and the live view's socket stay hidden. `packages/sandbox/test/sandbox-satellite.test.ts` runs an X app (xev) on the wayland backend: its window is a sway
+window, RFB clicks and keys reach it as X events, grim pictures it, and its X sockets are in neither the machine's
+`/tmp/.X11-unix` nor the machine's network namespace.
 
 ## The routing policy
 
@@ -96,7 +98,14 @@ None of these is built; each is a door the sandbox already has the frame for.
    display from `pickFreeDisplay`: on x11 a display number (:80–:89, then :100–:159; claimed atomically in
    /tmp/.dither-displays so sandboxes starting together never pick the same one), on wayland none (its compositor's
    socket is in the sandbox's own directory). Its environment comes from `displayEnv`, so a Qt, GTK or Electron app
-   needs nothing of its own for either backend; an app that draws only through X (Haveno's JavaFX) asks for x11. Its live view is `sb.vncSocket` (`<dir>/vnc.sock`), reported as
+   needs nothing of its own for either backend. An app that draws only through X (Haveno's JavaFX) says `x11App: true`:
+   on x11 nothing changes; on wayland it gets an Xwayland of its own inside its sandbox (xwayland-satellite as `:0`,
+   started by the sandbox before the app and the way niri runs X apps), so each X window is an ordinary window of the
+   sandbox's sway, under the same live view, input and screenshots. Its X sockets are the sandbox's: the path one in
+   its private `/tmp`, the abstract one in its own network namespace; Xwayland admits only the sandbox's user, by its
+   name in the sandbox's `/etc/passwd`. Without a network namespace of its own (`host`, pasta missing) that abstract
+   socket would be the machine's, so the sandbox takes an X display (Xvfb) instead, as it does when xwayland-satellite
+   (`XWAYLAND_SATELLITE_BIN`, else `PATH`, else `nixpkgs#xwayland-satellite`) cannot be had. Its live view is `sb.vncSocket` (`<dir>/vnc.sock`), reported as
    `liveView: { vncSocket, width, height }`.
 3. Its session on disk: where it is, its format, when it says "signed in", and whether its key can be used from a
    client of our own or should only be watched.

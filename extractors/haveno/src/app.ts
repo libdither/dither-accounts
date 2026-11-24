@@ -11,8 +11,9 @@
  * There is no window manager, so closeApp sends the window the close request a window manager would. Stopping the sandbox kills the app, like a
  * power cut; the wallet survives that, but it is a last resort (and what a manager restart does to an open app).
  *
- * Always on the x11 backend, whatever the account's display backend: Haveno is a JavaFX app, and JavaFX draws only
- * through X (on Wayland it would need Xwayland, which takes a global display number and an abstract socket).
+ * On the account's display backend. Haveno is a JavaFX app, which draws only through X: on the wayland backend it gets
+ * an Xwayland of its own inside its sandbox (xwayland-satellite, AppSandboxOptions.x11App), each of its windows a
+ * window of the sandbox's sway; on x11, or where that cannot be had, an Xvfb as before.
  */
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -67,7 +68,7 @@ export class HavenoApp {
     mkdirSync(join(this.o.accountDir, 'app'), { recursive: true });
     const tried: number[] = [];
     for (let attempt = 0; attempt < 3; attempt++) {
-      const free = await pickFreeDisplay(undefined, tried, 'x11');
+      const free = await pickFreeDisplay(undefined, tried);
       if (free.display !== null) tried.push(free.display);
       const sb = new AppSandbox({
         dir: join(this.o.accountDir, 'app'),
@@ -80,6 +81,7 @@ export class HavenoApp {
         binds: [{ src: this.o.dataDir, dest: INSIDE }],
         network: this.o.network ?? 'pasta',
         fitWindow: this.o.command ? undefined : WINDOW,
+        x11App: true,
         log: this.o.log,
         onEvent: (ev) => this.onEvent(ev),
       });
@@ -87,7 +89,7 @@ export class HavenoApp {
         await sb.start();
         this.sandbox = sb;
         this.startedAt = Date.now();
-        this.o.log('info', `the desktop app runs on display :${free.display}`);
+        this.o.log('info', `the desktop app runs on ${sb.info().backend === 'wayland' ? 'Wayland (through xwayland-satellite)' : `display :${sb.info().display}`}`);
         this.o.onChange();
         return;
       } catch (e) {

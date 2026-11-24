@@ -19,8 +19,8 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import type { Subprocess } from 'bun';
-import { cleanEnv, type FreeDisplay, makeScreen, type Screen, vncSocketPath } from '@dither-accounts/browser';
-import { BINS, type Log, type SandboxBins, sandboxBins, tryBin } from './bins.ts';
+import { cleanEnv, type FreeDisplay, makeScreen, pickFreeXDisplay, type Screen, vncSocketPath } from '@dither-accounts/browser';
+import { BINS, type Log, resolveBin, type SandboxBins, sandboxBins, tryBin } from './bins.ts';
 import { DBusConnection } from './dbus.ts';
 import { DesktopServices, type FileRequest, fileUri, type Notification } from './services.ts';
 
@@ -73,6 +73,14 @@ export interface AppSandboxOptions {
   binds?: { src: string; dest: string }[];
   /** Default pasta (falling back to the host's network when it cannot be had). */
   network?: Network;
+  /**
+   * The app draws only through X (Haveno's JavaFX). On the x11 backend nothing changes. On the wayland backend it gets
+   * an Xwayland of its own, inside its sandbox: xwayland-satellite as `:0`, its socket in the sandbox's private /tmp
+   * and its abstract socket in the sandbox's network namespace, each X window a window of the sandbox's sway. Without
+   * a network namespace of its own (network `host`, pasta missing) that abstract socket would be the machine's, so
+   * the sandbox takes an X display (Xvfb) instead, as it does when xwayland-satellite cannot be had.
+   */
+  x11App?: boolean;
   /** A window name (a regex) to keep fitted to the display: on X there is no window manager to maximize it. */
   fitWindow?: string;
   /** A download is announced once it has not changed for this long. */
@@ -140,6 +148,8 @@ export class AppSandbox {
   network: Network;
   private bins!: SandboxBins;
   private screen_: Screen | null = null;
+  /** xwayland-satellite, for an X app on the wayland backend (x11App). */
+  private satellite: string | null = null;
   private procs: Proc[] = [];
   private app: Proc | null = null;
   private bus: DBusConnection | null = null;
@@ -172,11 +182,26 @@ export class AppSandbox {
       this.network = 'host';
       this.o.log('warn', 'pasta is not available: the app shares the host network (and its abstract sockets)');
     }
+    let display = this.o.display;
+    if (this.o.x11App && typeof display !== 'number' && display.backend === 'wayland') {
+      // Xwayland's abstract socket would be in the machine's network namespace without one of the sandbox's own.
+      let why = this.network === 'host' ? 'no network namespace of its own' : '';
+      if (!why)
+        try {
+          this.satellite = resolveBin(BINS.satellite, this.o.log);
+        } catch (e) {
+          why = (e as Error).message;
+        }
+      if (why) {
+        display = await pickFreeXDisplay();
+        this.o.log('warn', `an X app on the wayland backend, but ${why}: on X display :${display.display} instead`);
+      }
+    }
     this.prepareFiles();
 
     // The display: only its path socket (X) or its Wayland socket, which is the one bound into the sandbox.
     const screen = makeScreen({
-      display: this.o.display,
+      display,
       dir: this.o.dir,
       vncSocket: this.vncSocket,
       width: this.o.width,
@@ -250,7 +275,7 @@ export class AppSandbox {
   /** Start (or start again) the app; its exits arrive as `app` events and it is not restarted here. */
   startApp() {
     if (this.stopped || (this.app && this.app.proc.exitCode === null)) return;
-    const cmd = [...this.wrap(), ...this.bwrapArgs(), '--', ...this.o.command];
+    const cmd = [...this.wrap(), ...this.bwrapArgs(), '--', ...this.appCommand()];
     this.appState = 'starting';
     this.appStartedAt = Date.now();
     const proc = this.spawn('app', cmd, join(this.o.dir, 'home'), (code, signal) => {
@@ -267,6 +292,26 @@ export class AppSandbox {
         this.emit({ t: 'app', state: 'running', at: Date.now() });
       }
     }, 1500);
+  }
+
+  /**
+   * The app's command inside: as given, or for an X app on Wayland behind its own Xwayland (xwayland-satellite :0,
+   * which Xwayland admits only the sandbox's user into, by its name in /etc/passwd). The app is started once the X
+   * socket is there, and without WAYLAND_DISPLAY: it sees X alone.
+   */
+  private appCommand(): string[] {
+    if (!this.satellite) return this.o.command;
+    const script = `${this.satellite} :0 &
+i=0
+until [ -S /tmp/.X11-unix/X0 ]; do
+  kill -0 $! 2>/dev/null || { echo "xwayland-satellite exited" >&2; exit 1; }
+  i=$((i + 1)); [ $i -lt 400 ] || { echo "xwayland-satellite did not make :0" >&2; exit 1; }
+  sleep 0.025
+done
+unset WAYLAND_DISPLAY
+exec "$@"
+`;
+    return [this.bins.sh, '-c', script, 'x11-app', ...this.o.command];
   }
 
   async stopApp() {
@@ -323,6 +368,11 @@ export class AppSandbox {
   }
 
   /** The screen it runs on (input, pictures, windows); null before start. */
+  /** The app's process on this side (pasta or bubblewrap, the app below it), while it runs. */
+  get appPid(): number | null {
+    return this.app && this.app.proc.exitCode === null ? this.app.proc.pid : null;
+  }
+
   get screen(): Screen | null {
     return this.screen_;
   }
@@ -422,6 +472,7 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
       SHELL: '/bin/sh',
       PATH: `${BIN}:${this.bins.coreutils}`,
       ...displayEnv(screen, run),
+      ...(this.satellite ? { DISPLAY: ':0', QT_QPA_PLATFORM: 'xcb', GDK_BACKEND: 'x11', SDL_VIDEODRIVER: 'x11', XDG_SESSION_TYPE: 'x11' } : {}),
       XDG_RUNTIME_DIR: run,
       DBUS_SESSION_BUS_ADDRESS: `unix:path=${run}/bus`,
       XDG_CONFIG_HOME: `${HOME}/.config`,

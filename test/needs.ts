@@ -35,6 +35,17 @@ export const wayland = (() => {
   }
 })();
 
+/** X apps on the wayland backend: xwayland-satellite (with its Xwayland) and xev, the X client the tests drive. */
+export const satellite = (() => {
+  try {
+    resolveBin({ name: 'xwayland-satellite', env: 'XWAYLAND_SATELLITE_BIN', nix: 'xwayland-satellite' }, () => {});
+    resolveBin({ name: 'xev', env: 'XEV_BIN', nix: 'xorg.xev' }, () => {});
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
 export function why(what: string, ok: boolean) {
   if (!ok) console.warn(`skipped: ${what} is not available here`);
   return ok;

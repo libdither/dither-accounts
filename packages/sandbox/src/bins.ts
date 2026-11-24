@@ -18,6 +18,8 @@ export const BINS = {
   pulseaudio: { name: 'pulseaudio', env: 'PULSEAUDIO_BIN', nix: 'pulseaudio' },
   sh: { name: 'sh', env: 'SANDBOX_SH_BIN', nix: 'bash', candidates: ['/bin/sh'] },
   env: { name: 'env', env: 'SANDBOX_COREUTILS_ENV', nix: 'coreutils', candidates: ['/usr/bin/env'] },
+  /** X apps on the wayland backend: an Xwayland of the app's own, inside its sandbox (AppSandboxOptions.x11App). */
+  satellite: { name: 'xwayland-satellite', env: 'XWAYLAND_SATELLITE_BIN', nix: 'xwayland-satellite' },
 } satisfies Record<string, BinSpec>;
 
 export interface SandboxBins {

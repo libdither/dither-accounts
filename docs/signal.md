@@ -91,7 +91,7 @@ Mapped into `MessageFact.extra` under the keys dither-chat's protocol names (`ex
 | an attachment with no `id`, or whose file is not there | `extra.missingAttachments` (`name, mime, size`) | signal-cli downloads a message's files before it hands the message over, so a file not there failed or was skipped |
 | `sourceDevice`, `serverReceivedTimestamp`, `serverDeliveredTimestamp` | `extra.sourceDevice`, `serverReceivedTs`, `serverDeliveredTs` | not for edits |
 | a `receive` with an `exception` and nothing readable, from someone else | a system message in your 1:1 with them, "A message from Sam could not be decrypted.", id `<author>:<ts>:undecrypted` | once per message; none for `…Duplicate…` or `SelfSend…` exceptions. The warning is logged as before. Reading up to it (`markRead`) acknowledges what came before it and sends no receipt for the line itself |
-| your `send`'s `results[]` that are not `SUCCESS` (some of a group) | `extra.failed` on the echo (`who, number, reason`) | when nobody gets it signal-cli fails the call, as before |
+| your `send`'s `results[]` that are not `SUCCESS` (some of a group) | `extra.failed` on the echo (`who, number, reason`) | when nobody gets it signal-cli fails the call, as before. `UNREGISTERED_FAILURE` (they left Signal) is left out, as Signal's apps leave it out: it would come back on every message to that group |
 
 What you send:
 

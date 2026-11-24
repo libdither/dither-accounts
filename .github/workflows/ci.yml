@@ -57,12 +57,15 @@ jobs:
       # Ubuntu lets no unprivileged program make a user namespace by default; bubblewrap, pasta and Chromium's
       # sandbox each need one.
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      # On PATH ahead of Ubuntu's own, so the sandboxes run /nix/store programs only (sh and env among them); the rest
-      # is fetched here, once, instead of inside a test's time limit.
+      # On PATH ahead of Ubuntu's own, so the sandboxes run /nix/store programs only (sh and env among them), and so
+      # the runner's own Chromium, Xvfb, bwrap and ImageMagick are not the ones found (its Chromium cannot load
+      # PipeWire, so it cannot share a Wayland screen); the rest is fetched here, once, instead of inside a test's time
+      # limit.
       - name: Programs from nixpkgs
         run: |
-          nix profile install nixpkgs#bash nixpkgs#coreutils nixpkgs#dbus
-          nix build --no-link nixpkgs#{bubblewrap,passt,xvfb,x11vnc,xdotool,imagemagick,pulseaudio,sway-unwrapped,wayvnc,grim,chromium,pipewire,wireplumber,xdg-desktop-portal,xdg-desktop-portal-wlr,xwayland-satellite,xorg.xev,electron}
+          nix profile install nixpkgs#{bash,coreutils,dbus,bubblewrap,xvfb,imagemagick,chromium}
+          nix build --no-link nixpkgs#{passt,x11vnc,xdotool,pulseaudio,sway-unwrapped,wayvnc,grim,pipewire,wireplumber,xdg-desktop-portal,xdg-desktop-portal-wlr,xwayland-satellite,xorg.xev,electron}
+          command -v chromium Xvfb bwrap import
       # DITHER_TESTS_NEED_ALL: a test that would skip for a missing program fails instead (test/needs.ts).
       - name: Tests that need Nix
         env:

@@ -14,7 +14,7 @@
  *
  * Logs and status carry ids, counts and states: never a link, a notification's text, a file name or the key.
  */
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { AppSandbox, type Download, displayName, type FileRequestRecord, type FreeDisplay, type Network, pickFreeDisplay, resolveBin, type SandboxEvent } from '@dither-accounts/sandbox';
 import type { DesktopKey } from './backend.ts';
@@ -118,7 +118,8 @@ export class DesktopSession implements DesktopHost {
     if (this.o.fake) {
       const bun = process.execPath;
       const binds = [join(REPO, 'extractors/telegram/src'), join(REPO, 'extractors/telegram/test'), join(REPO, 'packages/sandbox/src')];
-      if (!bun.startsWith('/nix/store/')) binds.push(dirname(bun));
+      // A bun from outside the store (setup-bun on CI) is linked against the system's libraries: those too.
+      if (!bun.startsWith('/nix/store/')) binds.push(dirname(bun), ...['/lib', '/lib64', '/usr/lib', '/usr/lib64', '/etc/ld.so.cache'].filter((p) => existsSync(p)));
       return { command: [bun, join(REPO, 'extractors/telegram/test/fake-desktop.ts'), '-workdir', WORKDIR], roBinds: binds };
     }
     if (!this.bin) throw new Error(this.binError ?? 'Telegram Desktop is not available');

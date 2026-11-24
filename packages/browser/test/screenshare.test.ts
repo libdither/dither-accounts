@@ -195,6 +195,8 @@ async function probe(name: string, display: Awaited<ReturnType<typeof pickFreeDi
   mkdirSync(src, { recursive: true });
   writeFileSync(join(src, 'manifest.json'), JSON.stringify({ manifest_version: 3, name: 'probe', version: '1.0.0' }));
   const logs: string[] = [];
+  // DITHER_SHARE_DEBUG=1: what Chromium's capturer does, in the log a failure prints (the portal's too: screenshare.ts).
+  if (process.env.DITHER_SHARE_DEBUG === '1') flags = [...flags, '--enable-logging=stderr', '--vmodule=*pipewire*=4,*screencast*=4,*desktop_capture*=4,*capturer*=4,*egl_dmabuf*=4,*xdg_desktop_portal*=4,*shared_x_display*=4'];
   const sb = new Sandbox({ accountDir: acc, display, width: w, height: h, extensionSrc: src, config: {}, startUrl: `http://127.0.0.1:${server.port}/`, screenShare: true, flags, log: (_l, m) => logs.push(m) });
   await sb.start();
   await until(`${name}'s page`, () => reports.some((r) => r.ev === 'page'));
@@ -224,7 +226,7 @@ async function share(p: Probe, session: number): Promise<ShareStats> {
   await until(`getDisplayMedia answered for session ${session}`, () => p.reports.some((r) => (r.ev === 'shared' && r.session === session) || r.ev === 'error'), 30_000);
   await until(`session ${session}'s numbers`, () => p.reports.some((r) => (r.ev === 'stats' && r.session === session) || r.ev === 'error'), 60_000);
   const err = p.reports.find((r) => r.ev === 'error');
-  if (err) throw new Error(`getDisplayMedia: ${err.name}: ${err.message}\n${p.logs.filter((l) => /portal|pipewire|wireplumber|screencast|capture|pw[._]|xdpw/i.test(l)).slice(-60).join('\n')}`);
+  if (err) throw new Error(`getDisplayMedia: ${err.name}: ${err.message}\n${p.logs.filter((l) => /portal|pipewire|wireplumber|screencast|capture|pw[._]|xdpw|x_display|dmabuf|egl/i.test(l)).slice(process.env.DITHER_SHARE_DEBUG === '1' ? -200 : -60).join('\n')}`);
   await until(`session ${session} stopped`, () => p.reports.some((r) => r.ev === 'stopped' && r.session === session));
   const s = p.reports.find((r) => r.ev === 'stats' && r.session === session) as ShareStats;
   if (process.env.SHARE_VERBOSE) console.log(`share ${session}: ${s.width}x${s.height} ${s.fps.toFixed(1)} fps, ${s.distinct} frames (${s.bad} unreadable), latency p50 ${s.latency.p50.toFixed(0)} p95 ${s.latency.p95.toFixed(0)} ms, first frame ${s.firstFrameMs} ms`);

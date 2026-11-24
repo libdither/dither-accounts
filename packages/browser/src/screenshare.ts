@@ -160,7 +160,7 @@ export class ScreenShare {
     const pw = this.spawn('pipewire', [bins.pipewire], d);
     await this.waitForFile(join(d, 'pipewire-0'), pw, 10_000, 'pipewire');
     this.spawn('wireplumber', [bins.wireplumber], d);
-    const wlr = this.spawn('xdg-desktop-portal-wlr', [bins.portalWlr, '-r'], d, { WAYLAND_DISPLAY: this.o.waylandSocket });
+    const wlr = this.spawn('xdg-desktop-portal-wlr', [bins.portalWlr, '-r', ...(process.env.DITHER_SHARE_DEBUG === '1' ? ['-l', 'DEBUG'] : [])], d, { WAYLAND_DISPLAY: this.o.waylandSocket });
     await this.waitForName('org.freedesktop.impl.portal.desktop.wlr', wlr, bins.dbusDaemon, 10_000);
     const xdp = this.spawn('xdg-desktop-portal', [bins.portal, '-r'], d, { XDG_DESKTOP_PORTAL_DIR: join(d, 'portals'), WAYLAND_DISPLAY: this.o.waylandSocket });
     await this.waitForName('org.freedesktop.portal.Desktop', xdp, bins.dbusDaemon, 15_000);

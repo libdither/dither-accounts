@@ -30,9 +30,13 @@ import { type ShareStats, sharePage, decode, encode } from './share-page.ts';
 
 process.env.DITHER_DISPLAY_CLAIMS = mkdtempSync(join(tmpdir(), 'display-claims-share-'));
 
-test('the pattern: every counter round-trips, and a flipped block is caught by its check', () => {
+test('the pattern: every counter round-trips, a flipped block is caught by its check, and no two counters share one', () => {
   for (const n of [0, 1, 255, 256, 4097, 65535]) expect(decode(encode(n))).toBe(n);
-  for (let bit = 0; bit < 24; bit++) {
+  // One-to-one: a frame torn between two counters, row by row, cannot pass as a third.
+  const checks = new Set<string>();
+  for (let n = 0; n < 65536; n++) checks.add(encode(n).slice(16).join(''));
+  expect(checks.size).toBe(65536);
+  for (let bit = 0; bit < 32; bit++) {
     const b = encode(1234);
     b[bit] ^= 1;
     expect(decode(b)).not.toBe(1234);

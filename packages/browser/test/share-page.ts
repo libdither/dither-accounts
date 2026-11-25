@@ -1,6 +1,6 @@
 /**
  * The screen-share test page (screenshare.test.ts, scripts/bench-display.ts). It fills the screen with an animated
- * pattern: on every frame a counter, drawn as 24 black or white blocks (16 bits of the counter, 8 of a check), with the
+ * pattern: on every frame a counter, drawn as 32 black or white blocks (16 bits of the counter, 16 of a check), with the
  * time it was drawn kept. A click shares the screen (getDisplayMedia: a user gesture, as browsers want) and sends it
  * over WebRTC on this machine to a second page (a same-origin iframe), which decodes the blocks of every frame it gets
  * and reports what it saw: the counters (each one checked, so a wrong picture cannot pass as a frame), the frame size,
@@ -10,25 +10,34 @@
  * {ev:'stats', session, ...}, {ev:'stopped', session, ended}, {ev:'error', name, message}.
  */
 
-export const GRID = { cols: 8, rows: 3, w: 64, h: 48 } as const;
+export const GRID = { cols: 8, rows: 4, w: 64, h: 48 } as const;
 
-/** 16 bits of n and an 8-bit check, as 24 bits (most significant first). */
+/**
+ * 16 bits of n and a 16-bit check of them (CRC-16/CCITT, xor 0x5a5a), as 32 bits (most significant first). The check
+ * is one-to-one over the 16 bits, so a frame torn between two counters, row by row, decodes to one of them or fails;
+ * a block blurred to the wrong colour passes 1 time in 65536 (an 8-bit check passed 1 in 256, and a few blurred frames
+ * a share are allowed: now and then one passed as a counter the page never drew).
+ */
 export function encode(n: number): number[] {
   const v = n & 0xffff;
-  const check = (v ^ (v >> 8) ^ 0x5a) & 0xff;
+  let c = 0;
+  for (let i = 15; i >= 0; i--) c = ((c << 1) ^ ((((c >> 15) ^ (v >> i)) & 1) ? 0x1021 : 0)) & 0xffff;
+  c ^= 0x5a5a;
   const bits: number[] = [];
   for (let i = 15; i >= 0; i--) bits.push((v >> i) & 1);
-  for (let i = 7; i >= 0; i--) bits.push((check >> i) & 1);
+  for (let i = 15; i >= 0; i--) bits.push((c >> i) & 1);
   return bits;
 }
 
-/** The counter in 24 bits, or null when its check does not match. */
+/** The counter in 32 bits, or null when its check does not match. */
 export function decode(bits: number[]): number | null {
   let v = 0;
-  let c = 0;
+  let got = 0;
   for (let i = 0; i < 16; i++) v = (v << 1) | bits[i]!;
-  for (let i = 16; i < 24; i++) c = (c << 1) | bits[i]!;
-  return ((v ^ (v >> 8) ^ 0x5a) & 0xff) === c ? v : null;
+  for (let i = 16; i < 32; i++) got = (got << 1) | bits[i]!;
+  let c = 0;
+  for (let i = 15; i >= 0; i--) c = ((c << 1) ^ ((((c >> 15) ^ (v >> i)) & 1) ? 0x1021 : 0)) & 0xffff;
+  return (c ^ 0x5a5a) === got ? v : null;
 }
 
 export interface ShareStats {

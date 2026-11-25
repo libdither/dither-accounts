@@ -10,7 +10,10 @@
  * {ev:'stats', session, ...}, {ev:'stopped', session, ended}, {ev:'error', name, message}.
  */
 
-export const GRID = { cols: 8, rows: 4, w: 64, h: 48 } as const;
+// Small (128×64 px): a capture that catches the page mid-draw reads a frame part old, part new, which fails its
+// check; the smaller the pattern, the less often (64 px blocks on 4 rows: up to 5% of X's captured frames; these: at
+// most the first frame of a share).
+export const GRID = { cols: 8, rows: 4, w: 16, h: 16 } as const;
 
 /**
  * 16 bits of n and a 16-bit check of them (CRC-16/CCITT, xor 0x5a5a), as 32 bits (most significant first). The check

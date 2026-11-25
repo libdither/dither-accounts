@@ -40,6 +40,8 @@ afterAll(async () => {
 /** A screen's spawn as the sandboxes do it, every process kept for the end, and what each said (for a failure's message). */
 const said = new Map<Subprocess, string[]>();
 const spawn = (_name: string, cmd: string[], o: { env?: Record<string, string | undefined> }) => {
+  // KasmVNC's own log, every line (it keeps it in a buffer: it reaches stderr at the latest when the server exits).
+  if (cmd[0]?.endsWith('Xkasmvnc')) cmd = [...cmd, '-Log', '*:stderr:100'];
   const p = Bun.spawn(cmd, { env: cleanEnv({ ...process.env, ...o.env }), stdout: 'ignore', stderr: 'pipe' });
   procs.push(p);
   const lines: string[] = [];
@@ -49,8 +51,14 @@ const spawn = (_name: string, cmd: string[], o: { env?: Record<string, string | 
   })();
   return p;
 };
-/** What the processes started since `start` said, the end of it. */
-const saidSince = (start: number) => procs.slice(start).map((p) => (said.get(p) ?? []).join('').slice(-3000)).join('\n---\n');
+/** What the processes started since `start` said, the end of it, once they have been stopped (so it is all out). */
+const saidSince = async (start: number) => {
+  const mine = procs.slice(start);
+  for (const p of mine) p.kill('SIGTERM');
+  await Promise.race([Promise.all(mine.map((p) => p.exited)), Bun.sleep(3000)]);
+  await Bun.sleep(100);
+  return mine.map((p) => (said.get(p) ?? []).join('').slice(-6000)).join('\n---\n');
+};
 
 test('the backends by name, and how a status shows their displays', () => {
   for (const b of ['tigervnc', 'KasmVNC', ' turbovnc ']) expect(parseBackend(b)).toBe(b.trim().toLowerCase() as XBackend);
@@ -246,8 +254,9 @@ for (const backend of BACKENDS) {
         expect(free).toEqual({ backend, display: free.display! });
         const screen = makeScreen({ display: free, dir, width: 1024, height: 700, spawn, log: () => {} });
         try {
-          await screen.start().catch((e) => {
-            throw new Error(`${(e as Error).message}\nit said:\n${saidSince(start)}`);
+          const t0 = performance.now();
+          await screen.start().catch(async (e) => {
+            throw new Error(`${(e as Error).message} (${((performance.now() - t0) / 1000).toFixed(1)} s after the start)\nit said:\n${await saidSince(start)}`);
           });
           const mine = procs.slice(start);
           expect(mine.length).toBe(1);

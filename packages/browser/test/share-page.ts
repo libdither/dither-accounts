@@ -86,7 +86,13 @@ function frame() {
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
-say({ ev: 'page', w: innerWidth, h: innerHeight, sw: screen.width, sh: screen.height });
+// Ready once the page has been painted and two frames have passed: a click that comes before Chromium has shown the
+// page's first frame can be lost (CI, now and then), and this script runs before that.
+new PerformanceObserver((list, obs) => {
+  if (!list.getEntries().some((e) => e.name === 'first-contentful-paint')) return;
+  obs.disconnect();
+  requestAnimationFrame(() => requestAnimationFrame(() => say({ ev: 'page', w: innerWidth, h: innerHeight, sw: screen.width, sh: screen.height })));
+}).observe({ type: 'paint', buffered: true });
 addEventListener('resize', () => say({ ev: 'resize', w: innerWidth, h: innerHeight }));
 
 let session = 0, busy = false;

@@ -84,7 +84,11 @@ export function tree(roots: number[], all = procs()): Proc[] {
   const kids = new Map<number, Proc[]>();
   for (const p of all.values()) kids.set(p.ppid, [...(kids.get(p.ppid) ?? []), p]);
   const out: Proc[] = [];
+  // Each process once, also when one root is another's descendant (a manager's list of an account's processes).
+  const seen = new Set<number>();
   const walk = (pid: number) => {
+    if (seen.has(pid)) return;
+    seen.add(pid);
     const p = all.get(pid);
     if (p) out.push(p);
     for (const k of kids.get(pid) ?? []) walk(k.pid);

@@ -84,6 +84,8 @@ test("each Xvnc's flags: its socket and no TCP port, no password, shared; KasmVN
   expect(turbo[turbo.indexOf('-rfbunixpath') + 1]).toBe('/a/vnc.sock');
   expect(turbo).not.toContain('-rfbport');
   expect(turbo[turbo.indexOf('-securitytypes') + 1]).toBe('none');
+  // Else it holds every change 40 ms: about 20 frames a second at most.
+  expect(turbo[turbo.indexOf('-deferupdate') + 1]).toBe('1');
   expect(xvncArgs('tigervnc', '/bin/Xvnc', ':81', '/a/vnc.sock', { ...o, pathSocketOnly: true }).join(' ')).toContain('-nolisten tcp -nolisten local');
 });
 
@@ -453,6 +455,11 @@ for (const backend of chromium ? (['x11', ...BACKENDS] as const) : []) {
           await screen.keys(['Return']);
           await until('done', () => reports.some((r) => r.ev === 'done'));
           expect(reports.find((r) => r.ev === 'done')).toMatchObject({ value: 'aB é€ Z' });
+          // é and € were put on keys of their own and stay there (screen.ts bindCharacters), so xdotool did not bind
+          // and unbind them around each press, which Chromium can miss.
+          const keymap = await run([resolveBin(DISPLAY_BINS.xmodmap, () => {}), '-pke'], screen.clientEnv());
+          expect(keymap).toMatch(/= (eacute|U00E9) /);
+          expect(keymap).toMatch(/= (EuroSign|U20AC) /);
           // The page's green, in import's picture and in the live view's (raw, read by the test's own viewer).
           const shot = decodePng(await screen.screenshot());
           const at = (4 * (shot.width * (top + 400) + 600)) as number;

@@ -68,7 +68,7 @@ jobs:
       - name: Programs from nixpkgs
         run: |
           nix profile install nixpkgs#{bash,coreutils,dbus,bubblewrap,passt,xvfb,imagemagick,chromium}
-          nix build --no-link nixpkgs#{x11vnc,xdotool,xclip,tigervnc,turbovnc,pulseaudio,sway-unwrapped,wayvnc,grim,pipewire,wireplumber,xdg-desktop-portal,xdg-desktop-portal-wlr,xwayland-satellite,xorg.xev,electron}
+          nix build --no-link nixpkgs#{x11vnc,xdotool,xclip,xmodmap,tigervnc,turbovnc,pulseaudio,sway-unwrapped,wayvnc,grim,pipewire,wireplumber,xdg-desktop-portal,xdg-desktop-portal-wlr,xwayland-satellite,xorg.xev,electron}
           nix build --no-link -f nix/kasmvnc.nix
           command -v chromium Xvfb bwrap pasta import
       # DITHER_TESTS_NEED_ALL: a test that would skip for a missing program fails instead (test/needs.ts).

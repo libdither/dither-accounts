@@ -18,7 +18,7 @@
 import type { Subprocess } from 'bun';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { DISPLAY_BINS, type Log, resolveBin, run, withoutDisplays } from './bins.ts';
+import { DISPLAY_BINS, type Log, resolveBin, run, tryBin, withoutDisplays } from './bins.ts';
 import { type DisplayBackend, displayIsOurs, type FreeDisplay, type XDisplay } from './display.ts';
 import { prepareVncSocket, vncSocketPath, waitForRfbBanner, waitForVncSocket, x11vncArgs, xvncArgs } from './vnc.ts';
 import { WaylandScreen } from './wayland.ts';
@@ -203,7 +203,49 @@ class XScreen implements Screen {
   }
 
   async type(text: string, delayMs = 35) {
-    if (text) await this.xdo(['type', '--delay', String(delayMs), '--', text]);
+    if (!text) return;
+    await this.bindCharacters(text);
+    await this.xdo(['type', '--delay', String(delayMs), '--', text]);
+  }
+
+  /** Characters this screen's keyboard map has been given, by us (bindCharacters), and the keycodes still free for it. */
+  private boundChars = new Set<string>();
+  private spareKeycodes: number[] | null = null;
+  private xmodmap: string | null | undefined;
+
+  /**
+   * Puts every character of `text` that a US keyboard lacks (é, €, an emoji) on a key of its own, for as long as the
+   * screen runs. Left to xdotool, each such character is bound to a spare key, pressed and unbound at once, and an
+   * app reads the new keyboard map only when it gets to the notice of the change: if the unbinding came first, it
+   * reads the old map and the character is lost (Chromium on X, now and then). Bound here and kept, xdotool finds the
+   * character in the map and presses its key, as for any other. The keys taken are those that carry only XF86 media
+   * symbols (no empty key is left in the default map), which nothing in a sandbox presses. Without xmodmap, or with
+   * no key left, xdotool binds the character its own way, as before.
+   */
+  private async bindCharacters(text: string) {
+    const need = [...new Set([...text].filter((c) => c.codePointAt(0)! > 0x7e && !this.boundChars.has(c)))];
+    if (!need.length) return;
+    if (this.xmodmap === undefined) this.xmodmap = tryBin(DISPLAY_BINS.xmodmap, this.o.log);
+    const xmodmap = this.xmodmap;
+    if (!xmodmap) return;
+    const env = { ...withoutDisplays(process.env), DISPLAY: `:${this.display}` };
+    if (!this.spareKeycodes) {
+      const map = (await run([xmodmap, '-pke'], env, 'reading the keyboard map')).toString('utf8');
+      this.spareKeycodes = map
+        .split('\n')
+        .map((l) => /^keycode\s+(\d+)\s*=\s*(.*)$/.exec(l))
+        .filter((m): m is RegExpExecArray => !!m && m[2]!.trim().split(/\s+/).filter(Boolean).every((k) => k.startsWith('XF86') || k === 'NoSymbol'))
+        .map((m) => Number(m[1]));
+    }
+    const lines: string[] = [];
+    for (const c of need) {
+      const code = this.spareKeycodes.pop();
+      if (code === undefined) break;
+      const sym = `U${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}`;
+      lines.push('-e', `keycode ${code} = ${sym} ${sym}`);
+      this.boundChars.add(c);
+    }
+    if (lines.length) await run([xmodmap, ...lines], env, 'binding characters to keys');
   }
 
   async keys(keys: string[], delayMs = 60) {

@@ -8,7 +8,8 @@
  * live view under scrolling is measured on bench-display's /scroll page.)
  *
  *   bun scripts/bench-lab.ts --url http://127.0.0.1:<port> --data <its data dir> --accounts <id>,<id>
- *                            [--backends x11,tigervnc,turbovnc,wayland] [--reps 1] [--out lab.json] [--no-restore]
+ *                            [--backends x11,tigervnc,turbovnc,wayland] [--reps 1] [--first-rep 0] [--out lab.json]
+ *                            [--no-restore]
  *
  * For each account and backend: start to usable (the setting saved, until the manager says online and until the live
  * view shows a drawn screen: many colours, then the same picture for 2 s), idle CPU over 10 s and memory (PSS) after
@@ -21,7 +22,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { type Backend, DISPLAY_PROCS, Viewer, cpuOver, log, memory, novncEncodings, procs, progName, tree } from './bench-lib.ts';
+import { type Backend, DISPLAY_PROCS, Viewer, cpuOver, load1, log, memory, novncEncodings, procs, progName, tree } from './bench-lib.ts';
 import { type Condition, startLink } from './bench-link.ts';
 
 const argOf = (name: string, def: string) => {
@@ -33,6 +34,8 @@ const DATA = argOf('data', '');
 const IDS = argOf('accounts', '').split(',').filter(Boolean);
 const BACKENDS = argOf('backends', 'x11,tigervnc,turbovnc,wayland').split(',') as Backend[];
 const REPS = Number(argOf('reps', '1'));
+/** The first repetition's number: a later run goes on from there, so its backend order differs from the first run's. */
+const FIRST_REP = Number(argOf('first-rep', '0'));
 const OUT = argOf('out', join(homedir(), '.cache/da-bench', `lab-${new Date().toISOString().replace(/[:.]/g, '-')}.json`));
 const RESTORE = !process.argv.includes('--no-restore');
 if (!URL_ || !DATA || !IDS.length) throw new Error('--url, --data and --accounts are needed');
@@ -208,6 +211,7 @@ async function measure(id: string, backend: Backend, dir: string) {
   const acc = before.account;
   const t0 = performance.now();
   const wall0 = Date.now();
+  const loadAtStart = load1();
   await setBackend(id, backend);
   const online = await until(async () => {
     const d = await detail(id);
@@ -240,12 +244,14 @@ async function measure(id: string, backend: Backend, dir: string) {
     kind: acc.kind,
     label: acc.label,
     backend,
+    // The machine's 1-minute load as the run began: the machine is shared, and one run is one sample.
+    load: loadAtStart,
     onlineMs,
     usableMs: Math.max(onlineMs, shown.settledMs),
     drawnMs: shown.drawnMs,
     settledMs: shown.settledMs,
     colours: shown.colours,
-    idle: { cpu: idleCpu.total, screenCpu, cpuByName: idleCpu.byName, pssMB: mem.pssMB, rssMB: mem.rssMB, screenPssMB: screenMem.pssMB },
+    idle: { cpu: idleCpu.total, screenCpu, cpuByName: idleCpu.byName, pssMB: mem.pssMB, rssMB: mem.rssMB, ussMB: mem.ussMB, screenPssMB: screenMem.pssMB, screenUssMB: screenMem.ussMB },
     interact: sc,
     slow: slowRuns,
     procs: Object.fromEntries((online.process.tree as { name: string; pids: number[] }[]).map((t) => [t.name, t.pids.length])),
@@ -263,7 +269,7 @@ try {
   for (const id of IDS) {
     const start = (await detail(id)).account;
     log(`${start.label} (${start.kind})`);
-    for (let rep = 0; rep < REPS; rep++) {
+    for (let rep = FIRST_REP; rep < FIRST_REP + REPS; rep++) {
       // A different order each rep, so no backend always comes first (a warm cache, a fresh login).
       const order = BACKENDS.map((_, i) => BACKENDS[(i + rep) % BACKENDS.length]!);
       for (const b of order) {

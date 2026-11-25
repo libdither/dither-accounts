@@ -86,6 +86,8 @@ export const DISPLAY_BINS = {
   x11vnc: { name: 'x11vnc', env: 'X11VNC_BIN', nix: 'x11vnc' },
   xdotool: { name: 'xdotool', env: 'XDOTOOL_BIN', nix: 'xdotool' },
   import: { name: 'import', env: 'IMPORT_BIN', nix: 'imagemagick' },
+  // Binds characters a US keyboard lacks for typing on X (screen.ts, XScreen.type).
+  xmodmap: { name: 'xmodmap', env: 'XMODMAP_BIN', nix: 'xmodmap' },
   // sway-unwrapped: NixOS's `sway` runs it under dbus-run-session, a session bus of its own we neither want nor stop.
   sway: { name: 'sway', env: 'SWAY_BIN', nix: 'sway-unwrapped', path: false },
   wayvnc: { name: 'wayvnc', env: 'WAYVNC_BIN', nix: 'wayvnc' },

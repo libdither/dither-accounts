@@ -126,11 +126,12 @@ export async function waitForRfbBanner(socket: string, server: Subprocess, timeo
  *              With no -websocketPort it opens no websocket or HTTP listener, nor any UDP socket.
  *   turbovnc   -rfbunixpath <path> alone opens no TCP port (TurboVNC listens on TCP only when given no Unix path);
  *              its options are lowercase and its own: -securitytypes none, -alwaysshared, -noreverse, and no
- *              -rfbport -1, which it refuses
+ *              -rfbport -1, which it refuses. -deferupdate 1: it holds each change 40 ms by default to send more at
+ *              once, which caps the live view near 20 frames a second and adds 40 ms to every click; TigerVNC's is 1 ms
  */
 export function xvncArgs(backend: 'tigervnc' | 'kasmvnc' | 'turbovnc', bin: string, display: string, socket: string, o: { width: number; height: number; pathSocketOnly?: boolean }): string[] {
   const common = [bin, display, '-geometry', `${o.width}x${o.height}`, '-depth', '24', '-nolisten', 'tcp', ...(o.pathSocketOnly ? ['-nolisten', 'local'] : []), '-dpi', '96', '-desktop', 'sandbox'];
-  if (backend === 'turbovnc') return [...common, '-rfbunixpath', socket, '-securitytypes', 'none', '-alwaysshared', '-noreverse'];
+  if (backend === 'turbovnc') return [...common, '-rfbunixpath', socket, '-securitytypes', 'none', '-alwaysshared', '-noreverse', '-deferupdate', '1'];
   const tiger = [...common, '-rfbunixpath', socket, '-rfbport', '-1', '-SecurityTypes', 'None', '-AlwaysShared', '-AcceptSetDesktopSize=0'];
   return backend === 'kasmvnc' ? [...tiger, '-publicIP', '127.0.0.1', '-DisableBasicAuth'] : tiger;
 }

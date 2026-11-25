@@ -58,7 +58,7 @@ shows unchanged, real clicks at an element's middle, typed text, xdotool's key n
 | screen | Xvfb on a free display number (`:80`–`:89`, `:100`–`:159`; Discord `:91`–`:99`) | Xvnc on a free display number from the same ranges: X server and VNC server in one process | a headless sway of the sandbox's own; its sockets in `<account>/wl` (0700), or in `$XDG_RUNTIME_DIR/dither-wl/<hash>` when the account's path leaves no room for sway's socket names; no display number, nothing in /tmp |
 | live view | x11vnc on the socket | the same Xvnc, on the socket (`-rfbunixpath`), with no TCP port (`-rfbport -1` for TigerVNC; TurboVNC opens none once given a path) | wayvnc on the same socket (no TCP or UDP port, no abstract socket) |
 | input | xdotool | xdotool | an RFB client of the sandbox's own on that socket: wayvnc turns it into the seat's virtual pointer and keyboard |
-| text no US key makes (é, €, emoji) | xdotool's keysyms | xdotool's keysyms | an input method (input-method-v2 → the field's text-input-v3), as a person with an IME types it |
+| text no US key makes (é, €, emoji) | xdotool's keysyms, each character first put on a key of its own for the screen's life (xmodmap): bound and unbound around each press, as xdotool does alone, an app can miss it | the same | an input method (input-method-v2 → the field's text-input-v3), as a person with an IME types it |
 | picture | ImageMagick's `import` | ImageMagick's `import` | grim |
 | apps | `DISPLAY` | `DISPLAY` | Chromium `--ozone-platform=wayland`; native apps get only the compositor's socket, as `<run>/wayland-0`, with Qt, GTK, SDL and Electron told to use it, and no X socket at all |
 
@@ -87,7 +87,9 @@ process instead of two. Each runs with `-nolisten tcp`, no security type (the so
 shared (the manager's view and a sandbox's own client at once), and `HOME` in `<account>/xvnc-home`, where it keeps
 what it writes. TigerVNC answers noVNC's list (Tight first) with its JPEG encoding for photo-like areas and Tight for
 the rest; TurboVNC with Tight and JPEG subrects. `-rfbport -1` is TigerVNC's way to open no port; TurboVNC opens none
-once given `-rfbunixpath` and refuses `-rfbport -1`. The tests read `/proc/net/{tcp,tcp6,udp,udp6}` against each
+once given `-rfbunixpath` and refuses `-rfbport -1`. TurboVNC runs with `-deferupdate 1`: by default it holds each
+change 40 ms to send more at once, which kept its live view near 20 frames a second and added 40 ms to every click
+(TigerVNC's default is 1 ms). The tests read `/proc/net/{tcp,tcp6,udp,udp6}` against each
 Xvnc's sockets (what `ss -p` shows): no inet socket at all.
 
 **KasmVNC is refused.** `kasmvnc` (KasmVNC 1.5.2, packaged from its upstream Debian build in `nix/kasmvnc.nix`,
@@ -106,7 +108,7 @@ view cannot drive it: KasmVNC changed RFB in ways noVNC (the manager's page and 
 Its own web client speaks all that, but it is served from KasmVNC's built-in HTTP and WebSocket listener, which takes
 a TCP port (`-websocketPort`); the bridge carries the Unix socket's RFB only. It also asks STUN servers for its public
 address at every start unless given `-publicIP` (the sandbox gives `127.0.0.1`), and the packaging patches its
-hardcoded `/usr/bin/xkbcomp` and puts FFmpeg's libraries on its library path (it loads them by name).
+hardcoded `/usr/bin/xkbcomp`. Its video mode is left without FFmpeg: it looks for `libavformat.so` under `/usr/lib` only.
 
 **What a page sees.** Chromium 155 compared on both, same flags, same machine:
 
@@ -244,6 +246,48 @@ full-screen animation / of the video, then click to photon):
   which Bun drops what is sent (38 MB in the run), which breaks the RFB stream. Paced, wayvnc sees a full socket and
   sends fewer frames; the frames a second are the same, the stream stays whole and the manager holds at most a few
   hundred KB.
+
+**What the benchmarks leave out.** Read the numbers above with these in mind; the first three are fixed in the
+scripts, the rest are open.
+
+- Fixed: an Xvnc's socket appears before the server answers on it (KasmVNC's first start on CI took more than 5 s to
+  greet), so a screen counts as started once its live view has said "RFB" (`waitForRfbBanner`), as the benchmarks'
+  "live view up" always meant.
+- Fixed: PSS splits each shared page among every process that maps it, other programs' Chromiums included (a live
+  manager's), so it moves with whatever else runs. The scripts now record USS (pages no other process maps) beside it.
+  Neither is the cost of one more sandbox; the scale runs' per-sandbox figure is closer.
+- Fixed: `scripts/bench-lab.ts` ran each account on each backend once, in the same order. It now records the machine's
+  load at each run and takes `--first-rep` so a later pass goes through the backends in another order.
+- Synthetic pages are not apps. The animation, scrolling page, video and WebGL scene are regular and worst-case; an
+  app redraws in bursts (a hover, an avatar, a typing dot). The lab run covers two kinds of signed-in browser accounts
+  (Proton, Discord), read-only. The native apps (Signal Desktop, Telegram Desktop, Haveno) are measured only on their
+  first screen, never signed in. To close: a signed-in Signal Desktop and Telegram Desktop on test accounts in the lab.
+- Our viewer is not noVNC. The benchmarks' viewer is a Bun RFB client that counts what arrives and decodes only what
+  a measurement reads; frames a second are updates received, not frames drawn, and the cost of decoding JPEG, WebP or
+  ZRLE in a browser (on a phone, most of it) is not in them. To close: noVNC in a headless Chromium as the viewer, CPU
+  throttled to a phone's, counting its own paints.
+- The shaped link is tc on a loopback with a fixed delay and independent random loss: no jitter, reordering,
+  Wi-Fi or cellular bursts, and none of the real path's hops (the manager's WebSocket, TLS, the tailnet's WireGuard).
+  To close: the same scenes through the manager's live-view WebSocket from another machine, and netem jitter and slot
+  models for Wi-Fi and LTE.
+- Click to photon ends when the changed pixels reach our viewer's framebuffer: it leaves out the viewer's decode and
+  paint and the screen's refresh (16–50 ms more), and the change it waits for is a flat block of colour, cheap to
+  encode. To close: the same with noVNC, timed from its input event to the canvas showing the change.
+- The machine is shared. Load is taken as a repetition starts, not throughout; a repetition that could not wait for a
+  quiet machine is kept and marked busy. To close: sample CPU pressure (`/proc/pressure/cpu`) through each measurement
+  and flag the ones it rose in, or pin the benchmark to cores nothing else uses.
+- Few repetitions (three synthetic, two slow-link, one or two per account in the lab): the report shows the median and
+  the range, not a confidence interval.
+- Warm caches: every start after the first reads its programs from the page cache. A first start after a boot or a
+  deploy is slower, by seconds for a large program. To close: evict the store paths (`posix_fadvise` DONTNEED, no root
+  needed) before a cold repetition.
+- The GPU is shared with the desktop and every other Chromium on the machine, so WebGL, video and wayland's
+  gles2 numbers move with them. To close: record the GPU's busy share (`gpu_busy_percent` in sysfs) during each run.
+- Lab start times are mostly the service's: "online" waits for the account's site to load and sign in. One run per
+  account and backend (Proton B on tigervnc online in 11.6 s against 3.7 s on x11) says little about the backend.
+- One screen size (1280×800); a phone viewer scaling it down is not measured.
+- KasmVNC is measured only through its RFB on the Unix socket with our viewer speaking its pointer format: its own
+  web client's WebP, adaptive quality and UDP transport, which is how its users get it, are not.
 
 **Limits.** Discord's extension port is picked free on wayland (on x11 it comes from the display number). No
 clipboard tool is used on either backend. An extractor killed outright leaves its compositor's directory (its config

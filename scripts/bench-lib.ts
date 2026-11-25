@@ -98,17 +98,21 @@ export function tree(roots: number[], all = procs()): Proc[] {
 }
 /** The program's name without nix's wrapper marks (.wayvnc-wrapped → wayvnc). */
 export const progName = (p: Proc) => p.comm.replace(/^\./, '').replace(/-wrapped$/, '').replace(/-wrapp?e?$/, '');
-export function memory(ps: Proc[]): { rssMB: number; pssMB: number } {
+export function memory(ps: Proc[]): { rssMB: number; pssMB: number; ussMB: number } {
   let rss = 0;
   let pss = 0;
+  let uss = 0;
   for (const p of ps) {
     try {
       const t = readFileSync(`/proc/${p.pid}/smaps_rollup`, 'utf8');
       rss += Number(/^Rss:\s+(\d+)/m.exec(t)?.[1] ?? 0);
       pss += Number(/^Pss:\s+(\d+)/m.exec(t)?.[1] ?? 0);
+      // USS: pages no other process maps. PSS splits shared pages among every process mapping them, Chromiums of
+      // other programs on the machine too, so it moves with what else runs; USS does not (it leaves those out).
+      uss += Number(/^Private_Clean:\s+(\d+)/m.exec(t)?.[1] ?? 0) + Number(/^Private_Dirty:\s+(\d+)/m.exec(t)?.[1] ?? 0);
     } catch {}
   }
-  return { rssMB: rss / 1024, pssMB: pss / 1024 };
+  return { rssMB: rss / 1024, pssMB: pss / 1024, ussMB: uss / 1024 };
 }
 /** CPU of a set of processes over a span: % of one core, in all and by program name. */
 export async function cpuOver(roots: () => number[], ms: number): Promise<{ total: number; byName: Record<string, number> }> {

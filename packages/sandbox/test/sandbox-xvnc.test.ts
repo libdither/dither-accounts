@@ -46,7 +46,13 @@ for (const backend of BACKENDS) {
           }
         };
         try {
-          await sb.start();
+          const t0 = performance.now();
+          await sb.start().catch(async (e) => {
+            // What the display said comes out as it stops (KasmVNC keeps its log in a buffer until then).
+            await sb.stop();
+            await Bun.sleep(200);
+            throw new Error(`${(e as Error).message} (${((performance.now() - t0) / 1000).toFixed(1)} s after the start); the sandbox said:\n${said.slice(-60).join('\n')}`);
+          });
           expect(sb.info()).toMatchObject({ backend, display: free.display });
           expect(await rfbBanner(sb.vncSocket)).toMatch(/^RFB 003\.00\d\n/);
           const env = join(sb.home, 'env.txt');
@@ -56,13 +62,13 @@ for (const backend of BACKENDS) {
           expect(r.x!.trim()).toBe(`X${free.display}`);
           if (sb.info().network === 'pasta') expect(r.abstract).toBe('0');
           const log = join(sb.home, 'xev.log');
-          // The window mapped (xev says so on Expose... only with -event exposure; a click landing is the proof).
           await until(() => existsSync(log));
-          for (let end = Date.now() + 20_000; !/ButtonPress event/.test(readFileSync(log, 'utf8')); ) {
-            if (Date.now() > end) throw new Error(`no ButtonPress; the sandbox said:\n${said.slice(-30).join('\n')}`);
-            await sb.screen!.click(400, 300);
-            await Bun.sleep(300);
-          }
+          // xev's window on the screen (mapped and viewable), then one click: it lands in it.
+          const xdotool = resolveBin(DISPLAY_BINS.xdotool, () => {});
+          const found = Bun.spawnSync(['timeout', '20', xdotool, 'search', '--sync', '--onlyvisible', '--name', 'xvnc-xev'], { env: { ...process.env, ...sb.screen!.clientEnv() } });
+          expect(found.stdout.toString().trim()).toMatch(/^\d+/);
+          await sb.screen!.click(400, 300);
+          await until(() => /ButtonPress event/.test(readFileSync(log, 'utf8')));
           await sb.screen!.type('qZ');
           await until(() => /keysym 0x71, q\)[\s\S]*keysym 0x5a, Z\)/.test(readFileSync(log, 'utf8')));
           // The Xvnc: one process of the sandbox's, no TCP or UDP socket.

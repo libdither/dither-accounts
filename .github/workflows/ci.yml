@@ -71,36 +71,6 @@ jobs:
           nix build --no-link nixpkgs#{x11vnc,xdotool,xclip,xmodmap,tigervnc,turbovnc,pulseaudio,sway-unwrapped,wayvnc,grim,pipewire,wireplumber,xdg-desktop-portal,xdg-desktop-portal-wlr,xwayland-satellite,xorg.xev,electron}
           nix build --no-link -f nix/kasmvnc.nix
           command -v chromium Xvfb bwrap pasta import
-      # TEMPORARY: what KasmVNC's first start on a runner waits on (it answers its socket only after 5-14 s there).
-      - name: KasmVNC first start (diagnostic)
-        run: |
-          K=$(nix build --no-link --print-out-paths -f nix/kasmvnc.nix)/bin/Xkasmvnc
-          S=$(nix build --no-link --print-out-paths nixpkgs#strace | grep -v -- -man)/bin/strace
-          mkdir -p /tmp/kd/h
-          T0=$(date +%s.%N)
-          HOME=/tmp/kd/h timeout -s INT 30 $S -f -tt -o /tmp/kd/tr.txt $K :170 -geometry 640x480 -depth 24 -nolisten tcp -rfbunixpath /tmp/kd/v.sock -rfbport -1 -SecurityTypes None -publicIP 127.0.0.1 -DisableBasicAuth -Log '*:stderr:100' > /tmp/kd/out.txt 2>&1 &
-          python3 -c "
-          import socket,time,os
-          t0=float('$T0')
-          while not os.path.exists('/tmp/kd/v.sock'): time.sleep(0.05)
-          print('socket after %.2f s'%(time.time()-t0))
-          s=socket.socket(socket.AF_UNIX); s.connect('/tmp/kd/v.sock'); s.settimeout(28)
-          print('banner', s.recv(12), 'after %.2f s'%(time.time()-t0))
-          "
-          wait || true
-          cat /tmp/kd/out.txt | head -80
-          python3 -c "
-          import re
-          prev=None; lines=open('/tmp/kd/tr.txt').read().split('\n')
-          def ts(l):
-            m=re.match(r'\d+ +(\d+):(\d+):([\d.]+) ',l); return int(m[1])*3600+int(m[2])*60+float(m[3]) if m else None
-          for i,l in enumerate(lines):
-            t=ts(l)
-            if t is None: continue
-            if prev is not None and t-prev[0]>0.3: print('GAP %.2f s after: %s\n   then: %s'%(t-prev[0],prev[1][:220],l[:220]))
-            prev=(t,l)
-          print(len(lines),'syscalls')
-          "
       # DITHER_TESTS_NEED_ALL: a test that would skip for a missing program fails instead (test/needs.ts).
       - name: Tests that need Nix
         env:

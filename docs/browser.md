@@ -108,7 +108,9 @@ view cannot drive it: KasmVNC changed RFB in ways noVNC (the manager's page and 
 Its own web client speaks all that, but it is served from KasmVNC's built-in HTTP and WebSocket listener, which takes
 a TCP port (`-websocketPort`); the bridge carries the Unix socket's RFB only. It also asks STUN servers for its public
 address at every start unless given `-publicIP` (the sandbox gives `127.0.0.1`), and the packaging patches its
-hardcoded `/usr/bin/xkbcomp`. Its video mode is left without FFmpeg: it looks for `libavformat.so` under `/usr/lib` only.
+hardcoded `/usr/bin/xkbcomp`. Its video mode is left without FFmpeg: it looks for `libavformat.so` by walking
+`/usr/lib/` and `/usr/lib64` whole at every start, before it answers on its socket (5–18 s on an Ubuntu CI runner),
+so the packaging points both at an empty directory.
 
 **What a page sees.** Chromium 155 compared on both, same flags, same machine:
 
@@ -250,9 +252,9 @@ full-screen animation / of the video, then click to photon):
 **What the benchmarks leave out.** Read the numbers above with these in mind; the first three are fixed in the
 scripts, the rest are open.
 
-- Fixed: an Xvnc's socket appears before the server answers on it (KasmVNC's first start on CI took more than 5 s to
-  greet), so a screen counts as started once its live view has said "RFB" (`waitForRfbBanner`), as the benchmarks'
-  "live view up" always meant.
+- Fixed: an Xvnc's socket appears before the server answers on it (KasmVNC, walking `/usr/lib` for FFmpeg, greeted
+  5–18 s late on CI), so a screen counts as started once its live view has said "RFB" (`waitForRfbBanner`), as the
+  benchmarks' "live view up" always meant.
 - Fixed: PSS splits each shared page among every process that maps it, other programs' Chromiums included (a live
   manager's), so it moves with whatever else runs. The scripts now record USS (pages no other process maps) beside it.
   Neither is the cost of one more sandbox; the scale runs' per-sandbox figure is closer.

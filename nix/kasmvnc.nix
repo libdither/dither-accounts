@@ -26,11 +26,15 @@ pkgs.stdenv.mkDerivation rec {
     # /usr/bin and no flag to change it. It becomes "." (same length, NUL-padded) and the wrapper starts it in a
     # directory holding only an xkbcomp link, so it runs nixpkgs' one.
     perl -0777 -pi -e 's|/usr/bin\0|.\0\0\0\0\0\0\0\0|g or die "no /usr/bin in Xkasmvnc"' $out/bin/Xkasmvnc
+    # Its video mode looks for FFmpeg's libavformat.so by walking /usr/lib/ and /usr/lib64 whole, at every start,
+    # before it answers on its socket: on a Debian or Ubuntu machine that walk took 5-18 s (on NixOS, nothing to walk).
+    # The sandboxes do not use that mode: both become ".", the wrapper's directory, which holds only the xkbcomp link.
+    perl -0777 -pi -e 's|(?<=\0)/usr/lib/\0|.\0\0\0\0\0\0\0\0\0|g or die "no /usr/lib/ in Xkasmvnc"' $out/bin/Xkasmvnc
+    perl -0777 -pi -e 's|(?<=\0)/usr/lib64\0|.\0\0\0\0\0\0\0\0\0\0|g or die "no /usr/lib64 in Xkasmvnc"' $out/bin/Xkasmvnc
     mkdir -p $out/libexec/kasmvnc
     ln -s ${pkgs.xkbcomp}/bin/xkbcomp $out/libexec/kasmvnc/xkbcomp
-    # -xkbdir and -fp: the keyboard maps and fonts Debian's xkb-data and xfonts packages would bring. No ffmpeg: its
-    # video mode looks for libavformat.so under /usr/lib and /usr/lib64 only ("ffmpeg: Could not open
-    # libavformat.so"), whatever the library path says, and the sandboxes do not use that mode.
+    # -xkbdir and -fp: the keyboard maps and fonts Debian's xkb-data and xfonts packages would bring. No FFmpeg (above:
+    # it never looked on the library path anyway).
     wrapProgram $out/bin/Xkasmvnc --chdir $out/libexec/kasmvnc \
       --add-flags "-xkbdir ${pkgs.xkeyboard_config}/share/X11/xkb -fp ${pkgs.font-misc-misc}/share/fonts/X11/misc,built-ins"
     runHook postInstall

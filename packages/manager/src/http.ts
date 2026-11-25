@@ -31,7 +31,7 @@ import type { Kind } from './kinds.ts';
 import { localNotice, type Notices } from './notices.ts';
 import type { Provider } from './providers/index.ts';
 import { CallFailure, type ConsumerSocketData, type Router } from './router.ts';
-import { DISPLAY_BACKENDS, parseBackend } from './display-backend.ts';
+import { DISPLAY_BACKENDS, parseBackend, REFUSED_BACKENDS } from './display-backend.ts';
 import { accountDir, type ExtractorSocketData, LOCK, type Supervisor, writeSecret } from './supervisor.ts';
 
 /** The page's live view: a browser WebSocket carried to the account's VNC, a Unix socket on this machine. */
@@ -646,6 +646,7 @@ export class Http {
             if (k === 'displayBackend') {
               if (v === null) delete cfg[k];
               else if (parseBackend(v)) cfg[k] = parseBackend(v);
+              else if (typeof v === 'string' && REFUSED_BACKENDS[v.trim().toLowerCase()]) return bad(`displayBackend ${v.trim().toLowerCase()} is not offered: ${REFUSED_BACKENDS[v.trim().toLowerCase()]}`);
               else return bad(`displayBackend is one of ${DISPLAY_BACKENDS.join(', ')}, or null (the manager's default)`);
               continue;
             }

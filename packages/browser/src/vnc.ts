@@ -91,10 +91,12 @@ export async function waitForVncSocket(socket: string, server: Subprocess, timeo
  *              -SecurityTypes None (the manager carries the socket, behind its login, as with x11vnc), -AlwaysShared
  *              (a viewer asking for the screen alone does not push the others off), -AcceptSetDesktopSize=0 (viewers
  *              cannot resize it, as wayvnc's -R)
- *   kasmvnc    the same (KasmVNC is TigerVNC's fork, its RFB on the Unix socket unchanged), and -publicIP 127.0.0.1:
- *              without it, it asks STUN servers on the internet (stun.l.google.com and others) for the machine's public
- *              address at every start, for a UDP transport only its own web client uses. With no -websocketPort it
- *              opens no websocket or HTTP listener, nor any UDP socket.
+ *   kasmvnc    the same (KasmVNC is TigerVNC's fork, its RFB on the Unix socket unchanged), and:
+ *              -publicIP 127.0.0.1: without it, it asks STUN servers on the internet (stun.l.google.com and others)
+ *              for the machine's public address at every start, for a UDP transport only its own web client uses.
+ *              -DisableBasicAuth: else it gives a connection the rights its user has in ~/.kasmpasswd, and one with no
+ *              user (any on the Unix socket) gets none: no picture, no input, and nothing said about it.
+ *              With no -websocketPort it opens no websocket or HTTP listener, nor any UDP socket.
  *   turbovnc   -rfbunixpath <path> alone opens no TCP port (TurboVNC listens on TCP only when given no Unix path);
  *              its options are lowercase and its own: -securitytypes none, -alwaysshared, -noreverse, and no
  *              -rfbport -1, which it refuses
@@ -103,5 +105,5 @@ export function xvncArgs(backend: 'tigervnc' | 'kasmvnc' | 'turbovnc', bin: stri
   const common = [bin, display, '-geometry', `${o.width}x${o.height}`, '-depth', '24', '-nolisten', 'tcp', ...(o.pathSocketOnly ? ['-nolisten', 'local'] : []), '-dpi', '96', '-desktop', 'sandbox'];
   if (backend === 'turbovnc') return [...common, '-rfbunixpath', socket, '-securitytypes', 'none', '-alwaysshared', '-noreverse'];
   const tiger = [...common, '-rfbunixpath', socket, '-rfbport', '-1', '-SecurityTypes', 'None', '-AlwaysShared', '-AcceptSetDesktopSize=0'];
-  return backend === 'kasmvnc' ? [...tiger, '-publicIP', '127.0.0.1'] : tiger;
+  return backend === 'kasmvnc' ? [...tiger, '-publicIP', '127.0.0.1', '-DisableBasicAuth'] : tiger;
 }

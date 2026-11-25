@@ -7,7 +7,7 @@
  *   bun packages/manager/src/cli.ts grant <app> <interface> <level> [--accounts a,b] [--kinds k,l] [--dry-run]
  *   bun packages/manager/src/cli.ts import-dither-chat --hub-data <dir> (--accounts id,id | --all) [--dry-run]
  *   bun packages/manager/src/cli.ts forget <account>      stop it and drop it from the registry; its directory stays
- *   bun packages/manager/src/cli.ts display <account> <backend>|default   the screen its sandboxes draw on: x11, tigervnc, kasmvnc, turbovnc or wayland (restarts it)
+ *   bun packages/manager/src/cli.ts display <account> <backend>|default   the screen its sandboxes draw on: x11, tigervnc, turbovnc or wayland (restarts it)
  *   bun packages/manager/src/cli.ts export-to-dither-chat <account> --hub-data <dir>
  *   bun packages/manager/src/cli.ts set-password [--file <file>]   the page's password, from the file or stdin (never argv)
  *   bun packages/manager/src/cli.ts sessions                       the page's signed-in browsers
@@ -137,7 +137,7 @@ async function main() {
     }
     case 'display': {
       const [id, value] = rest;
-      if (!id || !value || !['x11', 'tigervnc', 'kasmvnc', 'turbovnc', 'wayland', 'default'].includes(value)) die('display <account> x11|tigervnc|kasmvnc|turbovnc|wayland|default');
+      if (!id || !value || !['x11', 'tigervnc', 'turbovnc', 'wayland', 'default'].includes(value)) die('display <account> x11|tigervnc|turbovnc|wayland|default');
       if (!up) die(`the manager is not running at ${url}`);
       await call('PATCH', `/api/accounts/${encodeURIComponent(id)}`, { settings: { displayBackend: value === 'default' ? null : value } });
       console.log(`${id}: display ${value === 'default' ? "the manager's default" : value} (its extractor restarts to take it)`);

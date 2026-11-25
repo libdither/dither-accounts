@@ -7,15 +7,50 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFil
 import { cpus, homedir, loadavg, tmpdir } from 'node:os';
 import { connect, type Socket } from 'node:net';
 import { dirname, join } from 'node:path';
-import { resolveBin } from '../packages/browser/src/bins.ts';
+import { DISPLAY_BINS, resolveBin, tryBin } from '../packages/browser/src/bins.ts';
 import { type FreeDisplay, pickFreeDisplay } from '../packages/browser/src/display.ts';
 import { Sandbox } from '../packages/browser/src/sandbox.ts';
 import { sharePage } from '../packages/browser/test/share-page.ts';
 
 export const W = 1280;
 export const H = 800;
-export const BACKENDS = ['x11', 'wayland'] as const;
+export const BACKENDS = ['x11', 'tigervnc', 'kasmvnc', 'turbovnc', 'wayland'] as const;
 export type Backend = (typeof BACKENDS)[number];
+
+/** `--backends x11,tigervnc,...` (default: every one whose programs can be had here), checked against BACKENDS. */
+export function backendsArg(argv = process.argv): Backend[] {
+  const i = argv.indexOf('--backends');
+  const want = i >= 0 ? argv[i + 1]!.split(',').map((s) => s.trim()) : [...BACKENDS];
+  for (const b of want) if (!(BACKENDS as readonly string[]).includes(b)) throw new Error(`--backends: no backend "${b}" (${BACKENDS.join(', ')})`);
+  return (want as Backend[]).filter((b) => {
+    const bins = b === 'x11' ? [DISPLAY_BINS.xvfb, DISPLAY_BINS.x11vnc] : b === 'wayland' ? [DISPLAY_BINS.sway, DISPLAY_BINS.wayvnc] : [DISPLAY_BINS[b]];
+    const ok = bins.every((x) => tryBin(x, () => {}));
+    if (!ok) log(`skipping ${b}: its programs cannot be had here`);
+    return ok;
+  });
+}
+
+/** The live view's server, by its name in /proc (progName): x11vnc, an Xvnc (KasmVNC's is Xkasmvnc), wayvnc. */
+export const VNC_SERVER: Record<Backend, string> = { x11: 'x11vnc', tigervnc: 'Xvnc', kasmvnc: 'Xkasmvnc', turbovnc: 'Xvnc', wayland: 'wayvnc' };
+/** Every process of the display: the display server and the live view's (one and the same for an Xvnc). */
+export const DISPLAY_PROCS: Record<Backend, string[]> = { x11: ['Xvfb', 'x11vnc'], tigervnc: ['Xvnc'], kasmvnc: ['Xkasmvnc'], turbovnc: ['Xvnc'], wayland: ['sway', 'wayvnc'] };
+
+/**
+ * SysV shared memory segments (/proc/sysvipc/shm): all of the machine's, and those these processes made or last
+ * attached (cpid, lpid). The machine's count has a limit (kernel.shmmni); x11vnc holds about 40 per display.
+ */
+export function shm(pids: number[] = []): { total: number; mine: number; limit: number } {
+  const lines = readFileSync('/proc/sysvipc/shm', 'utf8').trim().split('\n');
+  const head = lines[0]!.trim().split(/\s+/);
+  const [c, l] = [head.indexOf('cpid'), head.indexOf('lpid')];
+  const set = new Set(pids);
+  const rows = lines.slice(1).map((x) => x.trim().split(/\s+/));
+  let limit = NaN;
+  try {
+    limit = Number(readFileSync('/proc/sys/kernel/shmmni', 'utf8'));
+  } catch {}
+  return { total: rows.length, mine: rows.filter((f) => set.has(Number(f[c])) || set.has(Number(f[l]))).length, limit };
+}
 const HZ = 100; // clock ticks per second in /proc/<pid>/stat (USER_HZ)
 
 export const log = (...a: unknown[]) => console.error(new Date().toISOString().slice(11, 19), ...a);
@@ -314,10 +349,15 @@ export const ENC = {
   extMouseButtons: -316,
   vmwareCursor: 0x574d5664,
   extClipboard: 0xc0a1e5ce | 0,
+  /** KasmVNC's: Tight rectangles as WebP (Tight subtype 0x0b) for a client that asks, as its own web client does. */
+  kasmWebp: -1024,
+  /** KasmVNC's lossless QOI (Tight subtype 0x0c), which its client asks for only when told to. */
+  kasmQoi: -1886,
   /** Quality level n is qualityLevel0 + n; compress level n is compressLevel0 + n. */
   qualityLevel0: -32,
   compressLevel0: -256,
 } as const;
+const TIGHT_KIND: Record<number, string> = { 8: 'fill', 9: 'jpeg', 10: 'png', 11: 'webp', 12: 'qoi', 13: 'kasm-0x0d' };
 export const ENC_NAME: Record<number, string> = { 0: 'raw', 1: 'copyrect', 5: 'hextile', 6: 'zlib', 7: 'tight', 16: 'zrle', 50: 'open-h264', [-260]: 'tightpng', [-223]: 'desktop-size', [-224]: 'last-rect', [-239]: 'cursor', [ENC.vmwareCursor]: 'vmware-cursor', [-307]: 'desktop-name', [-308]: 'ext-desktop-size', [-261]: 'led' };
 
 /**
@@ -364,6 +404,8 @@ export interface ViewerOptions {
    * noVNC answers them (what the manager's live view does). `eager`: as soon as an update's header arrives.
    */
   mode?: 'novnc' | 'eager';
+  /** Pointer events in KasmVNC's own layout (a 16-bit mask and two scroll fields), as its web client sends them. */
+  kasmPointer?: boolean;
 }
 
 /** A viewer: asks for every frame (incremental), counts them and their bytes, and keeps the picture when raw. */
@@ -373,12 +415,23 @@ export class Viewer {
   private wait: (() => void) | null = null;
   private closed = false;
   private mode: 'novnc' | 'eager' = 'eager';
+  private kasmPointer = false;
   private continuous = false;
   width = 0;
   height = 0;
+  /** FramebufferUpdate messages, empty ones too: a server with continuous updates sends many small ones. */
   updates = 0;
+  /**
+   * Frames as a 60 Hz screen would show them: the 1/60 s slots in which pixels arrived. A server that splits one frame
+   * over several updates (TigerVNC, TurboVNC with continuous updates) counts once per slot, so this is what to compare;
+   * `updates` is not.
+   */
+  frames = 0;
+  private slot = -1;
   bytes = 0;
   encodings: Record<string, number> = {};
+  /** Tight rectangles by their kind: fill, jpeg, png, webp, qoi, basic (zlib) — what the bytes went to. */
+  tightKinds: Record<string, number> = {};
   /** Server messages beyond updates (continuous-updates, fence, clipboard...): how many of each. */
   messages: Record<string, number> = {};
   fb: Uint8Array | null = null;
@@ -422,6 +475,7 @@ export class Viewer {
     const o: ViewerOptions = Array.isArray(encodings) ? { encodings, keepPicture } : encodings;
     const v = new Viewer(path);
     v.mode = o.mode ?? 'eager';
+    v.kasmPointer = !!o.kasmPointer;
     await v.need(12);
     v.sock.write('RFB 003.008\n');
     const n = (await v.need(1))[0]!;
@@ -483,8 +537,12 @@ export class Viewer {
   private async tight(w: number, h: number) {
     const ctl = (await this.need(1))[0]!;
     const kind = ctl >> 4;
+    const name = TIGHT_KIND[kind] ?? (kind < 8 ? 'basic' : `kind${kind}`);
+    this.tightKinds[name] = (this.tightKinds[name] ?? 0) + 1;
     if (kind === 8) return void (await this.need(3));
-    if (kind === 9 || kind === 10) return void (await this.need(await this.compactLength()));
+    // JPEG, PNG (TightPNG), and KasmVNC's WebP, QOI and 0x0d: a compact length, then that many bytes.
+    if (kind >= 9 && kind <= 13) return void (await this.need(await this.compactLength()));
+    if (kind > 13) throw new Error(`Tight subtype ${kind}, which this viewer does not read`);
     let size = w * h * 3;
     if (kind & 4) {
       const filter = (await this.need(1))[0]!;
@@ -496,6 +554,39 @@ export class Viewer {
     }
     if (size < 12) await this.need(size);
     else await this.need(await this.compactLength());
+  }
+
+  /**
+   * The JPEG encoding (21, TigerVNC's for noVNC): a bare JPEG with no length before it, read as noVNC does, marker by
+   * marker to the end-of-image, the entropy-coded data after SOS scanned in the buffer (not byte by byte).
+   */
+  private async jpeg() {
+    await this.need(2); // SOI
+    for (;;) {
+      const m = await this.need(2);
+      if (m[0] !== 0xff) throw new Error('JPEG: a marker expected');
+      const t = m[1]!;
+      if (t === 0xd9) return; // EOI
+      if ((t >= 0xd0 && t <= 0xd7) || t === 0x01) continue;
+      await this.need((await this.need(2)).readUInt16BE(0) - 2);
+      if (t !== 0xda) continue;
+      // After the scan header: data up to the next marker (0xff not followed by 0x00 or a restart marker).
+      for (let from = 0; ; ) {
+        const i = this.buf.indexOf(0xff, from);
+        if (i >= 0 && i + 1 < this.buf.length) {
+          const n = this.buf[i + 1]!;
+          if (n === 0x00 || (n >= 0xd0 && n <= 0xd7)) {
+            from = i + 2;
+            continue;
+          }
+          await this.need(i);
+          break;
+        }
+        from = i >= 0 ? i : this.buf.length;
+        if (this.closed) throw new Error('the server closed the connection');
+        await new Promise<void>((r) => (this.wait = r));
+      }
+    }
   }
 
   private count(name: string) {
@@ -510,6 +601,7 @@ export class Viewer {
         if (type === 0) {
           const h = await this.need(3);
           let rects = h.readUInt16BE(1);
+          let pixels = false;
           if (this.mode === 'eager') this.request(true);
           while (rects-- > 0) {
             const r = await this.need(12);
@@ -522,6 +614,7 @@ export class Viewer {
             } else if (enc === ENC.copyRect) await this.need(4);
             else if (enc === ENC.zrle || enc === ENC.zlib) await this.need((await this.need(4)).readUInt32BE(0));
             else if (enc === ENC.tight || enc === ENC.tightPng) await this.tight(w, hh);
+            else if (enc === ENC.jpeg) await this.jpeg();
             else if (enc === ENC.h264) {
               const l = (await this.need(8)).readUInt32BE(0);
               await this.need(l);
@@ -542,9 +635,16 @@ export class Viewer {
             else if (enc === ENC.lastRect) break;
             else if (enc >= 0) throw new Error(`the server used encoding ${enc}, which this viewer does not read`);
             // Other pseudo-encodings (an acknowledgement that the server has the extension) carry nothing.
-            if (enc >= 0) this.onRect?.(x, y, w, hh, enc);
+            if (enc >= 0) {
+              pixels = true;
+              this.onRect?.(x, y, w, hh, enc);
+            }
           }
           this.updates++;
+          if (pixels) {
+            const slot = Math.floor(performance.now() / (1000 / 60));
+            if (slot !== this.slot) [this.slot, this.frames] = [slot, this.frames + 1];
+          }
           if (!this.t.firstFrame) this.t.firstFrame = performance.now();
           if (this.mode === 'novnc' && !this.continuous) this.request(true);
           this.onUpdate?.();
@@ -584,6 +684,10 @@ export class Viewer {
         } else if (type === 250) {
           await this.need(3);
           this.count('xvp');
+        } else if (type === 253 || type === 254) {
+          // KasmVNC's own: a viewer joined or left the session (a string: u32 length, then the bytes).
+          await this.need((await this.need(4)).readUInt32BE(0));
+          this.count(type === 253 ? 'kasm-user-joined' : 'kasm-user-left');
         } else throw new Error(`server message ${type}`);
       }
     } catch (e) {
@@ -598,11 +702,13 @@ export class Viewer {
   }
 
   pointer(x: number, y: number, mask: number) {
-    const b = Buffer.alloc(6);
+    const k = this.kasmPointer;
+    const b = Buffer.alloc(k ? 11 : 6);
     b[0] = 5;
-    b[1] = mask;
-    b.writeUInt16BE(x, 2);
-    b.writeUInt16BE(y, 4);
+    if (k) b.writeUInt16BE(mask, 1);
+    else b[1] = mask;
+    b.writeUInt16BE(x, k ? 3 : 2);
+    b.writeUInt16BE(y, k ? 5 : 4);
     this.sock.write(b);
   }
 

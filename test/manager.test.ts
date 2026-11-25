@@ -122,7 +122,11 @@ test("the display backend: the manager's default (x11), an account's own from it
   expect('displayBackend' in (await detail()).config).toBe(false);
   expect((await detail()).process.displayBackend).toBe('x11');
   expect(m.sup.backendOf({ config: JSON.stringify({ displayBackend: 'wayland' }) })).toBe('wayland');
-  expect(m.sup.backendOf({ config: JSON.stringify({ displayBackend: 'kasmvnc' }) })).toBe('kasmvnc');
+  // KasmVNC's Xvnc is not offered: the live view (noVNC) cannot drive it (display-backend.ts).
+  const refused = await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: 'kasmvnc' } });
+  expect(refused.status).toBe(400);
+  expect(await refused.text()).toContain('live view cannot drive it');
+  expect(m.sup.backendOf({ config: JSON.stringify({ displayBackend: 'kasmvnc' }) })).toBe('x11');
   expect(m.sup.backendOf({ config: JSON.stringify({ displayBackend: 'xvnc' }) })).toBe('x11');
   expect(m.sup.backendOf({ config: '{}' })).toBe('x11');
   expect(m.sup.backendOf({ config: 'not json' })).toBe('x11');

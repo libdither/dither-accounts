@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
 /**
  * The native apps' sandboxes (packages/sandbox) on each display: Signal Desktop, Telegram Desktop and Haveno (an X
- * app, through xwayland-satellite on wayland), each on x11, on wayland with sway on the GPU (gles2) and on wayland with
- * sway drawing in software (pixman, what they get: AppSandboxOptions.gpu). No network (`none`), a fresh temporary home,
- * never signed in: each app gets as far as its first screen.
+ * app, through xwayland-satellite on wayland), each on x11, on each Xvnc (tigervnc, kasmvnc, turbovnc), on wayland
+ * with sway on the GPU (gles2) and on wayland with sway drawing in software (pixman, what they get:
+ * AppSandboxOptions.gpu). No network (`none`), a fresh temporary home, never signed in: each app gets as far as its
+ * first screen.
  *
  *   bun scripts/bench-native.ts [--out native.json] [--reps 3] [--apps signal,telegram,haveno] [--shots <dir>]
- *                               [--max-load <load1>] [--wait-load-s 600]
+ *                               [--configs x11,tigervnc,kasmvnc,turbovnc,gles2,pixman] [--max-load <load1>] [--wait-load-s 600]
  *
  * For each: the sandbox up (screen, bus, audio), the app's first picture (a screenshot with more than a few colours),
  * then after 15 s CPU over 10 s and memory (PSS) by program, and whether input reaches it (a click on Telegram's Start
@@ -33,12 +34,17 @@ const MAX_LOAD = Number(argOf('max-load', String(cpus().length / 2)));
 const WAIT_LOAD_S = Number(argOf('wait-load-s', '600'));
 const W = 1280;
 const H = 800;
-const CONFIGS = [
+const ALL_CONFIGS = [
   { name: 'x11', backend: 'x11' as const, gpu: false },
+  { name: 'tigervnc', backend: 'tigervnc' as const, gpu: false },
+  { name: 'kasmvnc', backend: 'kasmvnc' as const, gpu: false },
+  { name: 'turbovnc', backend: 'turbovnc' as const, gpu: false },
   { name: 'gles2', backend: 'wayland' as const, gpu: true },
   { name: 'pixman', backend: 'wayland' as const, gpu: false },
 ];
-const SCREEN_PROCS = ['Xvfb', 'x11vnc', 'sway', 'wayvnc', 'xwayland-satellite', 'Xwayland'];
+const WANT = argOf('configs', ALL_CONFIGS.map((c) => c.name).join(',')).split(',');
+const CONFIGS = ALL_CONFIGS.filter((c) => WANT.includes(c.name));
+const SCREEN_PROCS = ['Xvfb', 'x11vnc', 'Xvnc', 'Xkasmvnc', 'sway', 'wayvnc', 'xwayland-satellite', 'Xwayland'];
 /** A program of the screen stack, by its name in /proc, which the kernel cuts to 15 characters (xwayland-satel). */
 const screenProc = (name: string) => SCREEN_PROCS.some((p) => p.startsWith(name) && name.length >= Math.min(p.length, 14));
 const GPU_LINE = /\b(EGL|GLX|GLES|OpenGL|gbm|DRI\d?|dri|GPU|gpu_|vaapi|libva|ContextLost|context lost|swrast|llvmpipe|zink|vulkan|Vulkan|SwiftShader|ANGLE|viz|Skia)\b/;
@@ -89,7 +95,7 @@ async function one(app: App, key: string, cfg: (typeof CONFIGS)[number], rep: nu
     if (msg.startsWith('[app]')) lines.push(msg.slice(6));
     else if (level === 'warn' || level === 'error') lines.push(`(${level}) ${msg}${extra ? ` ${JSON.stringify(extra)}` : ''}`);
   };
-  const display: FreeDisplay = cfg.backend === 'wayland' ? { backend: 'wayland', display: null } : await pickFreeDisplay(undefined, [], 'x11');
+  const display: FreeDisplay = cfg.backend === 'wayland' ? { backend: 'wayland', display: null } : await pickFreeDisplay(undefined, [], cfg.backend);
   const sb = new AppSandbox({ dir: join(dir, 'desktop'), display, width: W, height: H, network: 'none', gpu: cfg.gpu, log: log_ as any, onEvent: () => {}, ...app.opts(dir) });
   const out: any = { app: key, config: cfg.name, rep };
   const roots = () => ((sb as any).procs ?? []).map((p: { proc: { pid: number } }) => p.proc.pid);
@@ -157,7 +163,7 @@ const save = () => {
 try {
   for (let rep = 0; rep < REPS; rep++)
     for (const key of APPS) {
-      const order = rep % 2 ? [...CONFIGS].reverse() : CONFIGS;
+      const order = CONFIGS.map((_, i) => CONFIGS[(i + rep) % CONFIGS.length]!);
       for (const cfg of order) {
         const load = await quiet(MAX_LOAD, WAIT_LOAD_S);
         log(`rep ${rep + 1}/${REPS} ${key} ${cfg.name} (load ${load.load.toFixed(1)}${load.busy ? ', busy' : ''})`);

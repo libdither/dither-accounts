@@ -1,20 +1,23 @@
 #!/usr/bin/env bun
 /**
- * The two display backends side by side (docs/browser.md, "Display backends"): the same browser sandbox, the same
- * pages, the same input, on x11 (Xvfb, x11vnc, xdotool, import) and on wayland (sway, wayvnc, RFB input, grim), and
- * the numbers as JSON.
+ * The display backends side by side (docs/browser.md, "Display backends"): the same browser sandbox, the same
+ * pages, the same input, on x11 (Xvfb, x11vnc, xdotool, import), on the Xvnc backends (tigervnc, kasmvnc, turbovnc:
+ * one Xvnc, xdotool, import) and on wayland (sway, wayvnc, RFB input, grim), and the numbers as JSON.
  *
  *   bun scripts/bench-display.ts [--out results.json] [--reps 3] [--scale 1,5,10,20] [--only start,idle,...]
+ *                                [--backends x11,tigervnc,kasmvnc,turbovnc,wayland] [--wayvnc-extras]
  *                                [--max-load <load1>] [--wait-load-s 600]
  *
- * What it measures, each on both backends, `reps` times (alternating which backend goes first), median and spread:
+ * What it measures, each on every backend, `reps` times (rotating which backend goes first), median and spread:
  *   start     sandbox start → the live view answers RFB, and → the first page's script ran
  *   idle      CPU (% of one core) and memory (RSS and PSS) of every process of the sandbox, on a still page
  *   vnc       a viewer of our own on the live view's socket, asking for every frame: delivered frames/s, bytes/s,
- *             the encodings the server used, the VNC server's CPU, during a full-screen animation, a page scrolling,
- *             a video playing and a still page; on wayland again from a second wayvnc at its own default of 30 frames
+ *             the encodings the server used (Tight's by kind: jpeg, webp...), the VNC server's CPU, during a full-screen
+ *             animation, a page scrolling, a video playing and a still page, asking for ZRLE; the animation and the
+ *             scrolling again asking as noVNC does (Tight first, quality 6), and on kasmvnc as its own client does
+ *             (WebP too). With --wayvnc-extras, on wayland again from a second wayvnc at its own default of 30 frames
  *             a second (the sandbox's sends up to 60), and from one with its GPU features (-g), with and without Open
- *             H.264 asked for
+ *             H.264 asked for (measured in r2: H.264 hangs).
  *   input     an RFB pointer press → the page's pointerdown (event time and handler time), and → the changed pixels
  *             arriving in the viewer's framebuffer (click to photon)
  *   typing    the backend's own typing (xdotool / RFB keys) of 200 characters: characters per second until the page has
@@ -25,7 +28,8 @@
  *   video     a 1280×720 VP9 video playing in Chromium: dropped and total frames (getVideoPlaybackQuality), CPU
  *   webgl     a full-screen WebGL shader: frames/s
  *   shot      the backend's screenshot (import / grim): ms each
- *   scale     1, 5, 10, 20 sandboxes at once: start time, idle CPU, PSS
+ *   scale     1, 5, 10, 20 sandboxes at once: start time, idle CPU, PSS, and the SysV shared memory segments they
+ *             hold and the machine's count before and after (a machine-wide limit: kernel.shmmni)
  *
  * Every number comes with the machine's load average when it was taken. The machine this was written on is shared
  * and often busy: before each repetition it waits (up to --wait-load-s) for the 1-minute load to fall under
@@ -38,7 +42,7 @@ import { dirname, join } from 'node:path';
 import { resolveBin } from '../packages/browser/src/bins.ts';
 import { type FreeDisplay, pickFreeDisplay } from '../packages/browser/src/display.ts';
 import type { ShareStats } from '../packages/browser/test/share-page.ts';
-import { type Backend, BACKENDS, Bench, cpuDuring, cpuOver, ENC, ensureVideo, H, load1, log, memory, progName, quiet as quietFor, summary, tree, VIDEO, Viewer, W, work } from './bench-lib.ts';
+import { type Backend, backendsArg, Bench, cpuDuring, cpuOver, ENC, ensureVideo, H, load1, log, memory, novncEncodings, progName, quiet as quietFor, shm, summary, tree, VIDEO, Viewer, VNC_SERVER, W, work } from './bench-lib.ts';
 
 // ------------------------------------------------------------------------------------------------ options
 
@@ -52,6 +56,8 @@ const SCALE = arg('scale', '1,5,10,20').split(',').map(Number).filter(Boolean);
 const ONLY = new Set(arg('only', 'start,idle,vnc,input,typing,share,video,webgl,shot,scale').split(','));
 const MAX_LOAD = Number(arg('max-load', String(cpus().length / 2)));
 const WAIT_LOAD_S = Number(arg('wait-load-s', '600'));
+const BACKENDS = backendsArg();
+const WAYVNC_EXTRAS = process.argv.includes('--wayvnc-extras');
 const quiet = () => quietFor(MAX_LOAD, WAIT_LOAD_S);
 if (ONLY.has('video')) ensureVideo();
 
@@ -63,14 +69,16 @@ async function vnc(b: Bench, page: '/anim' | '/scroll' | '/video' | '/idle', enc
   await Bun.sleep(1500);
   const v = await Viewer.open(socket, encodings, false);
   await Bun.sleep(1000);
-  const [u0, by0] = [v.updates, v.bytes];
+  const [u0, f0, by0] = [v.updates, v.frames, v.bytes];
   v.encodings = {};
-  const serverName = b.backend === 'x11' ? 'x11vnc' : 'wayvnc';
+  v.tightKinds = {};
+  const serverName = VNC_SERVER[b.backend];
   const vncPid = server ?? (() => tree(b.roots()).filter((p) => progName(p) === serverName).map((p) => p.pid));
   const t0 = performance.now();
   const cpu = await cpuOver(vncPid, 5000);
   const secs = (performance.now() - t0) / 1000;
-  const out = { fps: (v.updates - u0) / secs, bytesPerS: (v.bytes - by0) / secs, encodings: v.encodings, serverCpu: cpu.total, pageFps: b.reports.filter((r) => r.ev === 'fps').pop()?.fps ?? null };
+  if (v.error) throw new Error(`the viewer: ${v.error}`);
+  const out = { fps: (v.frames - f0) / secs, updatesPerS: (v.updates - u0) / secs, bytesPerS: (v.bytes - by0) / secs, encodings: v.encodings, tightKinds: v.tightKinds, serverCpu: cpu.total, pageFps: b.reports.filter((r) => r.ev === 'fps').pop()?.fps ?? null };
   v.close();
   return out;
 }
@@ -112,11 +120,10 @@ async function otherWayvnc(b: Bench, args: string[], encodings: number[], page: 
 async function input(b: Bench, trials = 20) {
   await b.open('/input');
   await Bun.sleep(1000);
-  const v = await Viewer.open(b.vncSocket, [ENC.raw, ENC.desktopSize], true);
+  const v = await Viewer.open(b.vncSocket, { encodings: [ENC.raw, ENC.desktopSize], keepPicture: true, kasmPointer: b.backend === 'kasmvnc' });
   await new Promise<void>((r) => {
     const t = setInterval(() => v.updates > 0 && (clearInterval(t), r()), 20);
   });
-  const toPage: number[] = [];
   const toHandler: number[] = [];
   const toPhoton: number[] = [];
   const page = b.reports.find((r) => r.ev === 'page');
@@ -142,13 +149,12 @@ async function input(b: Bench, trials = 20) {
     const photon = await Promise.race([seen, Bun.sleep(5000).then(() => NaN)]);
     
     const d = await b.until('pointerdown', (r) => r.ev === 'down' && b.reports.filter((x) => x.ev === 'down').indexOf(r) >= downs, 5000);
-    toPage.push(d.eventAt - sent);
     toHandler.push(d.handlerAt - sent);
     toPhoton.push(photon - sent);
     await Bun.sleep(250);
   }
   v.close();
-  return { toEvent: summary(toPage), toHandler: summary(toHandler), clickToPhoton: summary(toPhoton.filter((x) => !Number.isNaN(x))), lost: toPhoton.filter((x) => Number.isNaN(x)).length };
+  return { toHandler: summary(toHandler), clickToPhoton: summary(toPhoton.filter((x) => !Number.isNaN(x))), lost: toPhoton.filter((x) => Number.isNaN(x)).length };
 }
 
 async function typing(b: Bench) {
@@ -164,7 +170,7 @@ async function typing(b: Bench) {
 
 /** Chromium's picker answered: on X by the source's name, under PipeWire only by the fake UI (docs/browser.md). */
 function flagsFor(backend: Backend): string[] {
-  return backend === 'x11' ? ['--auto-select-desktop-capture-source=Entire screen'] : ['--use-fake-ui-for-media-stream'];
+  return backend !== 'wayland' ? ['--auto-select-desktop-capture-source=Entire screen'] : ['--use-fake-ui-for-media-stream'];
 }
 
 /** In a sandbox of its own with screen sharing on (on wayland its own PipeWire and portal; on x11 nothing more). */
@@ -230,6 +236,7 @@ async function idle(b: Bench) {
 }
 
 async function scale(backend: Backend, n: number) {
+  const shmBefore = shm().total;
   const benches = Array.from({ length: n }, () => new Bench(backend));
   const t0 = performance.now();
   try {
@@ -241,8 +248,12 @@ async function scale(backend: Backend, n: number) {
     await Bun.sleep(15_000);
     const roots = () => benches.flatMap((b) => b.roots());
     const cpu = await cpuOver(roots, 10_000);
-    const mem = memory(tree(roots()));
-    return { n, wallMs: wall, startPage: summary(starts.map((s) => s.pageMs)), idleCpu: cpu.total, ...mem, perSandboxPssMB: mem.pssMB / n };
+    const all = tree(roots());
+    const mem = memory(all);
+    // Segments held by the display's own processes, and by everything of the sandboxes (Chromium's MIT-SHM ones too).
+    const display = shm(all.filter((p) => ['Xvfb', 'x11vnc', 'Xvnc', 'Xkasmvnc', 'sway', 'wayvnc'].includes(progName(p))).map((p) => p.pid));
+    const shmAll = shm(all.map((p) => p.pid));
+    return { n, wallMs: wall, startPage: summary(starts.map((s) => s.pageMs)), idleCpu: cpu.total, ...mem, perSandboxPssMB: mem.pssMB / n, shm: { display: display.mine, sandboxes: shmAll.mine, machine: shmAll.total, before: shmBefore, limit: shmAll.limit } };
   } finally {
     await Promise.all(benches.map((b) => b.stop()));
   }
@@ -255,6 +266,7 @@ const results: any = {
   machine: { cpus: cpus().length, model: cpus()[0]?.model, memGB: Math.round(Number(/MemTotal:\s+(\d+)/.exec(readFileSync('/proc/meminfo', 'utf8'))?.[1] ?? 0) / 1048576), gpu: readdirSync('/dev/dri').some((n) => n.startsWith('renderD')) },
   size: `${W}x${H}`,
   reps: REPS,
+  backends: BACKENDS,
   maxLoad: MAX_LOAD,
   runs: [] as any[],
   scale: [] as any[],
@@ -267,7 +279,8 @@ const save = () => {
 
 try {
   for (let rep = 0; rep < REPS; rep++) {
-    const order = rep % 2 ? [...BACKENDS].reverse() : [...BACKENDS];
+    // Rotated, so no backend always goes first (a machine warming up, caches filling).
+    const order = BACKENDS.map((_, i) => BACKENDS[(i + rep) % BACKENDS.length]!);
     for (const backend of order) {
       const load = await quiet();
       log(`rep ${rep + 1}/${REPS} ${backend} (load ${load.load.toFixed(1)}${load.busy ? ', busy' : ''})`);
@@ -287,18 +300,31 @@ try {
           log(`  ${name}`, JSON.stringify(run[name]).slice(0, 200));
         };
         await step('idle', () => idle(b));
+        const ZRLE = [ENC.zrle, ENC.raw, ENC.copyRect, ENC.desktopSize];
+        const NOVNC = novncEncodings(false);
         await step('vnc', async () => ({
-          anim: await vnc(b, '/anim', [ENC.zrle, ENC.raw, ENC.copyRect, ENC.desktopSize]),
-          scroll: await vnc(b, '/scroll', [ENC.zrle, ENC.raw, ENC.copyRect, ENC.desktopSize]),
-          ...(existsSync(VIDEO) ? { video: await vnc(b, '/video', [ENC.zrle, ENC.raw, ENC.copyRect, ENC.desktopSize]) } : {}),
-          idle: await vnc(b, '/idle', [ENC.zrle, ENC.raw, ENC.copyRect, ENC.desktopSize]),
-          ...(backend === 'wayland'
+          anim: await vnc(b, '/anim', ZRLE),
+          scroll: await vnc(b, '/scroll', ZRLE),
+          ...(existsSync(VIDEO) ? { video: await vnc(b, '/video', ZRLE) } : {}),
+          idle: await vnc(b, '/idle', ZRLE),
+          // As the manager's live view asks: noVNC's list, Tight first, quality 6, compression 2.
+          animTight: await vnc(b, '/anim', NOVNC).catch((e) => ({ error: (e as Error).message })),
+          scrollTight: await vnc(b, '/scroll', NOVNC).catch((e) => ({ error: (e as Error).message })),
+          ...(existsSync(VIDEO) ? { videoTight: await vnc(b, '/video', NOVNC).catch((e) => ({ error: (e as Error).message })) } : {}),
+          ...(backend === 'kasmvnc'
+            ? {
+                // As KasmVNC's own web client asks: WebP in Tight as well.
+                animWebp: await vnc(b, '/anim', [ENC.kasmWebp, ...NOVNC]).catch((e) => ({ error: (e as Error).message })),
+                scrollWebp: await vnc(b, '/scroll', [ENC.kasmWebp, ...NOVNC]).catch((e) => ({ error: (e as Error).message })),
+              }
+            : {}),
+          ...(backend === 'wayland' && WAYVNC_EXTRAS
             ? {
                 // The sandbox's wayvnc sends up to 60 frames a second; wayvnc's own default, 30, beside it.
-                anim30: await otherWayvnc(b, ['-f', '30'], [ENC.zrle, ENC.raw, ENC.copyRect, ENC.desktopSize]).catch((e) => ({ error: (e as Error).message })),
-                idle30: await otherWayvnc(b, ['-f', '30'], [ENC.zrle, ENC.raw, ENC.copyRect, ENC.desktopSize], '/idle').catch((e) => ({ error: (e as Error).message })),
+                anim30: await otherWayvnc(b, ['-f', '30'], ZRLE).catch((e) => ({ error: (e as Error).message })),
+                idle30: await otherWayvnc(b, ['-f', '30'], ZRLE, '/idle').catch((e) => ({ error: (e as Error).message })),
                 // -g: its GPU features, without Open H.264 asked for and with it.
-                animGpu: await otherWayvnc(b, ['-g', '-f', '60'], [ENC.zrle, ENC.raw, ENC.copyRect, ENC.desktopSize]).catch((e) => ({ error: (e as Error).message })),
+                animGpu: await otherWayvnc(b, ['-g', '-f', '60'], ZRLE).catch((e) => ({ error: (e as Error).message })),
                 animH264: await otherWayvnc(b, ['-g', '-f', '60'], [ENC.h264, ENC.zrle, ENC.raw, ENC.desktopSize]).catch((e) => ({ error: (e as Error).message })),
               }
             : {}),

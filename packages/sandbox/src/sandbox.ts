@@ -463,7 +463,7 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
     const etc = join(this.o.dir, 'etc');
     a.push('--ro-bind', join(etc, 'passwd'), '/etc/passwd', '--ro-bind', join(etc, 'group'), '/etc/group', '--ro-bind', join(etc, 'machine-id'), '/etc/machine-id');
     // The display's one socket: X's path socket, or the compositor's Wayland socket at a path of the app's own.
-    if (screen.backend === 'x11') a.push('--dir', '/tmp/.X11-unix', '--bind', screen.socket, screen.socket);
+    if (screen.backend !== 'wayland') a.push('--dir', '/tmp/.X11-unix', '--bind', screen.socket, screen.socket);
     a.push('--dir', run, '--chmod', '0700', run, '--bind', join(this.run, 'bus'), `${run}/bus`);
     if (screen.backend === 'wayland') a.push('--bind', screen.socket, `${run}/wayland-0`);
     if (this.o.audio) a.push('--dir', `${run}/pulse`, '--bind', this.pulseSocket, `${run}/pulse/native`);
@@ -703,7 +703,7 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
  * told to use it (Qt, GTK, SDL; Electron and Chromium by the session type and their own hint). Qt on X stays on xcb.
  */
 export function displayEnv(screen: Pick<Screen, 'backend' | 'display'>, run: string): Record<string, string> {
-  if (screen.backend === 'x11') return { DISPLAY: `:${screen.display}`, QT_QPA_PLATFORM: 'xcb' };
+  if (screen.backend !== 'wayland') return { DISPLAY: `:${screen.display}`, QT_QPA_PLATFORM: 'xcb' };
   return {
     WAYLAND_DISPLAY: `${run}/wayland-0`,
     XDG_SESSION_TYPE: 'wayland',

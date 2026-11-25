@@ -49,7 +49,7 @@ const until = async (f: () => boolean | Promise<boolean>, ms = 15_000, what = 'c
 
 const kinds = () => new Map([['fake', kindOf(fakeManifest, join(ROOT, 'extractors/fake'))]]);
 
-async function manager(dir: string, opts: { port?: number; code?: string; pause?: number; displayBackend?: 'x11' | 'wayland' } = {}) {
+async function manager(dir: string, opts: { port?: number; code?: string; pause?: number; displayBackend?: 'x11' | 'tigervnc' | 'kasmvnc' | 'turbovnc' | 'wayland' } = {}) {
   const m = await createManager({
     openPage: true,
     dataDir: dir,

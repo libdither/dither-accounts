@@ -253,7 +253,8 @@ export async function slotFree(n: number, port: number | null): Promise<boolean>
 }
 
 /**
- * On the wayland backend, a compositor of its own (no number, nothing to pick). On x11, the display from config/env
+ * On the wayland backend, a compositor of its own (no number, nothing to pick). On an X backend (x11, tigervnc, kasmvnc,
+ * turbovnc), the display from config/env
  * when set; else the account's hashed slot in :91–:99 when it is free, or the next free one after it. Two accounts can
  * hash to the same slot, and the second then failed to start ("Is port 8796 in use?", the extension port being 8700 +
  * display), so a slot is taken only when slotFree says so. Its live view is a socket, not a port.
@@ -263,16 +264,17 @@ export async function pickDisplay(
   config: Record<string, any>,
   opts: { portFixed?: boolean; free?: (n: number, port: number | null) => Promise<boolean>; backend?: DisplayBackend } = {},
 ): Promise<FreeDisplay> {
-  if ((opts.backend ?? displayBackend()) === 'wayland') return { backend: 'wayland', display: null };
+  const backend = opts.backend ?? displayBackend();
+  if (backend === 'wayland') return { backend: 'wayland', display: null };
   const envD = process.env.DITHER_DISPLAY ? Number(process.env.DITHER_DISPLAY) : undefined;
-  if (config.display || envD) return { backend: 'x11', display: Number(config.display ?? envD) };
+  if (config.display || envD) return { backend, display: Number(config.display ?? envD) };
   const free = opts.free ?? slotFree;
   const { from, to } = DISCORD_DISPLAYS;
   const span = to - from + 1;
   const start = hashedDisplay(accountId) - from;
   for (let i = 0; i < span; i++) {
     const n = from + ((start + i) % span);
-    if (await free(n, opts.portFixed ? null : 8700 + n)) return { backend: 'x11', display: n };
+    if (await free(n, opts.portFixed ? null : 8700 + n)) return { backend, display: n };
   }
   throw new Error(`no free Discord display in :${from}–:${to}; set this account's config.display to one outside it`);
 }

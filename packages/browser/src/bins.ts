@@ -17,6 +17,8 @@ export interface BinSpec {
   env: string;
   /** nixpkgs attribute to build when nothing else has it. */
   nix: string;
+  /** A Nix file in this repo (nix/) to build instead, for a program nixpkgs lacks. */
+  nixFile?: string;
   candidates?: string[];
   /** False when the copy on PATH is not the one to run (NixOS's sway is wrapped in dbus-run-session). Default true. */
   path?: boolean;
@@ -54,8 +56,9 @@ export function resolveBin(spec: BinSpec, log: Log): string {
     const onPath = spec.path === false ? null : Bun.which(spec.name);
     if (onPath) return real(onPath);
     for (const c of spec.candidates ?? []) if (existsSync(c)) return real(c);
-    log('info', `resolving ${spec.name} via nix build nixpkgs#${spec.nix}`);
-    const out = spawnSync('nix', ['build', `nixpkgs#${spec.nix}`, '--no-link', '--print-out-paths'], { encoding: 'utf8' });
+    const what = spec.nixFile ? ['-f', spec.nixFile] : [`nixpkgs#${spec.nix}`];
+    log('info', `resolving ${spec.name} via nix build ${what.join(' ')}`);
+    const out = spawnSync('nix', ['build', ...what, '--no-link', '--print-out-paths'], { encoding: 'utf8' });
     if (out.status !== 0) throw new Error(`cannot find ${spec.name}: set ${spec.env}, put it on PATH, or make nix available (${(out.stderr ?? out.error?.message ?? '').slice(0, 200)})`);
     for (const store of out.stdout.trim().split('\n').reverse()) {
       const bin = join(store.trim(), spec.sub ?? 'bin', spec.name);
@@ -87,6 +90,10 @@ export const DISPLAY_BINS = {
   sway: { name: 'sway', env: 'SWAY_BIN', nix: 'sway-unwrapped', path: false },
   wayvnc: { name: 'wayvnc', env: 'WAYVNC_BIN', nix: 'wayvnc' },
   grim: { name: 'grim', env: 'GRIM_BIN', nix: 'grim' },
+  // The Xvnc backends (screen.ts). TigerVNC's and TurboVNC's are both called Xvnc, so neither is taken from PATH.
+  tigervnc: { name: 'Xvnc', env: 'TIGERVNC_XVNC_BIN', nix: 'tigervnc', path: false },
+  turbovnc: { name: 'Xvnc', env: 'TURBOVNC_XVNC_BIN', nix: 'turbovnc', path: false },
+  kasmvnc: { name: 'Xkasmvnc', env: 'KASMVNC_BIN', nix: 'kasmvnc', nixFile: join(import.meta.dir, '../../../nix/kasmvnc.nix') },
 } satisfies Record<string, BinSpec>;
 
 /** Run a program, collect its stdout; reject with its stderr when it fails. */

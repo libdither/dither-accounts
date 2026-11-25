@@ -378,26 +378,31 @@ describe.skipIf(!ok)('Chromium on wayland', () => {
   }, 60_000);
 });
 
+// Every X backend shares the same way: Chromium's X capturer reads the X server's screen, whichever server it is
+// (Xvfb, or an Xvnc that is the live view too).
+const X_SHARE = (['x11', 'tigervnc', 'kasmvnc', 'turbovnc'] as const).filter((b) => b === 'x11' || (ok && why(`${b}'s Xvnc`, !!tryBin(DISPLAY_BINS[b], () => {}))));
+
 describe.skipIf(!ok)('x11 parity', () => {
-  test(
-    "Chromium on x11 shares its Xvfb (Chromium's picker answered by its Entire screen), and calls no portal",
-    async () => {
-      const p = await probe('x', await pickFreeDisplay(undefined, [], 'x11'), ['--auto-select-desktop-capture-source=Entire screen']);
-      try {
-        expectGood(await share(p, 1), 1024, 700);
-        expect(monitored.join('')).not.toContain('org.freedesktop.portal.ScreenCast');
-      } finally {
-        await p.sb.stop();
-        p.server.stop(true);
-        // An x11 sandbox's Chromium still has the machine's session bus (unchanged here: docs/browser.md), so it was
-        // there; its capture is X's own and asked no portal. Its connections are counted as known from here on, pass
-        // or fail, so the Electron test below sees only its own.
-        await flushHostBus();
-        ownNames = new Set([...ownNames, ...strangersOnHostBus()]);
-      }
-    },
-    180_000,
-  );
+  for (const backend of X_SHARE)
+    test(
+      `Chromium on ${backend} shares its X server's screen (Chromium's picker answered by its Entire screen), and calls no portal`,
+      async () => {
+        const p = await probe(backend, await pickFreeDisplay(undefined, [], backend), ['--auto-select-desktop-capture-source=Entire screen']);
+        try {
+          expectGood(await share(p, 1), 1024, 700);
+          expect(monitored.join('')).not.toContain('org.freedesktop.portal.ScreenCast');
+        } finally {
+          await p.sb.stop();
+          p.server.stop(true);
+          // An X sandbox's Chromium still has the machine's session bus (unchanged here: docs/browser.md), so it was
+          // there; its capture is X's own and asked no portal. Its connections are counted as known from here on, pass
+          // or fail, so the Electron test below sees only its own.
+          await flushHostBus();
+          ownNames = new Set([...ownNames, ...strangersOnHostBus()]);
+        }
+      },
+      180_000,
+    );
 });
 
 // ------------------------------------------------------------- Electron

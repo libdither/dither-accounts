@@ -1,9 +1,12 @@
 /**
- * A sandbox's screen: where its windows show, the live view of it, and real input and pictures of it. One of two
+ * A sandbox's screen: where its windows show, the live view of it, and real input and pictures of it. One of these
  * backends, chosen per sandbox (docs/browser.md, "Display backends"):
  *
  *   x11      Xvfb on a numbered display from the shared pool (display.ts), x11vnc as the live view (vnc.ts), xdotool
  *            for input, ImageMagick's import for pictures. The default.
+ *   tigervnc, kasmvnc, turbovnc
+ *            the same, but the X server is an Xvnc that serves the live view itself (vnc.ts, xvncArgs): TigerVNC's,
+ *            KasmVNC's or TurboVNC's. One process instead of two, and no shared memory segments.
  *   wayland  a headless sway of the sandbox's own, its socket in the account's directory and no number at all, wayvnc as
  *            the live view on the same socket path, input through that live view (rfb.ts) and wtype, pictures by grim
  *            (wayland.ts).
@@ -13,13 +16,15 @@
  * `backend`, `name` and `note`, for its status.
  */
 import type { Subprocess } from 'bun';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { DISPLAY_BINS, type Log, resolveBin, run, withoutDisplays } from './bins.ts';
 import { type DisplayBackend, displayIsOurs, type FreeDisplay, type XDisplay } from './display.ts';
-import { prepareVncSocket, vncSocketPath, waitForVncSocket, x11vncArgs } from './vnc.ts';
+import { prepareVncSocket, vncSocketPath, waitForVncSocket, x11vncArgs, xvncArgs } from './vnc.ts';
 import { WaylandScreen } from './wayland.ts';
 import { closeWindow } from './x11.ts';
 
-export { DISPLAY_BACKEND_ENV, DISPLAY_BACKENDS, type DisplayBackend, displayBackend, parseBackend } from './display.ts';
+export { DISPLAY_BACKEND_ENV, DISPLAY_BACKENDS, type DisplayBackend, displayBackend, isXBackend, parseBackend, X_BACKENDS, type XBackend } from './display.ts';
 
 /** A display as a status shows it: ":80" for an X display (a number is one), "wayland" for a compositor of its own. */
 export function displayName(d: FreeDisplay | number | null | undefined): string | null {
@@ -28,11 +33,14 @@ export function displayName(d: FreeDisplay | number | null | undefined): string 
   return d.backend === 'wayland' ? 'wayland' : `:${d.display}`;
 }
 
-/** What runs it, for a status layer's note: "Xvfb :80", "sway (Wayland)". */
+/** The X server each X backend runs, for notes. */
+export const X_SERVER_NAME: Record<XDisplay['backend'], string> = { x11: 'Xvfb', tigervnc: 'Xvnc (TigerVNC)', kasmvnc: 'Xvnc (KasmVNC)', turbovnc: 'Xvnc (TurboVNC)' };
+
+/** What runs it, for a status layer's note: "Xvfb :80", "Xvnc (TigerVNC) :81", "sway (Wayland)". */
 export function displayNote(d: FreeDisplay | number | null | undefined): string {
   if (d === null || d === undefined) return 'no display';
   if (typeof d === 'number') return `Xvfb :${d}`;
-  return d.backend === 'wayland' ? 'sway (Wayland)' : `Xvfb :${d.display}`;
+  return d.backend === 'wayland' ? 'sway (Wayland)' : `${X_SERVER_NAME[d.backend]} :${d.display}`;
 }
 
 /** Spawns one of the screen's processes in its owner's list, so the owner stops it and can find it after a crash. */
@@ -101,12 +109,15 @@ export function makeScreen(o: ScreenOptions): Screen {
   return new XScreen(o, free);
 }
 
-/** Xvfb, x11vnc, xdotool and import: the backend the sandboxes always had. */
+/**
+ * An X server on a numbered display, with xdotool and import: Xvfb and x11vnc (x11, the backend the sandboxes always
+ * had), or one Xvnc that is both (tigervnc, kasmvnc, turbovnc).
+ */
 class XScreen implements Screen {
-  readonly backend = 'x11' as const;
+  readonly backend: XDisplay['backend'];
   readonly display: number;
   readonly vncSocket: string;
-  readonly procNames = ['x11vnc', 'Xvfb'] as const;
+  readonly procNames: readonly string[];
   private xdotool: string | null = null;
   private importBin: string | null = null;
 
@@ -114,8 +125,10 @@ class XScreen implements Screen {
     private o: ScreenOptions,
     readonly free: XDisplay,
   ) {
+    this.backend = free.backend;
     this.display = free.display;
     this.vncSocket = o.vncSocket ?? vncSocketPath(o.dir);
+    this.procNames = free.backend === 'x11' ? ['x11vnc', 'Xvfb'] : ['Xvnc'];
   }
 
   get socket() {
@@ -123,6 +136,7 @@ class XScreen implements Screen {
   }
 
   async start() {
+    if (this.backend !== 'x11') return this.startXvnc(this.backend);
     const d = `:${this.display}`;
     const xvfbBin = resolveBin(DISPLAY_BINS.xvfb, this.o.log);
     const x11vncBin = resolveBin(DISPLAY_BINS.x11vnc, this.o.log);
@@ -139,17 +153,34 @@ class XScreen implements Screen {
   }
 
   /**
+   * One Xvnc: the X server and, on the account's own Unix socket and no TCP port, the live view (vnc.ts, xvncArgs). Its
+   * display's lock and its socket both come up before its live view's socket, which it makes once its VNC extension
+   * runs; both are waited for.
+   */
+  private async startXvnc(backend: 'tigervnc' | 'kasmvnc' | 'turbovnc') {
+    const bin = resolveBin(DISPLAY_BINS[backend], this.o.log);
+    prepareVncSocket(this.vncSocket);
+    const d = `:${this.display}`;
+    // HOME: KasmVNC reads ~/.kasmpasswd and writes ~/.vnc; TurboVNC reads ~/.vnc. A directory of the account's own.
+    const home = join(this.o.dir, 'xvnc-home');
+    mkdirSync(home, { recursive: true, mode: 0o700 });
+    const xvnc = this.o.spawn('Xvnc', xvncArgs(backend, bin, d, this.vncSocket, this.o), { match: d, env: { HOME: home, DISPLAY: undefined, WAYLAND_DISPLAY: undefined } });
+    await this.waitForDisplay(xvnc, 8000, 'Xvnc');
+    await waitForVncSocket(this.vncSocket, xvnc, 10_000, 'Xvnc');
+  }
+
+  /**
    * Our Xvfb's display is up: its socket there and its lock naming it. Two sandboxes starting together can pick the
    * same free display: the socket is then the other one's, and ours is about to exit with "already active".
    */
-  private async waitForDisplay(xvfb: Subprocess, ms: number) {
+  private async waitForDisplay(xvfb: Subprocess, ms: number, name = 'Xvfb') {
     const deadline = Date.now() + ms;
     while (Date.now() < deadline) {
-      if (xvfb.exitCode !== null) throw new Error(`Xvfb on :${this.display} exited (${xvfb.exitCode}); is the display taken?`);
+      if (xvfb.exitCode !== null) throw new Error(`${name} on :${this.display} exited (${xvfb.exitCode}); is the display taken?`);
       if (displayIsOurs(this.display, xvfb.pid)) return;
       await Bun.sleep(50);
     }
-    throw new Error(`Xvfb display :${this.display} did not come up within ${ms} ms`);
+    throw new Error(`${name} display :${this.display} did not come up within ${ms} ms`);
   }
 
   clientEnv() {

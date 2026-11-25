@@ -78,3 +78,30 @@ export async function waitForVncSocket(socket: string, server: Subprocess, timeo
   throw new Error(`${name}'s live view socket did not come up within ${timeoutMs}ms`);
 }
 
+
+/**
+ * An Xvnc for a display (the tigervnc, kasmvnc and turbovnc backends: screen.ts): the X server with its VNC server built
+ * in, so one process where x11 has two, and the picture read where it is drawn instead of copied out through MIT-SHM
+ * (x11vnc holds about 40 SysV shared memory segments, a machine-wide count with a limit; an Xvnc holds none).
+ *
+ * Each one's flags, checked with `ss -lntup`, `ss -lxp` and strace (socket, bind, connect, sendto):
+ *   common     :<n> -geometry WxH -depth 24, -nolisten tcp (and -nolisten local for a sandbox shown the path socket
+ *              only), -dpi 96 as for Xvfb (Chromium sizes its window by it)
+ *   tigervnc   -rfbunixpath <path> and -rfbport -1: the socket, and no TCP port (without -rfbport -1 it takes 5900+n).
+ *              -SecurityTypes None (the manager carries the socket, behind its login, as with x11vnc), -AlwaysShared
+ *              (a viewer asking for the screen alone does not push the others off), -AcceptSetDesktopSize=0 (viewers
+ *              cannot resize it, as wayvnc's -R)
+ *   kasmvnc    the same (KasmVNC is TigerVNC's fork, its RFB on the Unix socket unchanged), and -publicIP 127.0.0.1:
+ *              without it, it asks STUN servers on the internet (stun.l.google.com and others) for the machine's public
+ *              address at every start, for a UDP transport only its own web client uses. With no -websocketPort it
+ *              opens no websocket or HTTP listener, nor any UDP socket.
+ *   turbovnc   -rfbunixpath <path> alone opens no TCP port (TurboVNC listens on TCP only when given no Unix path);
+ *              its options are lowercase and its own: -securitytypes none, -alwaysshared, -noreverse, and no
+ *              -rfbport -1, which it refuses
+ */
+export function xvncArgs(backend: 'tigervnc' | 'kasmvnc' | 'turbovnc', bin: string, display: string, socket: string, o: { width: number; height: number; pathSocketOnly?: boolean }): string[] {
+  const common = [bin, display, '-geometry', `${o.width}x${o.height}`, '-depth', '24', '-nolisten', 'tcp', ...(o.pathSocketOnly ? ['-nolisten', 'local'] : []), '-dpi', '96', '-desktop', 'sandbox'];
+  if (backend === 'turbovnc') return [...common, '-rfbunixpath', socket, '-securitytypes', 'none', '-alwaysshared', '-noreverse'];
+  const tiger = [...common, '-rfbunixpath', socket, '-rfbport', '-1', '-SecurityTypes', 'None', '-AlwaysShared', '-AcceptSetDesktopSize=0'];
+  return backend === 'kasmvnc' ? [...tiger, '-publicIP', '127.0.0.1'] : tiger;
+}

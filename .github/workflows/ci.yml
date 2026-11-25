@@ -40,9 +40,11 @@ jobs:
       - if: github.event_name == 'pull_request'
         run: bun scripts/flake-check.ts origin/${{ github.base_ref }}
 
-  # The tests that need Nix: the sandboxes on both display backends (Xvfb and x11vnc; sway, wayvnc and grim),
+  # The tests that need Nix: the sandboxes on every display backend (Xvfb and x11vnc; TigerVNC's, KasmVNC's and
+  # TurboVNC's Xvnc; sway, wayvnc and grim),
   # Chromium on them, the native-app sandbox (bubblewrap, pasta), X apps through xwayland-satellite, and screen
-  # sharing (PipeWire, WirePlumber, the portals, Chromium and Electron). Everything comes from nixpkgs.
+  # sharing (PipeWire, WirePlumber, the portals, Chromium and Electron). Everything comes from nixpkgs, but KasmVNC
+  # (nix/kasmvnc.nix: upstream's build, patched).
   nix:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -66,7 +68,8 @@ jobs:
       - name: Programs from nixpkgs
         run: |
           nix profile install nixpkgs#{bash,coreutils,dbus,bubblewrap,passt,xvfb,imagemagick,chromium}
-          nix build --no-link nixpkgs#{x11vnc,xdotool,pulseaudio,sway-unwrapped,wayvnc,grim,pipewire,wireplumber,xdg-desktop-portal,xdg-desktop-portal-wlr,xwayland-satellite,xorg.xev,electron}
+          nix build --no-link nixpkgs#{x11vnc,xdotool,xclip,tigervnc,turbovnc,pulseaudio,sway-unwrapped,wayvnc,grim,pipewire,wireplumber,xdg-desktop-portal,xdg-desktop-portal-wlr,xwayland-satellite,xorg.xev,electron}
+          nix build --no-link -f nix/kasmvnc.nix
           command -v chromium Xvfb bwrap pasta import
       # DITHER_TESTS_NEED_ALL: a test that would skip for a missing program fails instead (test/needs.ts).
       - name: Tests that need Nix

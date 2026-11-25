@@ -12,6 +12,7 @@ import { Router } from './router.ts';
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { procAlive, procStat } from './procs.ts';
 import { acquireManagerLock, chooseLaunch, type CodeRestarts, type Launch, releaseManagerLock, Supervisor } from './supervisor.ts';
+import type { DisplayBackend } from './display-backend.ts';
 import { NdjsonFile, setTraceSink, StallWatch } from './trace.ts';
 
 export interface ManagerOpts {
@@ -62,7 +63,7 @@ export interface ManagerOpts {
   /** Tests only: how often adopted extractors are looked at in /proc (1 s). */
   watchMs?: number;
   /** The display backend of accounts whose config names none (default x11; docs/browser.md "Display backends"). */
-  displayBackend?: 'x11' | 'wayland';
+  displayBackend?: DisplayBackend;
   /** Tests only: what a `scope` launch goes through instead of systemd-run. */
   systemdRun?: string;
   /** Tests only: how long a surviving extractor waits for a manager before it ends itself (1800 s). */

@@ -114,10 +114,16 @@ test("the display backend: the manager's default (x11), an account's own from it
   expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: 'Wayland' } })).status).toBe(200);
   expect((await detail()).config.displayBackend).toBe('wayland');
   expect((await detail()).process.displayBackend).toBe('wayland');
+  // The Xvnc backends by name, as given on the page or by the cli.
+  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: ' TigerVNC ' } })).status).toBe(200);
+  expect((await detail()).config.displayBackend).toBe('tigervnc');
+  expect((await detail()).process.displayBackend).toBe('tigervnc');
   expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: null } })).status).toBe(200);
   expect('displayBackend' in (await detail()).config).toBe(false);
   expect((await detail()).process.displayBackend).toBe('x11');
   expect(m.sup.backendOf({ config: JSON.stringify({ displayBackend: 'wayland' }) })).toBe('wayland');
+  expect(m.sup.backendOf({ config: JSON.stringify({ displayBackend: 'kasmvnc' }) })).toBe('kasmvnc');
+  expect(m.sup.backendOf({ config: JSON.stringify({ displayBackend: 'xvnc' }) })).toBe('x11');
   expect(m.sup.backendOf({ config: '{}' })).toBe('x11');
   expect(m.sup.backendOf({ config: 'not json' })).toBe('x11');
   await until(online, 10_000, 'the extractor back online');

@@ -28,11 +28,11 @@ pkgs.stdenv.mkDerivation rec {
     perl -0777 -pi -e 's|/usr/bin\0|.\0\0\0\0\0\0\0\0|g or die "no /usr/bin in Xkasmvnc"' $out/bin/Xkasmvnc
     mkdir -p $out/libexec/kasmvnc
     ln -s ${pkgs.xkbcomp}/bin/xkbcomp $out/libexec/kasmvnc/xkbcomp
-    # -xkbdir and -fp: the keyboard maps and fonts Debian's xkb-data and xfonts packages would bring. ffmpeg's
-    # libraries, which it opens by name (libavformat.so) for its video mode, are on the library path.
+    # -xkbdir and -fp: the keyboard maps and fonts Debian's xkb-data and xfonts packages would bring. No ffmpeg: its
+    # video mode looks for libavformat.so under /usr/lib and /usr/lib64 only ("ffmpeg: Could not open
+    # libavformat.so"), whatever the library path says, and the sandboxes do not use that mode.
     wrapProgram $out/bin/Xkasmvnc --chdir $out/libexec/kasmvnc \
-      --add-flags "-xkbdir ${pkgs.xkeyboard_config}/share/X11/xkb -fp ${pkgs.font-misc-misc}/share/fonts/X11/misc,built-ins" \
-      --prefix LD_LIBRARY_PATH : ${pkgs.lib.getLib pkgs.ffmpeg_7}/lib
+      --add-flags "-xkbdir ${pkgs.xkeyboard_config}/share/X11/xkb -fp ${pkgs.font-misc-misc}/share/fonts/X11/misc,built-ins"
     runHook postInstall
   '';
   meta = {

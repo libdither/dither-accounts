@@ -37,12 +37,20 @@ afterAll(async () => {
   rmSync(process.env.DITHER_DISPLAY_CLAIMS!, { recursive: true, force: true });
 });
 
-/** A screen's spawn as the sandboxes do it, every process kept for the end. */
+/** A screen's spawn as the sandboxes do it, every process kept for the end, and what each said (for a failure's message). */
+const said = new Map<Subprocess, string[]>();
 const spawn = (_name: string, cmd: string[], o: { env?: Record<string, string | undefined> }) => {
-  const p = Bun.spawn(cmd, { env: cleanEnv({ ...process.env, ...o.env }), stdout: 'ignore', stderr: 'ignore' });
+  const p = Bun.spawn(cmd, { env: cleanEnv({ ...process.env, ...o.env }), stdout: 'ignore', stderr: 'pipe' });
   procs.push(p);
+  const lines: string[] = [];
+  said.set(p, lines);
+  void (async () => {
+    for await (const c of p.stderr as ReadableStream<Uint8Array>) lines.push(new TextDecoder().decode(c));
+  })();
   return p;
 };
+/** What the processes started since `start` said, the end of it. */
+const saidSince = (start: number) => procs.slice(start).map((p) => (said.get(p) ?? []).join('').slice(-3000)).join('\n---\n');
 
 test('the backends by name, and how a status shows their displays', () => {
   for (const b of ['tigervnc', 'KasmVNC', ' turbovnc ']) expect(parseBackend(b)).toBe(b.trim().toLowerCase() as XBackend);
@@ -238,7 +246,9 @@ for (const backend of BACKENDS) {
         expect(free).toEqual({ backend, display: free.display! });
         const screen = makeScreen({ display: free, dir, width: 1024, height: 700, spawn, log: () => {} });
         try {
-          await screen.start();
+          await screen.start().catch((e) => {
+            throw new Error(`${(e as Error).message}\nit said:\n${saidSince(start)}`);
+          });
           const mine = procs.slice(start);
           expect(mine.length).toBe(1);
           expect(screen.procNames).toEqual(['Xvnc']);

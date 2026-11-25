@@ -87,6 +87,7 @@ function frame() {
 }
 requestAnimationFrame(frame);
 say({ ev: 'page', w: innerWidth, h: innerHeight, sw: screen.width, sh: screen.height });
+addEventListener('resize', () => say({ ev: 'resize', w: innerWidth, h: innerHeight }));
 
 let session = 0, busy = false;
 window.addEventListener('click', () => { say({ ev: 'click', busy, session }); if (!busy) start().catch((e) => { busy = false; say({ ev: 'error', name: e.name, message: String(e.message) }); }); });

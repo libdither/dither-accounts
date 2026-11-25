@@ -40,7 +40,7 @@ test('the backend: DITHER_DISPLAY_BACKEND, x11 when unset or empty, an error for
   expect(displayBackend({})).toBe('x11');
   expect(displayBackend({ DITHER_DISPLAY_BACKEND: '' })).toBe('x11');
   expect(displayBackend({ DITHER_DISPLAY_BACKEND: ' Wayland ' })).toBe('wayland');
-  expect(() => displayBackend({ DITHER_DISPLAY_BACKEND: 'xorg' })).toThrow(/x11 or wayland/);
+  expect(() => displayBackend({ DITHER_DISPLAY_BACKEND: 'xorg' })).toThrow(/must be one of x11, tigervnc, kasmvnc, turbovnc, wayland/);
   expect(parseBackend('x11')).toBe('x11');
   expect(parseBackend(1)).toBeNull();
   // No display number to pick, claim or leave behind.

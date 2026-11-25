@@ -478,17 +478,21 @@ if (LAB && LAB.runs.length) {
   h('p', 'note', LAB.note || '', root);
   const LB = [...new Set(LAB.runs.map((r) => r.backend))];
   const LM = [
-    ['Start → usable', 'ms', (r) => r.usableMs],
+    ['Restart → online (manager)', 's', (r) => r.onlineMs / 1000],
+    ['Restart → usable (online, the live view settled 2 s)', 's', (r) => r.usableMs / 1000],
     ['Idle CPU, whole sandbox', '%', (r) => r.idle.cpu],
-    ['Memory (PSS)', 'MB', (r) => r.idle.pssMB],
-    ['Display stack memory (PSS)', 'MB', (r) => r.idle.screenPssMB],
-    ['Scrolling: frames to the viewer', 'per s', (r) => r.scroll.fps],
-    ['Scrolling: bytes', 'MB/s', (r) => r.scroll.bytesPerS / 1e6],
-    ['Scrolling: display CPU', '%', (r) => r.scroll.cpu],
-    ['Scrolling at 5 Mbit/s, 50 ms: frames', 'per s', (r) => r.slow.fps],
-    ['Scrolling at 5 Mbit/s, 50 ms: bytes', 'MB/s', (r) => r.slow.bytesPerS / 1e6],
-    ['Whole screen at 1 Mbit/s, 150 ms', 'ms', (r) => r.slowFirst.ms],
+    ['Idle CPU, display stack', '%', (r) => r.idle.screenCpu],
+    ['Memory, whole sandbox (PSS)', 'MB', (r) => r.idle.pssMB],
+    ['Memory, display stack (PSS)', 'MB', (r) => r.idle.screenPssMB],
+    ['Interacting: frames to the live view', 'per s', (r) => r.interact.fps],
+    ['Interacting: bytes', 'KB/s', (r) => r.interact.bytesPerS / 1e3],
+    ['Interacting: CPU, whole sandbox', '%', (r) => r.interact.cpu],
+    ['5 Mbit/s, 50 ms: first whole screen', 's', (r) => r.slow.bw5rtt50.firstWholeMs / 1000],
+    ['5 Mbit/s, 50 ms: frames interacting', 'per s', (r) => r.slow.bw5rtt50.fps],
+    ['1 Mbit/s, 150 ms: first whole screen', 's', (r) => r.slow.bw1rtt150.firstWholeMs / 1000],
+    ['1 Mbit/s, 150 ms: frames interacting', 'per s', (r) => r.slow.bw1rtt150.fps],
   ];
+  for (const r of LAB.runs) r.program ??= r.label;
   for (const prog of [...new Set(LAB.runs.map((r) => r.program))]) {
     h('h3', '', prog, root).style.margin = '16px 0 6px';
     const rows = LM.map(([label, unit, f]) => [label + ' (' + unit + ')', ...LB.map((b) => { const v = LAB.runs.filter((r) => r.program === prog && r.backend === b && !r.error).map(val(f)).filter((x) => x !== undefined); return v.length ? fmt(med(v)) + (v.length > 1 ? ' (' + v.length + ')' : '') : '–'; })]);

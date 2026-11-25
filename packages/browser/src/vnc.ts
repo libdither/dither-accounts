@@ -18,6 +18,7 @@
  */
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, rmSync } from 'node:fs';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { Subprocess } from 'bun';
@@ -78,6 +79,32 @@ export async function waitForVncSocket(socket: string, server: Subprocess, timeo
   throw new Error(`${name}'s live view socket did not come up within ${timeoutMs}ms`);
 }
 
+
+
+/**
+ * Wait until the VNC server on the socket says its first words ("RFB 003.008\n"). An Xvnc listens on its socket before
+ * it has finished starting (its keyboard map; KasmVNC also times its encoders), and answers a connection only then: the
+ * live view works from here, not from when the socket appeared. Fails at once if the server exits.
+ */
+export async function waitForRfbBanner(socket: string, server: Subprocess, timeoutMs: number, name: string) {
+  const deadline = Date.now() + timeoutMs;
+  let last = 'no answer';
+  while (Date.now() < deadline) {
+    if (server.exitCode !== null || server.signalCode) throw new Error(`${name} exited (${server.signalCode ?? server.exitCode}) before its live view answered`);
+    const said = await new Promise<string | null>((resolve) => {
+      const sock = connect({ path: socket });
+      const done = (v: string | null) => (clearTimeout(t), sock.destroy(), resolve(v));
+      const t = setTimeout(() => done(null), Math.max(0, deadline - Date.now()));
+      sock.once('data', (b) => done(b.toString('latin1')));
+      sock.once('error', (e) => ((last = e.message), done(null)));
+      sock.once('close', () => done(null));
+    });
+    if (said?.startsWith('RFB ')) return;
+    if (said !== null) last = `it said ${JSON.stringify(said.slice(0, 20))}`;
+    await Bun.sleep(50);
+  }
+  throw new Error(`${name}'s live view did not answer within ${timeoutMs}ms (${last})`);
+}
 
 /**
  * An Xvnc for a display (the tigervnc, kasmvnc and turbovnc backends: screen.ts): the X server with its VNC server built

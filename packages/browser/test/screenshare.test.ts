@@ -255,11 +255,14 @@ async function share(p: Probe, session: number): Promise<ShareStats> {
       await Bun.sleep(50);
     }
   }
-  await screen.click(200, pg.sh - pg.h + 300);
+  // Low on the screen, left of the receiving frame (bottom right): inside the page whatever its size was when it first
+  // reported. That report can come before the window took its final size (on a slow machine, from a smaller or larger
+  // first window), so its innerHeight is not where the page ends up.
+  await screen.click(200, pg.sh - 200);
   try {
     await until(`the click for session ${session}`, () => p.reports.filter((r) => r.ev === 'click').length > clicks, 10_000);
   } catch (e) {
-    throw new Error(`${(e as Error).message}${await whatIsOnScreen(p)}`);
+    throw new Error(`${(e as Error).message} (the page's reports: ${JSON.stringify(p.reports.filter((r) => r.ev === 'page' || r.ev === 'resize'))})${await whatIsOnScreen(p)}`);
   }
   await until(`getDisplayMedia answered for session ${session}`, () => p.reports.some((r) => (r.ev === 'shared' && r.session === session) || r.ev === 'error'), 30_000);
   await until(`session ${session}'s numbers`, () => p.reports.some((r) => (r.ev === 'stats' && r.session === session) || r.ev === 'error'), 60_000);

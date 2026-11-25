@@ -20,7 +20,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DISPLAY_BINS, type Log, resolveBin, run, withoutDisplays } from './bins.ts';
 import { type DisplayBackend, displayIsOurs, type FreeDisplay, type XDisplay } from './display.ts';
-import { prepareVncSocket, vncSocketPath, waitForVncSocket, x11vncArgs, xvncArgs } from './vnc.ts';
+import { prepareVncSocket, vncSocketPath, waitForRfbBanner, waitForVncSocket, x11vncArgs, xvncArgs } from './vnc.ts';
 import { WaylandScreen } from './wayland.ts';
 import { closeWindow } from './x11.ts';
 
@@ -155,7 +155,7 @@ class XScreen implements Screen {
   /**
    * One Xvnc: the X server and, on the account's own Unix socket and no TCP port, the live view (vnc.ts, xvncArgs). Its
    * display's lock and its socket both come up before its live view's socket, which it makes once its VNC extension
-   * runs; both are waited for.
+   * runs, and it answers there once it has finished starting: all three are waited for.
    */
   private async startXvnc(backend: 'tigervnc' | 'kasmvnc' | 'turbovnc') {
     const bin = resolveBin(DISPLAY_BINS[backend], this.o.log);
@@ -167,6 +167,7 @@ class XScreen implements Screen {
     const xvnc = this.o.spawn('Xvnc', xvncArgs(backend, bin, d, this.vncSocket, this.o), { match: d, env: { HOME: home, DISPLAY: undefined, WAYLAND_DISPLAY: undefined } });
     await this.waitForDisplay(xvnc, 8000, 'Xvnc');
     await waitForVncSocket(this.vncSocket, xvnc, 10_000, 'Xvnc');
+    await waitForRfbBanner(this.vncSocket, xvnc, 10_000, 'Xvnc');
   }
 
   /**

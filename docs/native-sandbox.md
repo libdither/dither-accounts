@@ -19,6 +19,7 @@ account's calls body (docs/signal.md, "Calls through Signal Desktop"), is its se
 | **the network** | its own network namespace through pasta (user-mode networking: out to the internet, nothing in, the host's loopback not mapped); `host` when pasta cannot be had (said in the status), `none` for tests | the app reaches Telegram and nothing on this machine: not the manager on 8486 (and no live view listens on a port to reach). And abstract unix sockets live in the network namespace: under the host's network, the app could reach every other Xvfb on the machine (the browser sandboxes' x11 displays listen on abstract sockets, unauthenticated; their wayland compositors listen on none) |
 | **sound** (when asked: `audio`) | a PulseAudio server of the sandbox's own, outside it like the display, with its own home and runtime directory, no default script (so nothing of the machine's sound), only the null sinks and the sources remapped from their monitors that the app's runner names, and no module loading by clients; its socket is the app's session PulseAudio (`PULSE_SERVER`) | what the app plays and records, as streams we can tap and feed: Signal Desktop's calls |
 | **processes** | the app under `bwrap --unshare-all` with `--die-with-parent`; a small environment (the extractor's own, with its manager token, never reaches even bubblewrap's init); a pid file so a later start ends what a killed extractor left | one account's app cannot see another's processes, or the extractor's secrets |
+| **the machine's session** | nothing the sandbox starts gets it, inside bubblewrap or outside: the app is given its own runtime directory, bus and audio server and an address for the system bus where nothing is; everything started outside it (the screen's servers: Xvfb, x11vnc, an Xvnc, sway, the live view's; the sandbox's dbus-daemon and PulseAudio; pasta and bubblewrap; the screen's tools: xdotool, import, grim) gets the sandbox's run directory (or its screen's) as `XDG_RUNTIME_DIR`, session and system bus addresses where nothing is, and no `PULSE_SERVER` or `PIPEWIRE_REMOTE` (`noHostSession`, packages/browser bins.ts, the same the browser sandboxes use) | none of them can reach the owner's session bus (the owner's portal, notifications, desktop), system bus, or sound, even one that would look there by itself; nothing is made in the owner's runtime directory but the sandbox's own `dither-sandbox/<hash>` |
 
 `bun test packages/sandbox` checks these against a real bus and a real sandbox: what the app inside can see (its own
 home, its display, its bus; not the user's home, not the host's abstract X sockets, not `DITHER_*` anywhere, not its
@@ -26,7 +27,18 @@ own live view's socket), RFB on that socket (0600) from an x11vnc that holds no 
 shim and a download announced. `packages/sandbox/test/sandbox-wayland.test.ts` does the same on the wayland backend:
 the app sees `wayland-0` and no X socket, the compositor's own directory and the live view's socket stay hidden. `packages/sandbox/test/sandbox-satellite.test.ts` runs an X app (xev) on the wayland backend: its window is a sway
 window, RFB clicks and keys reach it as X events, grim pictures it, and its X sockets are in neither the machine's
-`/tmp/.X11-unix` nor the machine's network namespace.
+`/tmp/.X11-unix` nor the machine's network namespace. `packages/sandbox/test/host-session.test.ts` runs a sandbox
+with sound on every backend under a stand-in for the machine's session (a runtime directory with a session bus,
+PulseAudio and PipeWire in it, and system bus and audio server addresses, each a socket that notes who connects):
+neither the app nor any process started outside bubblewrap has any of the stand-in's addresses or its runtime
+directory, the app gets no answer from a system bus, nothing new appears in the stand-in runtime directory but the
+sandbox's own, and nothing connects to a stand-in; a client given the environment the screen's servers had before is
+seen there.
+
+Until then, everything a native-app sandbox started outside bubblewrap kept the manager's `XDG_RUNTIME_DIR`, where
+libdbus and libpulse look for the session bus and the sound server when no address is given, and had no system bus
+address, so went to the machine's own (the sandbox's PulseAudio connected to it at start). None of the screen's
+servers used a bus or sound, but nothing stopped one.
 
 ### Its compositor draws in software
 

@@ -232,8 +232,10 @@ fresh at start and removed at stop: the screen's `runtimeDir`), a session bus of
 dbus-daemon on `<runtime>/share/bus`), an address for the system bus where nothing is, and an audio server of its own
 (a PulseAudio on `<runtime>/share/pulse/native`, given as `PULSE_SERVER`, with a silent speaker and microphone: null
 sink and source, no sound card, no shared memory, no server started on demand). `PIPEWIRE_REMOTE` is unset. The
-screen's own servers (Xvfb, x11vnc, an Xvnc, sway, the live view's) are given the same runtime directory and no bus
-or audio server at all.
+screen's own servers (Xvfb, x11vnc, an Xvnc, sway, the live view's) and its tools (xdotool, xmodmap, import, grim)
+are given the same runtime directory and no bus or audio server at all (`noHostSession` in
+`packages/browser/src/bins.ts`). The native-app sandboxes use the same for everything they start outside their app's
+bubblewrap (docs/native-sandbox.md, "the machine's session").
 
 That is what keeps the owner's desktop out of reach. The machine's session bus has the owner's portal on it, and a
 Chromium given it asks that portal for a screen when a page calls getDisplayMedia: it could share the owner's real

@@ -179,3 +179,28 @@ export function cleanEnv(env: Record<string, string | undefined>): Record<string
   for (const [k, v] of Object.entries(env)) if (v !== undefined) out[k] = v;
   return out;
 }
+
+/**
+ * The environment that keeps a process off the machine's session: no session or system bus (an address in `dir` that
+ * is never made: left unset, libdbus and GDBus would go to $XDG_RUNTIME_DIR/bus and the system bus's well-known path),
+ * no audio server (PulseAudio's and PipeWire's addresses unset), and `dir` as its runtime directory, where they would
+ * look next. What a sandbox's own session gives a client (screenshare.ts clientEnv) goes over it. Every process a
+ * sandbox starts gets it, the browser's (sandbox.ts spawn) and the native-app sandbox's (packages/sandbox sandbox.ts
+ * spawn): its screen's servers, its bus and audio server, the wrappers its app is started through. So none of them can
+ * reach the machine's session either, even one that would look for it.
+ */
+export function noHostSession(dir: string): Record<string, string | undefined> {
+  const none = `unix:path=${join(dir, 'no-bus')}`;
+  return {
+    XDG_RUNTIME_DIR: dir,
+    DBUS_SESSION_BUS_ADDRESS: none,
+    DBUS_SYSTEM_BUS_ADDRESS: none,
+    PULSE_SERVER: undefined,
+    PULSE_COOKIE: undefined,
+    PULSE_CLIENTCONFIG: undefined,
+    PIPEWIRE_REMOTE: undefined,
+    PIPEWIRE_RUNTIME_DIR: undefined,
+    // GTK's accessibility bridge looks for the accessibility bus on the session bus: there is none.
+    NO_AT_BRIDGE: '1',
+  };
+}

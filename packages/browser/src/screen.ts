@@ -21,7 +21,7 @@
 import type { Subprocess } from 'bun';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { DISPLAY_BINS, type Log, resolveBin, run, tryBin, withoutDisplays } from './bins.ts';
+import { DISPLAY_BINS, type Log, noHostSession, resolveBin, run, tryBin, withoutDisplays } from './bins.ts';
 import { BACKENDS, type DisplayBackend, displayIsOurs, type FreeDisplay, type WaylandBackend, type WaylandDisplay, type XBackend, type XDisplay } from './display.ts';
 import { KeptServer, prepareVncSocket, vncSocketPath, waitForRfbBanner, waitForVncSocket, x11vncArgs, xvncArgs, type XvncBackend } from './vnc.ts';
 import { privateDir, renderNode, SESSION_LONGEST, socketPlace, WaylandScreen } from './wayland.ts';
@@ -312,9 +312,14 @@ class XScreen implements Screen {
     return { DISPLAY: `:${this.display}`, WAYLAND_DISPLAY: undefined, WAYLAND_SOCKET: undefined };
   }
 
+  /** xdotool's, xmodmap's and import's: this display, and none of the machine's session (noHostSession). */
+  private toolEnv(): Record<string, string | undefined> {
+    return { ...withoutDisplays(process.env), ...noHostSession(this.runtimeDir), DISPLAY: `:${this.display}` };
+  }
+
   private async xdo(args: string[], what = 'input'): Promise<string> {
     this.xdotool ??= resolveBin(DISPLAY_BINS.xdotool, this.o.log);
-    const out = await run([this.xdotool, ...args], { ...withoutDisplays(process.env), DISPLAY: `:${this.display}` }, what);
+    const out = await run([this.xdotool, ...args], this.toolEnv(), what);
     return out.toString('utf8');
   }
 
@@ -353,7 +358,7 @@ class XScreen implements Screen {
     if (this.xmodmap === undefined) this.xmodmap = tryBin(DISPLAY_BINS.xmodmap, this.o.log);
     const xmodmap = this.xmodmap;
     if (!xmodmap) return;
-    const env = { ...withoutDisplays(process.env), DISPLAY: `:${this.display}` };
+    const env = this.toolEnv();
     if (!this.spareKeycodes) {
       const map = (await run([xmodmap, '-pke'], env, 'reading the keyboard map')).toString('utf8');
       this.spareKeycodes = map
@@ -385,7 +390,7 @@ class XScreen implements Screen {
 
   async screenshot() {
     this.importBin ??= resolveBin(DISPLAY_BINS.import, this.o.log);
-    return run([this.importBin, '-window', 'root', 'png:-'], { ...withoutDisplays(process.env), DISPLAY: `:${this.display}` }, 'screenshot');
+    return run([this.importBin, '-window', 'root', 'png:-'], this.toolEnv(), 'screenshot');
   }
 
   async fit(windowName: string) {

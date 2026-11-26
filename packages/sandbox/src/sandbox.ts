@@ -19,7 +19,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import type { Subprocess } from 'bun';
-import { cleanEnv, type FreeDisplay, isWaylandBackend, makeScreen, pickFreeXDisplay, type Screen, vncSocketPath } from '@dither-accounts/browser';
+import { cleanEnv, type FreeDisplay, isWaylandBackend, makeScreen, noHostSession, pickFreeXDisplay, type Screen, vncSocketPath } from '@dither-accounts/browser';
 import { BINS, type Log, resolveBin, type SandboxBins, sandboxBins, tryBin } from './bins.ts';
 import { DBusConnection } from './dbus.ts';
 import { DesktopServices, type FileRequest, fileUri, type Notification } from './services.ts';
@@ -511,6 +511,8 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
       ...(this.satellite ? { DISPLAY: ':0', QT_QPA_PLATFORM: 'xcb', GDK_BACKEND: 'x11', SDL_VIDEODRIVER: 'x11', XDG_SESSION_TYPE: 'x11' } : {}),
       XDG_RUNTIME_DIR: run,
       DBUS_SESSION_BUS_ADDRESS: `unix:path=${run}/bus`,
+      // No system bus: an address with nothing there (none is shown inside either).
+      DBUS_SYSTEM_BUS_ADDRESS: `unix:path=${run}/no-system-bus`,
       XDG_CONFIG_HOME: `${HOME}/.config`,
       XDG_DATA_HOME: `${HOME}/.local/share`,
       XDG_CACHE_HOME: `${HOME}/.cache`,
@@ -644,9 +646,12 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
     if (this.stopped) throw new Error(`the sandbox is stopping: ${name} is not started`);
     this.o.log('debug', `spawn ${name}`, cmd.slice(0, 3).join(' '));
     // A small environment: the extractor's own (its manager token among it) stays out of every child, so not even
-    // bubblewrap's init inside the sandbox carries it.
-    const keep = ['PATH', 'HOME', 'LANG', 'TZ', 'XDG_RUNTIME_DIR', 'LOCALE_ARCHIVE'];
-    const env: Record<string, string | undefined> = {};
+    // bubblewrap's init inside the sandbox carries it. And none of the machine's session: the sandbox's run directory
+    // as the runtime directory, no session or system bus, no audio server (noHostSession), so that not one of the
+    // processes started out here (the screen's servers, the bus, the audio server, pasta and bubblewrap) could find the
+    // owner's bus or sound by looking in the owner's runtime directory. What a process is given goes over that.
+    const keep = ['PATH', 'HOME', 'LANG', 'TZ', 'LOCALE_ARCHIVE'];
+    const env: Record<string, string | undefined> = noHostSession(this.run);
     for (const k of keep) if (process.env[k]) env[k] = process.env[k]!;
     Object.assign(env, extraEnv);
     const proc = Bun.spawn(cmd, {

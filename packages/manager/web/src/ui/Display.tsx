@@ -39,6 +39,17 @@ function Choice({ d, name }: { d: DisplayState; name: string }) {
   );
 }
 
+/**
+ * A picker's change: done, or (declined, refused) the select put back on what it shows. A controlled <select> is not
+ * redrawn when its value prop has not changed, so the browser would go on showing the choice that was declined.
+ */
+const picked = (pick: (v: string) => Promise<boolean>, shown: () => string) => (e: Event) => {
+  const el = e.currentTarget as HTMLSelectElement;
+  void pick(el.value).then((ok) => {
+    if (!ok) el.value = shown();
+  });
+};
+
 const option = (b: BackendView) => `${title(b, b.name)}${b.experimental ? ' · experimental fork' : ''}`;
 
 /** The manager's default, for every account of a kind with a screen that names none of its own. */
@@ -49,11 +60,11 @@ export function Screens() {
   const running = following.filter((a) => a.running);
   const pick = async (v: string) => {
     const next = v === '' ? d.config : v;
-    if (next === d.default && (v === '') === (d.chosen === null)) return;
+    if (next === d.default && (v === '') === (d.chosen === null)) return false;
     const b = viewOf(d, next);
     const who = running.length ? `${running.length === 1 ? `${named(running[0]!)} restarts` : `${running.length} accounts restart`} on it: ${running.map(named).join(', ')}.` : 'No running account follows the default, so nothing restarts now.';
-    if (next !== d.default && !(await confirm(`Draw sandboxes on ${title(b, next)}?`, `${b?.experimental ? `${b.note}. ` : ''}Accounts that follow the default use it from their next start. ${who}`, 'Change and restart', false))) return;
-    await act('/api/display', { method: 'PUT', body: { default: v === '' ? null : v } }, v === '' ? `The default is config.toml's again (${next})` : `The default is ${next}`);
+    if (next !== d.default && !(await confirm(`Draw sandboxes on ${title(b, next)}?`, `${b?.experimental ? `${b.note}. ` : ''}Accounts that follow the default use it from their next start. ${who}`, 'Change and restart', false))) return false;
+    return !!(await act('/api/display', { method: 'PUT', body: { default: v === '' ? null : v } }, v === '' ? `The default is config.toml's again (${next})` : `The default is ${next}`));
   };
   return (
     <section class="ov-cat" data-screens>
@@ -67,7 +78,7 @@ export function Screens() {
       <div class="screens-card">
         <label class="row nowrap small screen-pick">
           <span>Sandboxes draw on</span>
-          <select value={d.chosen ?? ''} onChange={(e) => void pick((e.target as HTMLSelectElement).value)} data-default-backend>
+          <select value={d.chosen ?? ''} onChange={picked(pick, () => state.value!.display.chosen ?? '')} data-default-backend>
             <option value="">config.toml's: {title(viewOf(d, d.config), d.config)}</option>
             {d.backends.map((b) => (
               <option key={b.name} value={b.name}>
@@ -90,7 +101,7 @@ export function AccountScreen({ a, reload }: { a: AccountInfo; reload: () => voi
   const d = state.value!.display;
   const own = a.display!.own;
   const pick = async (v: string) => {
-    if ((v || null) === own) return;
+    if ((v || null) === own) return false;
     const next = v || d.default;
     const b = viewOf(d, next);
     if (
@@ -98,15 +109,17 @@ export function AccountScreen({ a, reload }: { a: AccountInfo; reload: () => voi
       next !== a.display!.uses &&
       !(await confirm(`Move ${named(a)} to ${title(b, next)}?`, `${b?.experimental ? `${b.note}. ` : ''}Its sandbox restarts on the new screen; the site stays signed in.`, 'Change and restart', false))
     )
-      return;
-    if (await act(`/api/accounts/${a.id}`, { method: 'PATCH', body: { settings: { displayBackend: v || null } } }, `${named(a)}: ${v ? next : `the manager's default (${next})`}${a.running && next !== a.display!.uses ? ', restarting it' : ''}`)) reload();
+      return false;
+    if (!(await act(`/api/accounts/${a.id}`, { method: 'PATCH', body: { settings: { displayBackend: v || null } } }, `${named(a)}: ${v ? next : `the manager's default (${next})`}${a.running && next !== a.display!.uses ? ', restarting it' : ''}`))) return false;
+    reload();
+    return true;
   };
   return (
     <section class="pane-section" data-screen>
       <h4>Screen</h4>
       <label class="row nowrap small screen-pick">
         <span>Draws on</span>
-        <select value={own ?? ''} onChange={(e) => void pick((e.target as HTMLSelectElement).value)} data-account-backend>
+        <select value={own ?? ''} onChange={picked(pick, () => own ?? '')} data-account-backend>
           <option value="">The manager’s default: {title(viewOf(d, d.default), d.default)}</option>
           {d.backends.map((b) => (
             <option key={b.name} value={b.name}>

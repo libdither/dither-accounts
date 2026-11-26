@@ -24,6 +24,11 @@ For the rest the account says **Sign in to Luma in the live view**. Open the liv
 the emailed code, a passkey, Google, whatever Luma shows (codes, captchas and Cloudflare checks are yours; nothing here
 answers them). It goes online once `GET /user` answers with you.
 
+**Continue with Google** is answered by a Google account here when you have one (docs/signin-relay.md): Luma's
+browser never loads Google's sign-in page, a chooser asks which of your Google accounts to use, and that account's own
+browser answers Google. Picked with **Link it** on, it also clicks through Google's account chooser and Continue for
+you, then and every time after. The manifest's `signIn.sites` is `https://luma.com`.
+
 ## What luma.com is (read from its bundle as of November 2026, signed out)
 
 luma.com is a Next.js app (built with Turbopack: `/_next/static/chunks/<hash>.js`), React. Everything it shows comes

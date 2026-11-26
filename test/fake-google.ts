@@ -755,6 +755,11 @@ export function startFakeGoogle(opts: { web?: WebOpts } = {}) {
   let tokenRequests: string[] = [];
   const mailCalls: string[] = [];
   const mailOpened: string[] = [];
+  /** Visits to the authorize page: whose link, and whether the browser was signed in. */
+  const signIns: { clientId: string; redirectUri: string; scope: string; signedIn: boolean }[] = [];
+  const presses: { step: string; trusted: boolean }[] = [];
+  /** Each chooser or Continue screen once its script has run, with where its button is on the screen. */
+  const ready: { step: string; x: number; y: number }[] = [];
   const stalls: Record<FakePage, Stall> = { calendar: 'off', gmail: 'off' };
   const held: Record<FakePage, (() => void)[]> = { calendar: [], gmail: [] };
   const loads = new Map<string, number>();
@@ -835,6 +840,30 @@ export function startFakeGoogle(opts: { web?: WebOpts } = {}) {
       }
 
       let m: RegExpMatchArray | null;
+      // Google's authorize page, as a browser signed in to it sees it (docs/signin-relay.md): signed in, it sends the
+      // browser back to the site with a code; signed out, a sign-in page. A link with `prompt=select_account` shows the
+      // account chooser first and one with `consent` a Continue screen, as Google does, each going on only for a
+      // trusted click or key (a person's, or real input on the display): `presses` keeps each.
+      if (web && req.method === 'GET' && (path === '/o/oauth2/v2/auth' || path === '/o/oauth2/v2/auth/consent' || path === '/o/oauth2/v2/auth/approve')) {
+        const q = url.searchParams;
+        const signedIn = (req.headers.get('cookie') ?? '').includes(`SAPISID=${web.sapisid}`);
+        const prompt = (q.get('prompt') ?? '').split(/\s+/);
+        if (path === '/o/oauth2/v2/auth') signIns.push({ clientId: q.get('client_id') ?? '', redirectUri: q.get('redirect_uri') ?? '', scope: q.get('scope') ?? '', signedIn });
+        if (!signedIn) return new Response('<!doctype html><title>Sign in</title><body>Sign in to continue</body>', { headers: { 'content-type': 'text/html; charset=utf-8' } });
+        const step = (to: string) => `${to}?${q}`;
+        if (path === '/o/oauth2/v2/auth' && prompt.includes('select_account')) return oauthPage('Choose an account', 'choose', step(prompt.includes('consent') ? '/o/oauth2/v2/auth/consent' : '/o/oauth2/v2/auth/approve'), web.email);
+        if (path !== '/o/oauth2/v2/auth/approve' && prompt.includes('consent')) return oauthPage(`Sign in to ${new URL(q.get('redirect_uri') ?? 'http://x').host}`, 'consent', step('/o/oauth2/v2/auth/approve'), web.email);
+        const back = new URL(q.get('redirect_uri') ?? '');
+        back.searchParams.set('code', `4/fake-code-${++n}`);
+        if (q.get('state')) back.searchParams.set('state', q.get('state')!);
+        return new Response(null, { status: 302, headers: { location: back.toString() } });
+      }
+      if (web && req.method === 'POST' && path === '/o/oauth2/v2/auth/press') {
+        const b = (await req.json().catch(() => ({}))) as { step?: unknown; trusted?: unknown; ready?: unknown; x?: unknown; y?: unknown };
+        if (b.ready === true) ready.push({ step: String(b.step ?? ''), x: Number(b.x), y: Number(b.y) });
+        else presses.push({ step: String(b.step ?? ''), trusted: b.trusted === true });
+        return new Response(null, { status: 204 });
+      }
       if (web && req.method === 'GET' && (m = path.match(/^\/calendar\/u\/(\d+)\/r$/))) {
         if (slowLoads.calendar) {
           const ms = slowLoads.calendar;
@@ -1110,6 +1139,43 @@ export function startFakeGoogle(opts: { web?: WebOpts } = {}) {
     return null;
   }
 
+  /**
+   * Google's account chooser (`choose`: the account, and "Use another account") or its Continue screen (`consent`), as
+   * a sign-in link shows them. A click on the account or Continue, or Enter on it, is posted to /press with whether it
+   * was trusted, and only a trusted one goes on to `next`. The page says when it is ready and where its account or
+   * Continue is on the screen (`oauthReady`), for a test clicking it as a person would.
+   */
+  function oauthPage(title: string, step: 'choose' | 'consent', next: string, email: string) {
+    const body =
+      step === 'choose'
+        ? `<h1>Choose an account</h1><ul><li><div class="go" role="link" tabindex="0" data-identifier="${email}" autofocus>Pat<br>${email}</div></li><li><div role="link" tabindex="0">Use another account</div></li></ul>`
+        : `<h1>${title}</h1><p>Google will share your name, email address and profile picture.</p><button>Cancel</button> <button class="go" autofocus>Continue</button>`;
+    const html = `<!doctype html><html><head><title>${title}</title><style>body{font:16px sans-serif;margin:40px}li{list-style:none;padding:12px}.go{padding:12px;border:1px solid #888}</style></head><body>${body}
+<script>
+const go = document.querySelector('.go');
+go.focus();
+// Ready once loaded, shown and painted: where the button is on the screen then.
+const ready = () => {
+  if (document.hidden) return setTimeout(ready, 100);
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const r = go.getBoundingClientRect();
+    const side = (outerWidth - innerWidth) / 2;
+    const at = { x: Math.round(screenX + side + r.left + r.width / 2), y: Math.round(screenY + outerHeight - innerHeight - side + r.top + r.height / 2) };
+    fetch('/o/oauth2/v2/auth/press', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ step: ${JSON.stringify(step)}, ready: true, ...at }) });
+  }));
+};
+if (document.readyState === 'complete') ready();
+else addEventListener('load', ready);
+const press = (e) => {
+  fetch('/o/oauth2/v2/auth/press', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ step: ${JSON.stringify(step)}, trusted: e.isTrusted }) })
+    .finally(() => { if (e.isTrusted) location.href = ${JSON.stringify(next)}; });
+};
+go.addEventListener('click', press);
+go.addEventListener('keydown', (e) => { if (e.key === 'Enter' && go.tagName !== 'BUTTON') press(e); });
+</script></body></html>`;
+    return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+  }
+
   /** The stand-in Calendar page. Signed in: the cookie, the account button, and two calls of its own made as the real
    * page's look (a key, a SAPISIDHASH ending in _u, a body), then a query and hash in the address. */
   function calendarPage(signedIn: boolean) {
@@ -1169,6 +1235,10 @@ setTimeout(() => {
       server.stop(true);
       mailServer?.stop(true);
     },
+    /** web: the authorize page's visits (another account's sign-in, answered here). */
+    signIns,
+    presses,
+    oauthReady: ready,
     /** web: the Gmail side's origin, and the calls made to it. */
     mailUrl: mailBase,
     mailCalls,

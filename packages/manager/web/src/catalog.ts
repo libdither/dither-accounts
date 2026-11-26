@@ -65,6 +65,7 @@ const KIND_MARK: Record<string, Mark> = {
   lesswrong: { glyph: 'book' },
   partiful: { glyph: 'ticket' },
   luma: { glyph: 'ticket' },
+  site: { glyph: 'browser' },
   bugwatch: { glyph: 'bell' },
   t3: { glyph: 'terminal' },
   njalla: { glyph: 'server' },
@@ -340,6 +341,14 @@ const SERVICES: Service[] = [
   // other
   { id: 'github', name: 'GitHub', mark: { brand: 'github' }, category: 'other', line: 'Notifications, with a classic token', ways: [{ id: 'token', label: 'Token', glyph: 'key', kind: 'github', tip: 'A classic personal access token with the notifications scope (fine-grained tokens cannot read notifications).' }] },
   { id: 'bugwatch', name: 'Bug watch', mark: { glyph: 'bell' }, category: 'other', line: "Your own services' errors, as notices and T3 threads", ways: [{ id: 'config', label: 'Config file', glyph: 'bell', kind: 'bugwatch', tip: 'Reads the error files and logs a JSON config names; each new bug is a notice, and a T3 coding thread looks into it (docs/bugwatch.md).' }] },
+  {
+    id: 'site',
+    name: 'Any website',
+    mark: { glyph: 'browser' },
+    category: 'other',
+    line: 'Any site by its address, kept signed in in a sandboxed browser; "Continue with Google" there can use your Google account here',
+    ways: [{ ...BROWSER('site', 'the site'), tip: 'Runs the site you give in a sandboxed browser on this machine: sign in once in its live view, or with a Google account you already have here (docs/signin-relay.md).' }],
+  },
   { id: 'njalla', name: 'Njalla', mark: { glyph: 'server' }, category: 'other', line: 'DNS records of your domains, with an API token', ways: [{ id: 'token', label: 'API token', glyph: 'key', kind: 'njalla', tip: 'njal.la → Settings → API → Add token. You can restrict it to some domains there.' }] },
 ];
 

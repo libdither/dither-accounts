@@ -26,6 +26,13 @@ export interface FakeLuma {
   calls: Call[];
   world: World;
   signIn(): void;
+  /**
+   * The page's "Continue with Google": it sends its tab to `provider`'s authorize page for Luma's redirect address,
+   * as luma.com's button does (in its popup). The code that comes back to /google signs it in.
+   */
+  continueWithGoogle(provider: string): void;
+  /** The codes /google was given, in order. */
+  googleCodes: string[];
   /** The next `n` API calls answer 429. */
   rateLimit(n: number): void;
   /** A chat message someone sends now: the next message sync brings it. */
@@ -40,6 +47,8 @@ const OPEN = new Set(['/discover/bootstrap-page', '/url', '/discover/get-paginat
 
 export function startFakeLuma(o: { signedIn?: boolean } = {}): FakeLuma {
   let signedIn = o.signedIn ?? true;
+  let google: string | null = null;
+  const googleCodes: string[] = [];
   let limited = 0;
   const now = Date.now();
   const w = world(now);
@@ -57,6 +66,7 @@ export function startFakeLuma(o: { signedIn?: boolean } = {}): FakeLuma {
   setInterval(async () => {
     const s = await (await fetch('/__fake/state')).json();
     if (s.signedIn !== was) location.reload();
+    else if (s.google) location.href = s.google;
   }, 500);
 </script></body></html>`;
   const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
@@ -68,7 +78,16 @@ export function startFakeLuma(o: { signedIn?: boolean } = {}): FakeLuma {
     async fetch(req) {
       const url = new URL(req.url);
       const p = url.pathname;
-      if (p === '/__fake/state') return json({ signedIn });
+      if (p === '/__fake/state') {
+        const go = google;
+        google = null;
+        return json({ signedIn, google: go });
+      }
+      // Luma's /google page with Google's answer: it trades the code for a session (POST /google/sign-in).
+      if (p === '/google' && url.searchParams.get('code') && !req.headers.get('x-luma-client-type')) {
+        googleCodes.push(url.searchParams.get('code')!);
+        signedIn = true;
+      }
       if (p === '/__fake/media/pixel.png') return new Response(PIXEL, { headers: { 'content-type': 'image/png' } });
       const clientType = req.headers.get('x-luma-client-type');
       if (!clientType) {
@@ -162,6 +181,17 @@ export function startFakeLuma(o: { signedIn?: boolean } = {}): FakeLuma {
     signIn() {
       signedIn = true;
     },
+    continueWithGoogle(provider: string) {
+      const u = new URL('/o/oauth2/v2/auth', provider);
+      u.searchParams.set('response_type', 'code');
+      u.searchParams.set('client_id', 'luma-web.apps.example.com');
+      u.searchParams.set('scope', 'https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email');
+      u.searchParams.set('prompt', 'select_account consent');
+      u.searchParams.set('state', 'state-123');
+      u.searchParams.set('redirect_uri', `http://127.0.0.1:${server.port}/google`);
+      google = u.toString();
+    },
+    googleCodes,
     rateLimit(k: number) {
       limited = k;
     },

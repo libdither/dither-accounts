@@ -10,6 +10,8 @@
 
 /*@include worker-watch@*/
 
+/*@include signin-worker@*/
+
 let CONFIG = null;
 let ws = null;
 let wsReady = false;
@@ -57,7 +59,8 @@ function bare(url) {
 
 async function reportTabs(force) {
   try {
-    const tabs = await chrome.tabs.query({});
+    // A sign-in's tabs (signin-worker.js) are not the site's pages.
+    const tabs = (await chrome.tabs.query({})).filter((t) => !signinRelay.owns(t.id));
     const hooked = new Set(ports.map((p) => p.sender && p.sender.tab && p.sender.tab.id));
     const list = tabs.map((t) => ({ id: t.id, url: bare(t.url || t.pendingUrl || ''), active: !!t.active, hook: hooked.has(t.id) }));
     const s = JSON.stringify(list);
@@ -102,6 +105,8 @@ async function connect() {
       return;
     }
     if (msg.t !== 'cmd') return; // pings only keep this worker awake
+    // Signing in with another account (signin-worker.js): the worker's own.
+    if (signinRelay.command(msg)) return;
     const port = ports[ports.length - 1];
     // tab.state: how Chromium sees the page's tab, asked when the page stops answering (packages/browser's silence.ts).
     if (msg.cmd && msg.cmd.kind === 'tab.state') return void workerWatch.answer(sendUp, msg.id, port && port.sender && port.sender.tab ? port.sender.tab.id : null, { ports: ports.length });
@@ -163,4 +168,5 @@ try {
 } catch (e) {}
 
 self.addEventListener('activate', () => connect());
+signinRelay.start(sendUp, loadConfig().then((c) => c && c.signIn));
 connect();

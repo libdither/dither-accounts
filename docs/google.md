@@ -43,6 +43,14 @@ you would on your desktop (password, second step, whatever Google asks), and lea
 The account goes online once a Calendar call works. The browser profile keeps the sign-in, so this is once, until
 Google signs the browser out.
 
+That browser also answers other accounts' **Continue with Google** (Luma's, a website's: docs/signin-relay.md). The
+manager hands it a site's Google sign-in link; it opens the link in a tab of its own, in front, and hands back the
+address Google sent that tab to, stopped before it loaded. Google may ask to pick the account and allow the site: for a
+link you set up (and a site asking only who you are) it clicks this account in Google's chooser and Continue itself,
+with real input on its display; otherwise, and for anything else Google asks, the account shows an attention and you
+answer in the live view. The extension may read `accounts.google.com` for that (its host permission; the page is read,
+never changed), and its copy gets `webNavigation`, `declarativeNetRequest` and `scripting`.
+
 ### What runs
 
 - **The sandbox** (packages/browser, the Discord sandbox made general): a private screen on the account's display

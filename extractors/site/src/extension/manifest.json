@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Website",
+  "version": "0.1.0",
+  "description": "Opens one website in a sandboxed browser for a local extractor: tabs, page reads and real input for its browser interface, and sign-ins with another account. Personal use.",
+  "minimum_chrome_version": "111",
+  "background": { "service_worker": "sw.js" },
+  "permissions": ["tabs", "scripting", "webNavigation", "alarms"],
+  "host_permissions": []
+}

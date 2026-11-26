@@ -644,8 +644,6 @@ export interface MessageView {
    * each `author` a hub identity id and its pictures signed media paths.
    */
   post?: PostFact;
-  /** An event host's announcement to every guest (extra.ts blast; docs/events.md "Conversations"). */
-  blast?: true;
 }
 
 /**

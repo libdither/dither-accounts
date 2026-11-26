@@ -94,12 +94,6 @@ export const timelineName = (network: string, feed: HomeFeed): string => postRul
 /** The home timelines a network has: Following and For you, or what its rules say (an event site's Explore and Your events). */
 export const homeFeedsOf = (network: string): readonly HomeFeed[] => postRulesFor(network)?.feeds ?? ['following', 'foryou'];
 
-/** A timeline's name on its network: X's "For you", Reddit's "Best", Substack's "Notes". */
-export const timelineName = (network: string, feed: HomeFeed): string => postRulesFor(network)?.timelines?.[feed] ?? (feed === 'following' ? 'Following' : feed === 'explore' ? 'Explore' : 'For you');
-
-/** The home timelines a network has: Following and For you, or what its rules say (an event site's Explore and Your events). */
-export const homeFeedsOf = (network: string): readonly HomeFeed[] => postRulesFor(network)?.feeds ?? ['following', 'foryou'];
-
 // twitter-text v3: code points in these ranges weigh 100 (one), all others 200 (two); scale 100.
 const LIGHT: readonly [number, number][] = [
   [0, 4351],

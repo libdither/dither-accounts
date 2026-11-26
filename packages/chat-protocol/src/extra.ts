@@ -63,13 +63,6 @@ export interface AttachmentNote {
 
 /** The known keys of MessageFact.extra. */
 export interface MessageExtra {
-  /**
-   * An event's host writing to every guest (a Luma blast, a Partiful text blast; docs/events.md "Conversations"): shown
-   * as an announcement, not a chat line.
-   */
-  blast?: boolean;
-  /** The event (its id on the network) an event conversation, or a message about one, belongs to. */
-  event?: string;
   quote?: QuoteFact;
   contacts?: SharedContactFact[];
   /** A reply to a story (or, with `emoji`, a reaction to one). `author`: whose story, native id. */

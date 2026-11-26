@@ -11,6 +11,7 @@ export default {
   name: 'Charles Schwab',
   interfaces: ['statements', 'browser'],
   entry: 'src/main.ts',
+  screen: true,
   passkeys: true,
   add: {
     blurb:

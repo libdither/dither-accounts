@@ -30,7 +30,7 @@
  */
 import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BridgeServer, diagnoseSilence, displayName, displayNote, type FreeDisplay, pickFreeDisplay, type Reached, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, diagnoseSilence, displayName, displayState, type FreeDisplay, pickFreeDisplay, type Reached, Sandbox } from '@dither-accounts/browser';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
 import { Handover, HandoverError } from '@dither-accounts/spec/handover';
 import type { OutgoingMail } from '@dither-accounts/interfaces';
@@ -580,7 +580,7 @@ function layers(): Layer[] {
   // A sandbox that did not start: Chromium's own failures are the browser's, the rest (no free display, Xvfb) the display's.
   const browserFailed = !!sandboxError && /chromium/i.test(sandboxError);
   const screen: Layer = liveView
-    ? { name: 'display', state: 'ok', note: `${displayNote(display)}, live view ready` }
+    ? { name: 'display', ...displayState(display, sandbox?.screenHealth) }
     : sandboxError && !browserFailed
       ? { name: 'display', state: 'failed', note: sandboxError }
       : browserFailed
@@ -1718,6 +1718,8 @@ async function boot() {
       startUrl,
       noSandbox: !!cfg.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',
       log,
+      // The live view's server down or back (it is started again): said in the status at once.
+      onScreenHealth: () => status(true),
     });
     try {
       await sandbox.start();

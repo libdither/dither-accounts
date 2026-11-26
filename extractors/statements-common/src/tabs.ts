@@ -8,7 +8,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { BridgeServer, displayName, displayNote, type FreeDisplay, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, displayName, displayState, type FreeDisplay, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
 import type { Link } from '@dither-accounts/link';
 
 export const WIDTH = 1280;
@@ -150,6 +150,8 @@ export class BrowserHost {
         flags: [`--disk-cache-dir=${cache}`],
         noSandbox: !!link.config.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',
         log: (l, m, d) => link.log(l, m, d),
+        // The live view's server down or back (it is started again): said in the status at once.
+        onScreenHealth: () => this.o.onChange?.(),
       });
       try {
         await sb.start();
@@ -237,7 +239,7 @@ export class BrowserHost {
       }
     })();
     const display: Layer = this.liveView
-      ? { name: 'display', state: 'ok', note: `${displayNote(this.display)}, live view ready` }
+      ? { name: 'display', ...displayState(this.display, this.sandbox?.screenHealth) }
       : this.sandboxError
         ? { name: 'display', state: 'failed', note: this.sandboxError }
         : { name: 'display', state: 'waiting', note: 'starting the display' };

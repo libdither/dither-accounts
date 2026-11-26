@@ -25,7 +25,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { cpus, homedir } from 'node:os';
 import { connect, createServer, type Server } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
-import { resolveBin } from '../packages/browser/src/bins.ts';
+import { DISPLAY_BINS, resolveBin } from '../packages/browser/src/bins.ts';
 import { type Backend, BACKENDS, Bench, cpuOver, ENC, ensureVideo, log, median, novncEncodings, progName, quiet, summary, tree, Viewer, W, H, work } from './bench-lib.ts';
 
 const SHAPER = resolve(import.meta.dir, 'bench-shaper.ts');
@@ -291,7 +291,7 @@ async function withOtherWayvnc<T>(b: Bench, args: string[], f: (socket: string, 
   const sock = join(screen.dir, `${tag}.sock`);
   const conf = join(screen.dir, `${tag}.conf`);
   writeFileSync(conf, '', { mode: 0o600 });
-  const wayvnc = resolveBin({ name: 'wayvnc', env: 'WAYVNC_BIN', nix: 'wayvnc' }, () => {});
+  const wayvnc = resolveBin(DISPLAY_BINS.wayvnc, () => {});
   const p = Bun.spawn([wayvnc, ...args, '-C', conf, '-u', '-k', 'us', '-S', join(screen.dir, `${tag}-ctl.sock`), sock], {
     env: { ...process.env, DISPLAY: undefined, WAYLAND_DISPLAY: screen.socket, XDG_RUNTIME_DIR: screen.dir },
     stdout: 'ignore',

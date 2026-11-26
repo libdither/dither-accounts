@@ -137,6 +137,7 @@ export class DesktopSession implements DesktopHost {
         if (free.display !== null) tried.push(free.display);
         const { command, roBinds } = this.launch();
         this.sandbox = new AppSandbox({
+          onScreenHealth: () => this.o.onChange(),
           dir: this.dir,
           display: free,
           width,
@@ -378,7 +379,10 @@ export class DesktopSession implements DesktopHost {
   /** The sandbox, the app in it, and its sign-in. `needed`: the account rests on that sign-in (nothing imported yet, or it shares the key). */
   layers(needed: boolean): Layer[] {
     const info = this.sandbox?.info();
-    const sandbox: Layer = info
+    const health = this.sandbox?.screen?.health();
+    const sandbox: Layer = info && health && !health.ok
+      ? { name: 'sandbox', state: 'failed', note: health.note }
+      : info
       ? { name: 'sandbox', state: 'ok', note: `display ${displayName(this.sandbox?.screen?.free)}, live view ready, ${info.network === 'pasta' ? 'its own network' : info.network === 'none' ? 'no network' : "the host's network"}` }
       : this.sandboxError
         ? { name: 'sandbox', state: 'failed', note: this.sandboxError }

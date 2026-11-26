@@ -25,7 +25,7 @@ import { resolveChromium, Sandbox } from '../src/sandbox.ts';
 import { SwayIpc, views } from '../src/swayipc.ts';
 import { WaylandScreen } from '../src/wayland.ts';
 import { DBusConnection } from '../../sandbox/src/dbus.ts';
-import { sandbox as sandboxOk, wayland, why } from '../../../test/needs.ts';
+import { sandbox as sandboxOk, TEST_BINS, wayland, why } from '../../../test/needs.ts';
 import { type ShareStats, sharePage, decode, encode } from './share-page.ts';
 
 process.env.DITHER_DISPLAY_CLAIMS = mkdtempSync(join(tmpdir(), 'display-claims-share-'));
@@ -402,7 +402,7 @@ describe.skipIf(!ok)('x11 parity', () => {
 
 // ------------------------------------------------------------- Electron
 
-const ELECTRON = { name: 'electron', env: 'ELECTRON_BIN', nix: 'electron' };
+const ELECTRON = TEST_BINS.electron;
 const electron = ok && why('Electron', !!tryBin(ELECTRON, () => {})) ? resolveBin(ELECTRON, () => {}) : null;
 
 /** An Electron app as Signal Desktop or Discord's would be: getDisplayMedia answered by desktopCapturer's first screen. */

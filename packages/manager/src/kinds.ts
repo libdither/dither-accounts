@@ -34,6 +34,12 @@ export interface Manifest {
    * in the account's config under its key, and the extractor restarted to take it. Only keys listed here can be set.
    */
   settings?: SettingInfo[];
+  /**
+   * Its extractor runs sandboxes with a screen of their own (packages/browser screen.ts): a browser, a native app. Only
+   * such a kind takes the display backend (docs/browser.md "Display backends"): the account's displayBackend setting,
+   * the manager's default, a restart when either changes, and the programs the manager prepares (prepare.ts).
+   */
+  screen?: boolean;
 }
 
 export interface SettingInfo {

@@ -403,6 +403,9 @@
     },
     "packages/browser": {
       "name": "@dither-accounts/browser",
+      "dependencies": {
+        "@dither-accounts/spec": "workspace:*",
+      },
     },
     "packages/chat-protocol": {
       "name": "@dither-chat/protocol",

@@ -5,13 +5,13 @@
  * kind's signed-in layer has).
  */
 import type * as P from '@dither-chat/protocol';
-import { displayName, type FreeDisplay } from '@dither-accounts/browser';
+import { displayName, type FreeDisplay, type ScreenHealth } from '@dither-accounts/browser';
 
 export type PageState = 'loading' | 'login' | 'ready';
 
 export interface Facts {
   now: number;
-  sandbox: { started: boolean; error: string | null; browserAlive: boolean; display: FreeDisplay | number | null; liveView: boolean; startedAt: number };
+  sandbox: { started: boolean; error: string | null; browserAlive: boolean; screen?: ScreenHealth; display: FreeDisplay | number | null; liveView: boolean; startedAt: number };
   extensionAttached: boolean;
   /** The tab the browser shows (origin and path). */
   tab: string | null;

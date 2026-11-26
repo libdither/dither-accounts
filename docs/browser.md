@@ -55,7 +55,7 @@ shows unchanged, real clicks at an element's middle, typed text, xdotool's key n
 
 | | `x11` (the default) | `wayland` |
 |---|---|---|
-| screen | Xvfb on a free display number (`:80`–`:89`, `:100`–`:159`; Discord `:91`–`:99`) | a headless sway of the sandbox's own; its sockets in `<account>/wl` (0700), or in `$XDG_RUNTIME_DIR/dither-wl/<hash>` when the account's path leaves no room for sway's socket names; no display number, nothing in /tmp |
+| screen | Xvfb on a free display number (`:80`–`:89`, `:100`–`:159`; Discord `:91`–`:99`) | a headless sway of the sandbox's own; its sockets in `<account>/wl` (0700), or, when the account's path leaves no room for sway's socket names, in `$XDG_RUNTIME_DIR/dither-wl/<hash>` (in `/tmp/dither-wl-<uid>/<hash>` only where there is no runtime directory); no display number |
 | live view | x11vnc on the socket | wayvnc on the same socket (no TCP or UDP port, no abstract socket) |
 | input | xdotool | an RFB client of the sandbox's own on that socket: wayvnc turns it into the seat's virtual pointer and keyboard |
 | text no US key makes (é, €, emoji) | xdotool's keysyms | an input method (input-method-v2 → the field's text-input-v3), as a person with an IME types it |
@@ -68,7 +68,16 @@ config.toml) is the default for every account, `x11` unless set. An account's co
 or `{ "settings": { "displayBackend": "wayland" } }` in a PATCH of `/api/accounts/<id>`. The account's extractor
 restarts to take it. The extractor gets the result as `DITHER_DISPLAY_BACKEND`, and the account's detail shows it
 (`process.displayBackend`). A manager that adopts extractors started with another backend restarts them one at a time,
-as it does for changed code (docs/supervisor.md). Haveno follows it too: JavaFX draws only through X, so on wayland it gets an Xwayland of its own inside its sandbox (xwayland-satellite: docs/native-sandbox.md).
+as it does for changed code (docs/supervisor.md). Only kinds with a screen take part: their manifest says
+`screen: true` (Telegram's only when its Desktop app is on). Any other kind (mail, calendar,
+signal-cli, the feeds) answers 400 to a `displayBackend`, gets no `DITHER_DISPLAY_BACKEND`, shows
+`process.displayBackend: null`, and is never restarted when the manager's default changes. Haveno follows it too: JavaFX draws only through X, so on wayland it gets an Xwayland of its own inside its sandbox (xwayland-satellite: docs/native-sandbox.md).
+
+**The backends are a list.** `packages/spec/src/display.ts` names them (each with its protocol, X or Wayland, and the
+label its log lines use); `packages/browser/src/screen.ts` maps each to its `Screen` class, and everything else asks
+the `Screen` (`protocol`, `chromiumFlags()`, `adjustPrefs()`, `needsOwnBus`, `runtimeDir`, `describe()`, `health()`),
+never which class it is. A new backend is an entry in each of the two, and its programs in `nix/bins.json`
+(nix/README.md).
 
 **Why sway, not cage.** cage 0.3 as nixpkgs builds it always starts Xwayland, which takes a global X display number
 and an abstract socket, the two things this backend is for getting rid of. It also has no IPC (to close a window as a
@@ -96,8 +105,32 @@ its one app does. sway with `xwayland disable` listens on its Wayland socket and
 
 **Windows.** sway tiles the app's main window, so it fills the screen (on x11 Chromium's `--window-size` does
 that, and the native sandbox's fit loop). A window that opens while a tiled one is there floats at its own size, as
-a dialog does. That is decided once per window as it opens: a sway `for_window` rule would run again on every title
-change (a chat's unread count) and float the main window too.
+a dialog does. That is decided once per window as it opens, one window at a time, so two that open together get one
+tiled and one floating, never both floating: a sway `for_window` rule would run again on every title change (a chat's
+unread count) and float the main window too. The sway IPC connection that watches windows opening is opened again
+when it closes (logged), until the screen stops; every IPC request has a deadline (5 s), past which it fails and the
+connection is closed.
+
+**When something dies.** wayvnc is watched: when it exits, the screen says so (`health()`: "wayvnc exited (SIGKILL);
+starting it again"), the extractor's status shows its display layer failed with that note, and it is started again
+(after 0.5 s, doubling to 30 s while it keeps failing), the sandbox's own RFB client reconnects and the seat's pointer
+and keyboard come back; clicks and keys sent meanwhile wait for it (up to 15 s) instead of failing at once. x11vnc is
+kept the same way on x11. The renderer: a browser's sway uses gles2 only when this user can open the render node
+(read and write on `/dev/dri/renderD*`), and if sway still fails to start on it, it starts once more with pixman (a
+warning says so). Screen sharing: if PipeWire, WirePlumber or the portals fail to start, that is logged ("screen
+sharing is off for this run") and the sandbox starts with its own empty bus and no capture, rather than not at all.
+
+**The runtime directory fallback.** Every directory level the compositor's place is made under, from the runtime
+directory (or /tmp) down, is checked before anything goes in it: made 0700 if missing, closed if it is ours and open,
+and refused (the screen does not start) when it is a symlink, not a directory, or another user's. A level made first
+by someone else in /tmp can neither see the sockets nor point them elsewhere.
+
+**Typing in the live view.** A person's keys in the live view reach wayvnc as keysyms, which it types on its own
+keymap: `us-altgr-intl` (US, with the rest of Latin on AltGr and no dead keys). With plain `us`, é, ß, £, ñ, ü and €
+were dropped; now they arrive, and US keys are where they were. Still dropped: anything on no key of that keymap,
+which is emoji, CJK and most non-Latin scripts. Typing them from the live view needs the viewer's own input method
+to send text, which RFB has no message for; the extractor's own typing (the API's `type`) does not have this gap,
+since it goes through the input method.
 
 **Screen sharing, and the machine's session bus.** On wayland a browser sandbox's Chromium gets a session bus of its
 own (`packages/browser/src/screenshare.ts`), never the machine's. The machine's session bus has the owner's portal
@@ -212,6 +245,13 @@ full-screen animation / of the video, then click to photon):
   sends fewer frames; the frames a second are the same, the stream stays whole and the manager holds at most a few
   hundred KB.
 
+**Programs.** Every program a screen or a sandbox starts (Xvfb, x11vnc, xdotool, ImageMagick; sway, wayvnc, grim;
+dbus, PipeWire, WirePlumber, the portals; bubblewrap, pasta, xwayland-satellite) comes from the repo's one pinned
+nixpkgs, built ahead of time: the manager builds them at its start into `<data>/bins` (`prepare_bins`, on by default)
+and gives extractors of a kind with a screen that directory as `DITHER_BINS`; they start once it is ready. An
+extractor never runs `nix build`. Without it a program is looked for in its `*_BIN` override and on PATH, and one
+found nowhere fails the start at once, saying how to prepare it (nix/README.md).
+
 **Limits.** Discord's extension port is picked free on wayland (on x11 it comes from the display number). No
 clipboard tool is used on either backend. An extractor killed outright leaves its compositor's directory (its config
 and wayvnc's control socket); the next start on that account empties it.
@@ -252,8 +292,11 @@ ref is caught, that the screenshot is a PNG, and that a closed tab is gone.
 
 `packages/browser/test/wayland.test.ts` covers the wayland backend: its parts on their own (the key names, text split
 into keys and input-method runs, the Wayland and sway IPC wire, the RFB handshake against a stand-in server, the
-config and flags), then a real headless sway and wayvnc (RFB on the socket and nothing else, no TCP or abstract
-socket, the seat's pointer and keyboard, grim's PNG), then Chromium on it: a click, Shift-held capitals, é, € and an
+config and flags, the runtime directory checks against a hostile parent, a render node it cannot open, an IPC
+request nobody answers), then a real headless sway and wayvnc (RFB on the socket and nothing else, no TCP or abstract
+socket, the seat's pointer and keyboard, grim's PNG; two windows opening together, one tiled and one floating; wayvnc
+killed, its health down meanwhile, keys sent then still arriving, and a click after; é ß £ € ñ typed as a viewer's
+keysyms; screen sharing whose PipeWire fails, run with the bus alone), then Chromium on it: a click, Shift-held capitals, é, € and an
 emoji typed into a field arrive as trusted input with the right `code`s, and the page has a fine pointer and hover.
 `packages/sandbox/test/sandbox-wayland.test.ts` runs a native app on it and checks it sees only `wayland-0`, no X.
 Both skip without sway, wayvnc and grim (and Chromium for the last part), as on CI's runners. Both check the

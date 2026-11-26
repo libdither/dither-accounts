@@ -30,6 +30,12 @@ Its environment says whose it is: `DITHER_MANAGER_DATA` (the manager's data dire
 reached through the `current` link is resolved first), so one that lives on keeps loading its own release's files
 after a deploy moves the link.
 
+An extractor of a kind with a screen (its manifest's `screen`: the browser kinds, Discord, Signal and Telegram
+Desktop, Haveno) also gets `DITHER_DISPLAY_BACKEND` (below) and `DITHER_BINS`, the directory of its sandboxes'
+programs the manager builds at its start from the repo's pinned nixpkgs (`packages/manager/src/prepare.ts`,
+nix/README.md). Its start waits until that build is done (a few seconds when the store has them); a failed build keeps the last good directory, and with none the sandboxes look on PATH. Every
+other kind starts at once and gets neither.
+
 One manager per data directory: `<data>/manager.lock` names it, and a second one refuses to start (it would adopt and
 stop the first one's extractors).
 
@@ -152,11 +158,11 @@ to either network; every account at once, or two of one network together, is. On
 stopped (so does one stopped while a Restart waits for its stop). One whose code did not change keeps running, across
 any number of deploys.
 
-The display backend restarts the same way. Each extractor is started with `DITHER_DISPLAY_BACKEND` (`x11` or
+The display backend restarts the same way, for kinds with a screen only. Each such extractor is started with `DITHER_DISPLAY_BACKEND` (`x11` or
 `wayland`: its account's `displayBackend`, else the manager's `display_backend`; docs/browser.md, "Display
 backends"), and an adopted one started with another than its account now wants is restarted in the same queue, one
 at a time per kind. So a new default reaches every account without moving them all at once, and an account that names
-its own backend is not touched by it. `DITHER_DISPLAY_BACKEND` is per account, so it is not part of the fingerprint;
+its own backend is not touched by it, and a kind with no screen (mail, calendar, signal-cli) never restarts for it. `DITHER_DISPLAY_BACKEND` is per account, so it is not part of the fingerprint;
 the manager's own setting (`DITHER_ACCOUNTS_DISPLAY_BACKEND`) is not either, as no `DITHER_ACCOUNTS_*` is.
 
 `/api/health` says how that goes, in counts only: `codeRestarts: {queued, active, restarted, online, crashed}`

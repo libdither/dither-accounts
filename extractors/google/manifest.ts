@@ -9,5 +9,6 @@ export default {
   name: 'Google',
   interfaces: ['google.calendar', 'mail'],
   entry: 'src/main.ts',
+  screen: true,
   add: { blurb: 'Runs Google Calendar and Gmail in a sandboxed browser on this machine; you sign in to Google once in the live view.' },
 } satisfies Manifest;

@@ -78,3 +78,96 @@ export async function waitForVncSocket(socket: string, server: Subprocess, timeo
   throw new Error(`${name}'s live view socket did not come up within ${timeoutMs}ms`);
 }
 
+
+/**
+ * A live view's server kept running: started once (a failure then is the screen's start failing), and if it dies
+ * afterwards, started again, waiting 0.5 s, then twice as long after each failed try, up to 30 s. On Wayland every
+ * click and key goes through it too (wayland.ts), so while it is down health() says so, a status shows it, and input
+ * waits for it (ready) rather than failing on a socket that is gone.
+ */
+export class KeptServer {
+  private proc: Subprocess | null = null;
+  private down: string | null = null;
+  private stopped = false;
+  private back: Promise<void> | null = null;
+  private wake: (() => void) | null = null;
+
+  constructor(
+    private o: {
+      name: string;
+      /** Spawn it and wait until it serves; resolves to its process. */
+      start: () => Promise<Subprocess>;
+      /** After a restart, before it counts as up: what the screen needs of it again (its input client). */
+      after?: () => Promise<void>;
+      log: (level: 'debug' | 'info' | 'warn' | 'error', msg: string) => void;
+      onHealth?: (h: { ok: true } | { ok: false; note: string }) => void;
+      /** The first wait before a restart (tests make it short). */
+      firstWaitMs?: number;
+    },
+  ) {}
+
+  async start() {
+    this.watch(await this.o.start());
+  }
+
+  health(): { ok: true } | { ok: false; note: string } {
+    return this.down ? { ok: false, note: this.down } : { ok: true };
+  }
+
+  /** Resolves once it serves (at once when it does); rejects after `ms` or once stopped. */
+  async ready(ms = 15_000): Promise<void> {
+    if (!this.back) return;
+    let t: Timer | undefined;
+    try {
+      await Promise.race([this.back, new Promise<never>((_, reject) => (t = setTimeout(() => reject(new Error(`the live view's server (${this.o.name}) is down: ${this.down}`)), ms)))]);
+    } finally {
+      clearTimeout(t);
+    }
+    if (this.stopped) throw new Error(`the live view's server (${this.o.name}) is stopped`);
+  }
+
+  stop() {
+    this.stopped = true;
+    this.wake?.();
+  }
+
+  private watch(p: Subprocess) {
+    this.proc = p;
+    void p.exited.then(() => {
+      if (this.stopped || this.proc !== p) return;
+      this.down = `${this.o.name} exited (${p.signalCode ?? p.exitCode}); starting it again`;
+      this.o.log('warn', `the live view's server ${this.down}`);
+      this.o.onHealth?.(this.health());
+      this.back = this.restart().finally(() => (this.back = null));
+    });
+  }
+
+  private async restart() {
+    let wait = this.o.firstWaitMs ?? 500;
+    for (let tries = 1; !this.stopped; tries++) {
+      await new Promise<void>((r) => {
+        const t = setTimeout(r, wait);
+        this.wake = () => {
+          clearTimeout(t);
+          r();
+        };
+      });
+      this.wake = null;
+      if (this.stopped) return;
+      try {
+        const p = await this.o.start();
+        if (this.stopped) return;
+        await this.o.after?.();
+        this.down = null;
+        this.o.log('info', `the live view's server (${this.o.name}) is back, after ${tries} ${tries === 1 ? 'try' : 'tries'}`);
+        this.o.onHealth?.(this.health());
+        this.watch(p);
+        return;
+      } catch (e) {
+        this.down = `${this.o.name} did not start again (${(e as Error).message.slice(0, 160)}); trying again`;
+        this.o.log('warn', `the live view's server ${this.down}`);
+        wait = Math.min(wait * 2, 30_000);
+      }
+    }
+  }
+}

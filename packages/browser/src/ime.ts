@@ -104,10 +104,13 @@ export class InputMethod {
       }
       if (this.ended) throw this.ended;
       if (Date.now() > deadline) throw new ImeError('the compositor did not answer in time');
+      let t: Timer | undefined;
       await new Promise<void>((r) => {
         this.waiting = r;
-        setTimeout(() => this.wake(), Math.max(1, deadline - Date.now()));
+        t = setTimeout(() => this.wake(), Math.max(1, deadline - Date.now()));
       });
+      // Woken by an event, most often: the deadline's timer goes with this wait, not left to fire later.
+      clearTimeout(t);
     }
   }
 

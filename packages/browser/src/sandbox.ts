@@ -12,7 +12,7 @@
  * the profile, which holds the sign-in, persists). The copy is where the names the extension leaves in the page are
  * made for this install and account (markers.ts).
  */
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Subprocess } from 'bun';
 import { cleanEnv, DISPLAY_BINS, type Log, resolveBin } from './bins.ts';
@@ -20,9 +20,9 @@ import type { FreeDisplay } from './display.ts';
 import { MEMORY_DISABLED_FEATURES, mergeFeatureFlags } from './flags.ts';
 import { markerKey, stampExtension } from './markers.ts';
 import { ChromiumNoise } from './noise.ts';
-import { makeScreen, type Screen } from './screen.ts';
+import { makeScreen, type Screen, type ScreenHealth } from './screen.ts';
 import { browserShare, type ScreenShare } from './screenshare.ts';
-import { devDri } from './wayland.ts';
+import { renderNode } from './wayland.ts';
 import { vncSocketPath } from './vnc.ts';
 import { refreshWorker } from './worker.ts';
 
@@ -50,12 +50,15 @@ export interface SandboxOptions {
   /** Set if the chromium suid sandbox is unavailable. */
   noSandbox?: boolean;
   /**
-   * On wayland: the sandbox's own portal and PipeWire (screenshare.ts), so getDisplayMedia can share this sandbox's
-   * screen and nothing else. Chromium's own picker still asks (its Entire Screen tab, then Share) unless the flags say
-   * otherwise. Without it a wayland sandbox's Chromium still gets a session bus of its own, an empty one: never the
+   * On a screen that needs a bus of its own (Wayland): the sandbox's own portal and PipeWire (screenshare.ts), so
+   * getDisplayMedia can share this sandbox's screen and nothing else. Chromium's own picker still asks (its Entire
+   * Screen tab, then Share) unless the flags say otherwise. Without it, or when those fail to start (said in the log,
+   * and the sandbox starts without them), Chromium still gets a session bus of its own, an empty one: never the
    * machine's, where the owner's portal could share the owner's real screen. On x11 Chromium captures its Xvfb.
    */
   screenShare?: boolean;
+  /** The screen's live view's server went down or came back (Screen.health). */
+  onScreenHealth?: (h: ScreenHealth) => void;
   log: Log;
 }
 
@@ -82,39 +85,13 @@ export function resolveBins(log: Log): Bins {
 
 /**
  * Xvfb has no GL of its own, so left alone Chromium runs with WebGL off, which no ordinary desktop browser does.
- * Point it at the machine's GPU directly, or at its software renderer if there is none. The same on Wayland: sway
- * renders with gles2 on that render node (wayland.ts), and Chromium's WebGL reports the same Vulkan renderer as on X.
+ * Point it at the machine's GPU directly (a render node it can open), or at its software renderer if there is none.
+ * The same on Wayland: sway renders with gles2 on that render node (wayland.ts), and Chromium's WebGL reports the same
+ * Vulkan renderer as on X. What else depends on the screen is the screen's (Screen.chromiumFlags, adjustPrefs).
  */
 export function gpuFlags(): string[] {
-  let render = false;
-  try {
-    render = readdirSync(devDri()).some((n) => n.startsWith('renderD'));
-  } catch {
-    /* no /dev/dri at all */
-  }
-  if (render) return ['--ignore-gpu-blocklist', '--use-angle=vulkan', '--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan'];
+  if (renderNode()) return ['--ignore-gpu-blocklist', '--use-angle=vulkan', '--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan'];
   return ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
-}
-
-/**
- * Chromium's flags for the screen it is on: on Wayland, the Wayland platform (not XWayland, which isn't there) and the
- * text-input protocol, through which the backend types what a US keyboard has no key for (ime.ts).
- */
-/**
- * The profile's preferences that depend on the screen. On wayland, Chromium's own title bar (custom_chrome_frame)
- * draws client-side shadows around the window and counts them in its size even when sway tiles it: outerWidth was the
- * screen's plus 20 px, more than any real desktop gives, and the first page after a start saw the window's floating
- * size. With the system's title bar (sway draws none: default_border none) the window is the screen's size from the
- * first frame. On x11 Chromium's default is left, so a profile moved back from wayland looks as it did.
- */
-export function screenPrefs(prefs: Record<string, any>, display: number | FreeDisplay): void {
-  const wayland = typeof display !== 'number' && display.backend === 'wayland';
-  if (wayland) prefs.browser = { ...prefs.browser, custom_chrome_frame: false };
-  else if (prefs.browser?.custom_chrome_frame === false) delete prefs.browser.custom_chrome_frame;
-}
-
-export function screenFlags(screen: Screen): string[] {
-  return screen.backend === 'wayland' ? ['--ozone-platform=wayland', '--enable-wayland-ime', '--wayland-text-input-version=3'] : [];
 }
 
 export class Sandbox {
@@ -145,8 +122,11 @@ export class Sandbox {
     if (left.length) this.opts.log('warn', 'the extension copy still holds a name that is the same for every install', left);
   }
 
-  /** Chromium must not offer to keep a password typed into the live view: this profile runs on --password-store=basic. */
-  private disablePasswordManager() {
+  /**
+   * Chromium must not offer to keep a password typed into the live view: this profile runs on --password-store=basic.
+   * And what the screen needs of the profile (Screen.adjustPrefs).
+   */
+  private writePrefs(screen: Screen) {
     const path = join(this.profileDir, 'Default', 'Preferences');
     let prefs: Record<string, any> = {};
     try {
@@ -154,7 +134,7 @@ export class Sandbox {
     } catch {}
     prefs.credentials_enable_service = false;
     prefs.profile = { ...prefs.profile, password_manager_enabled: false };
-    screenPrefs(prefs, this.opts.display);
+    screen.adjustPrefs(prefs);
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify(prefs));
   }
@@ -164,7 +144,19 @@ export class Sandbox {
     return this.screen_;
   }
 
+  /** Whether its screen's live view's server runs (on Wayland all input goes through it): for its status. */
+  get screenHealth(): ScreenHealth {
+    return this.screen_?.health() ?? { ok: true };
+  }
+
+  /** Whether its screen share's portal and PipeWire run (they may have failed to start, and been left out). */
+  get capturing(): boolean {
+    return !!this.share?.capturing;
+  }
+
   private spawn(name: string, cmd: string[], env?: Record<string, string | undefined>): Subprocess {
+    // Nothing new once it is stopping (a live view's server started again, say): it would outlive the stop.
+    if (this.stopped) throw new Error(`the sandbox is stopping: ${name} is not started`);
     this.opts.log('debug', `spawn ${name}`, cmd.join(' '));
     const proc = Bun.spawn(cmd, {
       env: cleanEnv({ ...process.env, ...env }),
@@ -203,7 +195,6 @@ export class Sandbox {
   async start(): Promise<{ chromium: string }> {
     const chromium = resolveChromium(this.opts.log);
     this.prepareExtension();
-    this.disablePasswordManager();
     // Chromium runs the worker it first registered in this profile, not the copy's: clear it when the copy's changed.
     const worker = refreshWorker(this.opts.accountDir, this.profileDir, this.extensionDir);
     if (worker === 'cleared') this.opts.log('info', "the extension's worker is new to this profile: cleared its service workers so Chromium runs it");
@@ -220,10 +211,13 @@ export class Sandbox {
       height,
       spawn: (name, cmd, o) => this.spawn(name, cmd, o.env),
       log: this.opts.log,
+      onHealth: this.opts.onScreenHealth,
     });
     this.screen_ = screen;
+    this.writePrefs(screen);
     await screen.start();
-    // On wayland a session bus of its own, with the screen share's portal on it when asked for (screenshare.ts).
+    // Where the screen needs one (Wayland), a session bus of its own, with the screen share's portal on it when asked
+    // for and it starts (screenshare.ts).
     const shared = await browserShare(screen, { capture: !!this.opts.screenShare, spawn: (name, cmd, o) => this.spawn(name, cmd, o.env), log: this.opts.log });
     this.share = shared.share;
 
@@ -246,20 +240,22 @@ export class Sandbox {
       `--window-size=${width},${height}`,
       '--window-position=0,0',
       ...gpuFlags(),
-      ...screenFlags(screen),
+      ...screen.chromiumFlags(),
       ...shared.flags,
       ...(this.opts.flags ?? []),
     ];
     if (this.opts.noSandbox) flags.push('--no-sandbox');
     this.spawn('chromium', [chromium, ...mergeFeatureFlags(flags), this.opts.startUrl], { ...screen.clientEnv(), ...this.share?.clientEnv() });
 
-    this.opts.log('info', `sandbox up: ${screen.backend === 'wayland' ? 'sway (Wayland)' : `display :${screen.display}`}, vnc on ${this.vncSocket}`);
+    this.opts.log('info', `sandbox up: ${screen.describe()}, vnc on ${this.vncSocket}`);
     return { chromium };
   }
 
   async stop() {
     if (this.stopped) return;
     this.stopped = true;
+    // The screen first hears it is stopping, so it starts nothing again as its processes end (screen.ts KeptServer).
+    await this.screen_?.stop();
     // Browser and vnc first, display last.
     for (const name of ['chromium', ...(this.share?.procNames ?? []), ...(this.screen_?.procNames ?? [])]) {
       for (const p of this.procs.filter((x) => x.name === name)) {
@@ -282,7 +278,6 @@ export class Sandbox {
     const said = this.noise.summary(Date.now(), true);
     if (said) this.opts.log('debug', `[chromium] ${said}`);
     await this.share?.stop();
-    await this.screen_?.stop();
     rmSync(this.vncSocket, { force: true });
     this.opts.log('info', 'sandbox stopped');
   }

@@ -1,6 +1,7 @@
 /**
  * Programs the native-app sandbox runs, found by packages/browser's resolveBin (bins.ts there): an environment
- * override, then PATH, then known places, then `nix build nixpkgs#<attr>`, resolved to their real /nix/store path.
+ * override, then the prepared copy from the repo's pinned nixpkgs (DITHER_BINS), then PATH and known places, resolved
+ * to their real /nix/store path. All of them are pinned (nix/bins.json): never built while a sandbox starts.
  */
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -11,15 +12,15 @@ export { type BinSpec, type Log, resolveBin, tryBin };
 export const BINS = {
   xvfb: DISPLAY_BINS.xvfb,
   x11vnc: DISPLAY_BINS.x11vnc,
-  bwrap: { name: 'bwrap', env: 'BWRAP_BIN', nix: 'bubblewrap' },
-  pasta: { name: 'pasta', env: 'PASTA_BIN', nix: 'passt' },
-  dbusDaemon: { name: 'dbus-daemon', env: 'DBUS_DAEMON_BIN', nix: 'dbus', candidates: ['/run/current-system/sw/bin/dbus-daemon'] },
+  bwrap: { name: 'bwrap', env: 'BWRAP_BIN', nix: 'bubblewrap', pinned: true },
+  pasta: { name: 'pasta', env: 'PASTA_BIN', nix: 'passt', pinned: true },
+  dbusDaemon: { name: 'dbus-daemon', env: 'DBUS_DAEMON_BIN', nix: 'dbus', candidates: ['/run/current-system/sw/bin/dbus-daemon'], pinned: true },
   xdotool: DISPLAY_BINS.xdotool,
-  pulseaudio: { name: 'pulseaudio', env: 'PULSEAUDIO_BIN', nix: 'pulseaudio' },
-  sh: { name: 'sh', env: 'SANDBOX_SH_BIN', nix: 'bash', candidates: ['/bin/sh'] },
-  env: { name: 'env', env: 'SANDBOX_COREUTILS_ENV', nix: 'coreutils', candidates: ['/usr/bin/env'] },
+  pulseaudio: { name: 'pulseaudio', env: 'PULSEAUDIO_BIN', nix: 'pulseaudio', pinned: true },
+  sh: { name: 'sh', env: 'SANDBOX_SH_BIN', nix: 'bash', candidates: ['/bin/sh'], pinned: true },
+  env: { name: 'env', env: 'SANDBOX_COREUTILS_ENV', nix: 'coreutils', candidates: ['/usr/bin/env'], pinned: true },
   /** X apps on the wayland backend: an Xwayland of the app's own, inside its sandbox (AppSandboxOptions.x11App). */
-  satellite: { name: 'xwayland-satellite', env: 'XWAYLAND_SATELLITE_BIN', nix: 'xwayland-satellite' },
+  satellite: { name: 'xwayland-satellite', env: 'XWAYLAND_SATELLITE_BIN', nix: 'xwayland-satellite', pinned: true },
 } satisfies Record<string, BinSpec>;
 
 export interface SandboxBins {

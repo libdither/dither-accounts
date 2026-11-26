@@ -151,6 +151,7 @@ function view(): View {
     display: liveView ? display : null,
     liveView: !!liveView,
     browserAlive: !!sandbox?.browserAlive,
+    screen: sandbox?.screenHealth,
     attached: bridge.connected,
     attachOverdue: !!liveView && !!startedAt && Date.now() - startedAt > ATTACH_MS,
     page: tab,
@@ -533,6 +534,8 @@ async function boot() {
       startUrl: `${appOrigin}/`,
       noSandbox: !!cfg.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',
       log,
+      // The live view's server down or back (it is started again): said in the status at once.
+      onScreenHealth: () => status(true),
     });
     try {
       await sandbox.start();

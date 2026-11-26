@@ -110,7 +110,7 @@ const readPace = new Pace(2500, 3500);
 function facts(): Facts {
   return {
     now: Date.now(),
-    sandbox: { started: !!sandbox && !sandboxError && display !== null && startedAt > 0, error: sandboxError, browserAlive: !!sandbox?.browserAlive, display, liveView: vncSocket !== null, startedAt },
+    sandbox: { started: !!sandbox && !sandboxError && display !== null && startedAt > 0, error: sandboxError, browserAlive: !!sandbox?.browserAlive, screen: sandbox?.screenHealth, display, liveView: vncSocket !== null, startedAt },
     extensionAttached: bridge.connected,
     hookTabs,
     tab,
@@ -936,6 +936,8 @@ async function boot() {
       startUrl: `${origin}/i/chat`,
       noSandbox: !!cfg.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',
       log,
+      // The live view's server down or back (it is started again): said in the status at once.
+      onScreenHealth: () => status(true),
     });
     try {
       await sandbox.start();

@@ -14,8 +14,8 @@ import { sandbox, wayland, why } from '../../../test/needs.ts';
 import { rfbBanner } from '../../browser/test/inet.ts';
 
 test('the display environment: DISPLAY on x11; on wayland the socket at <run>/wayland-0 and each toolkit sent to it', () => {
-  expect(displayEnv({ backend: 'x11', display: 81 }, '/run/user/1')).toEqual({ DISPLAY: ':81', QT_QPA_PLATFORM: 'xcb' });
-  const w = displayEnv({ backend: 'wayland', display: null }, '/run/user/1');
+  expect(displayEnv({ protocol: 'x11', display: 81 }, '/run/user/1')).toEqual({ DISPLAY: ':81', QT_QPA_PLATFORM: 'xcb' });
+  const w = displayEnv({ protocol: 'wayland', display: null }, '/run/user/1');
   expect(w).toMatchObject({ WAYLAND_DISPLAY: '/run/user/1/wayland-0', XDG_SESSION_TYPE: 'wayland', QT_QPA_PLATFORM: 'wayland', ELECTRON_OZONE_PLATFORM_HINT: 'wayland' });
   expect('DISPLAY' in w).toBe(false);
 });

@@ -29,7 +29,7 @@ import { duePins, PIN_HOLD_MS } from './changes.ts';
 import { CHANNEL_TYPE, customEmoji, DISCORD_EPOCH, guildIconUrl, mapUser, refreshable } from './map.ts';
 import { BridgeServer, PaceQueue } from './server.ts';
 import { annotate, hookPhases, phase, sinceStart, traced } from './trace.ts';
-import { displayName, displayNote, vncSocketPath } from '@dither-accounts/browser';
+import { displayName, displayNote, displayState, vncSocketPath } from '@dither-accounts/browser';
 import { Sandbox, pickDisplay } from './sandbox.ts';
 import { PageWatch } from './pagewatch.ts';
 import { StartupGate } from './startup.ts';
@@ -122,7 +122,7 @@ function sessionLayers(): P.StatusLayer[] {
   };
   return [
     sandboxUp
-      ? { name: 'display', state: 'ok', note: `${displayNote(display)}, live view ready` }
+      ? { name: 'display', ...displayState(display, sandbox?.screenHealth) }
       : sandboxError && !browserFailed
         ? { name: 'display', state: 'failed', note: sandboxError }
         : browserFailed
@@ -307,6 +307,8 @@ async function boot() {
     noSandbox: !!hub.config.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',
     lab: hub.config.lab === true && process.env.DITHER_LAB === '1',
     log,
+    // The live view's server down or back (it is started again): said in the status at once.
+    onScreenHealth: () => pushStatus(),
   });
 
   // Report the live view immediately so the "Needs you" card can open it.
@@ -318,6 +320,8 @@ async function boot() {
   } catch (e: any) {
     log('error', 'sandbox failed to start', String(e?.message ?? e));
     sandboxError = String(e?.message ?? e).slice(0, 300);
+    // What it did start (the screen, its live view, the bus) goes with it, not left running beside the next try.
+    await sandbox.stop().catch(() => {});
     setStatus('error', { kind: 'unknown', message: `Sandbox failed: ${String(e?.message ?? e)}`, liveView: false });
     return;
   }

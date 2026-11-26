@@ -19,7 +19,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import type { Subprocess } from 'bun';
-import { cleanEnv, type FreeDisplay, makeScreen, pickFreeXDisplay, type Screen, vncSocketPath } from '@dither-accounts/browser';
+import { cleanEnv, type FreeDisplay, isWaylandBackend, makeScreen, pickFreeXDisplay, type Screen, vncSocketPath } from '@dither-accounts/browser';
 import { BINS, type Log, resolveBin, type SandboxBins, sandboxBins, tryBin } from './bins.ts';
 import { DBusConnection } from './dbus.ts';
 import { DesktopServices, type FileRequest, fileUri, type Notification } from './services.ts';
@@ -99,6 +99,8 @@ export interface AppSandboxOptions {
   audio?: AudioDevices;
   log: Log;
   onEvent: (ev: SandboxEvent) => void;
+  /** The screen's live view's server went down or came back (Screen.health; it is started again). */
+  onScreenHealth?: () => void;
 }
 
 /** A null sink (what an app plays into it goes nowhere but its monitor) and sources made from sinks' monitors. */
@@ -189,7 +191,7 @@ export class AppSandbox {
       this.o.log('warn', 'pasta is not available: the app shares the host network (and its abstract sockets)');
     }
     let display = this.o.display;
-    if (this.o.x11App && typeof display !== 'number' && display.backend === 'wayland') {
+    if (this.o.x11App && typeof display !== 'number' && isWaylandBackend(display.backend)) {
       // Xwayland's abstract socket would be in the machine's network namespace without one of the sandbox's own.
       let why = this.network === 'host' ? 'no network namespace of its own' : '';
       if (!why)
@@ -216,6 +218,7 @@ export class AppSandbox {
       gpu: this.o.gpu ?? false,
       spawn: (name, cmd, o) => this.spawn(name, cmd, o.match, undefined, o.env),
       log: this.o.log,
+      onHealth: () => this.o.onScreenHealth?.(),
     });
     this.screen_ = screen;
     await screen.start();
@@ -251,8 +254,8 @@ export class AppSandbox {
     this.timers.push(setInterval(() => this.scanDownloads(false), 1000));
     // No window manager on X: keep the app's main window the size of the display. On Wayland sway tiles it; the same
     // call makes sure the window that matches is the one tiled.
-    if (this.o.fitWindow && (screen.backend === 'wayland' || tryBin(BINS.xdotool, this.o.log))) this.timers.push(setInterval(() => void this.fit(), 3000));
-    this.o.log('info', `sandbox up: ${screen.backend === 'wayland' ? 'sway (Wayland)' : `display :${screen.display}`}, vnc on ${this.vncSocket}, network ${this.network}`);
+    if (this.o.fitWindow && (screen.protocol === 'wayland' || tryBin(BINS.xdotool, this.o.log))) this.timers.push(setInterval(() => void this.fit(), 3000));
+    this.o.log('info', `sandbox up: ${screen.describe()}, vnc on ${this.vncSocket}, network ${this.network}`);
     this.startApp();
   }
 
@@ -346,6 +349,8 @@ exec "$@"
     this.stopped = true;
     for (const t of this.timers) clearInterval(t);
     this.bus?.close();
+    // The screen first hears it is stopping, so it starts nothing again as its processes end (KeptServer).
+    await this.screen_?.stop().catch(() => {});
     for (const name of ['app', 'dbus-daemon', 'pulseaudio', ...(this.screen_?.procNames ?? [])]) {
       for (const p of this.procs.filter((x) => x.name === name)) {
         try {
@@ -363,7 +368,6 @@ exec "$@"
     await Promise.all(this.procs.map((p) => p.proc.exited.catch(() => {})));
     clearTimeout(killer);
     this.procs = [];
-    await this.screen_?.stop().catch(() => {});
     rmSync(join(this.o.dir, 'sandbox.json'), { force: true });
     rmSync(this.vncSocket, { force: true });
     rmSync(this.run, { recursive: true, force: true });
@@ -374,12 +378,12 @@ exec "$@"
     return !!this.app && this.app.proc.exitCode === null;
   }
 
-  /** The screen it runs on (input, pictures, windows); null before start. */
   /** The app's process on this side (pasta or bubblewrap, the app below it), while it runs. */
   get appPid(): number | null {
     return this.app && this.app.proc.exitCode === null ? this.app.proc.pid : null;
   }
 
+  /** The screen it runs on (input, pictures, windows); null before start. */
   get screen(): Screen | null {
     return this.screen_;
   }
@@ -463,9 +467,9 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
     const etc = join(this.o.dir, 'etc');
     a.push('--ro-bind', join(etc, 'passwd'), '/etc/passwd', '--ro-bind', join(etc, 'group'), '/etc/group', '--ro-bind', join(etc, 'machine-id'), '/etc/machine-id');
     // The display's one socket: X's path socket, or the compositor's Wayland socket at a path of the app's own.
-    if (screen.backend === 'x11') a.push('--dir', '/tmp/.X11-unix', '--bind', screen.socket, screen.socket);
+    if (screen.protocol === 'x11') a.push('--dir', '/tmp/.X11-unix', '--bind', screen.socket, screen.socket);
     a.push('--dir', run, '--chmod', '0700', run, '--bind', join(this.run, 'bus'), `${run}/bus`);
-    if (screen.backend === 'wayland') a.push('--bind', screen.socket, `${run}/wayland-0`);
+    if (screen.protocol === 'wayland') a.push('--bind', screen.socket, `${run}/wayland-0`);
     if (this.o.audio) a.push('--dir', `${run}/pulse`, '--bind', this.pulseSocket, `${run}/pulse/native`);
     a.push('--bind', this.home, HOME, '--ro-bind', join(this.o.dir, 'bin'), BIN);
     a.push('--symlink', this.bins.sh, '/bin/sh', '--symlink', join(this.bins.coreutils, 'env'), '/usr/bin/env');
@@ -611,6 +615,8 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
   // ---------------------------------------------------------------- processes
 
   private spawn(name: string, cmd: string[], match: string, onExit?: (code: number | null, signal: string | null) => void, extraEnv?: Record<string, string | undefined>): Subprocess {
+    // Nothing new once it is stopping (a live view's server started again, say): it would outlive the stop.
+    if (this.stopped) throw new Error(`the sandbox is stopping: ${name} is not started`);
     this.o.log('debug', `spawn ${name}`, cmd.slice(0, 3).join(' '));
     // A small environment: the extractor's own (its manager token among it) stays out of every child, so not even
     // bubblewrap's init inside the sandbox carries it.
@@ -702,8 +708,8 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
  * How the app finds its display inside: X's DISPLAY, or the compositor's socket at `<run>/wayland-0` and every toolkit
  * told to use it (Qt, GTK, SDL; Electron and Chromium by the session type and their own hint). Qt on X stays on xcb.
  */
-export function displayEnv(screen: Pick<Screen, 'backend' | 'display'>, run: string): Record<string, string> {
-  if (screen.backend === 'x11') return { DISPLAY: `:${screen.display}`, QT_QPA_PLATFORM: 'xcb' };
+export function displayEnv(screen: Pick<Screen, 'protocol' | 'display'>, run: string): Record<string, string> {
+  if (screen.protocol === 'x11') return { DISPLAY: `:${screen.display}`, QT_QPA_PLATFORM: 'xcb' };
   return {
     WAYLAND_DISPLAY: `${run}/wayland-0`,
     XDG_SESSION_TYPE: 'wayland',

@@ -117,9 +117,11 @@ test("the display backend: the manager's default (x11), an account's own from it
   expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: null } })).status).toBe(200);
   expect('displayBackend' in (await detail()).config).toBe(false);
   expect((await detail()).process.displayBackend).toBe('x11');
-  expect(m.sup.backendOf({ config: JSON.stringify({ displayBackend: 'wayland' }) })).toBe('wayland');
-  expect(m.sup.backendOf({ config: '{}' })).toBe('x11');
-  expect(m.sup.backendOf({ config: 'not json' })).toBe('x11');
+  expect(m.sup.backendOf({ kind: 'fake', config: JSON.stringify({ displayBackend: 'wayland' }) } as any)).toBe('wayland');
+  expect(m.sup.backendOf({ kind: 'fake', config: '{}' } as any)).toBe('x11');
+  expect(m.sup.backendOf({ kind: 'fake', config: 'not json' } as any)).toBe('x11');
+  // A kind with no screen has no backend, whatever its config says.
+  expect(m.sup.backendOf({ kind: 'chat-fake', config: JSON.stringify({ displayBackend: 'wayland' }) } as any)).toBeNull();
   await until(online, 10_000, 'the extractor back online');
 });
 

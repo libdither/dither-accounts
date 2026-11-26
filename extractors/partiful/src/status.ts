@@ -6,14 +6,14 @@
  * Signed out is not broken here: Explore reads work without an account, so a signed-out page still answers `explore`
  * while the status asks you to sign in.
  */
-import { displayNote, type FreeDisplay } from '@dither-accounts/browser';
+import { displayNote, type FreeDisplay, type ScreenHealth } from '@dither-accounts/browser';
 import type * as P from '@dither-chat/protocol';
 
 export type PageState = 'loading' | 'login' | 'ready';
 
 export interface Facts {
   now: number;
-  sandbox: { started: boolean; error: string | null; browserAlive: boolean; display: FreeDisplay | number | null; liveView: boolean; startedAt: number };
+  sandbox: { started: boolean; error: string | null; browserAlive: boolean; screen?: ScreenHealth; display: FreeDisplay | number | null; liveView: boolean; startedAt: number };
   extensionAttached: boolean;
   /** The tab the browser shows (origin and path). */
   tab: string | null;

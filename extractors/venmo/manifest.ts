@@ -10,6 +10,7 @@ export default {
   name: 'Venmo',
   interfaces: ['statements', 'browser'],
   entry: 'src/main.ts',
+  screen: true,
   add: {
     blurb:
       "Runs Venmo's web app in a sandboxed browser on this machine. You sign in by hand in the live view; right after that it downloads your statements the way Venmo's Statements page does, for an app such as dither-finance. Read only: it cannot pay, request or transfer.",

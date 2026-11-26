@@ -35,7 +35,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { cpus, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { resolveBin } from '../packages/browser/src/bins.ts';
+import { DISPLAY_BINS, resolveBin } from '../packages/browser/src/bins.ts';
 import { type FreeDisplay, pickFreeDisplay } from '../packages/browser/src/display.ts';
 import type { ShareStats } from '../packages/browser/test/share-page.ts';
 import { type Backend, BACKENDS, Bench, cpuDuring, cpuOver, ENC, ensureVideo, H, load1, log, memory, progName, quiet as quietFor, summary, tree, VIDEO, Viewer, W, work } from './bench-lib.ts';
@@ -86,7 +86,7 @@ async function otherWayvnc(b: Bench, args: string[], encodings: number[], page: 
   const sock = join(screen.dir, `${tag}.sock`);
   const conf = join(screen.dir, `${tag}.conf`);
   writeFileSync(conf, '', { mode: 0o600 });
-  const wayvnc = resolveBin({ name: 'wayvnc', env: 'WAYVNC_BIN', nix: 'wayvnc' }, () => {});
+  const wayvnc = resolveBin(DISPLAY_BINS.wayvnc, () => {});
   const p = Bun.spawn([wayvnc, ...args, '-C', conf, '-u', '-k', 'us', '-S', join(screen.dir, `${tag}-ctl.sock`), sock], {
     env: { ...process.env, DISPLAY: undefined, WAYLAND_DISPLAY: screen.socket, XDG_RUNTIME_DIR: screen.dir },
     stdout: 'ignore',

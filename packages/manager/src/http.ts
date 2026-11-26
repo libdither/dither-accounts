@@ -18,6 +18,7 @@ import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { join, normalize, resolve } from 'node:path';
 import { consent, type Level, LEVELS } from '@dither-accounts/spec';
+import { backendList, parseBackend } from '@dither-accounts/spec/display';
 import { IFACES } from '@dither-accounts/interfaces';
 import TYPES from '@dither-accounts/interfaces/types';
 import { ALG_NAMES, validCredentials } from '@dither-accounts/passkey';
@@ -31,7 +32,6 @@ import type { Kind } from './kinds.ts';
 import { localNotice, type Notices } from './notices.ts';
 import type { Provider } from './providers/index.ts';
 import { CallFailure, type ConsumerSocketData, type Router } from './router.ts';
-import { parseBackend } from './display-backend.ts';
 import { accountDir, type ExtractorSocketData, LOCK, type Supervisor, writeSecret } from './supervisor.ts';
 
 /** The page's live view: a browser WebSocket carried to the account's VNC, a Unix socket on this machine. */
@@ -642,11 +642,12 @@ export class Http {
           const known = new Map((this.kinds.get(a.kind)?.settings ?? []).map((x) => [x.key, x]));
           const cfg = parse<Record<string, unknown>>(a.config, {});
           for (const [k, v] of Object.entries(b.settings)) {
-            // Every kind's: the screen its sandboxes draw on (docs/browser.md "Display backends"); null is the manager's.
-            if (k === 'displayBackend') {
+            // A kind with a screen's: the one its sandboxes draw on (docs/browser.md "Display backends"); null is the
+            // manager's default.
+            if (k === 'displayBackend' && this.kinds.get(a.kind)?.screen) {
               if (v === null) delete cfg[k];
               else if (parseBackend(v)) cfg[k] = parseBackend(v);
-              else return bad('displayBackend is x11, wayland or null (the manager\'s default)');
+              else return bad(`displayBackend is one of ${backendList()}, or null (the manager's default)`);
               continue;
             }
             const info = known.get(k);

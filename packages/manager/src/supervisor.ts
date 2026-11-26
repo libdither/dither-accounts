@@ -19,9 +19,9 @@ import { join } from 'node:path';
 import { writeSecretFile } from '@dither-chat/protocol/secret-file';
 import { type FailureKind, isExtractorCode, isFailureKind, retryAfterOf } from '@dither-accounts/spec';
 import { Handover, HandoverError } from '@dither-accounts/spec/handover';
+import { DEFAULT_DISPLAY_BACKEND, DISPLAY_BACKEND_ENV, type DisplayBackend, parseBackend } from '@dither-accounts/spec/display';
 import type { Row, Store } from './db.ts';
 import { fingerprintEntry, sameCode } from './fingerprint.ts';
-import { type DisplayBackend, parseBackend } from './display-backend.ts';
 import { LOG } from './files.ts';
 import type { Kind } from './kinds.ts';
 import { allPids, cgroupMembers, cgroupOf, descendants, endAll, groupMembers, serviceOf, procAlive, procCmdline, procEnv, type ProcRef, procsWithEnv, procStartedAt, procStat, signalRef } from './procs.ts';
@@ -89,8 +89,10 @@ interface Running {
   survives?: boolean;
   /** The fingerprint of the code it runs (fingerprint.ts), as it was when it started. */
   fingerprint?: string;
-  /** The display backend it was started with (DITHER_DISPLAY_BACKEND). */
-  backend?: DisplayBackend;
+  /** The display backend it was started with (DITHER_DISPLAY_BACKEND); null for a kind with no screen. */
+  backend?: DisplayBackend | null;
+  /** Waiting for the sandboxes' programs to be prepared (prepare.ts) before it starts. */
+  waitingBins?: boolean;
   /** An adopted process that has not connected by then is started afresh. */
   connectBy?: number;
   /** adapter.log's size when it started: a failed exit's last lines are read from there. */
@@ -326,8 +328,8 @@ interface Found {
   accountId: string;
   token: string;
   fingerprint: string;
-  /** The display backend it was started with (DITHER_DISPLAY_BACKEND; none: x11). */
-  backend: DisplayBackend;
+  /** The display backend it was started with (DITHER_DISPLAY_BACKEND), null when it was given none. */
+  backend: DisplayBackend | null;
 }
 
 /** Restarts for changed code since this manager started, for /api/health (only counts) and the deployer. */
@@ -382,6 +384,8 @@ export class Supervisor {
   private cleanedAt = new Map<string, number>();
   /** Extractors that said they hold their events (a going manager's `manager-going`). */
   private holding = new Map<string, () => void>();
+  /** The sandboxes' programs are prepared (or failed to be): a kind with a screen starts without waiting. */
+  private binsSettled = false;
   /** The manager is going: nothing starts again, and exits of processes it leaves running are not crashes. */
   private closing = false;
 
@@ -398,6 +402,11 @@ export class Supervisor {
       launch?: Launch;
       /** The display backend of accounts whose config names none (default x11). */
       displayBackend?: DisplayBackend;
+      /**
+       * The sandboxes' programs, prepared at the manager's start (prepare.ts): an extractor of a kind with a screen
+       * starts once this settles, and is given the directory (DITHER_BINS) when there is one.
+       */
+      bins?: { ready: Promise<unknown>; dir: () => string | null };
       /** The command a `scope` launch goes through (default systemd-run; tests give a stand-in). */
       systemdRun?: string;
       /** The fingerprint of a kind's code (default fingerprint.ts over repoRoot); tests give their own. */
@@ -488,16 +497,21 @@ export class Supervisor {
     return { queued, active: this.rollingNow.size, restarted, online, crashed };
   }
 
-  /** The fingerprint of the code a kind's extractor would run if started now. */
-  /** The display backend an account's sandboxes use: its config's displayBackend, else the manager's default (x11). */
-  backendOf(acc: Row): DisplayBackend {
+  /**
+   * The display backend an account's sandboxes use: its config's displayBackend, else the manager's default (x11).
+   * Null for a kind with no screen (its manifest does not say `screen`): mail, calendars, signal-cli have none to move.
+   */
+  backendOf(acc: Row): DisplayBackend | null {
+    const kind = this.kinds.get(acc.kind);
+    if (!kind || !kind.screen) return null;
     let own: unknown;
     try {
       own = (JSON.parse(acc.config || '{}') as { displayBackend?: unknown }).displayBackend;
     } catch {}
-    return parseBackend(own) ?? this.opts.displayBackend ?? 'x11';
+    return parseBackend(own) ?? this.opts.displayBackend ?? DEFAULT_DISPLAY_BACKEND;
   }
 
+  /** The fingerprint of the code a kind's extractor would run if started now. */
   fingerprintOf(kind: Kind): string {
     if (this.opts.fingerprint) return this.opts.fingerprint(kind);
     try {
@@ -532,7 +546,7 @@ export class Supervisor {
       if (!isExtractorCmd(pid)) continue;
       const st = procStat(pid);
       if (!st || st.state === 'Z') continue;
-      found.push({ pid, start: st.start, accountId: env.DITHER_ACCOUNT_ID, token: env.DITHER_ADAPTER_TOKEN ?? '', fingerprint: env.DITHER_EXTRACTOR_FINGERPRINT ?? '', backend: parseBackend(env.DITHER_DISPLAY_BACKEND) ?? 'x11' });
+      found.push({ pid, start: st.start, accountId: env.DITHER_ACCOUNT_ID, token: env.DITHER_ADAPTER_TOKEN ?? '', fingerprint: env.DITHER_EXTRACTOR_FINGERPRINT ?? '', backend: parseBackend(env[DISPLAY_BACKEND_ENV]) });
     }
     this.scan = { at: Date.now(), found };
     return found;
@@ -681,7 +695,7 @@ export class Supervisor {
     const acc = this.store.account(id);
     if (!acc || !acc.enabled) return void this.line(id).down(acc ? 'the account is disabled' : 'the account is gone');
     const cur = this.running.get(id);
-    if (cur && !cur.stopping && (cur.pid || cur.cleaning)) return;
+    if (cur && !cur.stopping && (cur.pid || cur.cleaning || cur.waitingBins)) return;
     const r: Running = cur ?? { restarts: 0, stopping: false, lastStart: 0, ...this.history.get(id) };
     clearTimeout(r.retry);
     r.stopping = false;
@@ -706,12 +720,14 @@ export class Supervisor {
       r.adopted = true;
       r.survives = true;
       r.fingerprint = f!.fingerprint;
-      r.backend = f!.backend;
+      // One started before kinds said whether they have a screen had x11 written in: a kind without one has no backend.
+      r.backend = this.backendOf(acc) === null ? null : (f!.backend ?? DEFAULT_DISPLAY_BACKEND);
       r.lastStart = procStartedAt(f!.start) ?? Date.now();
       r.connectBy = r.ws ? undefined : Date.now() + (this.opts.adoptConnectMs ?? ADOPT_CONNECT_MS);
       const changed = !sameCode(f!.fingerprint, this.fingerprintOf(kind));
       // A display backend changed (the account's or the manager's default) restarts it the same way as changed code.
-      const moved = f!.backend !== this.backendOf(acc);
+      // Only a kind with a screen has one to change (backendOf is null for the rest).
+      const moved = r.backend !== this.backendOf(acc);
       appendFileSync(log, `--- ${new Date().toISOString()} dither-accounts took over the running ${acc.kind} extractor (pid ${f!.pid})${changed ? '; its code changed, so it restarts soon' : moved ? `; its display backend is now ${this.backendOf(acc)}, so it restarts soon` : ''}\n`);
       r.logFrom = fileSize(log);
       if (!r.ws) this.starting(id);
@@ -736,6 +752,21 @@ export class Supervisor {
       return;
     }
 
+    // A kind with a screen runs the programs the manager prepares at its start (prepare.ts): it waits for them.
+    const prep = this.opts.bins;
+    if (prep && kind.screen && !this.binsSettled) {
+      if (!r.waitingBins) {
+        r.waitingBins = true;
+        this.starting(id);
+        void prep.ready.finally(() => {
+          this.binsSettled = true;
+          r.waitingBins = false;
+          if (this.running.get(id) === r && !r.stopping) this.start(id);
+        });
+      }
+      return;
+    }
+
     const held = acquireLock(acc.dir, 'dither-accounts', acc.id);
     if (held) {
       // Another process runs it (dither-chat's hub, before it lets go): look again, and take over once it is gone.
@@ -755,18 +786,26 @@ export class Supervisor {
     } catch {}
     const fingerprint = this.fingerprintOf(kind);
     const backend = this.backendOf(acc);
+    const bins = this.opts.bins;
     const launch = this.launch;
     appendFileSync(log, `\n--- ${new Date().toISOString()} dither-accounts starting ${acc.kind} extractor\n`);
     r.logFrom = fileSize(log);
     const argv = launch === 'scope' ? [this.opts.systemdRun ?? 'systemd-run', '--user', '--scope', '--quiet', '--collect', `--unit=${scopeName(acc.id)}`, `--description=dither-accounts extractor (${acc.kind})`, 'bun', entry] : ['bun', entry];
     // Its output straight to its log: the manager going away cannot break a pipe under it.
     const fd = openSync(log, 'a', 0o600);
+    // The screen its sandboxes draw on (docs/browser.md "Display backends"): the account's, else the manager's; and the
+    // programs they run, from the manager's pinned nixpkgs (prepare.ts). A kind with no screen is given neither, nor
+    // what the manager's own environment might hand down.
+    const { [DISPLAY_BACKEND_ENV]: _b, DITHER_BINS: _d, ...inherited } = process.env;
+    const binsDir = backend ? (bins?.dir() ?? process.env.DITHER_BINS) : undefined;
+    const screenEnv: Record<string, string> = backend ? { [DISPLAY_BACKEND_ENV]: backend, ...(binsDir ? { DITHER_BINS: binsDir } : {}) } : {};
     let proc: Subprocess;
     try {
       proc = Bun.spawn(argv, {
         cwd: root,
         env: {
-          ...process.env,
+          ...inherited,
+          ...screenEnv,
           ...(kind.env ?? {}),
           DITHER_HUB_URL: this.opts.extractorUrl(),
           DITHER_ACCOUNTS_URL: this.opts.extractorUrl(),
@@ -774,8 +813,6 @@ export class Supervisor {
           DITHER_ADAPTER_TOKEN: acc.token,
           DITHER_ACCOUNT_DIR: acc.dir,
           DITHER_ACCOUNT_CONFIG: acc.config,
-          // The screen its sandboxes draw on (docs/browser.md "Display backends"): the account's, else the manager's.
-          DITHER_DISPLAY_BACKEND: backend,
           DITHER_ACCOUNT_LABEL: acc.label,
           DITHER_MARKER_KEY: pageMarkerKey(this.store, acc.id),
           // What a later manager reads in /proc to know it as one of its own, and whether its code is still current.

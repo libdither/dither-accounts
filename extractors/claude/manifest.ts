@@ -11,6 +11,7 @@ export default {
   name: 'Claude',
   interfaces: ['claude'],
   entry: 'src/main.ts',
+  screen: true,
   add: {
     blurb:
       "A Claude account in a sandboxed browser on this machine, for the CLIProxyAPI hub that serves your Claude subscriptions to Claude Code. It signs in with the link claude.ai emails you (read from that address's mail account here) and approves the hub's sign-in on claude.ai's own page. It never reads your chats. Usually added through the cliproxy provider: `cli.ts cliproxy add-claude <email>`.",

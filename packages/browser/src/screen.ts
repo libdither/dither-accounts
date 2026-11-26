@@ -1,38 +1,51 @@
 /**
- * A sandbox's screen: where its windows show, the live view of it, and real input and pictures of it. One of two
- * backends, chosen per sandbox (docs/browser.md, "Display backends"):
+ * A sandbox's screen: where its windows show, the live view of it, and real input and pictures of it. One per
+ * backend (the list is packages/spec display.ts), chosen per sandbox (docs/browser.md, "Display backends"):
  *
  *   x11      Xvfb on a numbered display from the shared pool (display.ts), x11vnc as the live view (vnc.ts), xdotool
  *            for input, ImageMagick's import for pictures. The default.
  *   wayland  a headless sway of the sandbox's own, its socket in the account's directory and no number at all, wayvnc as
- *            the live view on the same socket path, input through that live view (rfb.ts) and wtype, pictures by grim
- *            (wayland.ts).
+ *            the live view on the same socket path, input through that live view (rfb.ts) and, for what no key types,
+ *            an input method (ime.ts), pictures by grim (wayland.ts).
  *
  * The browser sandbox (sandbox.ts), Discord's and the native-app sandbox (packages/sandbox) each start one; the
- * `browser` interface (statements-common/browser-ops.ts) drives it. Nothing outside knows which backend it is but by
- * `backend`, `name` and `note`, for its status.
+ * `browser` interface (statements-common/browser-ops.ts) drives it. Nothing outside asks which backend it is: what
+ * differs is the Screen's to say (protocol, chromiumFlags, adjustPrefs, needsOwnBus, describe, health). A new backend
+ * is a class here and a line in SCREENS.
  */
 import type { Subprocess } from 'bun';
 import { DISPLAY_BINS, type Log, resolveBin, run, withoutDisplays } from './bins.ts';
-import { type DisplayBackend, displayIsOurs, type FreeDisplay, type XDisplay } from './display.ts';
-import { prepareVncSocket, vncSocketPath, waitForVncSocket, x11vncArgs } from './vnc.ts';
+import { BACKENDS, type DisplayBackend, displayIsOurs, type FreeDisplay, type WaylandBackend, type WaylandDisplay, type XBackend, type XDisplay } from './display.ts';
+import { KeptServer, prepareVncSocket, vncSocketPath, waitForVncSocket, x11vncArgs } from './vnc.ts';
 import { WaylandScreen } from './wayland.ts';
 import { closeWindow } from './x11.ts';
 
 export { DISPLAY_BACKEND_ENV, DISPLAY_BACKENDS, type DisplayBackend, displayBackend, parseBackend } from './display.ts';
 
-/** A display as a status shows it: ":80" for an X display (a number is one), "wayland" for a compositor of its own. */
+/** A display as a status shows it: ":80" for an X display (a number is one), its backend's name for a compositor. */
 export function displayName(d: FreeDisplay | number | null | undefined): string | null {
   if (d === null || d === undefined) return null;
   if (typeof d === 'number') return `:${d}`;
-  return d.backend === 'wayland' ? 'wayland' : `:${d.display}`;
+  return d.display === null ? d.backend : `:${d.display}`;
 }
 
-/** What runs it, for a status layer's note: "Xvfb :80", "sway (Wayland)". */
+/** What runs it, for a status layer's note and the logs: "Xvfb :80", "sway (Wayland)". */
 export function displayNote(d: FreeDisplay | number | null | undefined): string {
   if (d === null || d === undefined) return 'no display';
-  if (typeof d === 'number') return `Xvfb :${d}`;
-  return d.backend === 'wayland' ? 'sway (Wayland)' : `Xvfb :${d.display}`;
+  if (typeof d === 'number') return `${BACKENDS.x11.label} :${d}`;
+  return d.display === null ? BACKENDS[d.backend].label : `${BACKENDS[d.backend].label} :${d.display}`;
+}
+
+/** Whether the screen's live view's server runs (on Wayland all input goes through it too), and why not. */
+export type ScreenHealth = { ok: true } | { ok: false; note: string };
+
+/**
+ * A status's display layer: "<what runs it>, live view ready", or failed while the live view's server is down (the
+ * screen starts it again: KeptServer in vnc.ts).
+ */
+export function displayState(d: FreeDisplay | number | null | undefined, health?: ScreenHealth): { state: 'ok' | 'failed'; note: string } {
+  if (health && !health.ok) return { state: 'failed', note: `${displayNote(d)}: ${health.note}` };
+  return { state: 'ok', note: `${displayNote(d)}, live view ready` };
 }
 
 /** Spawns one of the screen's processes in its owner's list, so the owner stops it and can find it after a crash. */
@@ -57,6 +70,8 @@ export interface ScreenOptions {
   pathSocketOnly?: boolean;
   spawn: ScreenSpawn;
   log: Log;
+  /** The live view's server went down or came back (health()). */
+  onHealth?: (h: ScreenHealth) => void;
 }
 
 /** Real input and pictures, the same on both backends (the `browser` interface's: docs/browser.md). */
@@ -75,6 +90,8 @@ export interface ScreenInput {
 
 export interface Screen extends ScreenInput {
   readonly backend: DisplayBackend;
+  /** What its apps speak: X (DISPLAY, an X socket) or Wayland (WAYLAND_DISPLAY, the compositor's socket). */
+  readonly protocol: 'x11' | 'wayland';
   /** The X display number; null on Wayland. */
   readonly display: number | null;
   readonly free: FreeDisplay;
@@ -93,33 +110,75 @@ export interface Screen extends ScreenInput {
   closeWindows(windowName: string): Promise<boolean>;
   /** Its own connections closed and its files gone; the processes are its owner's to stop (procNames). */
   stop(): Promise<void>;
+  /** Chromium's flags for this screen (Wayland: its ozone platform and the text-input protocol ime.ts types through). */
+  chromiumFlags(): string[];
+  /** Set what a Chromium profile's preferences need on this screen, and undo what another screen's needed. */
+  adjustPrefs(prefs: Record<string, any>): void;
+  /**
+   * A client must get a session bus of its own here (screenshare.ts), never the machine's: on Wayland the machine's has
+   * the owner's portal, which could share the owner's real screen. On X Chromium captures its X server itself.
+   */
+  readonly needsOwnBus: boolean;
+  /** The screen's own private directory, short enough for sockets (the compositor's), where that bus goes; null: none. */
+  readonly runtimeDir: string | null;
+  /** What runs it, for logs and notes: "Xvfb :80", "sway (Wayland)" (displayNote). */
+  describe(): string;
+  /** Whether its live view's server runs (it is started again when it dies). */
+  health(): ScreenHealth;
 }
+
+/** Each backend's screen: the type checker says when a backend in packages/spec has none. */
+const SCREENS: { [K in DisplayBackend]: (o: ScreenOptions, free: K extends XBackend ? XDisplay : K extends WaylandBackend ? WaylandDisplay : never) => Screen } = {
+  x11: (o, free) => new XScreen(o, free),
+  wayland: (o, free) => new WaylandScreen(o, free),
+};
 
 export function makeScreen(o: ScreenOptions): Screen {
   const free: FreeDisplay = typeof o.display === 'number' ? { backend: 'x11', display: o.display } : o.display;
-  if (free.backend === 'wayland') return new WaylandScreen(o, free);
-  return new XScreen(o, free);
+  return (SCREENS[free.backend] as (o: ScreenOptions, free: FreeDisplay) => Screen)(o, free);
 }
 
 /** Xvfb, x11vnc, xdotool and import: the backend the sandboxes always had. */
 class XScreen implements Screen {
-  readonly backend = 'x11' as const;
+  readonly backend: XBackend;
+  readonly protocol = 'x11' as const;
   readonly display: number;
   readonly vncSocket: string;
   readonly procNames = ['x11vnc', 'Xvfb'] as const;
+  readonly needsOwnBus = false;
+  readonly runtimeDir = null;
   private xdotool: string | null = null;
   private importBin: string | null = null;
+  private vnc: KeptServer | null = null;
 
   constructor(
     private o: ScreenOptions,
     readonly free: XDisplay,
   ) {
+    this.backend = free.backend;
     this.display = free.display;
     this.vncSocket = o.vncSocket ?? vncSocketPath(o.dir);
   }
 
   get socket() {
     return `/tmp/.X11-unix/X${this.display}`;
+  }
+
+  describe() {
+    return displayNote(this.free);
+  }
+
+  chromiumFlags(): string[] {
+    return [];
+  }
+
+  /** Chromium's own default title bar: what a profile moved back from Wayland had set is taken away (WaylandScreen). */
+  adjustPrefs(prefs: Record<string, any>) {
+    if (prefs.browser?.custom_chrome_frame === false) delete prefs.browser.custom_chrome_frame;
+  }
+
+  health(): ScreenHealth {
+    return this.vnc?.health() ?? { ok: true };
   }
 
   async start() {
@@ -132,10 +191,19 @@ class XScreen implements Screen {
     const xvfb = this.o.spawn('Xvfb', args, { match: d });
     await this.waitForDisplay(xvfb, 8000);
     // The live view: on the account's own Unix socket and no TCP port, no password (the manager carries it, behind its
-    // login). -forever so it survives viewers leaving; -shared for several viewers.
-    prepareVncSocket(this.vncSocket);
-    const vnc = this.o.spawn('x11vnc', x11vncArgs(x11vncBin, d, this.vncSocket), { match: `-unixsock ${this.vncSocket}`, env: { DISPLAY: d } });
-    await waitForVncSocket(this.vncSocket, vnc, 10_000, 'x11vnc');
+    // login). -forever so it survives viewers leaving; -shared for several viewers. Started again if it dies.
+    this.vnc = new KeptServer({
+      name: 'x11vnc',
+      start: async () => {
+        prepareVncSocket(this.vncSocket);
+        const vnc = this.o.spawn('x11vnc', x11vncArgs(x11vncBin, d, this.vncSocket), { match: `-unixsock ${this.vncSocket}`, env: { DISPLAY: d } });
+        await waitForVncSocket(this.vncSocket, vnc, 10_000, 'x11vnc');
+        return vnc;
+      },
+      log: this.o.log,
+      onHealth: this.o.onHealth,
+    });
+    await this.vnc.start();
   }
 
   /**
@@ -208,5 +276,7 @@ class XScreen implements Screen {
     return ids.length > 0;
   }
 
-  async stop() {}
+  async stop() {
+    this.vnc?.stop();
+  }
 }

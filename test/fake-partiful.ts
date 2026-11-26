@@ -106,6 +106,8 @@ export function startFakePartiful(o: { signedIn?: boolean } = {}): FakePartiful 
       case 'getMyUpcomingEventsForHomePage':
         return result(w.myEvents);
       case 'getNotifications':
+        // As Partiful does: a cursor without its start time is an INTERNAL error, not the first page.
+        if (!Number.isFinite(p.cursor?.startAfterMs)) return fnError(500, 'INTERNAL', 'INTERNAL');
         return result({ notifications: w.notifications, reachedEndOfData: true });
       case 'getUsers':
         return result((Array.isArray(p.ids) ? p.ids : []).map((id: string) => people.find((x) => x.id === id)).filter(Boolean).map((x: any) => user(x, url, { stats: true })));

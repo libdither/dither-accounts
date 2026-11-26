@@ -10,6 +10,13 @@
  * - A spare renderer, started ahead of the next navigation to a new site: about 8 MiB, idle nearly all the time. A
  *   navigation now starts its renderer when it needs one.
  * Site isolation stays on: each site still gets its own renderer.
+ *
+ * Measured the same way and left out (each changes nothing a page can read, WebGL included):
+ * - --in-process-gpu: the GPU process (about 34 MiB) goes, but the browser process grows by about 25 MiB and the
+ *   zygotes by 7: nothing saved, and a GPU crash would take the whole browser down with it.
+ * - --process-per-site: tabs of one site share a renderer, about 12 MiB less for each tab past the first. Only Google
+ *   accounts keep two (Gmail and Calendar), and on one renderer they share its main thread, so a stalled Gmail page
+ *   would stall Calendar (docs/google.md "No cross-stalling") and one crash would close both.
  */
 export const MEMORY_DISABLED_FEATURES = [
   'SpareRendererForSitePerProcess',

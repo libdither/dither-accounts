@@ -50,7 +50,7 @@ Chats are Stream Chat: the function `getStreamUserToken` gives a token, and the 
 | Host messages (blasts) | `getEventDisplayedHostMessages` | `{eventId}` |
 | Album | `getEventMedia` | `{eventId}` |
 | Your events | `getMyUpcomingEventsForHomePage` | `{}` |
-| Notifications | `getNotifications` | `{cursor: {startAfterMs, startId}}` |
+| Notifications | `getNotifications` | `{cursor: {startAfterMs, startId}}`; the first page is `startAfterMs` = now, no `startId` (without a time it answers 500 INTERNAL) |
 | People | `getUsers` | `{ids, includePartyStats}` |
 | Comment | `createComment` | `{id, eventId, message, replyTo?, timezone, mentions}` |
 | React | `updateCommentReaction`, `updateHostMessageReaction` | `{eventId, commentId \| hostMessageId, reaction: {emoji, active}}` |

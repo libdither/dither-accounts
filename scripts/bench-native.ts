@@ -20,7 +20,7 @@ import { dirname, join } from 'node:path';
 import { type FreeDisplay, pickFreeDisplay, resolveBin } from '../packages/sandbox/src/index.ts';
 import { AppSandbox, type AppSandboxOptions } from '../packages/sandbox/src/sandbox.ts';
 import { AUDIO, resolveSignalDesktop } from '../extractors/signal/src/desktop/desktop.ts';
-import { argOf, cpuOver, log, memory, progName, quiet, tree, work } from './bench-lib.ts';
+import { argOf, cpuOver, log, machine, memory, progName, quiet, tree, work } from './bench-lib.ts';
 
 const OUT = argOf('out', join(homedir(), '.cache/da-bench', `native-${new Date().toISOString().replace(/[:.]/g, '-')}.json`));
 const REPS = Number(argOf('reps', '3'));
@@ -155,7 +155,7 @@ async function one(app: App, key: string, cfg: (typeof CONFIGS)[number], rep: nu
 }
 
 process.env.DITHER_SANDBOX_APP_LOG = '1';
-const results: any = { when: new Date().toISOString(), machine: { cpus: cpus().length, model: cpus()[0]?.model }, size: `${W}x${H}`, reps: REPS, maxLoad: MAX_LOAD, runs: [] as any[] };
+const results: any = { when: new Date().toISOString(), machine: machine(), size: `${W}x${H}`, reps: REPS, maxLoad: MAX_LOAD, runs: [] as any[] };
 const save = () => {
   mkdirSync(dirname(OUT), { recursive: true });
   writeFileSync(OUT, JSON.stringify(results, null, 2));

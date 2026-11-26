@@ -1,0 +1,432 @@
+{
+ "when": "2026-11-26T07:37:53.126Z",
+ "machine": {
+  "cpus": 16,
+  "gpu": true
+ },
+ "size": "1280x800",
+ "reps": 1,
+ "backends": [
+  "tigervnc",
+  "kasmvnc",
+  "wayland",
+  "wayland-tigervnc"
+ ],
+ "maxLoad": 8,
+ "runs": [
+  {
+   "rep": 0,
+   "backend": "tigervnc",
+   "load": {
+    "load": 4.03,
+    "busy": false,
+    "waitedS": 0
+   },
+   "start": {
+    "screenMs": 212.88195100000002,
+    "pageMs": 740.73002
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "kasmvnc",
+   "load": {
+    "load": 4.03,
+    "busy": false,
+    "waitedS": 0
+   },
+   "start": {
+    "screenMs": 74.3735650000001,
+    "pageMs": 577.6962040000001
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "wayland",
+   "load": {
+    "load": 4.03,
+    "busy": false,
+    "waitedS": 0
+   },
+   "start": {
+    "screenMs": 331.20208,
+    "pageMs": 909.7443579999999
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "wayland-tigervnc",
+   "load": {
+    "load": 4.03,
+    "busy": false,
+    "waitedS": 0
+   },
+   "start": {
+    "screenMs": 252.13981299999978,
+    "pageMs": 730.0105990000002
+   }
+  }
+ ],
+ "scale": [
+  {
+   "backend": "tigervnc",
+   "load": {
+    "load": 4.27,
+    "busy": false,
+    "waitedS": 0
+   },
+   "n": 1,
+   "wallMs": 494.15367100000003,
+   "startPage": {
+    "median": 492.51643800000056,
+    "p10": 492.51643800000056,
+    "p90": 492.51643800000056,
+    "min": 492.51643800000056,
+    "max": 492.51643800000056,
+    "n": 1
+   },
+   "idleCpu": 3.9936615331816165,
+   "rssMB": 715.47265625,
+   "pssMB": 219.171875,
+   "ussMB": 161.59765625,
+   "perSandboxPssMB": 219.171875,
+   "shm": {
+    "display": 0,
+    "sandboxes": 0,
+    "machine": 3634,
+    "before": 3634,
+    "limit": 4096
+   }
+  },
+  {
+   "backend": "kasmvnc",
+   "load": {
+    "load": 4.32,
+    "busy": false,
+    "waitedS": 0
+   },
+   "n": 1,
+   "wallMs": 516.2276190000048,
+   "startPage": {
+    "median": 514.8996100000004,
+    "p10": 514.8996100000004,
+    "p90": 514.8996100000004,
+    "min": 514.8996100000004,
+    "max": 514.8996100000004,
+    "n": 1
+   },
+   "idleCpu": 3.09537792070985,
+   "rssMB": 710.8984375,
+   "pssMB": 217.3916015625,
+   "ussMB": 160,
+   "perSandboxPssMB": 217.3916015625,
+   "shm": {
+    "display": 0,
+    "sandboxes": 0,
+    "machine": 3634,
+    "before": 3634,
+    "limit": 4096
+   }
+  },
+  {
+   "backend": "wayland",
+   "load": {
+    "load": 3.57,
+    "busy": false,
+    "waitedS": 0
+   },
+   "n": 1,
+   "wallMs": 735.4146640000035,
+   "startPage": {
+    "median": 734.5192999999999,
+    "p10": 734.5192999999999,
+    "p90": 734.5192999999999,
+    "min": 734.5192999999999,
+    "max": 734.5192999999999,
+    "n": 1
+   },
+   "idleCpu": 2.895763287498821,
+   "rssMB": 807.23046875,
+   "pssMB": 262.71484375,
+   "ussMB": 184.609375,
+   "perSandboxPssMB": 262.71484375,
+   "shm": {
+    "display": 0,
+    "sandboxes": 0,
+    "machine": 3634,
+    "before": 3634,
+    "limit": 4096
+   }
+  },
+  {
+   "backend": "wayland-tigervnc",
+   "load": {
+    "load": 3.03,
+    "busy": false,
+    "waitedS": 0
+   },
+   "n": 1,
+   "wallMs": 818.8122319999966,
+   "startPage": {
+    "median": 817.8923619999987,
+    "p10": 817.8923619999987,
+    "p90": 817.8923619999987,
+    "min": 817.8923619999987,
+    "max": 817.8923619999987,
+    "n": 1
+   },
+   "idleCpu": 3.3947417951517815,
+   "rssMB": 816.2890625,
+   "pssMB": 265.134765625,
+   "ussMB": 182.328125,
+   "perSandboxPssMB": 265.134765625,
+   "shm": {
+    "display": 0,
+    "sandboxes": 0,
+    "machine": 3634,
+    "before": 3634,
+    "limit": 4096
+   }
+  },
+  {
+   "backend": "tigervnc",
+   "load": {
+    "load": 3.19,
+    "busy": false,
+    "waitedS": 0
+   },
+   "n": 5,
+   "wallMs": 1129.346538999991,
+   "startPage": {
+    "median": 940.7089799999958,
+    "p10": 878.9464159999916,
+    "p90": 1126.7765510000027,
+    "min": 878.9464159999916,
+    "max": 1126.7765510000027,
+    "n": 5
+   },
+   "idleCpu": 16.666751101558823,
+   "rssMB": 3575.11328125,
+   "pssMB": 910.0390625,
+   "ussMB": 661.72265625,
+   "perSandboxPssMB": 182.0078125,
+   "shm": {
+    "display": 0,
+    "sandboxes": 0,
+    "machine": 3634,
+    "before": 3634,
+    "limit": 4096
+   }
+  },
+  {
+   "backend": "kasmvnc",
+   "load": {
+    "load": 4.08,
+    "busy": false,
+    "waitedS": 0
+   },
+   "n": 5,
+   "wallMs": 1165.4751429999887,
+   "startPage": {
+    "median": 933.2622689999989,
+    "p10": 874.3786940000136,
+    "p90": 1129.0778479999863,
+    "min": 874.3786940000136,
+    "max": 1129.0778479999863,
+    "n": 5
+   },
+   "idleCpu": 16.27567711543486,
+   "rssMB": 3568.39453125,
+   "pssMB": 906.6396484375,
+   "ussMB": 659.63671875,
+   "perSandboxPssMB": 181.3279296875,
+   "shm": {
+    "display": 0,
+    "sandboxes": 0,
+    "machine": 3634,
+    "before": 3634,
+    "limit": 4096
+   }
+  },
+  {
+   "backend": "wayland",
+   "load": {
+    "load": 4.47,
+    "busy": false,
+    "waitedS": 0
+   },
+   "n": 5,
+   "wallMs": 1210.421312999999,
+   "startPage": {
+    "median": 1116.6523980000056,
+    "p10": 1073.3042759999807,
+    "p90": 1164.8155030000198,
+    "min": 1073.3042759999807,
+    "max": 1164.8155030000198,
+    "n": 5
+   },
+   "idleCpu": 15.475086313449559,
+   "rssMB": 4042.55859375,
+   "pssMB": 1063.482421875,
+   "ussMB": 796.83203125,
+   "perSandboxPssMB": 212.696484375,
+   "shm": {
+    "display": 0,
+    "sandboxes": 0,
+    "machine": 3634,
+    "before": 3634,
+    "limit": 4096
+   }
+  },
+  {
+   "backend": "wayland-tigervnc",
+   "load": {
+    "load": 3.72,
+    "busy": false,
+    "waitedS": 0
+   },
+   "n": 5,
+   "wallMs": 1427.6388520000037,
+   "startPage": {
+    "median": 1301.3443200000038,
+    "p10": 1184.844379999995,
+    "p90": 1425.1725570000126,
+    "min": 1184.844379999995,
+    "max": 1425.1725570000126,
+    "n": 5
+   },
+   "idleCpu": 15.370376215881944,
+   "rssMB": 4073.359375,
+   "pssMB": 1079.8701171875,
+   "ussMB": 795.609375,
+   "perSandboxPssMB": 215.9740234375,
+   "shm": {
+    "display": 0,
+    "sandboxes": 0,
+    "machine": 3634,
+    "before": 3634,
+    "limit": 4096
+   }
+  },
+  {
+   "backend": "tigervnc",
+   "load": {
+    "load": 5.1,
+    "busy": false,
+    "waitedS": 0
+   },
+   "n": 10,
+   "wallMs": 2702.7293500000087,
+   "startPage": {
+    "median": 2342.2684135000018,
+    "p10": 1550.5003270000161,
+    "p90": 2632.914816000004,
+    "min": 1301.2173619999958,
+    "max": 2632.914816000004,
+    "n": 10
+   },
+   "idleCpu": 35.134827498481066,
+   "rssMB": 7152.328125,
+   "pssMB": 1743.197265625,
+   "ussMB": 1318.19140625,
+   "perSandboxPssMB": 174.3197265625,
+   "shm": {
+    "display": 0,
+    "sandboxes": 0,
+    "machine": 3634,
+    "before": 3634,
+    "limit": 4096
+   }
+  },
+  {
+   "backend": "kasmvnc",
+   "load": {
+    "load": 7.57,
+    "busy": false,
+    "waitedS": 30
+   },
+   "n": 10,
+   "wallMs": 1807.4901459999965,
+   "startPage": {
+    "median": 1643.4909465000383,
+    "p10": 1224.2735349999857,
+    "p90": 1757.9581229999894,
+    "min": 1072.6223229999887,
+    "max": 1757.9581229999894,
+    "n": 10
+   },
+   "idleCpu": 31.946613997375714,
+   "rssMB": 7130.5703125,
+   "pssMB": 1736.568359375,
+   "ussMB": 1313.171875,
+   "perSandboxPssMB": 173.6568359375,
+   "shm": {
+    "display": 0,
+    "sandboxes": 0,
+    "machine": 3634,
+    "before": 3634,
+    "limit": 4096
+   }
+  },
+  {
+   "backend": "wayland",
+   "load": {
+    "load": 6.14,
+    "busy": false,
+    "waitedS": 0
+   },
+   "n": 10,
+   "wallMs": 2042.3752889999887,
+   "startPage": {
+    "median": 1690.9476110000105,
+    "p10": 1470.493366999959,
+    "p90": 1948.225487000018,
+    "min": 1427.4437069999985,
+    "max": 1948.225487000018,
+    "n": 10
+   },
+   "idleCpu": 29.152460895442072,
+   "rssMB": 8084.6484375,
+   "pssMB": 2036.6259765625,
+   "ussMB": 1593.30859375,
+   "perSandboxPssMB": 203.66259765625,
+   "shm": {
+    "display": 0,
+    "sandboxes": 0,
+    "machine": 3634,
+    "before": 3634,
+    "limit": 4096
+   }
+  },
+  {
+   "backend": "wayland-tigervnc",
+   "load": {
+    "load": 6.56,
+    "busy": false,
+    "waitedS": 75
+   },
+   "n": 10,
+   "wallMs": 1927.1150919999927,
+   "startPage": {
+    "median": 1758.3524814999837,
+    "p10": 1470.3148010000004,
+    "p90": 1900.5720760000404,
+    "min": 1369.2367259999737,
+    "max": 1900.5720760000404,
+    "n": 10
+   },
+   "idleCpu": 32.33459507494078,
+   "rssMB": 8153.296875,
+   "pssMB": 2073.4326171875,
+   "ussMB": 1592.48828125,
+   "perSandboxPssMB": 207.34326171875,
+   "shm": {
+    "display": 0,
+    "sandboxes": 0,
+    "machine": 3634,
+    "before": 3634,
+    "limit": 4096
+   }
+  }
+ ]
+}

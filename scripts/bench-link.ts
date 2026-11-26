@@ -28,7 +28,7 @@ import { cpus, homedir } from 'node:os';
 import { connect, createServer, type Server } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { DISPLAY_BINS, resolveBin } from '../packages/browser/src/bins.ts';
-import { argOf, backendsArg, Bench, cpuOver, DISPLAY_PROCS, ENC, ensureVideo, log, median, novncEncodings, progName, quiet, summary, tree, Viewer, W, H, work } from './bench-lib.ts';
+import { argOf, backendsArg, Bench, cpuOver, DISPLAY_PROCS, ENC, ensureVideo, log, machine, median, novncEncodings, progName, quiet, summary, tree, Viewer, W, H, work } from './bench-lib.ts';
 
 const SHAPER = resolve(import.meta.dir, 'bench-shaper.ts');
 
@@ -348,7 +348,7 @@ if (import.meta.main) {
   const conditions = CONDITIONS.filter((c) => ONLY.has(c.name));
   const BACKENDS = backendsArg();
   const hasVideo = ensureVideo();
-  const results: any = { when: new Date().toISOString(), machine: { cpus: cpus().length, model: cpus()[0]?.model }, size: `${W}x${H}`, reps: REPS, backends: BACKENDS, maxLoad: MAX_LOAD, conditions, checks: [] as any[], runs: [] as any[] };
+  const results: any = { when: new Date().toISOString(), machine: machine(), size: `${W}x${H}`, reps: REPS, backends: BACKENDS, maxLoad: MAX_LOAD, conditions, checks: [] as any[], runs: [] as any[] };
   const save = () => {
     mkdirSync(dirname(OUT), { recursive: true });
     writeFileSync(OUT, JSON.stringify(results, null, 2));

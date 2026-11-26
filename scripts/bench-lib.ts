@@ -162,6 +162,18 @@ export async function cpuDuring<T>(roots: () => number[], f: () => Promise<T>): 
 // ------------------------------------------------------------------------------------------------ load
 
 export const load1 = () => loadavg()[0]!;
+
+/**
+ * What a result file says of the machine: how many threads and whether it has a GPU render node, nothing that names
+ * it (no CPU or GPU model, no memory size), so the JSON can go beside a dated page in docs/benchmarks/ as it is.
+ */
+export const machine = () => ({ cpus: cpus().length, gpu: existsSync('/dev/dri') && readdirSync('/dev/dri').some((n) => n.startsWith('renderD')) });
+/** WebGL's unmasked renderer reduced to its class: a software one, or a GPU and the API ANGLE drives it through. */
+export function rendererKind(r: string | undefined) {
+  if (!r) return r;
+  if (/swiftshader|llvmpipe|lavapipe|softpipe/i.test(r)) return 'a software renderer';
+  return `a GPU, through ANGLE on ${/vulkan/i.test(r) ? 'Vulkan' : /opengl/i.test(r) ? 'OpenGL' : 'its own API'}`;
+}
 /** Wait (up to waitS) for the 1-minute load to fall under maxLoad; busy when it did not. */
 export async function quiet(maxLoad = cpus().length / 2, waitS = 600): Promise<{ load: number; busy: boolean; waitedS: number }> {
   const t0 = Date.now();

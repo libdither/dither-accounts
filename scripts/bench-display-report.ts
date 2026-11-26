@@ -156,7 +156,7 @@ const runs = R.runs.filter((r) => !r.error);
 const pick = (b, get) => runs.filter((r) => r.backend === b).map((r) => { try { const v = get(r); return typeof v === 'number' && Number.isFinite(v) ? v : undefined; } catch { return undefined; } }).filter((v) => v !== undefined);
 
 const loads = R.runs.map((r) => r.load?.load).filter((x) => x !== undefined);
-document.getElementById('sub').textContent = \`\${R.machine.cpus} threads (\${R.machine.model}), \${R.machine.memGB} GB, \${R.machine.gpu ? 'a GPU render node' : 'no GPU'} · screen \${R.size} · \${R.reps} repetitions · \${new Date(R.when).toISOString().slice(0, 16).replace('T', ' ')} UTC · 1-minute load during the runs \${fmt(Math.min(...loads), 1)}–\${fmt(Math.max(...loads), 1)}\${R.runs.some((r) => r.load?.busy) ? ' (some runs taken while busy)' : ''}\`;
+document.getElementById('sub').textContent = \`\${R.machine.cpus} threads, \${R.machine.gpu ? 'a GPU render node' : 'no GPU'} · screen \${R.size} · \${R.reps} repetitions · \${new Date(R.when).toISOString().slice(0, 16).replace('T', ' ')} UTC · 1-minute load during the runs \${fmt(Math.min(...loads), 1)}–\${fmt(Math.max(...loads), 1)}\${R.runs.some((r) => r.load?.busy) ? ' (some runs taken while busy)' : ''}\`;
 
 const tip = document.getElementById('tip');
 function showTip(ev, title, rows) {

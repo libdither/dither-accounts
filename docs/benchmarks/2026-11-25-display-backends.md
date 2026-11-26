@@ -9,18 +9,33 @@ repetitions on a shared machine a median would claim more than the runs can say.
 ## What ran
 
 - **Code:** commit `7175670a6ef7` of this repository (the branch that added the Xvnc backends), every backend in one
-  session. The page's tables come from the JSON by `scripts/bench-tables.ts` (below).
+  session. The page's tables come from the JSON in [`2026-11-25-display-backends/`](2026-11-25-display-backends/) by
+  `scripts/bench-tables.ts` (below).
 - **Programs,** all from the pinned nixpkgs (`nix/pin.json`, `2786a2a7`), prepared with
   `bun scripts/prepare-bins.ts --out <dir> --tests`: Xvfb 21.1.24, x11vnc 0.9.17, TigerVNC's Xvnc 1.16.2, KasmVNC's
   Xvnc 1.5.2-dither.3 and w0vncserver 1.16.2-dither.2 (both from this project's forks, nix/README.md "Forks"), sway
   1.12, wayvnc 0.10.2, grim 1.5.0, xdotool, ImageMagick 7.1.2. Chromium 155 (the machine's own).
-- **Machine:** a desktop with an 8-core, 16-thread AMD CPU, 46 GB of memory and a mid-range AMD GPU (RADV, Vulkan),
-  shared with a desktop session and other work: the 1-minute load as each repetition began is given with each
-  table. 1280×800 screens.
+- **Machine:** a 16-thread desktop with a discrete GPU (Chromium's WebGL ran on it through ANGLE on Vulkan), shared
+  with a desktop session and other work: the 1-minute load as each repetition began is given with each table.
+  1280×800 screens.
 - **Viewer:** the benchmarks' own RFB client (`packages/browser/test/rfb-viewer.ts`), asking for what noVNC asks
   for unless a row says otherwise. KasmVNC speaks standard RFB to it, as to noVNC.
 
-## How to run it again
+## The JSON, and running it again
+
+The files in [`2026-11-25-display-backends/`](2026-11-25-display-backends/) are what the runs below wrote, passed
+through `bun scripts/bench-scrub.ts <in> <out>`, which leaves out what would describe the machine (the CPU and GPU
+models, the memory size, the native apps' own log lines) and puts `lab-1`… for the lab's account ids. The tables
+here come from them:
+
+```
+D=docs/benchmarks/2026-11-25-display-backends
+bun scripts/bench-tables.ts --results $D/results.json --scale $D/scale.json --link $D/link-a.json,$D/link-b.json \
+  --native $D/native.json --backends x11,tigervnc,kasmvnc,wayland,wayland-tigervnc
+bun scripts/bench-tables.ts --lab $D/lab.json --backends tigervnc,wayland,wayland-tigervnc
+```
+
+To take them again:
 
 ```
 bun scripts/prepare-bins.ts --out /tmp/bins --tests
@@ -213,7 +228,7 @@ takes `--first-rep` to go through the backends in another order. Still open:
   ZRLE in a browser (on a phone, most of it) is not in them. To close: noVNC in a headless Chromium as the viewer, CPU
   throttled to a phone's, counting its own paints.
 - The shaped link is tc on a loopback with a fixed delay and independent random loss: no jitter, reordering,
-  Wi-Fi or cellular bursts, and none of the real path's hops (the manager's WebSocket, TLS, the tailnet's WireGuard).
+  Wi-Fi or cellular bursts, and none of the real path's hops (the manager's WebSocket, TLS, a VPN tunnel).
   To close: the same scenes through the manager's live-view WebSocket from another machine, and netem jitter and slot
   models for Wi-Fi and LTE.
 - Click to photon ends when the changed pixels reach our viewer's framebuffer: it leaves out the viewer's decode and

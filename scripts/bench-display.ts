@@ -42,7 +42,7 @@ import { dirname, join } from 'node:path';
 import { DISPLAY_BINS, resolveBin } from '../packages/browser/src/bins.ts';
 import { type FreeDisplay, isWaylandBackend, pickFreeDisplay } from '../packages/browser/src/display.ts';
 import type { ShareStats } from '../packages/browser/test/share-page.ts';
-import { argOf, type Backend, backendsArg, Bench, cpuDuring, cpuOver, ENC, ensureVideo, H, load1, log, memory, novncEncodings, progName, quiet as quietFor, shm, summary, tree, VIDEO, Viewer, VNC_SERVER, W, work } from './bench-lib.ts';
+import { argOf, type Backend, backendsArg, Bench, cpuDuring, cpuOver, ENC, ensureVideo, H, load1, log, machine, memory, novncEncodings, progName, quiet as quietFor, rendererKind, shm, summary, tree, VIDEO, Viewer, VNC_SERVER, W, work } from './bench-lib.ts';
 
 // ------------------------------------------------------------------------------------------------ options
 
@@ -204,7 +204,7 @@ async function video(b: Bench) {
 async function webgl(b: Bench) {
   await b.open('/webgl');
   const r = await cpuDuring(b.roots, () => b.until('webgl fps', (x) => x.ev === 'fps', 30_000));
-  return { fps: r.result.fps, renderer: r.result.renderer, cpu: r.cpu };
+  return { fps: r.result.fps, renderer: rendererKind(r.result.renderer), cpu: r.cpu };
 }
 
 async function shots(b: Bench, n = 10) {
@@ -260,7 +260,7 @@ async function scale(backend: Backend, n: number) {
 
 const results: any = {
   when: new Date().toISOString(),
-  machine: { cpus: cpus().length, model: cpus()[0]?.model, memGB: Math.round(Number(/MemTotal:\s+(\d+)/.exec(readFileSync('/proc/meminfo', 'utf8'))?.[1] ?? 0) / 1048576), gpu: readdirSync('/dev/dri').some((n) => n.startsWith('renderD')) },
+  machine: machine(),
   size: `${W}x${H}`,
   reps: REPS,
   backends: BACKENDS,

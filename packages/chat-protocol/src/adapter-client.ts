@@ -111,12 +111,13 @@ export function linkHub(opts: LinkOptions): HubLink {
         return;
       }
       if (handshake.message(cmd as { t: string }, ws)) return;
-      // The manager's answer to an `ask`: not a command.
-      if ((cmd as { t: string }).t === 'answer') {
-        const a = cmd as unknown as { aid?: unknown; ok?: unknown; result?: unknown; error?: unknown };
-        const p = typeof a.aid === 'string' ? asked.get(a.aid) : undefined;
+      // The manager's answer to an `ask` (it carries the ask's `aid`): not a command. A hub's `answer` (to a join
+      // request) has none and goes on to the adapter.
+      const a = cmd as unknown as { t: string; aid?: unknown; ok?: unknown; result?: unknown; error?: unknown };
+      if (a.t === 'answer' && typeof a.aid === 'string') {
+        const p = asked.get(a.aid);
         if (!p) return;
-        asked.delete(a.aid as string);
+        asked.delete(a.aid);
         clearTimeout(p.timer);
         if (a.ok === true) p.resolve(a.result);
         else p.reject(new Error(String(a.error ?? 'the manager refused')));

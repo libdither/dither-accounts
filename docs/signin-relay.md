@@ -6,8 +6,8 @@ already signed in to Google, answers it. You never sign in to Google inside Luma
 cookies never leave the Google account's browser. Only the one-time code Google hands back moves, from one browser
 to the other.
 
-Today that means **Luma** asks and **Google** (the browser kind) answers. A kind takes part with a line in its
-manifest and a few lines in its extension's worker (below).
+Today **Luma** and any **website** ([site.md](site.md)) ask, and **Google** (the browser kind) answers. A kind takes
+part with a line in its manifest and a few lines in its extension's worker (below).
 
 ## What you see
 
@@ -19,12 +19,19 @@ manifest and a few lines in its extension's worker (below).
 
    ![The chooser](screenshots/signin-chooser.webp)
 
-3. You pick one. "Use it next time luma.com asks" is on by default, so the next sign-in skips the chooser and goes
-   ahead with that account. Picking with it off forgets the choice.
+3. You pick one. **Link it** ("use it next time luma.com asks, and go through Google's screens for me") is on by
+   default. Picking with it on sets up the link: this sign-in and every later one go ahead with that account, with no
+   chooser and nothing for you to press. Picking with it off forgets any link, and you answer Google yourself.
 4. The Google account's browser opens the link in a tab of its own, in front. Luma's link asks Google to show the
-   account picker and the consent screen every time (`prompt=select_account consent`), so the Google account shows
-   an attention after a few seconds: **Google may be asking you to allow a sign-in to luma.com: answer it in the live
-   view**. Answer Google there. A site that does not ask for that goes straight through.
+   account picker and the consent screen every time (`prompt=select_account consent`).
+   - **Linked**, and the site asks Google for no more than who you are (your name, picture and email): the Google
+     account presses them itself, with real mouse clicks on its display. It clicks that account in Google's chooser
+     (by its email), then Continue (or Allow). It presses nothing else, and at most six times in all.
+   - Anything else Google shows (a password, a code, a "verify it's you", a chooser without this account, a site
+     asking for more, such as your calendar): the Google account shows an attention after a few seconds, **Google is
+     asking something only you can answer…** (or, not linked, **Google may be asking you to allow a sign-in to
+     luma.com**), and you answer it in the live view. A linked sign-in keeps watching: once you are past a password,
+     it still presses the Continue after it.
 5. Google sends that tab to Luma's redirect address with the code. The tab is stopped before it loads that address,
    so Luma's server never sees the Google browser. The address goes back to Luma's popup, which loads it: Luma trades
    the code for its own session, as it does after any Google sign-in, and the popup closes. A first sign-in this way
@@ -68,10 +75,18 @@ you pick one
 
   It sends the answering account `signin.authorize`, a command of the manager's own: no interface carries it, so no
   app can ask for it. A choice to remember goes in the asking account's config (`signInWith: { google: <account> }`).
-- **The answering browser** (`SignInAnswerer`, and the same worker code): checks the link again, opens it in a new
-  tab in front with a session rule that blocks only that tab from loading the redirect address, and answers with the
-  address it was stopped at. The tab closes after (never the browser's last one). While it waits, the account's
-  status asks you to answer in the live view. A relay waits up to five minutes for you.
+- **Linked**: the manager sends `auto` only when the asking account's remembered choice (`signInWith`) is this
+  answering account and the link's scopes are identity only (`onlyIdentity`: `openid`, `email`, `profile` and their
+  `userinfo` forms). It sends `who` too: the answering account's email as last seen, which its chooser picks.
+- **The answering browser** (`SignInAnswerer`, and the same worker code): checks the link again (and `auto` against
+  the scopes again), opens it in a new tab in front with a session rule that blocks only that tab from loading the
+  redirect address, and answers with the address it was stopped at. The tab closes after (never the browser's last
+  one). With `auto` it asks the worker every second or so what the tab shows (`signin.look`: the worker reads the page
+  through `chrome.scripting`, which needs the provider's host in the kind's manifest, `https://accounts.google.com/*`
+  for Google): `choose` with where `who` is in the chooser, `consent` with where the one Continue or Allow is, or
+  `other`. It presses `choose` and `consent` with xdotool on the account's display, as the
+  [browser interface](browser.md) does, and leaves `other` to you. Not linked, or on `other`, the account's status asks
+  you to answer in the live view. A relay waits up to five minutes.
 - **Kept out of logs and statuses**: the link (its state, client and scopes ride in it) and the code. The logs name
   the accounts, the provider and the site.
 
@@ -90,21 +105,34 @@ you pick one
 
 Asking (a site with a "Continue with Google"):
 
-- the manifest: `signIn: { sites: ['https://example.com'] }`;
+- the manifest: `signIn: { sites: ['https://example.com'] }`, or `signIn: { siteSetting: 'url' }` when each account
+  names its own site in its config (the `site` kind);
+- a kind on statements-common's `BrowserHost` (the `site` kind): `signIn: signInConfig()` in its host options, which
+  appends the worker part (`extension/signin.js`) to its driver, and a `SignInAsker` that sees the host's `onMessage`.
+  That is all; the rest below is for a kind with a worker of its own.
 - the worker: `/*@include signin-worker@*/`, `if (signinRelay.command(msg)) return;` first in its command routing,
   `signinRelay.start(sendUp, loadConfig().then((c) => c && c.signIn));` at its top level, and its tab reports leaving
   out `signinRelay.owns(t.id)`;
 - the extractor: `signIn: signInConfig()` in the extension's config, and a `SignInAsker` whose `onMessage` sees the
   bridge's frames first.
 
-Answering (a provider's own browser kind): the manifest's `signsIn: ['google']`, the same worker lines, and a
-`SignInAnswerer` that takes the `signin.authorize` command.
+Answering (a provider's own browser kind): the manifest's `signsIn: ['google']`, the provider's host in the
+extension's `host_permissions` (for `signin.look`), the same worker lines, and a `SignInAnswerer` that takes the
+`signin.authorize` command, with the account's display and email for a linked sign-in.
 
 ## Tests
 
 `test/signin-relay-unit.test.ts` reads links and runs the manager's checks against a registry in memory: the choices,
-a relay and its answer, remembering and forgetting, and each refusal (another site, an account that cannot answer, an
-asker that does not sign in, an answer that is not the redirect). `test/signin-relay.test.ts` runs a Google account
-and Luma accounts in their own Chromiums against the fake Google and the fake Luma: a remembered account signs Luma in
-with no click, Luma's browser never reaches Google's authorize page, neither log holds the code or the link, and on
-the chooser a pick made with real keys (Tab, Enter on the account's display) signs in and is remembered.
+a relay and its answer, remembering and forgetting, `auto` only for a linked account and identity scopes, the `site`
+kind's own address, and each refusal (another site, an account that cannot answer, an asker that does not sign in, an
+answer that is not the redirect). `test/signin-relay.test.ts` runs a Google account, Luma accounts and a `site`
+account in their own Chromiums against the fake Google, whose authorize page shows a chooser and a Continue screen
+that go on only for trusted input, and the fake Luma:
+
+- a linked account signs Luma in with no click: Google's chooser and Continue are pressed with real input, Luma's
+  browser never reaches Google's authorize page, and neither log holds the code or the link;
+- on the chooser, a pick made with real keys (Tab, Enter on the account's display) with **Link it** on signs in, goes
+  through Google's screens and is remembered;
+- with **Link it** off, Google's account asks for you and nothing is pressed until the test clicks the account and
+  Continue on its display, as you would in the live view;
+- a `site` account is signed in the same way and lends its browser on its site only.

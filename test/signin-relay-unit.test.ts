@@ -49,6 +49,7 @@ function registry() {
     ['luma', kindOf({ kind: 'luma', name: 'Luma', interfaces: [], entry: '', signIn: { sites: ['https://luma.com'] } }, '')],
     ['google', kindOf({ kind: 'google', name: 'Google', interfaces: [], entry: '', signsIn: ['google'] }, '')],
     ['imap', kindOf({ kind: 'imap', name: 'IMAP', interfaces: [], entry: '' }, '')],
+    ['site', kindOf({ kind: 'site', name: 'Website', interfaces: [], entry: '', signIn: { siteSetting: 'url' } }, '')],
   ]);
   const add = (id: string, kind: string, config: Record<string, unknown> = {}, seen: unknown = null, enabled = 1) =>
     store.run('INSERT INTO account (id, kind, label, config, token, dir, enabled, created_at, updated_at, seen_as) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, kind, `${kind} ${id}`, JSON.stringify(config), `tok-${id}`, join(dir, id), enabled, 0, 0, seen ? JSON.stringify(seen) : null);
@@ -57,6 +58,8 @@ function registry() {
   add('acc-g2', 'google', {}, { email: 'ben@example.com' });
   add('acc-off', 'google', {}, null, 0);
   add('acc-mail', 'imap');
+  add('acc-site', 'site', { url: 'https://shop.example.org/start?x=1' });
+  add('acc-plain', 'site', { url: 'http://shop.example.org/' });
   const sent: { id: string; cmd: Record<string, unknown> }[] = [];
   let answer: unknown = null;
   const relays = new SignInRelays({
@@ -91,11 +94,14 @@ test("a relay goes to the chosen account and brings its answer back; a pick is r
   try {
     r.answerWith({ url: 'https://luma.com/google?code=4%2Fxyz&state=st' });
     expect(await r.relays.relay('acc-luma', { url: link(LUMA), account: 'acc-g1', remember: true })).toEqual({ url: 'https://luma.com/google?code=4%2Fxyz&state=st' });
-    expect(r.sent).toEqual([{ id: 'acc-g1', cmd: expect.objectContaining({ t: 'signin.authorize', provider: 'google', url: link(LUMA), redirect: 'https://luma.com/google', site: 'https://luma.com' }) }]);
+    // Linked (remembered): the provider's screens are gone through for you, as the account last seen.
+    expect(r.sent).toEqual([{ id: 'acc-g1', cmd: expect.objectContaining({ t: 'signin.authorize', provider: 'google', url: link(LUMA), redirect: 'https://luma.com/google', site: 'https://luma.com', auto: true, who: 'ann@example.com' }) }]);
     expect(JSON.parse(r.store.account('acc-luma')!.config).signInWith).toEqual({ google: 'acc-g1' });
     expect(r.relays.choices('acc-luma', { url: link(LUMA) }).remembered).toBe('acc-g1');
     await r.relays.relay('acc-luma', { url: link(LUMA), account: 'acc-g1', remember: false });
     expect(JSON.parse(r.store.account('acc-luma')!.config).signInWith).toBeUndefined();
+    // Not linked: you answer the provider's screens.
+    expect(r.sent[1]!.cmd.auto).toBe(false);
   } finally {
     r.done();
   }
@@ -129,6 +135,35 @@ test("a test origin counts only for an account that has one of its own", () => {
     expect(() => r.relays.choices('acc-luma', { url: q })).toThrow('Not relayed');
     r.store.run('UPDATE account SET config = ? WHERE id = ?', JSON.stringify({ testOrigin: fake, testSignInOrigins: { google: 'http://127.0.0.1:8' } }), 'acc-luma');
     expect(r.relays.choices('acc-luma', { url: q }).site).toBe(fake);
+  } finally {
+    r.done();
+  }
+});
+
+test("linked, but the site asks for more than who you are: the provider's screens are yours", async () => {
+  const r = registry();
+  try {
+    r.answerWith({ url: 'https://luma.com/google?code=1' });
+    const more = link({ ...LUMA, scope: `${LUMA.scope} https://www.googleapis.com/auth/calendar.readonly` });
+    await r.relays.relay('acc-luma', { url: more, account: 'acc-g1', remember: true });
+    expect(JSON.parse(r.store.account('acc-luma')!.config).signInWith).toEqual({ google: 'acc-g1' });
+    expect(r.sent[0]!.cmd.auto).toBe(false);
+  } finally {
+    r.done();
+  }
+});
+
+test("the general site kind: each account's own https address is its site, and nothing else", async () => {
+  const r = registry();
+  try {
+    const shop = (redirect: string) => link({ ...LUMA, redirect_uri: redirect });
+    expect(r.relays.choices('acc-site', { url: shop('https://shop.example.org/auth/google') }).site).toBe('https://shop.example.org');
+    expect(() => r.relays.choices('acc-site', { url: shop('https://luma.com/google') })).toThrow('not for this account');
+    expect(() => r.relays.choices('acc-site', { url: shop('https://www.shop.example.org/auth/google') })).toThrow('not for this account');
+    // An address that is not https is no site.
+    expect(() => r.relays.choices('acc-plain', { url: shop('https://shop.example.org/auth/google') })).toThrow('not for this account');
+    r.answerWith({ url: 'https://shop.example.org/auth/google?code=1' });
+    expect(await r.relays.relay('acc-site', { url: shop('https://shop.example.org/auth/google'), account: 'acc-g1', remember: true })).toEqual({ url: 'https://shop.example.org/auth/google?code=1' });
   } finally {
     r.done();
   }

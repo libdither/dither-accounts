@@ -18,7 +18,10 @@
  *
  * Answering: `signin.authorize` opens the link in a tab of its own, in front, with a session rule that stops that tab
  * from loading the redirect address, and answers with the address it was stopped at (the provider's code). The tab
- * closes after. Nothing here logs or keeps a link or a code.
+ * closes after. While it is open, `signin.look` (its `aid`) says which of the provider's screens that tab shows (its
+ * account chooser, its Continue, or something else) and where on the screen the one thing to press is: the extractor
+ * presses it with real input when you set up the link (signin.ts SignInAnswerer). Nothing here logs or keeps a link or
+ * a code.
  */
 const signinRelay = (() => {
   let up = null;
@@ -27,6 +30,7 @@ const signinRelay = (() => {
   const byTab = new Map(); // tabId -> rid
   const through = new Map(); // tabId -> until: the provider's page may load there
   const answering = new Set(); // tabs opened to answer a link
+  const answerTabs = new Map(); // aid -> tabId: the tab a signin.authorize opened, for signin.look
   let seq = 0;
 
   const page = () => chrome.runtime.getURL('signin.html');
@@ -127,6 +131,7 @@ const signinRelay = (() => {
     if (!/^https?:\/\/[^\s*^|]+$/.test(redirect) || !url) return reply(id, false, 'no link to open');
     const ms = Math.max(5000, Math.min(Number(cmd.ms) || 120000, 600000));
     const rule = 9000 + (++seq % 50000);
+    const aid = typeof cmd.aid === 'string' ? cmd.aid.slice(0, 80) : null;
     let tab = null;
     let finished = false;
     const isAnswer = (u) => typeof u === 'string' && u.startsWith(redirect) && /^([?#]|$)/.test(u.slice(redirect.length));
@@ -143,6 +148,7 @@ const signinRelay = (() => {
       try {
         await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [rule] });
       } catch (e) {}
+      if (aid) answerTabs.delete(aid);
       if (tab) {
         answering.delete(tab.id);
         try {
@@ -162,6 +168,7 @@ const signinRelay = (() => {
     try {
       tab = await chrome.tabs.create({ url: 'about:blank', active: true });
       answering.add(tab.id);
+      if (aid) answerTabs.set(aid, tab.id);
       chrome.tabs.onUpdated.addListener(onUpdated);
       chrome.tabs.onRemoved.addListener(onRemoved);
       if (chrome.webNavigation) {
@@ -179,6 +186,59 @@ const signinRelay = (() => {
     }
   }
 
+  /**
+   * Which of the provider's screens a page shows, run in the answering tab (chrome.scripting; it must stand alone).
+   * `choose`: its account chooser, and where `who` is in it. `consent`: a screen whose one way on is Continue (or
+   * Allow), and where that button is. Anything else (a password, a code, a check, a chooser without `who`) is `other`:
+   * the person's, in the live view. Points are on the screen: the window's frame added (as the browser interface does).
+   */
+  function providerPage(who) {
+    if (document.readyState !== 'complete') return { step: 'loading' };
+    if (document.hidden) return { step: 'hidden' };
+    const shown = (el) => {
+      const r = el.getBoundingClientRect();
+      const st = getComputedStyle(el);
+      return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
+    };
+    const at = (el, step) => {
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      const r = el.getBoundingClientRect();
+      const cx = Math.max(1, Math.min(innerWidth - 2, r.left + r.width / 2));
+      const cy = Math.max(1, Math.min(innerHeight - 2, r.top + Math.min(r.height / 2, 20)));
+      const top = document.elementFromPoint(cx, cy);
+      if (top && top !== el && !el.contains(top) && !top.contains(el)) return { step: 'other', why: 'covered' };
+      const side = (outerWidth - innerWidth) / 2;
+      const above = outerHeight - innerHeight - side;
+      return { step, x: Math.round(screenX + side + cx), y: Math.round(screenY + above + cy) };
+    };
+    const words = (el) => String(el.innerText || el.value || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+    if ([...document.querySelectorAll('input[type=password], input[type=tel], input[autocomplete=one-time-code], iframe[src*="recaptcha"]')].some(shown)) return { step: 'other', why: 'asks for something' };
+    const me = String(who || '').trim().toLowerCase();
+    const accounts = [...document.querySelectorAll('[data-identifier], [data-email]')].filter(shown);
+    if (accounts.length) {
+      const mine = me && accounts.find((el) => String(el.getAttribute('data-identifier') || el.getAttribute('data-email') || '').trim().toLowerCase() === me);
+      return mine ? at(mine, 'choose') : { step: 'other', why: 'not in the chooser' };
+    }
+    const buttons = [...document.querySelectorAll('button, [role=button], input[type=submit]')].filter(shown);
+    const go = [document.getElementById('submit_approve_access'), ...buttons.filter((b) => /^(continue|allow)$/i.test(words(b)))].filter((b) => b && shown(b));
+    if (go.length === 1 || (go.length > 1 && go.every((b) => b === go[0] || b.contains(go[0]) || go[0].contains(b)))) return at(go[0], 'consent');
+    return { step: 'other', why: go.length ? 'more than one Continue' : 'no Continue' };
+  }
+
+  async function look(id, cmd) {
+    const tabId = answerTabs.get(cmd.aid);
+    if (tabId === undefined) return reply(id, true, { step: 'gone' });
+    try {
+      const t = await chrome.tabs.get(tabId);
+      if (t.status === 'loading') return reply(id, true, { step: 'loading' });
+      if (!t.active) return reply(id, true, { step: 'hidden' });
+      const res = await chrome.scripting.executeScript({ target: { tabId }, func: providerPage, args: [String(cmd.who || '')] });
+      reply(id, true, (res && res[0] && res[0].result) || { step: 'other', why: 'unreadable' });
+    } catch (e) {
+      reply(id, true, { step: 'other', why: 'unreadable' });
+    }
+  }
+
   // ------------------------------------------------------------ the extractor's commands
   function command(msg) {
     const cmd = (msg && msg.cmd) || {};
@@ -186,6 +246,10 @@ const signinRelay = (() => {
     const r = relays.get(cmd.rid);
     if (cmd.kind === 'signin.authorize') {
       authorize(msg.id, cmd);
+      return true;
+    }
+    if (cmd.kind === 'signin.look') {
+      look(msg.id, cmd);
       return true;
     }
     if (!r) {

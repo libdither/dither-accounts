@@ -450,7 +450,16 @@ const bridge = new BridgeServer<Up, PageCmd | TabCmd>({
   log,
 });
 /** Other accounts' "Continue with Google", answered in this browser (packages/browser/src/signin.ts). */
-const signIns = new SignInAnswerer({ bridge, provider: 'google', testOrigin, log, onChange: () => status() });
+const signIns = new SignInAnswerer({
+  bridge,
+  provider: 'google',
+  testOrigin,
+  // A linked sign-in's account chooser and Continue are pressed on this display, as this account (its email).
+  display: () => (liveView ? display : null),
+  who: () => who()?.email ?? null,
+  log,
+  onChange: () => status(),
+});
 
 // ------------------------------------------------------------------- status
 const LOGIN: Attention = { kind: 'login', message: 'Sign in to Google in the live view', liveView: true };
@@ -1767,7 +1776,7 @@ const page = (p: any) => ({ items: p.items ?? [], ...(p.nextPageToken ? { nextPa
 /** Each op under its own time (deadline.ts): every page request it makes is cut to what is left of it. */
 function onCommand(cmd: Command): Promise<unknown> {
   // Another account's sign-in, from the manager (docs/signin-relay.md): its own time, up to minutes while you answer.
-  if (cmd.t === 'signin.authorize') return signIns.authorize(cmd as { url?: unknown; redirect?: unknown; ms?: unknown });
+  if (cmd.t === 'signin.authorize') return signIns.authorize(cmd as { url?: unknown; redirect?: unknown; ms?: unknown; auto?: unknown; who?: unknown });
   return withDeadline(opMs(cmd.t) - OP_MARGIN_MS, () => runOp(cmd));
 }
 

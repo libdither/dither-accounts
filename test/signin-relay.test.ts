@@ -11,6 +11,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AccountsClient, register } from '@dither-accounts/client';
+import { browser } from '@dither-accounts/interfaces';
 import { createManager, type Manager } from '@dither-accounts/manager';
 import { resolveBins, resolveXdotool } from '../packages/browser/src/index.ts';
 import { type FakeGoogle, startFakeGoogle } from './fake-google.ts';
@@ -80,7 +81,7 @@ beforeAll(async () => {
   luma = startFakeLuma({ signedIn: false });
   dir = mkdtempSync(join(tmpdir(), 'dacc-signin-'));
   m = await createManager({ openPage: true, dataDir: dir, port: 0 });
-  const reg = await register(m.url, { name: 'signin-app', requests: [{ interface: 'accounts', level: 'manage', kinds: ['google', 'luma'] }, { interface: 'google.calendar', level: 'read' }, { interface: 'chat', level: 'read', accounts: '*' }] });
+  const reg = await register(m.url, { name: 'signin-app', requests: [{ interface: 'accounts', level: 'manage', kinds: ['google', 'luma', 'site'] }, { interface: 'google.calendar', level: 'read' }, { interface: 'chat', level: 'read', accounts: '*' }, { interface: 'browser', level: 'write', accounts: '*' }] });
   for (const r of reg.requests) expect((await fetch(`${m.url}/api/requests/${r.id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status).toBe(200);
   app = new AccountsClient({ url: m.url, app: reg.app, token: reg.token, onEvents: (a, list) => (events[a] ??= []).push(...list) });
   await until(() => app.connected, 5000, 'the app connected');
@@ -116,6 +117,13 @@ it(
     luma.continueWithGoogle(google.url);
     await until(() => luma.googleCodes.length > 0, 60_000, "Google's code at Luma's /google");
 
+    // A linked account: Google's chooser and its Continue were pressed for you, with real input (trusted events).
+    expect(google.presses).toEqual([
+      { step: 'choose', trusted: true },
+      { step: 'consent', trusted: true },
+    ]);
+    expect(logOf(g)).toContain('pressed this account in the chooser');
+    expect(logOf(g)).toContain('pressed Continue');
     // Google saw the link in its own, signed-in browser; Luma's never went there.
     expect(google.signIns).toHaveLength(1);
     expect(google.signIns[0]).toMatchObject({ clientId: 'luma-web.apps.example.com', redirectUri: `${luma.url}/google`, signedIn: true });
@@ -146,6 +154,7 @@ it(
       made.push(id);
       await until(() => statusOf(id)?.attention?.kind === 'login', 60_000, 'Luma asking for a sign-in');
       const before = google.signIns.length;
+      const pressed = google.presses.length;
       other.continueWithGoogle(google.url);
       // The manager has answered which accounts could sign in: by then Luma's own request was stopped, or not.
       await until(() => /sign-in \S+: Google for http:\/\/127\.0\.0\.1:\d+, 1 account\(s\) could answer$/m.test(logOf(id)), 30_000, 'the chooser filled');
@@ -163,9 +172,111 @@ it(
       await until(() => other.googleCodes.length > 0, 60_000, "Google's code at this Luma's /google");
       expect(google.signIns.length).toBe(before + 1);
       expect(google.signIns.at(-1)).toMatchObject({ redirectUri: `${other.url}/google`, signedIn: true });
-      // "Use it next time" is on by default: the next sign-in goes ahead with it.
+      // "Link it" is on by default: Google's screens were gone through for you, and the next sign-in goes ahead with it.
+      expect(google.presses.slice(pressed)).toEqual([
+        { step: 'choose', trusted: true },
+        { step: 'consent', trusted: true },
+      ]);
       expect(JSON.parse(m!.store.account(id)!.config).signInWith).toEqual({ google: g });
       await until(() => statusOf(id)?.status === 'online', 60_000, 'this Luma signed in');
+    } finally {
+      if (id) await app.admin({ do: 'delete', account: id });
+      other.stop();
+    }
+  },
+  120_000,
+);
+
+it(
+  "a pick that is not linked leaves Google's screens to you: Google's account asks for you, and nothing is pressed until you do",
+  async () => {
+    const other = startFakeLuma({ signedIn: false });
+    let id = '';
+    try {
+      id = await create('luma', 'Luma (unlinked)', { testOrigin: other.url, testSignInOrigins: { google: google.url } });
+      made.push(id);
+      await until(() => statusOf(id)?.attention?.kind === 'login', 60_000, 'Luma asking for a sign-in');
+      const before = google.signIns.length;
+      const pressed = google.presses.length;
+      const count = (re: RegExp) => (logOf(g).match(re) ?? []).length;
+      const answering = count(/answering a sign-in to /g);
+      const screens = google.oauthReady.length;
+      const linked = count(/going through the provider's screens/g);
+      other.continueWithGoogle(google.url);
+      await until(() => /sign-in \S+: the chooser shows the accounts$/m.test(logOf(id)), 30_000, 'the accounts drawn');
+      const displayOf = (a: string) => String(statusOf(a)?.layers?.find((x: any) => x.name === 'display')?.note ?? '').match(/:(\d+)/)?.[1];
+      const xdotool = resolveXdotool(() => {});
+      const keys = (a: string, ...k: string[]) => {
+        const d = displayOf(a);
+        expect(d).toBeTruthy();
+        expect(Bun.spawnSync([xdotool, 'key', '--delay', '150', ...k], { env: { ...process.env, DISPLAY: `:${d}` } }).exitCode).toBe(0);
+      };
+      // You, on Luma's chooser: the account (Tab), off with "Link it" (Tab, space), back to the account, Enter.
+      keys(id, 'Tab', 'Tab', 'space', 'shift+Tab', 'Return');
+      await until(() => google.signIns.length > before, 30_000, "the link opened in Google's browser");
+      // Google's account asks for you, and nothing is pressed for you.
+      const asks = await until(() => (statusOf(g)?.attention?.kind === 'verify' ? statusOf(g).attention : null), 30_000, "Google's account asking for you");
+      expect(asks.message).toContain('may be asking you to allow a sign-in');
+      expect(google.presses.length).toBe(pressed);
+      expect(count(/answering a sign-in to /g)).toBe(answering + 1);
+      expect(count(/going through the provider's screens/g)).toBe(linked);
+
+      // You, in Google's live view: a click on the account, then on Continue (real clicks on its display).
+      const click = (step: string) => {
+        const at = google.oauthReady.slice(screens).findLast((x) => x.step === step)!;
+        expect(Bun.spawnSync([xdotool, 'mousemove', '--sync', String(at.x), String(at.y), 'click', '1'], { env: { ...process.env, DISPLAY: `:${displayOf(g)}` } }).exitCode).toBe(0);
+      };
+      await until(() => google.oauthReady.slice(screens).some((x) => x.step === 'choose'), 30_000, "Google's chooser shown");
+      click('choose');
+      await until(() => google.oauthReady.slice(screens).some((x) => x.step === 'consent'), 30_000, "Google's Continue screen shown");
+      click('consent');
+      await until(() => other.googleCodes.length > 0, 60_000, "Google's code at this Luma's /google");
+      expect(google.presses.slice(pressed)).toEqual([
+        { step: 'choose', trusted: true },
+        { step: 'consent', trusted: true },
+      ]);
+      // Not linked: the next sign-in asks again.
+      expect(JSON.parse(m!.store.account(id)!.config).signInWith).toBeUndefined();
+      await until(() => statusOf(g)?.status === 'online' && !statusOf(g)?.attention, 10_000, 'Google back to online');
+    } finally {
+      if (id) await app.admin({ do: 'delete', account: id });
+      other.stop();
+    }
+  },
+  120_000,
+);
+
+it(
+  "the general site kind: any site by its address signs in with the linked Google account, and lends its browser on that site only",
+  async () => {
+    const other = startFakeLuma({ signedIn: false });
+    let id = '';
+    try {
+      id = await create('site', 'Website (test)', { url: `${other.url}/`, testOrigin: other.url, testSignInOrigins: { google: google.url }, signInWith: { google: g } });
+      made.push(id);
+      await until(() => statusOf(id)?.status === 'online', 60_000, 'the site online');
+      expect(statusOf(id).layers.find((x: any) => x.name === 'site')).toMatchObject({ state: 'ok', note: '127.0.0.1' });
+      const pressed = google.presses.length;
+      const before = google.signIns.length;
+      other.continueWithGoogle(google.url);
+      await until(() => other.googleCodes.length > 0, 60_000, "Google's code at the site's /google");
+      expect(google.signIns.length).toBe(before + 1);
+      expect(google.signIns.at(-1)).toMatchObject({ redirectUri: `${other.url}/google`, signedIn: true });
+      expect(google.presses.slice(pressed)).toEqual([
+        { step: 'choose', trusted: true },
+        { step: 'consent', trusted: true },
+      ]);
+      expect(logOf(id)).toMatch(/sign-in \S+: the answer went to the tab/);
+      for (const secret of [other.googleCodes[0]!, 'state-123', 'luma-web.apps.example.com']) expect(logOf(id)).not.toContain(secret);
+
+      // The browser interface, on its site: a tab opened there and read; anywhere else is refused.
+      const opened = (await app.call(browser, id, 'browser.open', { url: `${other.url}/` })) as { tabId: number; url: string };
+      expect(opened.url).toBe(`${other.url}/`);
+      const read = (await app.call(browser, id, 'browser.read', { tabId: opened.tabId })) as { text: string };
+      // Signed in by the relay: the site's page is its signed-in one.
+      expect(read.text).toContain('Home');
+      await expect(app.call(browser, id, 'browser.open', { url: 'https://example.com/' })).rejects.toThrow();
+      await app.call(browser, id, 'browser.close', { tabId: opened.tabId });
     } finally {
       if (id) await app.admin({ do: 'delete', account: id });
       other.stop();

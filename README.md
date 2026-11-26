@@ -274,8 +274,8 @@ How to move a dither-chat account here and back is in dither-chat's `docs/accoun
 - **Money:** [statements.md](docs/statements.md) (how the finance kinds hand over files), [simplefin.md](docs/simplefin.md),
   [schwab.md](docs/schwab.md), [privacy.md](docs/privacy.md), [venmo.md](docs/venmo.md), [amazon.md](docs/amazon.md),
   [monero.md](docs/monero.md), [haveno.md](docs/haveno.md).
-- **Other:** [github.md](docs/github.md), [njalla.md](docs/njalla.md), [bugwatch.md](docs/bugwatch.md),
-  [claude.md](docs/claude.md).
+- **Other:** [site.md](docs/site.md) (any website, kept signed in), [github.md](docs/github.md),
+  [njalla.md](docs/njalla.md), [bugwatch.md](docs/bugwatch.md), [claude.md](docs/claude.md).
 
 ## Test
 

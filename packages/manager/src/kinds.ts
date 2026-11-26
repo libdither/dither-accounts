@@ -46,8 +46,9 @@ export interface Manifest {
   /**
    * Its browser can sign in to its site with another account here (docs/signin-relay.md): a "Continue with Google"
    * there is answered by a Google account's own browser. `sites`: the origins a sign-in's redirect may go to.
+   * `siteSetting`: a config key whose address is one more (the general `site` kind: each account its own site).
    */
-  signIn?: { sites: string[] };
+  signIn?: { sites?: string[]; siteSetting?: string };
   /** Sign-in providers its browser answers for other accounts' browsers (spec/signin.ts SIGN_IN_PROVIDERS): `google`. */
   signsIn?: string[];
 }

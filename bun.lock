@@ -337,6 +337,16 @@
         "@dither-accounts/statements-common": "workspace:*",
       },
     },
+    "extractors/site": {
+      "name": "@dither-accounts/extractor-site",
+      "dependencies": {
+        "@dither-accounts/browser": "workspace:*",
+        "@dither-accounts/link": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-accounts/spec": "workspace:*",
+        "@dither-accounts/statements-common": "workspace:*",
+      },
+    },
     "extractors/statements-common": {
       "name": "@dither-accounts/statements-common",
       "dependencies": {
@@ -581,6 +591,8 @@
     "@dither-accounts/extractor-signal": ["@dither-accounts/extractor-signal@workspace:extractors/signal"],
 
     "@dither-accounts/extractor-simplefin": ["@dither-accounts/extractor-simplefin@workspace:extractors/simplefin"],
+
+    "@dither-accounts/extractor-site": ["@dither-accounts/extractor-site@workspace:extractors/site"],
 
     "@dither-accounts/extractor-substack": ["@dither-accounts/extractor-substack@workspace:extractors/substack"],
 

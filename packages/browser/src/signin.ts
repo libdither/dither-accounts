@@ -8,8 +8,10 @@
  *   provider's one-time code, is loaded in the tab, and the site finishes its own sign-in with its own cookies.
  * - **Answering** (a kind whose manifest has `signsIn`, Google): the manager sends `signin.authorize`;
  *   `SignInAnswerer` checks the link and has the extension open it in a tab of its own, which the provider's session
- *   there answers (you pick an account and allow it in the live view when the provider asks), stopped before it loads
- *   the redirect address. That address comes back.
+ *   there answers, stopped before it loads the redirect address. That address comes back. The provider may ask to
+ *   pick an account and to allow the site: with `auto` (a link you set up, for a site that asks only who you are) the
+ *   answerer presses those itself, with real input on its display; otherwise, and for anything else the provider asks
+ *   (a password, a code, a check), you answer in the live view.
  *
  * A kind takes part with its worker's `include signin-worker` comment, a line in its worker's command routing
  * (`if (signinRelay.command(msg)) return;`), `signinRelay.start(sendUp, cfg.signIn)` once its config is read, its tab
@@ -18,11 +20,12 @@
  *
  * Never logged: the link (its state, client and scopes ride in it) or the code.
  */
+import { spawn } from 'node:child_process';
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isAnswer, readAuthorize, SIGN_IN_PROVIDERS } from '@dither-accounts/spec/signin';
-import type { Log } from './sandbox.ts';
+import { isAnswer, onlyIdentity, readAuthorize, SIGN_IN_PROVIDERS } from '@dither-accounts/spec/signin';
+import { type Log, resolveXdotool } from './sandbox.ts';
 
 const PAGE_DIR = join(dirname(fileURLToPath(import.meta.url)), 'page');
 const INCLUDE = '/*@include signin-worker@*/';
@@ -42,7 +45,8 @@ export function addSignInPage(dir: string): boolean {
   if (typeof worker !== 'string' || !existsSync(join(dir, worker)) || !readFileSync(join(dir, worker), 'utf8').includes(INCLUDE)) return false;
   for (const f of SIGN_IN_PAGE) copyFileSync(join(PAGE_DIR, f), join(dir, f));
   const perms = new Set<string>(m.permissions ?? []);
-  for (const p of ['tabs', 'webNavigation', 'declarativeNetRequest']) perms.add(p);
+  // scripting: an answering tab's provider page read (signin.look), where its manifest lets it reach the provider.
+  for (const p of ['tabs', 'webNavigation', 'declarativeNetRequest', 'scripting']) perms.add(p);
   m.permissions = [...perms];
   writeFileSync(manifestPath, JSON.stringify(m, null, 2));
   return true;
@@ -132,7 +136,7 @@ export class SignInAsker {
     const view = { state: 'choose', site: c.site, asks: c.asks, choices: c.choices };
     const remembered = c.remembered ? c.choices.find((x) => x.id === c.remembered && x.online) : undefined;
     if (remembered) {
-      await this.show(rid, 'signin.show', { ...view, state: 'waiting', account: remembered.id });
+      await this.show(rid, 'signin.show', { ...view, state: 'waiting', account: remembered.id, linked: true });
       return this.pick(rid, remembered.id, true);
     }
     await this.show(rid, 'signin.show', view);
@@ -142,7 +146,7 @@ export class SignInAsker {
     const r = this.relays.get(rid);
     if (!r?.view) return;
     const view = { site: r.view.site, asks: r.view.asks, choices: r.view.choices };
-    await this.show(rid, 'signin.show', { ...view, state: 'waiting', account });
+    await this.show(rid, 'signin.show', { ...view, state: 'waiting', account, linked: remember });
     let answer: { url?: unknown };
     try {
       answer = (await this.o.ask('signin.relay', { url: r.url, account, remember }, RELAY_MS)) as { url?: unknown };
@@ -164,10 +168,18 @@ export class SignInAsker {
   }
 }
 
+/** A provider screen, as signin-worker.js providerPage reads it. */
+type Look = { step: 'choose' | 'consent' | 'other' | 'loading' | 'hidden' | 'gone'; x?: number; y?: number; why?: string };
+
+/** How often a linked sign-in's provider tab is looked at, and how many presses it may take in all. */
+const LOOK_MS = 1_200;
+const MAX_PRESSES = 6;
+
 /** The answering side: the manager's `signin.authorize` goes to authorize(). */
 export class SignInAnswerer {
-  /** The sign-in being answered: for the account's status (Google may be asking you in the live view). */
-  current: { site: string; since: number } | null = null;
+  /** The sign-in being answered: for the account's status (the provider may be asking you in the live view). */
+  current: { site: string; since: number; auto: boolean; yours: number | null } | null = null;
+  private xdotool: string | null = null;
 
   constructor(
     private o: {
@@ -176,12 +188,16 @@ export class SignInAnswerer {
       provider: string;
       /** Tests: the origin standing for the provider. */
       testOrigin?: string | null;
+      /** The account's display, for real input (auto); null when there is none. */
+      display?: () => number | null;
+      /** Who this account is signed in as (its email): the one its chooser picks. */
+      who?: () => string | null;
       log: Log;
       onChange?: () => void;
     },
   ) {}
 
-  async authorize(cmd: { url?: unknown; redirect?: unknown; ms?: unknown }): Promise<{ url: string }> {
+  async authorize(cmd: { url?: unknown; redirect?: unknown; ms?: unknown; auto?: unknown; who?: unknown }): Promise<{ url: string }> {
     if (this.current) throw new Error('another sign-in is being answered here; try again in a moment');
     const url = typeof cmd.url === 'string' ? cmd.url : '';
     const testOrigins = this.o.testOrigin ? { [this.o.provider]: this.o.testOrigin } : {};
@@ -190,12 +206,20 @@ export class SignInAnswerer {
     if (r.provider !== this.o.provider) throw new Error(`this account signs in with ${this.o.provider}, not ${r.provider}`);
     if (cmd.redirect !== r.redirect) throw new Error('the redirect is not the one the link names');
     const ms = Math.max(10_000, Math.min(Number(cmd.ms) || 120_000, 10 * 60_000));
-    this.current = { site: r.site, since: Date.now() };
+    // The manager's word, checked again here: only a site that asks for who you are.
+    // Who this account is: as the manager last saw it, else as its own page says now.
+    const me = (typeof cmd.who === 'string' && cmd.who.trim() ? cmd.who.trim().slice(0, 200) : null) ?? this.o.who?.() ?? null;
+    const auto = cmd.auto === true && onlyIdentity(r.provider, r.scopes) && this.o.display?.() != null && !!me;
+    const aid = crypto.randomUUID();
+    this.current = { site: r.site, since: Date.now(), auto, yours: auto ? null : Date.now() };
     this.o.onChange?.();
     const nudge = setTimeout(() => this.o.onChange?.(), 3_100);
-    this.o.log('info', `answering a sign-in to ${r.site}`);
+    this.o.log('info', `answering a sign-in to ${r.site}${auto ? ", going through the provider's screens (a linked account)" : ''}`);
+    let done = false;
+    const asked = this.o.bridge.request<{ url?: unknown }>({ kind: 'signin.authorize', url, redirect: r.redirect, ms, aid }, ms + 5_000, { diagnose: false });
+    const driving = auto && me ? this.drive(aid, me, r.site, () => done) : null;
     try {
-      const res = await this.o.bridge.request<{ url?: unknown }>({ kind: 'signin.authorize', url, redirect: r.redirect, ms }, ms + 5_000, { diagnose: false });
+      const res = await asked;
       if (typeof res?.url !== 'string' || !isAnswer(res.url, r.redirect)) throw new Error('the browser did not come back to the sign-in address');
       this.o.log('info', `the sign-in to ${r.site} was answered`);
       return { url: res.url };
@@ -203,16 +227,101 @@ export class SignInAnswerer {
       this.o.log('warn', `the sign-in to ${r.site} was not answered: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
       throw e;
     } finally {
+      done = true;
+      await driving;
       clearTimeout(nudge);
       this.current = null;
       this.o.onChange?.();
     }
   }
 
-  /** While it waits a while: what the account needs from you (the provider's page in the live view). */
+  /**
+   * A linked sign-in: look at the provider's tab and press what it asks of a person who already said yes (this
+   * account in its chooser, its Continue), with real input. A screen it does not know is yours (the status says so);
+   * it keeps looking, so a Continue after you answer a password is still pressed. At most MAX_PRESSES in all.
+   */
+  private async drive(aid: string, me: string, site: string, over: () => boolean) {
+    let presses = 0;
+    let shown = '';
+    let last = '';
+    let same = 0;
+    while (!over()) {
+      await Bun.sleep(LOOK_MS);
+      if (over()) return;
+      let l: Look;
+      try {
+        l = await this.o.bridge.request<Look>({ kind: 'signin.look', aid, who: me }, 10_000, { diagnose: false });
+      } catch (e) {
+        l = { step: 'other', why: String((e as Error)?.message ?? e).slice(0, 120) };
+      }
+      if (over() || !this.current) return;
+      const seen = `${l.step}${l.why ? ` (${l.why})` : ''}`;
+      if (seen !== shown) this.o.log('debug', `sign-in to ${site}: the provider's tab shows ${(shown = seen)}`);
+      if (l.step === 'gone') return;
+      if (l.step === 'loading') continue;
+      const press = (l.step === 'choose' || l.step === 'consent') && Number.isFinite(l.x) && Number.isFinite(l.y);
+      if (!press) {
+        // Not one it presses: yours, after a moment (a screen between two of its own steps is not).
+        if (this.current.yours === null) {
+          this.current.yours = Date.now();
+          setTimeout(() => this.o.onChange?.(), 3_100);
+        }
+        same = 0;
+        last = '';
+        continue;
+      }
+      const key = `${l.step}@${l.x},${l.y}`;
+      same = key === last ? same + 1 : 0;
+      last = key;
+      // The same screen twice after a press: the press did nothing yet; give it once more, then leave it to you.
+      if (same === 1) continue;
+      if (presses >= MAX_PRESSES || same > 2) {
+        if (this.current.yours === null) {
+          this.o.log('info', `the provider's screens for ${site} did not move on after ${presses} press(es); left to you in the live view`);
+          this.current.yours = Date.now();
+          this.o.onChange?.();
+        }
+        continue;
+      }
+      if (this.current.yours !== null) {
+        this.current.yours = null;
+        this.o.onChange?.();
+      }
+      try {
+        await this.click(l.x!, l.y!);
+        presses++;
+        this.o.log('info', `sign-in to ${site}: pressed ${l.step === 'choose' ? 'this account in the chooser' : 'Continue'}`);
+      } catch (e) {
+        this.o.log('warn', `sign-in to ${site}: could not press: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+        this.current.yours ??= Date.now();
+      }
+    }
+  }
+
+  /** A real click on the account's display (as the browser interface's): the mouse moves there and clicks. */
+  private click(x: number, y: number): Promise<void> {
+    const display = this.o.display?.();
+    if (display === null || display === undefined) return Promise.reject(new Error('no display'));
+    this.xdotool ??= resolveXdotool(this.o.log);
+    return new Promise((resolve, reject) => {
+      const p = spawn(this.xdotool!, ['mousemove', '--sync', String(Math.round(x)), String(Math.round(y)), 'sleep', '0.15', 'click', '1'], {
+        env: { ...process.env, DISPLAY: `:${display}` },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let err = '';
+      p.stderr.on('data', (d) => (err += String(d)));
+      p.on('error', reject);
+      p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(err.trim().slice(0, 200) || `xdotool exited ${code}`))));
+    });
+  }
+
+  /** What the account needs from you while a sign-in waits on you (the provider's page in the live view). */
   attention(now = Date.now()): { kind: 'verify'; message: string; liveView: true } | null {
-    if (!this.current || now - this.current.since < 3_000) return null;
+    if (!this.current || this.current.yours === null || now - this.current.yours < 3_000) return null;
     const name = SIGN_IN_PROVIDERS[this.o.provider]?.name ?? this.o.provider;
-    return { kind: 'verify', message: `${name} may be asking you to allow a sign-in to ${this.current.site}: answer it in the live view`, liveView: true };
+    const message = this.current.auto
+      ? `${name} is asking something only you can answer in a sign-in to ${this.current.site}: answer it in the live view`
+      : `${name} may be asking you to allow a sign-in to ${this.current.site}: answer it in the live view`;
+    return { kind: 'verify', message, liveView: true };
   }
 }

@@ -13,10 +13,12 @@
  * - the answer it gives is that redirect address, with a code (or the provider's error).
  *
  * `signin.relay` with `remember` keeps the choice in the asking account's config (`signInWith`, by provider), so the
- * next sign-in on that site goes ahead with it; a pick without it forgets it. Logs name the accounts, the provider and
- * the site: never the link, its state or the code.
+ * next sign-in on that site goes ahead with it; a pick without it forgets it. That choice is a link you set up: while
+ * it stands, and the site asks the provider for no more than who you are (spec/signin.ts onlyIdentity), the answering
+ * browser goes through the provider's own screens for you (picks that account, presses Continue), with `auto`. Logs
+ * name the accounts, the provider and the site: never the link, its state or the code.
  */
-import { type Authorize, isAnswer, readAuthorize, scopeWords, SIGN_IN_PROVIDERS } from '@dither-accounts/spec/signin';
+import { type Authorize, isAnswer, onlyIdentity, readAuthorize, scopeWords, SIGN_IN_PROVIDERS } from '@dither-accounts/spec/signin';
 import type { Row, Store } from './db.ts';
 import type { Kind } from './kinds.ts';
 
@@ -49,6 +51,15 @@ const parse = <T>(s: unknown, d: T): T => {
   }
 };
 const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+/** An https address's origin, or null. */
+const httpsOrigin = (v: unknown) => {
+  try {
+    const u = new URL(String(v ?? ''));
+    return u.protocol === 'https:' ? u.origin : null;
+  } catch {
+    return null;
+  }
+};
 
 export class SignInRelays {
   constructor(private d: SignInDeps) {}
@@ -57,12 +68,14 @@ export class SignInRelays {
     (this.d.log ?? ((m: string) => console.log(`[signin] ${m}`)))(msg);
   }
 
-  /** The asking account's sites: its kind's, and its test origin. */
+  /** The asking account's sites: its kind's, the one its config names (siteSetting), and its test origin. */
   sitesOf(a: Row): string[] {
     const k = this.d.kinds.get(a.kind);
     const cfg = parse<Record<string, unknown>>(a.config, {});
     const test = str(cfg.testOrigin)?.replace(/\/$/, '');
-    return [...(k?.signIn?.sites ?? []), ...(test ? [test] : [])];
+    const key = k?.signIn?.siteSetting;
+    const own = key ? httpsOrigin(cfg[key]) : null;
+    return [...(k?.signIn?.sites ?? []), ...(own ? [own] : []), ...(test ? [test] : [])];
   }
 
   /** The link read and checked for the asking account, or a refusal said in a sentence. */
@@ -109,10 +122,16 @@ export class SignInRelays {
     const who = typeof input.account === 'string' ? this.d.store.account(input.account) : null;
     if (!who || !who.enabled || !this.d.kinds.get(who.kind)?.signsIn?.includes(r.provider)) throw new Error(`That account cannot sign in with ${p.name} here`);
     if (typeof input.remember === 'boolean') this.remember(asker, r.provider, input.remember ? who.id : null);
-    this.log(`${asker.id} (${asker.kind}) signs in to ${r.site} with ${who.id}'s ${p.name}`);
+    // A link you set up (this account, kept for this site) answers the provider's screens for you, when the site asks
+    // for nothing past who you are; anything more, or no link, is yours to answer in the live view.
+    const linked = str(parse<Record<string, any>>(this.d.store.account(asker.id)?.config, {}).signInWith?.[r.provider]) === who.id;
+    const auto = linked && onlyIdentity(r.provider, r.scopes);
+    this.log(`${asker.id} (${asker.kind}) signs in to ${r.site} with ${who.id}'s ${p.name}${auto ? `, ${p.name}'s screens answered for you (a linked account)` : ''}`);
     let answer: unknown;
     try {
-      answer = await this.d.command(who.id, { t: 'signin.authorize', provider: r.provider, url: input.url as string, redirect: r.redirect, site: r.site, ms: RELAY_MS - 10_000 }, RELAY_MS);
+      // `who`: the account as it was last seen signed in (its email), the one its provider's chooser picks.
+      const as = this.choiceOf(who).who;
+      answer = await this.d.command(who.id, { t: 'signin.authorize', provider: r.provider, url: input.url as string, redirect: r.redirect, site: r.site, auto, ...(as ? { who: as } : {}), ms: RELAY_MS - 10_000 }, RELAY_MS);
     } catch (e) {
       this.log(`${asker.id}: ${who.id} did not answer the sign-in: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
       throw e;

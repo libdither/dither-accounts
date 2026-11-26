@@ -37,13 +37,19 @@ function choices(v) {
         ),
       ),
     ),
-    el('label', {}, el('input', { type: 'checkbox', checked: remember, onchange: (e) => (remember = e.target.checked) }), `Use it next time ${v.site ? v.site.replace(/^https:\/\//, '') : 'this site'} asks`),
+    el(
+      'label',
+      {},
+      el('input', { type: 'checkbox', checked: remember, onchange: (e) => (remember = e.target.checked) }),
+      `Link it: use it next time ${v.site ? v.site.replace(/^https:\/\//, '') : 'this site'} asks, and go through ${v.name}'s screens for me`,
+    ),
   ];
 }
 
 function render(v) {
   if (!v) return;
-  const key = JSON.stringify(v) + remember;
+  // Not on `remember`: the box keeps its own tick, and drawing again would take the focus off it.
+  const key = JSON.stringify(v);
   if (key === shown) return;
   shown = key;
   const name = v.name || 'the provider';
@@ -60,7 +66,13 @@ function render(v) {
     body = [
       el('h1', {}, `Signing in to ${site}`),
       el('p', {}, `with ${who}.`),
-      el('p', { class: 'mute' }, `If ${name} asks you to pick an account or to allow it, answer it in the live view of ${c ? c.label : 'that account'} on your accounts page.`),
+      el(
+        'p',
+        { class: 'mute' },
+        v.linked
+          ? `Linked: ${name}'s account chooser and Continue are pressed for you. If ${name} asks for anything else, answer it in the live view of ${c ? c.label : 'that account'} on your accounts page.`
+          : `If ${name} asks you to pick an account or to allow it, answer it in the live view of ${c ? c.label : 'that account'} on your accounts page.`,
+      ),
       asks,
       el('div', { class: 'row' }, cancel),
     ];

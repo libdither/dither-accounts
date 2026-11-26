@@ -17,7 +17,7 @@
  */
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { AppSandbox, type Network, pickFreeDisplay, resolveBin, type SandboxEvent } from '@dither-accounts/sandbox';
+import { AppSandbox, displayState, type Network, pickFreeDisplay, resolveBin, type SandboxEvent } from '@dither-accounts/sandbox';
 
 type Log = (level: 'debug' | 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
 type Layer = { name: string; state: 'ok' | 'waiting' | 'failed' | 'off'; note?: string };
@@ -84,6 +84,8 @@ export class HavenoApp {
         x11App: true,
         log: this.o.log,
         onEvent: (ev) => this.onEvent(ev),
+        // The live view's server down or back (it is started again): said in the status at once.
+        onScreenHealth: () => this.o.onChange(),
       });
       try {
         await sb.start();
@@ -143,6 +145,9 @@ export class HavenoApp {
   }
 
   layer(): Layer {
+    const health = this.sandbox?.screen?.health();
+    // Its screen's live view's server down (it is started again): the app can be neither seen nor used meanwhile.
+    if (this.sandbox && health && !health.ok) return { name: 'desktop app', ...displayState(this.sandbox.screen?.free, health) };
     if (this.sandbox) return { name: 'desktop app', state: 'ok', note: `in the live view since ${new Date(this.startedAt ?? Date.now()).toISOString()}` };
     if (this.error) return { name: 'desktop app', state: 'failed', note: this.error };
     return { name: 'desktop app', state: 'off', note: 'openApp shows it in the live view (the node stops meanwhile)' };

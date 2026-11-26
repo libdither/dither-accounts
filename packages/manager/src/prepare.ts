@@ -8,10 +8,11 @@
  *
  * Asynchronous, so the manager answers meanwhile; on a machine with the packages already in its store it takes a few
  * seconds (evaluating nixpkgs). A machine without nix-build skips it: the sandboxes find their programs on PATH there.
- * A failed build keeps the last good out-link, if there is one.
+ * A failed build keeps the last good out-link, if there is one, and is tried again in the background (KeptBins).
  */
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import type { BinsInfo } from './api-types.ts';
 
 export const BINS_DIR = 'bins';
 
@@ -61,4 +62,71 @@ export async function prepareBins(o: {
   }
   o.log?.('info', `prepare: the sandboxes' programs are ready in ${out} (${stdout.trim().split('\n').pop()}, ${ms} ms)`);
   return { dir: out, ms };
+}
+
+/** How preparing the sandboxes' programs stands, for the manager's page (ManagerState.bins). */
+export type BinsState = BinsInfo;
+
+/**
+ * prepareBins kept at: a failed build is tried again in the background, 30 s later, then twice as long after each
+ * failure, up to 30 min, until one succeeds. `ready` resolves once kinds with a screen can start: the programs built,
+ * or an earlier out-link kept while the build fails, or no nix-build here. With neither (the very first build failing)
+ * it waits, and they start once a later try succeeds; meanwhile the manager's page says so (state).
+ */
+export class KeptBins {
+  state: BinsState = { state: 'preparing', dir: null, why: null, tries: 0, retryAt: null };
+  readonly ready: Promise<void>;
+  private settle!: () => void;
+  private timer?: Timer;
+  private stopped = false;
+  private wait: number;
+
+  constructor(
+    private o: Omit<Parameters<typeof prepareBins>[0], 'out' | 'attr'> & {
+      /** The state changed (the page shows it). */
+      onChange?: (s: BinsState) => void;
+      /** The first wait before trying again (30 s; tests make it short), and the longest (30 min). */
+      firstRetryMs?: number;
+      maxRetryMs?: number;
+    },
+  ) {
+    this.ready = new Promise((r) => (this.settle = r));
+    this.wait = o.firstRetryMs ?? 30_000;
+    void this.attempt();
+  }
+
+  dir(): string | null {
+    return this.state.dir;
+  }
+
+  stop() {
+    this.stopped = true;
+    clearTimeout(this.timer);
+  }
+
+  private set(s: Partial<BinsState>) {
+    this.state = { ...this.state, ...s };
+    this.o.onChange?.(this.state);
+  }
+
+  private async attempt() {
+    const r = await prepareBins(this.o);
+    if (this.stopped) return;
+    const tries = this.state.tries + 1;
+    if (!r.why) {
+      this.set({ state: 'ready', dir: r.dir, why: null, tries, retryAt: null });
+      return this.settle();
+    }
+    if (r.why === 'no nix-build') {
+      this.set({ state: 'none', dir: r.dir, why: r.why, tries, retryAt: null });
+      return this.settle();
+    }
+    const wait = this.wait;
+    this.wait = Math.min(wait * 2, this.o.maxRetryMs ?? 30 * 60_000);
+    this.o.log?.('warn', `prepare: trying again in ${wait < 1000 ? `${wait} ms` : `${Math.round(wait / 1000)} s`}${r.dir ? '' : "; kinds with a screen wait for it, since there are no earlier ones"}`);
+    this.set({ state: 'failing', dir: r.dir, why: r.why, tries, retryAt: Date.now() + wait });
+    // With the last good ones kept, kinds with a screen run on those meanwhile.
+    if (r.dir) this.settle();
+    this.timer = setTimeout(() => void this.attempt(), wait);
+  }
 }

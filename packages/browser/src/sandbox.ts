@@ -15,14 +15,13 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Subprocess } from 'bun';
-import { cleanEnv, DISPLAY_BINS, type Log, resolveBin } from './bins.ts';
+import { type BinSpec, cleanEnv, DISPLAY_BINS, type Log, resolveBin } from './bins.ts';
 import type { FreeDisplay } from './display.ts';
-import { MEMORY_DISABLED_FEATURES, mergeFeatureFlags } from './flags.ts';
+import { gpuFlags, MEMORY_DISABLED_FEATURES, mergeFeatureFlags } from './flags.ts';
 import { markerKey, stampExtension } from './markers.ts';
 import { ChromiumNoise } from './noise.ts';
 import { makeScreen, type Screen, type ScreenHealth } from './screen.ts';
 import { browserShare, type ScreenShare } from './screenshare.ts';
-import { renderNode } from './wayland.ts';
 import { vncSocketPath } from './vnc.ts';
 import { refreshWorker } from './worker.ts';
 
@@ -59,6 +58,8 @@ export interface SandboxOptions {
   screenShare?: boolean;
   /** The screen's live view's server went down or came back (Screen.health). */
   onScreenHealth?: (h: ScreenHealth) => void;
+  /** The Chromium to run; default the pinned one (resolveChromium). Tests give a stand-in. */
+  chromium?: string;
   log: Log;
 }
 
@@ -68,7 +69,12 @@ export interface Bins {
   chromium: string;
 }
 
-const CHROMIUM = { name: 'chromium', env: 'CHROMIUM_BIN', nix: 'chromium', candidates: [`/etc/profiles/per-user/${process.env.USER}/bin/chromium`, '/run/current-system/sw/bin/chromium'] };
+/**
+ * Chromium, from the pinned nixpkgs like the screens' programs (nix/bins.json), so CI's tests and every account run
+ * the same one. Never move the pin back past a Chromium the accounts have run: Chromium will not open a profile a
+ * newer one wrote (nix/README.md).
+ */
+export const CHROMIUM: BinSpec = { name: 'chromium', env: 'CHROMIUM_BIN', nix: 'chromium', pinned: true };
 
 export function resolveChromium(log: Log): string {
   return resolveBin(CHROMIUM, log);
@@ -83,16 +89,8 @@ export function resolveBins(log: Log): Bins {
   };
 }
 
-/**
- * Xvfb has no GL of its own, so left alone Chromium runs with WebGL off, which no ordinary desktop browser does.
- * Point it at the machine's GPU directly (a render node it can open), or at its software renderer if there is none.
- * The same on Wayland: sway renders with gles2 on that render node (wayland.ts), and Chromium's WebGL reports the same
- * Vulkan renderer as on X. What else depends on the screen is the screen's (Screen.chromiumFlags, adjustPrefs).
- */
-export function gpuFlags(): string[] {
-  if (renderNode()) return ['--ignore-gpu-blocklist', '--use-angle=vulkan', '--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan'];
-  return ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
-}
+/** Chromium's GPU flags: what the screen's renderer is fits it (Screen.chromiumFlags, flags.ts gpuFlags). */
+export { gpuFlags };
 
 export class Sandbox {
   private procs: { name: string; proc: Subprocess }[] = [];
@@ -193,7 +191,7 @@ export class Sandbox {
   }
 
   async start(): Promise<{ chromium: string }> {
-    const chromium = resolveChromium(this.opts.log);
+    const chromium = this.opts.chromium ?? resolveChromium(this.opts.log);
     this.prepareExtension();
     // Chromium runs the worker it first registered in this profile, not the copy's: clear it when the copy's changed.
     const worker = refreshWorker(this.opts.accountDir, this.profileDir, this.extensionDir);
@@ -239,7 +237,7 @@ export class Sandbox {
       '--disable-infobars',
       `--window-size=${width},${height}`,
       '--window-position=0,0',
-      ...gpuFlags(),
+      // The screen's: its GPU flags (what its renderer really is, after any fallback) and the rest it needs.
       ...screen.chromiumFlags(),
       ...shared.flags,
       ...(this.opts.flags ?? []),
@@ -251,11 +249,22 @@ export class Sandbox {
     return { chromium };
   }
 
-  async stop() {
-    if (this.stopped) return;
+  private stopping: Promise<void> | null = null;
+  /** Everything down and its files gone. A second call waits for the first. */
+  stop(): Promise<void> {
+    this.stopping ??= this.stopNow();
+    return this.stopping;
+  }
+
+  private async stopNow() {
     this.stopped = true;
     // The screen first hears it is stopping, so it starts nothing again as its processes end (screen.ts KeptServer).
-    await this.screen_?.stop();
+    // Whatever goes wrong there, the processes below are still ended.
+    try {
+      await this.screen_?.stop();
+    } catch (e) {
+      this.opts.log('warn', `stopping the screen: ${(e as Error).message}`);
+    }
     // Browser and vnc first, display last.
     for (const name of ['chromium', ...(this.share?.procNames ?? []), ...(this.screen_?.procNames ?? [])]) {
       for (const p of this.procs.filter((x) => x.name === name)) {
@@ -277,8 +286,18 @@ export class Sandbox {
     this.procs = [];
     const said = this.noise.summary(Date.now(), true);
     if (said) this.opts.log('debug', `[chromium] ${said}`);
-    await this.share?.stop();
-    rmSync(this.vncSocket, { force: true });
+    // Its files once nothing writes there any more.
+    for (const [what, f] of [
+      ['the screen share', () => this.share?.stop()],
+      ["the screen's files", () => this.screen_?.removeFiles()],
+      ["the live view's socket", () => rmSync(this.vncSocket, { force: true })],
+    ] as const) {
+      try {
+        await f();
+      } catch (e) {
+        this.opts.log('warn', `removing ${what}: ${(e as Error).message}`);
+      }
+    }
     this.opts.log('info', 'sandbox stopped');
   }
 

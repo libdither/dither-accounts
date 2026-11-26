@@ -2,7 +2,8 @@
  * The sandboxes' programs, prepared at the manager's start (packages/manager/src/prepare.ts) with a stand-in
  * nix-build: an extractor of a kind with a screen starts only once they are ready and is given their directory
  * (DITHER_BINS) and its display backend; one of a kind with no screen starts at once, with neither. A failed build keeps
- * the last good out-link.
+ * the last good out-link, and is tried again until one succeeds; with no earlier one, kinds with a screen wait for it,
+ * and the page says so.
  */
 import { afterAll, expect, setDefaultTimeout, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
@@ -93,7 +94,8 @@ test('a kind with a screen starts once the programs are prepared, with their dir
   expect(m.sup.details(plainId).displayBackend).toBeNull();
 
   writeFileSync(join(nix, 'go'), '');
-  expect((await m.bins)!).toMatchObject({ dir: join(dir, 'bins') });
+  await m.bins!.ready;
+  expect(m.bins!.state).toMatchObject({ state: 'ready', dir: join(dir, 'bins'), tries: 1 });
   expect(readlinkSync(join(dir, 'bins'))).toBe(join(nix, 'store'));
   await until('the kind with a screen running', () => !!m.sup.details(screenId).pid);
   const env = envOf(m.sup.details(screenId).pid!);
@@ -123,4 +125,33 @@ test('a failed build keeps the last good programs; no nix-build at all leaves th
   } finally {
     process.env.PATH = was;
   }
+});
+
+test('a first build that fails is tried again: kinds with a screen wait, the page says so, and they start once one succeeds', async () => {
+  const dir = tmp('retry');
+  const nix = tmp('nix-retry');
+  const script = fakeNixBuild(nix);
+  writeFileSync(join(nix, 'fail'), '');
+  writeFileSync(join(nix, 'go'), '');
+  const fake = kindOf(fakeManifest, join(ROOT, 'extractors/fake'));
+  const m = await createManager({ dataDir: dir, port: 0, kinds: new Map([['fake', fake]]), launch: 'child', openPage: true, prepareBins: { nixBuild: script, firstRetryMs: 50 } });
+  managers.push(m);
+  const id = `acc-prep-retry-${RUN}`;
+  addAccount(m, dir, id, 'fake');
+  m.sup.start(id);
+  // Two failed builds, so it is surely trying again, not stopped at the first.
+  await until('a second failed build', () => m.bins!.state.state === 'failing' && m.bins!.state.tries >= 2);
+  expect(m.bins!.state).toMatchObject({ dir: null, why: expect.stringMatching(/nix-build exited 1: error: the build failed/) });
+  expect(m.bins!.state.retryAt).toBeGreaterThan(0);
+  expect(existsSync(join(dir, 'bins'))).toBe(false);
+  expect(m.sup.details(id).pid).toBeFalsy();
+  // The page's state says so (Overview shows it as a banner).
+  const state = (await (await fetch(`${m.url}/api/state`)).json()) as { bins: { state: string; dir: string | null } };
+  expect(state.bins).toMatchObject({ state: 'failing', dir: null });
+
+  rmSync(join(nix, 'fail'));
+  await m.bins!.ready;
+  expect(m.bins!.state).toMatchObject({ state: 'ready', dir: join(dir, 'bins'), why: null, retryAt: null });
+  await until('the kind with a screen running', () => !!m.sup.details(id).pid);
+  expect(envOf(m.sup.details(id).pid!).DITHER_BINS).toBe(join(dir, 'bins'));
 });

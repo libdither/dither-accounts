@@ -89,7 +89,9 @@ its one app does. sway with `xwayland disable` listens on its Wayland socket and
 - The same: `navigator.platform` (Linux x86_64), the user agent (Chromium still says X11 in it), client hints, the
   screen (the sandbox's size), device pixel ratio, colour depth, fonts, and the unmasked WebGL renderer (the GPU's,
   through ANGLE on Vulkan). A browser sandbox's sway renders with gles2 on the machine's render node for that: under
-  pixman Chromium's GPU process loses WebGL or hangs, so a browser gets pixman only where there is no render node.
+  pixman Chromium's GPU process loses WebGL or hangs, so a browser gets pixman only where there is no render node,
+  or where a gles2 sway failed to start; Chromium's GPU flags follow the renderer sway really runs with
+  (`Screen.chromiumFlags`), so after that fallback it draws in software (SwiftShader) too.
   A native app's sway always draws in software (pixman): the app has no render node inside its sandbox and draws in
   software anyway, and the GPU driver is most of what a GPU-backed sway costs (docs/native-sandbox.md).
 - Made the same: a fine pointer, hover and `document.hasFocus()`. Without a pointer and keyboard on the seat a
@@ -107,15 +109,19 @@ its one app does. sway with `xwayland disable` listens on its Wayland socket and
 that, and the native sandbox's fit loop). A window that opens while a tiled one is there floats at its own size, as
 a dialog does. That is decided once per window as it opens, one window at a time, so two that open together get one
 tiled and one floating, never both floating: a sway `for_window` rule would run again on every title change (a chat's
-unread count) and float the main window too. The sway IPC connection that watches windows opening is opened again
-when it closes (logged), until the screen stops; every IPC request has a deadline (5 s), past which it fails and the
-connection is closed.
+unread count) and float the main window too. Both sway IPC connections, the one that watches windows opening and the
+one requests and commands go on, are opened again when they close (logged), until the screen stops; every IPC
+request has a deadline (5 s), past which it fails and its connection is closed. While the main one is being made
+again (it counts as back once sway answers on it), `health()` says so and a request waits for it.
 
 **When something dies.** wayvnc is watched: when it exits, the screen says so (`health()`: "wayvnc exited (SIGKILL);
 starting it again"), the extractor's status shows its display layer failed with that note, and it is started again
-(after 0.5 s, doubling to 30 s while it keeps failing), the sandbox's own RFB client reconnects and the seat's pointer
-and keyboard come back; clicks and keys sent meanwhile wait for it (up to 15 s) instead of failing at once. x11vnc is
-kept the same way on x11. The renderer: a browser's sway uses gles2 only when this user can open the render node
+(after 0.5 s, doubling to 30 s with each try; the wait starts over only once one has stayed up 30 s, so a server
+that dies soon after each start is not restarted twice a second for good), the sandbox's own RFB client reconnects
+and the seat's pointer and keyboard come back; clicks and keys sent meanwhile wait for it (up to 15 s) instead of
+failing at once. A try whose reconnect fails ends the server it started before the next one. x11vnc is kept the same
+way on x11. Stopping a sandbox ends every process even when its screen fails to stop, and removes the screen's files
+only after they are gone (sway, PipeWire and WirePlumber write in the compositor's directory until then). The renderer: a browser's sway uses gles2 only when this user can open the render node
 (read and write on `/dev/dri/renderD*`), and if sway still fails to start on it, it starts once more with pixman (a
 warning says so). Screen sharing: if PipeWire, WirePlumber or the portals fail to start, that is logged ("screen
 sharing is off for this run") and the sandbox starts with its own empty bus and no capture, rather than not at all.
@@ -246,11 +252,13 @@ full-screen animation / of the video, then click to photon):
   hundred KB.
 
 **Programs.** Every program a screen or a sandbox starts (Xvfb, x11vnc, xdotool, ImageMagick; sway, wayvnc, grim;
-dbus, PipeWire, WirePlumber, the portals; bubblewrap, pasta, xwayland-satellite) comes from the repo's one pinned
-nixpkgs, built ahead of time: the manager builds them at its start into `<data>/bins` (`prepare_bins`, on by default)
-and gives extractors of a kind with a screen that directory as `DITHER_BINS`; they start once it is ready. An
-extractor never runs `nix build`. Without it a program is looked for in its `*_BIN` override and on PATH, and one
-found nowhere fails the start at once, saying how to prepare it (nix/README.md).
+dbus, PipeWire, WirePlumber, the portals; bubblewrap, pasta, xwayland-satellite) and Chromium come from the repo's
+one pinned nixpkgs, built ahead of time: the manager builds them at its start into `<data>/bins` (`prepare_bins`, on
+by default, tried again while it fails) and gives extractors of a kind with a screen that directory as
+`DITHER_BINS`; they start once it is ready. CI's tests run the same Chromium. An extractor never runs `nix build`.
+Without it a program is looked for in its `*_BIN` override and on PATH, and one found nowhere fails the start at
+once, saying how to prepare it (nix/README.md). The native apps (Signal Desktop, Telegram Desktop, Haveno) are the
+machine's own install, not pinned (nix/README.md "What is not pinned").
 
 **Limits.** Discord's extension port is picked free on wayland (on x11 it comes from the display number). No
 clipboard tool is used on either backend. An extractor killed outright leaves its compositor's directory (its config
@@ -295,7 +303,8 @@ into keys and input-method runs, the Wayland and sway IPC wire, the RFB handshak
 config and flags, the runtime directory checks against a hostile parent, a render node it cannot open, an IPC
 request nobody answers), then a real headless sway and wayvnc (RFB on the socket and nothing else, no TCP or abstract
 socket, the seat's pointer and keyboard, grim's PNG; two windows opening together, one tiled and one floating; wayvnc
-killed, its health down meanwhile, keys sent then still arriving, and a click after; é ß £ € ñ typed as a viewer's
+killed, its health down meanwhile, keys sent then still arriving, and a click after; sway stopped past a request's
+deadline, its IPC down meanwhile, and fit working once it answers again; é ß £ € ñ typed as a viewer's
 keysyms; screen sharing whose PipeWire fails, run with the bus alone), then Chromium on it: a click, Shift-held capitals, é, € and an
 emoji typed into a field arrive as trusted input with the right `code`s, and the page has a fine pointer and hover.
 `packages/sandbox/test/sandbox-wayland.test.ts` runs a native app on it and checks it sees only `wayland-0`, no X.

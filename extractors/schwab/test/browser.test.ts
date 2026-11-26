@@ -23,16 +23,11 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, w
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server, ServerWebSocket, Subprocess } from 'bun';
-import { resolveBins } from '../../../packages/browser/src/index.ts';
 import { ADD_PASSKEY_MESSAGE, CHALLENGE_MESSAGE, CHECK_MESSAGE, CHECK_SIGNED_OUT_MESSAGE, iso, SIGN_IN_MESSAGE } from '../src/schwab.ts';
 import { exportCsv, type FakeSchwab, startFakeSchwab } from './fake-schwab.ts';
+import { browserBins } from '../../../test/needs.ts';
 
-let bins: ReturnType<typeof resolveBins> | null = null;
-try {
-  bins = resolveBins(() => {});
-} catch (e) {
-  console.warn(`schwab browser: skipped, ${(e as Error).message}`);
-}
+const bins = browserBins('schwab browser');
 const it = test.skipIf(!bins);
 
 let fake: FakeSchwab;

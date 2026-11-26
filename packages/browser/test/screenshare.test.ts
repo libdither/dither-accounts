@@ -470,6 +470,7 @@ describe.skipIf(!electron)('an Electron app on wayland', () => {
         await Promise.all(procs.map((p) => p.exited));
         clearTimeout(t);
         await screen.stop();
+        await screen.removeFiles();
         server.stop(true);
       }
     },

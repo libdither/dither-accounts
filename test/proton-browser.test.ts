@@ -16,16 +16,11 @@ import { AccountsClient, type CallFailed, register } from '@dither-accounts/clie
 import { mail } from '@dither-accounts/interfaces';
 import { createManager, type Manager } from '@dither-accounts/manager';
 import { openpgp } from '../extractors/proton/src/pgp.ts';
-import { resolveBins } from '../packages/browser/src/index.ts';
 import { inetSockets, rfbBanner, x11vncs } from '../packages/browser/test/inet.ts';
 import { ACCEPT, APP_VERSION, type FakeProton, type SentPackage, startFakeProton } from './fake-proton.ts';
+import { browserBins } from './needs.ts';
 
-let bins: ReturnType<typeof resolveBins> | null = null;
-try {
-  bins = resolveBins(() => {});
-} catch (e) {
-  console.warn(`proton-browser: skipped, ${(e as Error).message}`);
-}
+const bins = browserBins('proton-browser');
 const it = test.skipIf(!bins);
 
 let fake: FakeProton;

@@ -11,9 +11,9 @@ import { join } from 'node:path';
 import { AccountsClient, type CallFailed, register } from '@dither-accounts/client';
 import { googleCalendar, mail as mailIface } from '@dither-accounts/interfaces';
 import { createManager, type Manager } from '@dither-accounts/manager';
-import { resolveBins } from '../packages/browser/src/index.ts';
 import { inetSockets, rfbBanner, x11vncs } from '../packages/browser/test/inet.ts';
 import { type FakeGoogle, type FakeMessage, fakeEml, GMAIL_ROWS, startFakeGoogle } from './fake-google.ts';
+import { browserBins } from './needs.ts';
 
 const LA = 'America/Los_Angeles';
 /** How long the hook gives a Gmail call here before it cuts it off (testFetchMs; 20 s live). */
@@ -35,12 +35,7 @@ const WEB = {
 /** What the Gmail side holds that must never reach a log, a status, the probe's answer or the recorded shapes. */
 const MAIL_SECRETS = [WEB.mailKey, WEB.mailEmail, 'secret-label-name', 'another-secret-label', 'secret-subject-line', '424242', WEB.mailMark, 'Mk%237731', WEB.peopleKey];
 
-let bins: ReturnType<typeof resolveBins> | null = null;
-try {
-  bins = resolveBins(() => {});
-} catch (e) {
-  console.warn(`google-browser: skipped, ${(e as Error).message}`);
-}
+const bins = browserBins('google-browser');
 const it = test.skipIf(!bins);
 
 let fake: FakeGoogle;

@@ -7,7 +7,7 @@ import { errorBlocks, ErrorLog } from './errors.ts';
 import { Store } from './db.ts';
 import { Http } from './http.ts';
 import { type Kind, loadKinds } from './kinds.ts';
-import { type PrepareResult, prepareBins } from './prepare.ts';
+import { KeptBins } from './prepare.ts';
 import { type NoticeTimes, Notices, NOTICES_KIND, noticesKind } from './notices.ts';
 import { providers as factories, type Provider } from './providers/index.ts';
 import { Router } from './router.ts';
@@ -67,10 +67,10 @@ export interface ManagerOpts {
   displayBackend?: DisplayBackend;
   /**
    * Build the sandboxes' programs from the repo's pinned nixpkgs into <data>/bins at start (prepare.ts), and start
-   * kinds with a screen once they are there. main.ts turns it on (prepare_bins); tests leave it off, or give a
-   * stand-in nix-build.
+   * kinds with a screen once they are there; a failed build is tried again in the background (KeptBins). main.ts
+   * turns it on (prepare_bins); tests leave it off, or give a stand-in nix-build (and a short first retry).
    */
-  prepareBins?: boolean | { nixBuild: string };
+  prepareBins?: boolean | { nixBuild: string; firstRetryMs?: number };
   /** Tests only: what a `scope` launch goes through instead of systemd-run. */
   systemdRun?: string;
   /** Tests only: how long a surviving extractor waits for a manager before it ends itself (1800 s). */
@@ -117,8 +117,8 @@ export interface Manager {
   service: string | null;
   /** Why its launch is what it is (supervisor.ts chooseLaunch): logged at start. */
   launchWhy: string;
-  /** The sandboxes' programs being prepared (prepare.ts), when prepareBins is on. */
-  bins: Promise<PrepareResult> | null;
+  /** The sandboxes' programs being prepared (prepare.ts), when prepareBins is on: `ready`, and how it stands. */
+  bins: KeptBins | null;
   /**
    * Stops the manager. With `leaveExtractors`, extractors that can outlive it are left running for the next manager
    * to adopt (main.ts on SIGTERM: a restart keeps every session); without it every extractor stops.
@@ -148,12 +148,15 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
   const publicUrl = (o.publicUrl ?? `http://localhost:${o.port}`).replace(/\/$/, '');
   const approvers = new Approvers(store, { dataDir: o.dataDir, publicUrl, pushHttp: o.approverPushHttp === true, requestMs: o.approverRequestMs, onChange: () => router?.accountsChanged(), count: (account, op, outcome) => router?.count('approver', account, op, outcome), onNoDevice: (account, rpId, op) => notices?.noDevice(account, rpId, op) });
   const launch = chooseLaunch(o.launch ?? 'child');
-  // The sandboxes' programs (prepare.ts): built while the manager starts; kinds with a screen wait for them.
-  let binsDir: string | null = null;
+  // The sandboxes' programs (prepare.ts): built while the manager starts, and again until a build succeeds; kinds with
+  // a screen wait for them. How it stands is on the page (ManagerState.bins).
   const bins = o.prepareBins
-    ? prepareBins({ repoRoot, dataDir: o.dataDir, nixBuild: typeof o.prepareBins === 'object' ? o.prepareBins.nixBuild : undefined, log: (l, m) => console.log(`${l}: ${m}`) }).then((r) => {
-        binsDir = r.dir;
-        return r;
+    ? new KeptBins({
+        repoRoot,
+        dataDir: o.dataDir,
+        ...(typeof o.prepareBins === 'object' ? o.prepareBins : {}),
+        log: (l, m) => console.log(`${l}: ${m}`),
+        onChange: () => router?.accountsChanged(),
       })
     : null;
   let handoverNow: Handover | null = null;
@@ -164,7 +167,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     dataDir: o.dataDir,
     launch: launch.launch,
     displayBackend: o.displayBackend,
-    bins: bins ? { ready: bins, dir: () => binsDir } : undefined,
+    bins: bins ?? undefined,
     fingerprint: o.fingerprint,
     restartPauseMs: o.restartPauseMs,
     adoptConnectMs: o.adoptConnectMs,
@@ -223,6 +226,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     publicUrl,
     startedAt: Date.now(),
     openPage: o.openPage === true,
+    bins: () => bins?.state ?? null,
   }, approvers);
   // What the manager before handed over (a restart): its held events first, before anything new comes.
   const handover = takeHandover(o.dataDir);
@@ -254,6 +258,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     launchWhy: launch.why,
     bins,
     async stop(so = {}) {
+      bins?.stop();
       for (const p of providers) p.stop?.();
       notices!.stop();
       approvals.stop();

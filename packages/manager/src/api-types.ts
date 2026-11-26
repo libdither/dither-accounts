@@ -143,6 +143,22 @@ export interface ManagerState {
   apps: AppInfo[];
   /** Provider sections (Google sign-in), each with its own status; see providers/. */
   providers: Record<string, unknown>;
+  /**
+   * The sandboxes' programs, built from the pinned nixpkgs at the manager's start and tried again while that fails
+   * (prepare.ts KeptBins); null when this manager does not prepare them. The page says so while they fail.
+   */
+  bins: BinsInfo | null;
+}
+
+/** How preparing the sandboxes' programs stands (prepare.ts BinsState). */
+export interface BinsInfo {
+  /** preparing, ready, failing (the last build failed), none (no nix-build here: programs from PATH). */
+  state: 'preparing' | 'ready' | 'failing' | 'none';
+  /** The prepared directory kinds with a screen are given; null while there is none (they wait while failing). */
+  dir: string | null;
+  why: string | null;
+  tries: number;
+  retryAt: number | null;
 }
 
 /** GET /api/accounts/:id: everything the manager knows about one account. */

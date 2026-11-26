@@ -1212,5 +1212,5 @@ that used it lose it at once (dither-calendar drops its copies of those calendar
   side; `stall()`
   makes a page's API calls hang). One account there has `calendarIdleSeconds: 2`: its Calendar tab closes with the
   status still online and Gmail's page up, two calls at once open it again with one page load and are answered, the
-  Gmail page is not loaded again, and it closes again. The stall tests wait out the real 25 s, so the suite takes about three minutes. Skipped without Xvfb, chromium and x11vnc (found on PATH, through
-  `XVFB_BIN` / `X11VNC_BIN` / `CHROMIUM_BIN`, or with `nix build`).
+  Gmail page is not loaded again, and it closes again. The stall tests wait out the real 25 s, so the suite takes about three minutes. Skipped, saying so, without Xvfb, Chromium and x11vnc
+  prepared from the pinned nixpkgs (`DITHER_BINS`: nix/README.md), or `XVFB_BIN` / `X11VNC_BIN` / `CHROMIUM_BIN`.

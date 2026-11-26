@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { TEST_BINS } from '../../../test/needs.ts';
 import { BINS } from '../../sandbox/src/bins.ts';
 import { BinNotPrepared, type BinSpec, DISPLAY_BINS, preparedBin, resolveBin } from '../src/bins.ts';
+import { CHROMIUM } from '../src/sandbox.ts';
 import { SHARE_BINS } from '../src/screenshare.ts';
 
 const dirs: string[] = [];
@@ -25,12 +26,12 @@ afterAll(() => {
 test('nix/bins.json lists exactly the pinned specs: the run list the sandboxes, the test list the tests', () => {
   const list = JSON.parse(readFileSync(join(import.meta.dir, '../../../nix/bins.json'), 'utf8')) as { run: string[]; test: string[] };
   const pinned = (specs: Record<string, BinSpec>) => Object.values(specs).filter((s) => s.pinned).map((s) => s.nix);
-  const run = new Set([...pinned(DISPLAY_BINS), ...pinned(SHARE_BINS), ...pinned(BINS)]);
+  const run = new Set([...pinned(DISPLAY_BINS), ...pinned(SHARE_BINS), ...pinned(BINS), ...pinned({ CHROMIUM })]);
   expect([...new Set(list.run)].sort()).toEqual([...run].sort());
   expect(list.run.length).toBe(new Set(list.run).size);
   expect([...list.test].sort()).toEqual(pinned(TEST_BINS).sort());
   // Every program the screens and the sandbox start is pinned.
-  for (const s of [...Object.values(DISPLAY_BINS), ...Object.values(SHARE_BINS), ...Object.values(BINS)]) expect(s.pinned).toBe(true);
+  for (const s of [...Object.values(DISPLAY_BINS), ...Object.values(SHARE_BINS), ...Object.values(BINS), CHROMIUM]) expect(s.pinned).toBe(true);
 });
 
 test('a pinned program: its override, then the prepared package (a link per attribute), else an error that says how to prepare it', () => {
@@ -60,6 +61,11 @@ test('a pinned program: its override, then the prepared package (a link per attr
     expect(logs.filter((m) => /nix build/.test(m))).toEqual([]);
     delete process.env.DITHER_BINS;
     expect(() => resolveBin(missing, () => {})).toThrow(/DITHER_BINS is not set/);
+    // A program that is not pinned (a native app: the machine's own install) and is not there: an error at once,
+    // never a build.
+    const app: BinSpec = { name: 'nosuchapp-dither', env: 'NOSUCHAPP_BIN_FOR_TEST', nix: 'no-such-app' };
+    expect(() => resolveBin(app, (_l, m) => logs.push(m))).toThrow(/nosuchapp-dither is not installed here: .*no-such-app.*NOSUCHAPP_BIN_FOR_TEST/);
+    expect(logs.filter((m) => /nix build/.test(m))).toEqual([]);
   } finally {
     if (was === undefined) delete process.env.DITHER_BINS;
     else process.env.DITHER_BINS = was;

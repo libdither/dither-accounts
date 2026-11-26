@@ -15,7 +15,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { claimDisplay, type DisplayBackend, displayBackend, displayTaken, type FreeDisplay, portInUse, Sandbox as BrowserSandbox } from '@dither-accounts/browser';
+import { claimDisplay, type DisplayBackend, displayBackend, displayTaken, type FreeDisplay, isWaylandBackend, portInUse, Sandbox as BrowserSandbox } from '@dither-accounts/browser';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const EXTENSION_SRC = join(HERE, 'extension');
@@ -96,16 +96,17 @@ export async function pickDisplay(
   config: Record<string, any>,
   opts: { portFixed?: boolean; free?: (n: number, port: number | null) => Promise<boolean>; backend?: DisplayBackend } = {},
 ): Promise<FreeDisplay> {
-  if ((opts.backend ?? displayBackend()) === 'wayland') return { backend: 'wayland', display: null };
+  const backend = opts.backend ?? displayBackend();
+  if (isWaylandBackend(backend)) return { backend, display: null };
   const envD = process.env.DITHER_DISPLAY ? Number(process.env.DITHER_DISPLAY) : undefined;
-  if (config.display || envD) return { backend: 'x11', display: Number(config.display ?? envD) };
+  if (config.display || envD) return { backend, display: Number(config.display ?? envD) };
   const free = opts.free ?? slotFree;
   const { from, to } = DISCORD_DISPLAYS;
   const span = to - from + 1;
   const start = hashedDisplay(accountId) - from;
   for (let i = 0; i < span; i++) {
     const n = from + ((start + i) % span);
-    if (await free(n, opts.portFixed ? null : 8700 + n)) return { backend: 'x11', display: n };
+    if (await free(n, opts.portFixed ? null : 8700 + n)) return { backend, display: n };
   }
   throw new Error(`no free Discord display in :${from}–:${to}; set this account's config.display to one outside it`);
 }

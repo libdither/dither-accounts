@@ -10,7 +10,7 @@ the Haveno desktop app on the same data, in this account's sandbox with a live v
 |---|---|---|
 | **the node** | the headless daemon, which you run yourself (for example as a systemd unit); gRPC on 127.0.0.1:1201 by default (config `address`), data in `~/.local/share/Haveno-reto` by default (config `dataDir`) | always on; restarting dither-accounts never touches it |
 | **the extractor** | `extractors/haveno`, a gRPC client of the node (`@grpc/grpc-js`, `proto/` from haveno-reto at the node's tag) | the manager's |
-| **the desktop app** | a `haveno-desktop` launcher of the signed desktop jar (`HAVENO_DESKTOP_BIN`, else on `PATH`, else `nixpkgs#haveno-desktop`) in the account's sandbox, the data dir bound in | on demand, while you use it |
+| **the desktop app** | a `haveno-desktop` launcher of the signed desktop jar (`HAVENO_DESKTOP_BIN`, else on `PATH`; nixpkgs has none) in the account's sandbox, the data dir bound in | on demand, while you use it |
 
 The node and the app must never run at once on the data: the daemon's unit and the launcher should both hold a flock
 on `<data>/.instance.lock`, the launcher waiting for it. **openApp** stops the node through its API (a clean stop), and

@@ -12,7 +12,7 @@
  *   TELEGRAM_LOG_LEVEL        mtcute's own log level (1 error … 4 debug; default 2)
  *   DITHER_TELEGRAM_DESKTOP=1 the sign-in through Telegram Desktop is offered and runs (off by default; docs/telegram.md)
  *   TELEGRAM_DESKTOP_FAKE=1   the fake Telegram Desktop (test/fake-desktop.ts) in the sandbox, with TELEGRAM_FAKE
- *   TELEGRAM_DESKTOP_BIN      Telegram Desktop's binary (else PATH, else nix build nixpkgs#telegram-desktop)
+ *   TELEGRAM_DESKTOP_BIN      Telegram Desktop's binary (else PATH: the machine's own install, never built here)
  *   TELEGRAM_DESKTOP_NETWORK  pasta (default), host or none: the sandbox's network
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';

@@ -19,6 +19,7 @@ import { networkInterfaces } from 'node:os';
 import { join, normalize, resolve } from 'node:path';
 import { consent, type Level, LEVELS } from '@dither-accounts/spec';
 import { BACKENDS, type BackendInfo, backendList, DISPLAY_BACKENDS, parseBackend } from '@dither-accounts/spec/display';
+import type { BinsState } from './prepare.ts';
 import { IFACES } from '@dither-accounts/interfaces';
 import TYPES from '@dither-accounts/interfaces/types';
 import { ALG_NAMES, validCredentials } from '@dither-accounts/passkey';
@@ -136,6 +137,8 @@ export interface HttpOpts {
   startedAt: number;
   /** Tests only: the page and its API answer without a login. */
   openPage?: boolean;
+  /** How preparing the sandboxes' programs stands (prepare.ts KeptBins); null when the manager does not prepare them. */
+  bins?: () => BinsState | null;
 }
 
 let own: { at: number; ips: Set<string> } | null = null;
@@ -940,6 +943,7 @@ export class Http {
       display: this.displayState(),
       apps: s.all('SELECT * FROM app ORDER BY created_at').map((a) => this.appInfo(a)),
       providers: Object.fromEntries(this.providers.map((p) => [p.name, p.status()])),
+      bins: this.opts.bins?.() ?? null,
     };
   }
 

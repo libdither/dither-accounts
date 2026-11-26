@@ -24,7 +24,8 @@ import { join } from 'node:path';
 import { DISPLAY_BINS, type Log, resolveBin, run, tryBin, withoutDisplays } from './bins.ts';
 import { BACKENDS, type DisplayBackend, displayIsOurs, type FreeDisplay, type WaylandBackend, type WaylandDisplay, type XBackend, type XDisplay } from './display.ts';
 import { KeptServer, prepareVncSocket, vncSocketPath, waitForRfbBanner, waitForVncSocket, x11vncArgs, xvncArgs, type XvncBackend } from './vnc.ts';
-import { WaylandScreen } from './wayland.ts';
+import { renderNode, WaylandScreen } from './wayland.ts';
+import { gpuFlags } from './flags.ts';
 import { closeWindow } from './x11.ts';
 
 export { DISPLAY_BACKEND_ENV, DISPLAY_BACKENDS, type DisplayBackend, displayBackend, parseBackend } from './display.ts';
@@ -73,6 +74,8 @@ export interface ScreenOptions {
    * sandbox): the compositor draws in software too (pixman), without loading the GPU driver (wayland.ts).
    */
   gpu?: boolean;
+  /** wayland: how long one request to sway waits for its answer (5 s; tests make it short). */
+  ipcRequestMs?: number;
   /** x11: no abstract X socket either (-nolisten local), for a sandbox that is shown only the path socket. */
   pathSocketOnly?: boolean;
   spawn: ScreenSpawn;
@@ -115,9 +118,17 @@ export interface Screen extends ScreenInput {
   fit(windowName: string): Promise<void>;
   /** Ask the windows whose name matches to close, as a window manager's close button does; false when none was found. */
   closeWindows(windowName: string): Promise<boolean>;
-  /** Its own connections closed and its files gone; the processes are its owner's to stop (procNames). */
+  /**
+   * Stopping, first half: nothing is started again (its live view's server), and its own connections are closed.
+   * Never throws. The processes are then its owner's to stop (procNames), and its files go after them (removeFiles).
+   */
   stop(): Promise<void>;
-  /** Chromium's flags for this screen (Wayland: its ozone platform and the text-input protocol ime.ts types through). */
+  /** Stopping, second half, once its processes are gone: its files (on Wayland the compositor's directory). */
+  removeFiles(): Promise<void>;
+  /**
+   * Chromium's flags for this screen: its GPU flags, from what the screen really renders with (flags.ts gpuFlags), and
+   * on Wayland its ozone platform and the text-input protocol ime.ts types through. Valid after start().
+   */
   chromiumFlags(): string[];
   /** Set what a Chromium profile's preferences need on this screen, and undo what another screen's needed. */
   adjustPrefs(prefs: Record<string, any>): void;
@@ -197,8 +208,9 @@ class XScreen implements Screen {
     return displayNote(this.free);
   }
 
+  /** On the machine's GPU when it has a render node this process can open (Xvfb has no GL: flags.ts gpuFlags). */
   chromiumFlags(): string[] {
-    return [];
+    return gpuFlags(renderNode() !== null);
   }
 
   /** Chromium's own default title bar: what a profile moved back from Wayland had set is taken away (WaylandScreen). */
@@ -390,4 +402,7 @@ class XScreen implements Screen {
     this.vnc?.stop();
     this.xvnc = null;
   }
+
+  /** Nothing of its own: the live view's socket is its owner's (Sandbox.stop), Xvfb's are Xvfb's. */
+  async removeFiles() {}
 }

@@ -80,6 +80,16 @@ export function Overview() {
         </button>
       </header>
 
+      {s.bins?.state === 'failing' && (
+        <p class="banner error" role="alert" data-bins-failing>
+          <span>
+            <strong>The sandboxes' programs did not build</strong>
+            {s.bins.dir ? ' this time: accounts with a screen run on the last ones built.' : ': accounts with a screen wait for them.'}{' '}
+            {s.bins.retryAt ? `Trying again at ${new Date(s.bins.retryAt).toLocaleTimeString()} (${s.bins.tries} ${s.bins.tries === 1 ? 'try' : 'tries'} so far).` : ''}
+            {s.bins.why && <span class="small"> {s.bins.why}</span>}
+          </span>
+        </p>
+      )}
       {asking > 0 && (
         <a class="banner attention" href={href('apps')} data-asking>
           <span>

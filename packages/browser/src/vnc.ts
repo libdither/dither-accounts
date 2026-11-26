@@ -80,6 +80,24 @@ export async function waitForVncSocket(socket: string, server: Subprocess, timeo
 }
 
 
+/** End a process: SIGTERM, then SIGKILL if it is still there after `ms`; resolves once it has exited. */
+export async function endProcess(p: Subprocess, ms = 3000) {
+  if (p.exitCode !== null || p.signalCode) return;
+  try {
+    p.kill('SIGTERM');
+  } catch {}
+  let t: Timer | undefined;
+  const late = new Promise<'late'>((r) => (t = setTimeout(() => r('late'), ms)));
+  const how = await Promise.race([p.exited.then(() => 'gone' as const, () => 'gone' as const), late]);
+  clearTimeout(t);
+  if (how === 'late') {
+    try {
+      p.kill('SIGKILL');
+    } catch {}
+    await p.exited.catch(() => {});
+  }
+}
+
 /**
  * Wait until the VNC server on the socket says its first words ("RFB 003.008\n"). A server can have its socket's file
  * before it answers there: bind() makes it before listen() (wayvnc on a loaded machine refused a connection then), an
@@ -164,9 +182,12 @@ export function xvncArgs(backend: XvncBackend, bin: string, display: string, soc
 
 /**
  * A live view's server kept running: started once (a failure then is the screen's start failing), and if it dies
- * afterwards, started again, waiting 0.5 s, then twice as long after each failed try, up to 30 s. On Wayland every
- * click and key goes through it too (wayland.ts), so while it is down health() says so, a status shows it, and input
- * waits for it (ready) rather than failing on a socket that is gone.
+ * afterwards, started again, waiting 0.5 s, then twice as long after each try, up to 30 s. The wait goes back to
+ * 0.5 s only once a server has stayed up for a while (stableMs, 30 s): one that starts and dies soon after (wayvnc
+ * crashing as each viewer connects, say) is started again ever more slowly, not twice a second for good. A try whose
+ * `after` step fails ends the process it started, and waits for it to go, before the next: never two at once. On
+ * Wayland every click and key goes through it too (wayland.ts), so while it is down health() says so, a status shows
+ * it, and input waits for it (ready) rather than failing on a socket that is gone.
  */
 export class KeptServer {
   private proc: Subprocess | null = null;
@@ -174,6 +195,10 @@ export class KeptServer {
   private stopped = false;
   private back: Promise<void> | null = null;
   private wake: (() => void) | null = null;
+  /** The wait before the next try; back to the first once a server has stayed up for stableMs. */
+  private wait: number;
+  /** When the server that runs now started serving. */
+  private upAt = 0;
 
   constructor(
     private o: {
@@ -186,8 +211,18 @@ export class KeptServer {
       onHealth?: (h: { ok: true } | { ok: false; note: string }) => void;
       /** The first wait before a restart (tests make it short). */
       firstWaitMs?: number;
+      /** The longest wait (30 s). */
+      maxWaitMs?: number;
+      /** How long a server must stay up before the wait starts over from the first (30 s). */
+      stableMs?: number;
     },
-  ) {}
+  ) {
+    this.wait = this.firstWait;
+  }
+
+  private get firstWait() {
+    return this.o.firstWaitMs ?? 500;
+  }
 
   async start() {
     this.watch(await this.o.start());
@@ -195,6 +230,11 @@ export class KeptServer {
 
   health(): { ok: true } | { ok: false; note: string } {
     return this.down ? { ok: false, note: this.down } : { ok: true };
+  }
+
+  /** The wait before the next try, were the server to die now (for tests). */
+  get nextWaitMs(): number {
+    return Date.now() - this.upAt >= (this.o.stableMs ?? 30_000) ? this.firstWait : this.wait;
   }
 
   /** Resolves once it serves (at once when it does); rejects after `ms` or once stopped. */
@@ -216,8 +256,10 @@ export class KeptServer {
 
   private watch(p: Subprocess) {
     this.proc = p;
+    this.upAt = Date.now();
     void p.exited.then(() => {
       if (this.stopped || this.proc !== p) return;
+      this.wait = this.nextWaitMs;
       this.down = `${this.o.name} exited (${p.signalCode ?? p.exitCode}); starting it again`;
       this.o.log('warn', `the live view's server ${this.down}`);
       this.o.onHealth?.(this.health());
@@ -226,8 +268,9 @@ export class KeptServer {
   }
 
   private async restart() {
-    let wait = this.o.firstWaitMs ?? 500;
     for (let tries = 1; !this.stopped; tries++) {
+      const wait = this.wait;
+      this.wait = Math.min(wait * 2, this.o.maxWaitMs ?? 30_000);
       await new Promise<void>((r) => {
         const t = setTimeout(r, wait);
         this.wake = () => {
@@ -237,19 +280,23 @@ export class KeptServer {
       });
       this.wake = null;
       if (this.stopped) return;
+      let p: Subprocess | null = null;
       try {
-        const p = await this.o.start();
-        if (this.stopped) return;
+        p = await this.o.start();
+        if (this.stopped) return void (await endProcess(p));
         await this.o.after?.();
+        if (this.stopped) return void (await endProcess(p));
         this.down = null;
         this.o.log('info', `the live view's server (${this.o.name}) is back, after ${tries} ${tries === 1 ? 'try' : 'tries'}`);
         this.o.onHealth?.(this.health());
         this.watch(p);
         return;
       } catch (e) {
+        // The one it started (its `after` failed) goes before the next try: one server at a time.
+        if (p) await endProcess(p);
         this.down = `${this.o.name} did not start again (${(e as Error).message.slice(0, 160)}); trying again`;
         this.o.log('warn', `the live view's server ${this.down}`);
-        wait = Math.min(wait * 2, 30_000);
+        this.o.onHealth?.(this.health());
       }
     }
   }

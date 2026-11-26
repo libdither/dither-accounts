@@ -3,7 +3,7 @@
  * because inside a bubblewrap sandbox only /nix/store is there (a /run/current-system symlink would point nowhere).
  * packages/sandbox re-exports these.
  *
- * A pinned program (the screens', the screen share's and the native sandbox's: `pinned: true`) comes from the repo's
+ * A pinned program (the screens', the screen share's, the native sandbox's, and Chromium: `pinned: true`) comes from the repo's
  * one nixpkgs (nix/pin.json), prepared ahead of time: the manager builds them at its start (packages/manager
  * prepare.ts, `nix-build nix -A dither-bins`) into an out-link in its data directory, which is their GC root, and hands
  * the directory to its extractors as DITHER_BINS; CI and the tests run `bun scripts/prepare-bins.ts`. In order:
@@ -13,10 +13,10 @@
  *   3. PATH (unless the spec says PATH's copy is the wrong one), then known places: a machine without Nix
  *   4. none: an error at once saying how to prepare it. An extractor never runs `nix build` for one, and never waits.
  *
- * Anything else (an app a native sandbox runs: Signal Desktop, Telegram Desktop) is found by 1 and 3, then, as before
- * the pin, `nix build nixpkgs#<attr>` from the machine's own nixpkgs.
+ * Anything else (a native app a sandbox runs: Signal Desktop, Telegram Desktop, Haveno) is found by 1 and 3 only, and
+ * is an error at once when it is not there: these are the machine's own install, kept up to date with it, not pinned
+ * (nix/README.md "What is not pinned"). Nothing here ever builds, so resolving never blocks an extractor's event loop.
  */
-import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, readlinkSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { DisplayBackend } from '@dither-accounts/spec/display';
@@ -98,14 +98,7 @@ export function resolveBin(spec: BinSpec, log: Log): string {
           `The manager prepares the sandboxes' programs at its start (docs/browser.md "Programs"); by hand: bun scripts/prepare-bins.ts --out <dir>, then ${BINS_ENV}=<dir>, or set ${spec.env}`,
       );
     }
-    log('info', `resolving ${spec.name} via nix build nixpkgs#${spec.nix}`);
-    const out = spawnSync('nix', ['build', `nixpkgs#${spec.nix}`, '--no-link', '--print-out-paths'], { encoding: 'utf8' });
-    if (out.status !== 0) throw new Error(`cannot find ${spec.name}: set ${spec.env}, put it on PATH, or make nix available (${(out.stderr ?? out.error?.message ?? '').slice(0, 200)})`);
-    for (const store of out.stdout.trim().split('\n').reverse()) {
-      const bin = join(store.trim(), spec.sub ?? 'bin', spec.name);
-      if (existsSync(bin)) return bin;
-    }
-    throw new Error(`nix built ${spec.nix} but it has no ${spec.sub ?? 'bin'}/${spec.name}`);
+    throw new Error(`${spec.name} is not installed here: install it on this machine (nixpkgs' ${spec.nix}, on PATH), or set ${spec.env} to its path`);
   })();
   cache.set(key, found);
   return found;

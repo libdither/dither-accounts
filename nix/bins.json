@@ -1,5 +1,5 @@
 {
-  "note": "The packages the sandboxes run (nix/README.md). Each is a BinSpec's `nix` attribute with `pinned: true` (packages/browser bins.ts, packages/sandbox bins.ts); a test checks both lists agree.",
+  "note": "The packages the sandboxes run (nix/README.md). Each is a BinSpec's `nix` attribute with `pinned: true` (packages/browser bins.ts and sandbox.ts, packages/sandbox bins.ts); a test checks both lists agree.",
   "run": [
     "xvfb",
     "x11vnc",
@@ -22,7 +22,8 @@
     "xmodmap",
     "tigervnc",
     "kasmvnc",
-    "w0vncserver"
+    "w0vncserver",
+    "chromium"
   ],
   "test": [
     "electron",

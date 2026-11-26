@@ -16,7 +16,7 @@
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { AppSandbox, type Download, displayName, type FileRequestRecord, type FreeDisplay, type Network, pickFreeDisplay, resolveBin, type SandboxEvent } from '@dither-accounts/sandbox';
+import { AppSandbox, type Download, displayName, type FileRequestRecord, type FreeDisplay, isXBackend, type Network, pickFreeDisplay, resolveBin, type SandboxEvent } from '@dither-accounts/sandbox';
 import type { DesktopKey } from './backend.ts';
 import { keyFingerprint, readTdata, signedInAccount, TdataError } from './tdata.ts';
 
@@ -158,7 +158,7 @@ export class DesktopSession implements DesktopHost {
         await this.sandbox?.stop().catch(() => {});
         this.sandbox = null;
         // Another display only helps when an X display was the trouble.
-        if (!free || free.display === null || !/display|Xvfb|Xvnc/i.test(this.sandboxError)) break;
+        if (!free || !isXBackend(free.backend) || !/display|Xvfb|Xvnc/i.test(this.sandboxError)) break;
       }
     }
     this.readSignIn();

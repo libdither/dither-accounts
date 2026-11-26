@@ -34,7 +34,10 @@ after a deploy moves the link.
 An extractor of a kind with a screen (its manifest's `screen`: the browser kinds, Discord, Signal and Telegram
 Desktop, Haveno) also gets `DITHER_DISPLAY_BACKEND` (below) and `DITHER_BINS`, the directory of its sandboxes'
 programs the manager builds at its start from the repo's pinned nixpkgs (`packages/manager/src/prepare.ts`,
-nix/README.md). Its start waits until that build is done (a few seconds when the store has them); a failed build keeps the last good directory, and with none the sandboxes look on PATH. Every
+nix/README.md). Its start waits until that build is done (a few seconds when the store has them). A failed build is
+tried again in the background (30 s later, then twice as long each time, up to 30 min) until one succeeds: meanwhile
+these kinds run on the last good directory, or, with none, wait for the build, and the manager's page says the build
+is failing. A machine without `nix-build` skips it, and the sandboxes look on PATH. Every
 other kind starts at once and gets neither.
 
 One manager per data directory: `<data>/manager.lock` names it, and a second one refuses to start (it would adopt and

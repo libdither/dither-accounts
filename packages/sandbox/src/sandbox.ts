@@ -360,9 +360,12 @@ exec "$@"
   private async stopNow() {
     this.stopped = true;
     for (const t of this.timers) clearInterval(t);
-    this.bus?.close();
-    // The screen first hears it is stopping, so it starts nothing again as its processes end (KeptServer).
-    await this.screen_?.stop().catch(() => {});
+    try {
+      this.bus?.close();
+    } catch {}
+    // The screen first hears it is stopping, so it starts nothing again as its processes end (KeptServer). Whatever
+    // goes wrong there, the processes below are still ended.
+    await this.screen_?.stop().catch((e) => this.o.log('warn', `stopping the screen: ${(e as Error).message}`));
     for (const name of ['app', 'dbus-daemon', 'pulseaudio', ...(this.screen_?.procNames ?? [])]) {
       for (const p of this.procs.filter((x) => x.name === name)) {
         try {
@@ -380,9 +383,19 @@ exec "$@"
     await Promise.all(this.procs.map((p) => p.proc.exited.catch(() => {})));
     clearTimeout(killer);
     this.procs = [];
-    rmSync(join(this.o.dir, 'sandbox.json'), { force: true });
-    rmSync(this.vncSocket, { force: true });
-    rmSync(this.run, { recursive: true, force: true });
+    // Its files once nothing writes there any more.
+    for (const [what, f] of [
+      ["the screen's files", () => this.screen_?.removeFiles()],
+      ['sandbox.json', () => rmSync(join(this.o.dir, 'sandbox.json'), { force: true })],
+      ["the live view's socket", () => rmSync(this.vncSocket, { force: true })],
+      ['the run directory', () => rmSync(this.run, { recursive: true, force: true })],
+    ] as const) {
+      try {
+        await f();
+      } catch (e) {
+        this.o.log('warn', `removing ${what}: ${(e as Error).message}`);
+      }
+    }
     this.o.log('info', 'sandbox stopped');
   }
 

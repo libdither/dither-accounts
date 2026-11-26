@@ -151,6 +151,11 @@ export interface ManagerState {
   providers: Record<string, unknown>;
   /** The display backends (docs/browser.md "Display backends") and the manager's default. */
   display: DisplayState;
+  /**
+   * The sandboxes' programs, built from the pinned nixpkgs at the manager's start and tried again while that fails
+   * (prepare.ts KeptBins); null when this manager does not prepare them. The page says so while they fail.
+   */
+  bins: BinsInfo | null;
 }
 
 /** A display backend as the page offers it (packages/spec display.ts). */
@@ -172,6 +177,17 @@ export interface DisplayState {
   chosen: DisplayBackend | null;
   /** config.toml's display_backend (or --display-backend), else x11. */
   config: DisplayBackend;
+}
+
+/** How preparing the sandboxes' programs stands (prepare.ts BinsState). */
+export interface BinsInfo {
+  /** preparing, ready, failing (the last build failed), none (no nix-build here: programs from PATH). */
+  state: 'preparing' | 'ready' | 'failing' | 'none';
+  /** The prepared directory kinds with a screen are given; null while there is none (they wait while failing). */
+  dir: string | null;
+  why: string | null;
+  tries: number;
+  retryAt: number | null;
 }
 
 /** GET /api/accounts/:id: everything the manager knows about one account. */

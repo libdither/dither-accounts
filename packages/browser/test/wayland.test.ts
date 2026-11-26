@@ -19,7 +19,7 @@ import { message, readString } from '../src/ime.ts';
 import { KEYSYM, parseChord, textRuns } from '../src/keysyms.ts';
 import { RfbClient } from '../src/rfb.ts';
 import { resolveChromium, Sandbox } from '../src/sandbox.ts';
-import { displayName, displayNote, displayState, makeScreen, type Screen, type ScreenHealth } from '../src/screen.ts';
+import { displayName, displayNote, displayState, makeScreen, type Screen, type ScreenHealth, type ScreenOptions } from '../src/screen.ts';
 import { IPC, ipcMessage, SwayIpc, views, type SwayNode } from '../src/swayipc.ts';
 import { SOCKET_PATH_MAX } from '../src/vnc.ts';
 import { privateDir, renderNode, swayConfig, swayRenderer, w0vncserverArgs, w0vncserverEnv, waylandDir, waylandPlace, WaylandScreen, wayvncArgs } from '../src/wayland.ts';
@@ -213,8 +213,27 @@ test("Chromium on wayland: its ozone and input-method flags, and the system's ti
   const x = makeScreen({ ...o, display: 80 });
   expect([w.protocol, w.needsOwnBus, w.describe()]).toEqual(['wayland', true, 'sway (Wayland)']);
   expect([x.protocol, x.needsOwnBus, x.runtimeDir, x.describe()]).toEqual(['x11', false, null, 'Xvfb :80']);
-  expect(w.chromiumFlags()).toEqual(['--ozone-platform=wayland', '--enable-wayland-ime', '--wayland-text-input-version=3']);
-  expect(x.chromiumFlags()).toEqual([]);
+  const SOFT = ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
+  const VULKAN = ['--ignore-gpu-blocklist', '--use-angle=vulkan', '--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan'];
+  const WL = ['--ozone-platform=wayland', '--enable-wayland-ime', '--wayland-text-input-version=3'];
+  // The GPU flags follow the renderer sway really runs with: after a fallback to pixman, software ones.
+  (w as WaylandScreen).renderer = 'pixman';
+  expect(w.chromiumFlags()).toEqual([...WL, ...SOFT]);
+  (w as WaylandScreen).renderer = 'gles2';
+  expect(w.chromiumFlags()).toEqual([...WL, ...VULKAN]);
+  // On X, the machine's render node, if this process can open one.
+  const saved = process.env.DITHER_DEV_DRI;
+  try {
+    process.env.DITHER_DEV_DRI = tmp('no-dri');
+    expect(x.chromiumFlags()).toEqual(SOFT);
+    const dri = tmp('dri-x');
+    writeFileSync(join(dri, 'renderD128'), '');
+    process.env.DITHER_DEV_DRI = dri;
+    expect(x.chromiumFlags()).toEqual(VULKAN);
+  } finally {
+    if (saved === undefined) delete process.env.DITHER_DEV_DRI;
+    else process.env.DITHER_DEV_DRI = saved;
+  }
   const prefs: Record<string, any> = { browser: { show_home_button: true }, profile: { x: 1 } };
   w.adjustPrefs(prefs);
   expect(prefs).toEqual({ browser: { show_home_button: true, custom_chrome_frame: false }, profile: { x: 1 } });
@@ -297,7 +316,7 @@ const spawn = (name: string, cmd: string[], o: { env?: Record<string, string | u
 };
 
 /** A real screen on a fresh directory, with what its live view's server said of itself. */
-async function realScreen(what: string, size = { width: 800, height: 600 }, backend: WaylandBackend = 'wayland') {
+async function realScreen(what: string, size = { width: 800, height: 600 }, { backend = 'wayland', ...extra }: Partial<ScreenOptions> & { backend?: WaylandBackend } = {}) {
   const dir = tmp(what);
   const start = procs.length;
   const healths: ScreenHealth[] = [];
@@ -308,6 +327,7 @@ async function realScreen(what: string, size = { width: 800, height: 600 }, back
     ...size,
     spawn,
     log: () => {},
+    ...extra,
     onHealth: (h) => {
       healths.push(h);
       for (const w of waiters.splice(0)) (w.ok(h) ? w.resolve() : waiters.push(w));
@@ -321,6 +341,7 @@ async function realScreen(what: string, size = { width: 800, height: 600 }, back
     await screen.stop();
     for (const p of mine()) p.kill('SIGKILL');
     await Promise.all(mine().map((p) => p.exited));
+    await screen.removeFiles();
   };
   return { dir, screen, healths, health, mine, done };
 }
@@ -394,9 +415,10 @@ describe.each(WL)('a real headless sway and its live view: $server', ({ backend,
         expect(seats.some((s) => (s.capabilities & 3) === 3)).toBe(true);
         expect(pngSize(await screen.screenshot())).toEqual([1024, 700]);
       } finally {
+        await screen.stop();
         for (const p of procs.slice(start)) p.kill();
         await Promise.all(procs.slice(start).map((p) => p.exited));
-        await screen.stop();
+        await screen.removeFiles();
       }
     },
     30_000,
@@ -456,6 +478,37 @@ describe.skipIf(!why('sway, wayvnc, grim and wev', wayland && wev))('windows and
       await r.screen.click(400, 300);
       await until("wev's click", () => /button: \d+ \(left\), state: 1/.test(w.text));
     } finally {
+      await r.done();
+    }
+  }, 60_000);
+
+  test("sway stalls past a request's deadline: the status says its IPC is down, and once sway answers again fit works", async () => {
+    const r = await realScreen('sway-stalls', undefined, { ipcRequestMs: 300 });
+    const ipc = await SwayIpc.connect(r.screen.ipcSocket);
+    try {
+      wevOn(r.screen);
+      await until('the window', async () => views(await ipc.tree()).length === 1);
+      const sway = r.mine().find((p) => named.get(p) === 'sway')!;
+      const down = r.health((h) => !h.ok);
+      sway.kill('SIGSTOP');
+      const up = r.health((h) => h.ok);
+      try {
+        await expect(r.screen.fit('')).rejects.toThrow(/did not answer within 300 ms/);
+        await down;
+        expect(r.screen.health()).toEqual({ ok: false, note: expect.stringMatching(/^sway's IPC connection ended \(sway did not answer within 300 ms\); connecting again$/) });
+      } finally {
+        sway.kill('SIGCONT');
+      }
+      // Back once sway answers on a new connection, and fit goes through it: a floated window is tiled again.
+      await up;
+      expect(r.screen.health()).toEqual({ ok: true });
+      const [win] = views(await ipc.tree());
+      await ipc.command(`[con_id=${win!.id}] floating enable`);
+      expect(views(await ipc.tree())[0]!.type).toBe('floating_con');
+      await r.screen.fit('');
+      expect(views(await ipc.tree()).map((v) => [v.id, v.type])).toEqual([[win!.id, 'con']]);
+    } finally {
+      ipc.close();
       await r.done();
     }
   }, 60_000);

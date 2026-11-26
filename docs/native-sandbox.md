@@ -118,9 +118,9 @@ None of these is built; each is a door the sandbox already has the frame for.
 
 ## Adding another native app
 
-1. Its binary from nixpkgs (resolved by `resolveBin`: environment, PATH, `nix build`; the sandbox's own programs,
-   bubblewrap, pasta, the screen's and xwayland-satellite, come prepared from the pinned nixpkgs instead and are
-   never built in the extractor: nix/README.md), its arguments to keep its data
+1. Its binary, the machine's own install (resolved by `resolveBin`: its `*_BIN` override, then PATH, else an error
+   at once, never a build: nix/README.md "What is not pinned"; the sandbox's own programs, bubblewrap, pasta, the
+   screen's and xwayland-satellite, come prepared from the pinned nixpkgs instead), its arguments to keep its data
    under the sandbox's home and not update itself.
 2. `new AppSandbox({ dir: <account>/desktop, display, width, height, command, fitWindow, onEvent })` with a
    display from `pickFreeDisplay`: on x11 a display number (:80–:89, then :100–:159; claimed atomically in

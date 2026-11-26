@@ -53,12 +53,13 @@ import { join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Subprocess } from 'bun';
 import { type BinSpec, DISPLAY_BINS, resolveBin, run, withoutDisplays } from './bins.ts';
+import { gpuFlags } from './flags.ts';
 import type { WaylandDisplay } from './display.ts';
 import { InputMethod } from './ime.ts';
 import { parseChord, textRuns } from './keysyms.ts';
 import { RfbClient } from './rfb.ts';
 import { displayNote, type Screen, type ScreenHealth, type ScreenOptions } from './screen.ts';
-import { EVENT_WINDOW, IPC, SwayIpc, type SwayNode, views } from './swayipc.ts';
+import { EVENT_WINDOW, IPC, IPC_REQUEST_MS, SwayIpc, type SwayNode, views } from './swayipc.ts';
 import { KeptServer, prepareVncSocket, SOCKET_PATH_MAX, vncSocketPath, waitForRfbBanner, waitForVncSocket } from './vnc.ts';
 
 /** The compositor's directory in the sandbox's: its sockets, its config. */
@@ -246,7 +247,12 @@ export class WaylandScreen implements Screen {
   /** Where privateDir starts checking (the account's directory, the runtime directory or /tmp). */
   private root: string;
   private waylandSocket = '';
+  /** The main IPC connection (requests and commands), made again when it ends (keepIpc). */
   private ipc: SwayIpc | null = null;
+  /** Why the main IPC connection is down while it is made again; null while it is up. */
+  private ipcDown: string | null = null;
+  /** Resolves once the main IPC connection is back (while ipcDown). */
+  private ipcBack: Promise<void> | null = null;
   private windowEvents: SwayIpc | null = null;
   private rfb: RfbClient | null = null;
   private connecting: Promise<RfbClient> | null = null;
@@ -288,9 +294,12 @@ export class WaylandScreen implements Screen {
     return displayNote(this.free);
   }
 
-  /** The Wayland platform (not XWayland, which isn't there) and the text-input protocol ime.ts types through. */
+  /**
+   * The Wayland platform (not XWayland, which isn't there), the text-input protocol ime.ts types through, and the GPU
+   * flags of the renderer sway runs with: after a fallback to pixman, Chromium's are the software ones too.
+   */
   chromiumFlags(): string[] {
-    return ['--ozone-platform=wayland', '--enable-wayland-ime', '--wayland-text-input-version=3'];
+    return ['--ozone-platform=wayland', '--enable-wayland-ime', '--wayland-text-input-version=3', ...gpuFlags(this.renderer === 'gles2')];
   }
 
   /**
@@ -303,8 +312,83 @@ export class WaylandScreen implements Screen {
     prefs.browser = { ...prefs.browser, custom_chrome_frame: false };
   }
 
+  /** The live view's server, then sway's IPC (windows are placed and fitted through it): either one down says so. */
   health(): ScreenHealth {
-    return this.vnc?.health() ?? { ok: true };
+    const vnc = this.vnc?.health() ?? { ok: true };
+    if (!vnc.ok) return vnc;
+    return this.ipcDown ? { ok: false, note: this.ipcDown } : { ok: true };
+  }
+
+  /** How long one request to sway waits for its answer. */
+  private get requestMs() {
+    return this.o.ipcRequestMs ?? IPC_REQUEST_MS;
+  }
+
+  /**
+   * The main IPC connection: a request that sway does not answer in time ends it (swayipc.ts: a late answer could not
+   * be told from the next one), and so does sway restarting its IPC. It is made again at once, then 0.25 s later,
+   * twice as long after each failure, up to 10 s, and counts as back only once sway answers on it (a connection to a
+   * stuck sway is taken by the kernel all the same). Meanwhile health() says so, and a request waits for it.
+   */
+  private keepIpc(ipc: SwayIpc) {
+    this.ipc = ipc;
+    void (async () => {
+      let cur = ipc;
+      while (!this.stopped) {
+        const why = await cur.closed;
+        if (this.stopped) return;
+        this.ipcDown = `sway's IPC connection ended (${why.message}); connecting again`;
+        this.o.log('warn', this.ipcDown);
+        this.o.onHealth?.(this.health());
+        let back!: () => void;
+        this.ipcBack = new Promise<void>((r) => (back = r));
+        let wait = 0;
+        for (;;) {
+          if (wait) await sleep(wait);
+          if (this.stopped) return back();
+          let next: SwayIpc | null = null;
+          try {
+            next = await SwayIpc.connect(this.ipcSocket, this.requestMs);
+            await next.request(IPC.GET_SEATS, '', this.requestMs);
+            if (this.stopped) {
+              next.close();
+              return back();
+            }
+            cur = next;
+            break;
+          } catch (e) {
+            next?.close();
+            this.o.log('debug', `sway's IPC: ${(e as Error).message}; trying again`);
+            wait = Math.min(Math.max(wait * 2, 250), 10_000);
+          }
+        }
+        this.ipc = cur;
+        this.ipcDown = null;
+        this.ipcBack = null;
+        back();
+        this.o.log('info', "sway's IPC connection is back");
+        this.o.onHealth?.(this.health());
+      }
+    })();
+  }
+
+  /** The main IPC connection once it is up; throws when the screen is stopped or it stays down. */
+  private async sway(ms = 10_000): Promise<SwayIpc> {
+    if (this.stopped || !this.ipc) throw new Error('the compositor is stopped');
+    if (this.ipc.open && !this.ipcDown) return this.ipc;
+    // Ended a moment ago (a request's deadline): keepIpc hears it next, and says so.
+    if (!this.ipcBack) await Promise.race([this.ipc.closed, sleep(50)]).then(() => sleep(0));
+    const back = this.ipcBack;
+    if (back) {
+      let t: Timer | undefined;
+      try {
+        await Promise.race([back, new Promise<never>((_, reject) => (t = setTimeout(() => reject(new Error(this.ipcDown ?? "sway's IPC connection is down")), ms)))]);
+      } finally {
+        clearTimeout(t);
+      }
+    }
+    if (this.stopped || !this.ipc?.open) throw new Error(this.ipcDown ?? 'the compositor is stopped');
+    return this.ipc;
   }
 
   /** The compositor's directory, fresh: made 0700 at every level it makes, refused unless each is this user's own. */
@@ -320,14 +404,14 @@ export class WaylandScreen implements Screen {
     this.prepareDir();
     const wanted = swayRenderer(this.o.gpu ?? true);
     try {
-      this.ipc = await this.startSway(sway, wanted);
+      this.keepIpc(await this.startSway(sway, wanted));
     } catch (e) {
       if (wanted !== 'gles2' || this.stopped) throw e;
       // The render node opened, but the GPU driver did not start (a driver the machine lacks, a GPU in another
       // container's hands): drawing in software works anywhere.
       this.o.log('warn', `sway did not start on the GPU (${(e as Error).message}): starting it again in software (pixman)`);
       this.prepareDir();
-      this.ipc = await this.startSway(sway, 'pixman');
+      this.keepIpc(await this.startSway(sway, 'pixman'));
     }
     this.waylandSocket = this.findSocket();
     this.watchWindows();
@@ -424,12 +508,16 @@ export class WaylandScreen implements Screen {
     throw new Error(`sway made no Wayland socket in ${this.dir}`);
   }
 
-  /** The seat has the pointer and keyboard the live view's server made for our client (wl_seat capabilities 1 and 2). */
+  /**
+   * The seat has the pointer and keyboard the live view's server made for our client (wl_seat capabilities 1 and 2).
+   * Each request has its own time (requestMs), not what is left of `ms`: a few ms left would end the connection on a
+   * slow reply.
+   */
   private async waitForSeat(ms: number) {
     const deadline = Date.now() + ms;
     while (Date.now() < deadline) {
-      if (!this.ipc) throw new Error('the compositor is stopped');
-      const seats = await this.ipc.request<{ capabilities: number }[]>(IPC.GET_SEATS, '', Math.max(1, deadline - Date.now()));
+      const ipc = await this.sway();
+      const seats = await ipc.request<{ capabilities: number }[]>(IPC.GET_SEATS, '', this.requestMs);
       if (seats.some((s) => (s.capabilities & 3) === 3)) return;
       await sleep(50);
     }
@@ -463,7 +551,8 @@ export class WaylandScreen implements Screen {
           await sub.request(IPC.SUBSCRIBE, JSON.stringify(['window']));
           // Windows that opened while there was no subscription are placed as they are.
           this.place(async () => {
-            if (this.ipc) for (const v of views(await this.ipc.tree())) this.placed.add(v.id);
+            if (this.stopped) return;
+            for (const v of views(await (await this.sway()).tree(this.requestMs))) this.placed.add(v.id);
           });
           wait = 250;
           said = false;
@@ -498,13 +587,14 @@ export class WaylandScreen implements Screen {
    * placed count, so two that open together see one another in one order: the first tiled, the second a dialog.
    */
   private async placeNew(id: number) {
-    if (!this.ipc) return;
-    const all = views(await this.ipc.tree());
+    if (this.stopped) return;
+    const ipc = await this.sway();
+    const all = views(await ipc.tree(this.requestMs));
     const present = new Set(all.map((v) => v.id));
     for (const p of this.placed) if (!present.has(p)) this.placed.delete(p);
     const tiled = all.some((v) => v.id !== id && v.type === 'con' && this.placed.has(v.id));
     this.placed.add(id);
-    if (tiled) await this.ipc.command(`[con_id=${id}] floating enable`);
+    if (tiled) await ipc.command(`[con_id=${id}] floating enable`, this.requestMs);
   }
 
   clientEnv() {
@@ -603,37 +693,46 @@ export class WaylandScreen implements Screen {
     return run([grim, '-t', 'png', '-'], { ...withoutDisplays(process.env), WAYLAND_DISPLAY: this.waylandSocket, XDG_RUNTIME_DIR: this.dir }, 'screenshot');
   }
 
-  private async windows(name: string): Promise<SwayNode[]> {
-    if (!this.ipc) return [];
+  private async windows(ipc: SwayIpc, name: string): Promise<SwayNode[]> {
     const re = new RegExp(name);
-    return views(await this.ipc.tree()).filter((v) => re.test(v.name ?? ''));
+    return views(await ipc.tree(this.requestMs)).filter((v) => re.test(v.name ?? ''));
   }
 
   /** The biggest window whose title matches fills the output (tiled); any other tiled window floats. */
   async fit(name: string) {
-    if (!this.ipc) return;
-    const all = views(await this.ipc.tree());
+    if (this.stopped) return;
+    const ipc = await this.sway();
+    const all = views(await ipc.tree(this.requestMs));
     const re = new RegExp(name);
     const best = all.filter((v) => re.test(v.name ?? '')).sort((a, b) => b.rect.width * b.rect.height - a.rect.width * a.rect.height)[0];
     if (!best) return;
-    if (best.type === 'floating_con') await this.ipc.command(`[con_id=${best.id}] floating disable`);
-    for (const v of all) if (v.id !== best.id && v.type === 'con') await this.ipc.command(`[con_id=${v.id}] floating enable`);
+    if (best.type === 'floating_con') await ipc.command(`[con_id=${best.id}] floating disable`, this.requestMs);
+    for (const v of all) if (v.id !== best.id && v.type === 'con') await ipc.command(`[con_id=${v.id}] floating enable`, this.requestMs);
   }
 
   async closeWindows(name: string) {
-    const found = await this.windows(name);
-    for (const v of found) await this.ipc?.command(`[con_id=${v.id}] kill`);
+    if (this.stopped) return false;
+    const ipc = await this.sway();
+    const found = await this.windows(ipc, name);
+    for (const v of found) await ipc.command(`[con_id=${v.id}] kill`, this.requestMs);
     return found.length > 0;
   }
 
-  /** Its connections closed and its directory gone; the processes are its owner's to stop. */
+  /**
+   * Nothing started again and its connections closed; the processes are its owner's to stop. Its directory stays
+   * until they are gone (removeFiles): sway, PipeWire and WirePlumber still write there until they end.
+   */
   async stop() {
     this.stopped = true;
-    this.vnc?.stop();
-    this.rfb?.close();
-    this.windowEvents?.close();
-    this.ipc?.close();
+    for (const f of [() => this.vnc?.stop(), () => this.rfb?.close(), () => this.windowEvents?.close(), () => this.ipc?.close()]) {
+      try {
+        f();
+      } catch {}
+    }
     this.ipc = null;
+  }
+
+  async removeFiles() {
     rmSync(this.dir, { recursive: true, force: true });
   }
 }

@@ -11,6 +11,7 @@
  */
 import type { DisplayBackend } from '@dither-accounts/spec/display';
 import { BACKEND_BINS, type BinSpec, DISPLAY_BINS, resolveBin } from '../packages/browser/src/bins.ts';
+import { type Bins, resolveBins } from '../packages/browser/src/sandbox.ts';
 import { BINS, sandboxBins } from '../packages/sandbox/src/bins.ts';
 
 export const nix = !!Bun.which('nix');
@@ -80,4 +81,20 @@ export function why(what: string, ok: boolean) {
   if (!ok && process.env.DITHER_TESTS_NEED_ALL === '1') throw new Error(`${what} is not available here, and DITHER_TESTS_NEED_ALL=1`);
   if (!ok) console.warn(`skipped: ${what} is not available here`);
   return ok;
+}
+
+/**
+ * Xvfb, x11vnc and Chromium, for a test that runs a real browser on X (`name` says which), or null: it then skips,
+ * saying why and how to run it. They come prepared from the pinned nixpkgs (DITHER_BINS: nix/README.md), as everything
+ * the sandboxes run does. Where the machine must have everything (DITHER_TESTS_NEED_ALL=1) a missing one fails instead.
+ */
+export function browserBins(name: string): Bins | null {
+  try {
+    return resolveBins(() => {});
+  } catch (e) {
+    const msg = `${name} needs Xvfb, x11vnc and Chromium from the pinned nixpkgs (${(e as Error).message.split(/\. /)[0]}): bun scripts/prepare-bins.ts --out <dir> --tests, then DITHER_BINS=<dir> (nix/README.md)`;
+    if (process.env.DITHER_TESTS_NEED_ALL === '1') throw new Error(`${msg}, and DITHER_TESTS_NEED_ALL=1`);
+    console.warn(`skipped: ${msg}`);
+    return null;
+  }
 }

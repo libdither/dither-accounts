@@ -10,15 +10,10 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server, ServerWebSocket, Subprocess } from 'bun';
-import { resolveBins } from '../../../packages/browser/src/index.ts';
 import { type FakePrivacy, startFakePrivacy } from './fake-privacy.ts';
+import { browserBins } from '../../../test/needs.ts';
 
-let bins: ReturnType<typeof resolveBins> | null = null;
-try {
-  bins = resolveBins(() => {});
-} catch (e) {
-  console.warn(`privacy browser: skipped, ${(e as Error).message}`);
-}
+const bins = browserBins('privacy browser');
 const it = test.skipIf(!bins);
 
 let fake: FakePrivacy;

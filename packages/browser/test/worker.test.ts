@@ -5,6 +5,7 @@
  * is skipped without Xvfb, chromium or x11vnc. Every process it starts is gone at the end.
  */
 import { afterAll, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -134,16 +135,35 @@ test.skipIf(!bins)(
     const src = join(acc, 'src');
     const worker = (tag: string) => `fetch(chrome.runtime.getURL('config.json')).then((r) => r.json()).then((c) => fetch(c.origin + '/report?who=worker&tag=${tag}'));`;
     const logs: string[] = [];
-    async function start(tag: string, hold = 2000) {
+    /** Until Chromium has written the page's cookie into the profile's cookie store (it commits within 30 s). */
+    async function cookieOnDisk() {
+      const file = join(acc, 'profile', 'Default', 'Cookies');
+      const end = Date.now() + 90_000;
+      for (;;) {
+        try {
+          const db = new Database(file, { readonly: true });
+          try {
+            if ((db.query("SELECT count(*) AS n FROM cookies WHERE name = 'probe'").get() as { n: number }).n > 0) return;
+          } finally {
+            db.close();
+          }
+        } catch {}
+        if (Date.now() > end) throw new Error("Chromium never wrote the page's cookie to the profile");
+        await Bun.sleep(250);
+      }
+    }
+    async function start(tag: string, o: { cookie?: boolean } = {}, hold = 2000) {
       extension(src, worker(tag));
       reports.length = 0;
       logs.length = 0;
       const free = await pickFreeDisplay();
-      const sb = new Sandbox({ accountDir: acc, display: free.display, width: 800, height: 600, extensionSrc: src, config: { origin }, startUrl: `${origin}/`, log: (_l, m) => logs.push(m) });
+      const sb = new Sandbox({ accountDir: acc, display: free, width: 800, height: 600, extensionSrc: src, config: { origin }, startUrl: `${origin}/`, log: (_l, m) => logs.push(m) });
       try {
         await sb.start();
         const end = Date.now() + 30_000;
         while (Date.now() < end && !(reports.some((r) => r.startsWith('who=worker')) && reports.some((r) => r.startsWith('who=page')))) await Bun.sleep(200);
+        // The cookie on disk, as a sign-in's would be, before Chromium is stopped.
+        if (o.cookie) await cookieOnDisk();
         // Long enough for a second worker to say so, were there one.
         await Bun.sleep(hold);
       } finally {
@@ -156,8 +176,8 @@ test.skipIf(!bins)(
       };
     }
     try {
-      // Held past Chromium's cookie commit (every 30 s), so the cookie is on disk as a sign-in's would be.
-      expect(await start('first', 33_000)).toEqual({ workers: ['first'], page: 'who=page&cookie=no&ls=no', cleared: true });
+      // Held until Chromium has committed the cookie (within 30 s), so it is on disk as a sign-in's would be.
+      expect(await start('first', { cookie: true })).toEqual({ workers: ['first'], page: 'who=page&cookie=no&ls=no', cleared: true });
       // The same worker: the profile's service workers stay (Chromium runs the one it has, which is this one).
       expect(await start('first')).toEqual({ workers: ['first'], page: 'who=page&cookie=yes&ls=yes', cleared: false });
       // A changed worker: without the clear Chromium would run 'first' again.

@@ -12,6 +12,7 @@
  * with `needs-you` and holds the account in attention until the live view shows it gone. Config: { email, testOrigin?,
  * noSandbox? }. Logs steps and page paths: never the link, a URL's query, the callback or a cookie.
  */
+import { displayName } from '@dither-accounts/browser';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
 import { BrowserHost, sleep } from '@dither-accounts/statements-common/tabs';
 import { join } from 'node:path';
@@ -243,7 +244,7 @@ function status(force = false) {
   const v = { signedIn, email, expectedEmail, hold };
   const s = host.baseState() ?? statusOf(v);
   const details = {
-    display: host.liveView ? `:${host.display}` : null,
+    display: host.liveView ? displayName(host.display) : null,
     page,
     extensionAttached: host.attached,
     signedIn,

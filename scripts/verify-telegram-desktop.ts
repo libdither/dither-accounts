@@ -23,6 +23,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { AccountsClient, register } from '@dither-accounts/client';
 import { desktop, notifications } from '@dither-accounts/interfaces';
+import { DISPLAY_BINS } from '../packages/browser/src/bins.ts';
 import { resolveBin } from '../packages/sandbox/src/bins.ts';
 import { FAKE_IDS, fakeControl } from '../extractors/telegram/src/fake.ts';
 import { keyFingerprint, readTdata, signedInAccount } from '../extractors/telegram/src/tdata.ts';
@@ -81,7 +82,7 @@ const desk = async (id: string, cmd: Record<string, unknown>) => {
 const shot = async (display: string, name: string) => {
   if (!shots) return;
   mkdirSync(shots, { recursive: true });
-  const bin = resolveBin({ name: 'import', env: 'IMPORT_BIN', nix: 'imagemagick' }, () => {});
+  const bin = resolveBin(DISPLAY_BINS.import, () => {});
   const p = Bun.spawn([bin, '-display', display, '-window', 'root', join(shots, name)], { stderr: 'pipe' });
   check((await p.exited) === 0, `screenshot ${join(shots, name)}`);
 };
@@ -163,7 +164,7 @@ try {
     check(bus, `it uses our desktop services: ${bus}`);
     await shot(display, '1-welcome.png');
     if (startMessaging) {
-      const xdotool = resolveBin({ name: 'xdotool', env: 'XDOTOOL_BIN', nix: 'xdotool' }, () => {});
+      const xdotool = resolveBin(DISPLAY_BINS.xdotool, () => {});
       // "Start Messaging" sits in the middle of the window, which is fitted to the display.
       await Bun.sleep(4000);
       const p = Bun.spawn([xdotool, 'mousemove', '640', '505', 'click', '1'], { env: { DISPLAY: display } });

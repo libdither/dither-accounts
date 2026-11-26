@@ -14,9 +14,9 @@
  *
  * Logs and status carry ids, counts and states: never a link, a notification's text, a file name or the key.
  */
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { AppSandbox, type Download, type FileRequestRecord, type Network, pickFreeDisplay, resolveBin, type SandboxEvent } from '@dither-accounts/sandbox';
+import { AppSandbox, type Download, displayName, type FileRequestRecord, type FreeDisplay, isXBackend, type Network, pickFreeDisplay, resolveBin, type SandboxEvent } from '@dither-accounts/sandbox';
 import type { DesktopKey } from './backend.ts';
 import { keyFingerprint, readTdata, signedInAccount, TdataError } from './tdata.ts';
 
@@ -118,7 +118,8 @@ export class DesktopSession implements DesktopHost {
     if (this.o.fake) {
       const bun = process.execPath;
       const binds = [join(REPO, 'extractors/telegram/src'), join(REPO, 'extractors/telegram/test'), join(REPO, 'packages/sandbox/src')];
-      if (!bun.startsWith('/nix/store/')) binds.push(dirname(bun));
+      // A bun from outside the store (setup-bun on CI) is linked against the system's libraries: those too.
+      if (!bun.startsWith('/nix/store/')) binds.push(dirname(bun), ...['/lib', '/lib64', '/usr/lib', '/usr/lib64', '/etc/ld.so.cache'].filter((p) => existsSync(p)));
       return { command: [bun, join(REPO, 'extractors/telegram/test/fake-desktop.ts'), '-workdir', WORKDIR], roBinds: binds };
     }
     if (!this.bin) throw new Error(this.binError ?? 'Telegram Desktop is not available');
@@ -130,14 +131,15 @@ export class DesktopSession implements DesktopHost {
     const height = this.o.height ?? 800;
     const tried: number[] = [];
     for (let attempt = 0; attempt < 3 && !this.stopped; attempt++) {
-      let free: { display: number };
+      let free: FreeDisplay | null = null;
       try {
         free = await pickFreeDisplay(undefined, tried);
-        tried.push(free.display);
+        if (free.display !== null) tried.push(free.display);
         const { command, roBinds } = this.launch();
         this.sandbox = new AppSandbox({
+          onScreenHealth: () => this.o.onChange(),
           dir: this.dir,
-          display: free.display,
+          display: free,
           width,
           height,
           command,
@@ -155,8 +157,8 @@ export class DesktopSession implements DesktopHost {
         this.o.log('warn', `desktop sandbox failed: ${this.sandboxError}`);
         await this.sandbox?.stop().catch(() => {});
         this.sandbox = null;
-        // Another display only helps when the display was the trouble.
-        if (!/display|Xvfb/i.test(this.sandboxError)) break;
+        // Another display only helps when an X display was the trouble.
+        if (!free || !isXBackend(free.backend) || !/display|Xvfb/i.test(this.sandboxError)) break;
       }
     }
     this.readSignIn();
@@ -377,8 +379,11 @@ export class DesktopSession implements DesktopHost {
   /** The sandbox, the app in it, and its sign-in. `needed`: the account rests on that sign-in (nothing imported yet, or it shares the key). */
   layers(needed: boolean): Layer[] {
     const info = this.sandbox?.info();
-    const sandbox: Layer = info
-      ? { name: 'sandbox', state: 'ok', note: `display :${info.display}, live view ready, ${info.network === 'pasta' ? 'its own network' : info.network === 'none' ? 'no network' : "the host's network"}` }
+    const health = this.sandbox?.screen?.health();
+    const sandbox: Layer = info && health && !health.ok
+      ? { name: 'sandbox', state: 'failed', note: health.note }
+      : info
+      ? { name: 'sandbox', state: 'ok', note: `display ${displayName(this.sandbox?.screen?.free)}, live view ready, ${info.network === 'pasta' ? 'its own network' : info.network === 'none' ? 'no network' : "the host's network"}` }
       : this.sandboxError
         ? { name: 'sandbox', state: 'failed', note: this.sandboxError }
         : { name: 'sandbox', state: 'waiting', note: 'starting' };
@@ -409,7 +414,7 @@ export class DesktopSession implements DesktopHost {
     const info = this.sandbox?.info();
     return {
       desktop: this.o.fake ? 'the fake Telegram Desktop' : (this.bin ?? 'not found'),
-      desktopDisplay: info ? `:${info.display}` : null,
+      desktopDisplay: info ? displayName(this.sandbox?.screen?.free) : null,
       desktopNetwork: info?.network ?? null,
       desktopApp: info?.app ?? (this.sandboxError ? 'sandbox failed' : 'starting'),
       desktopRestarts: info?.appExits ?? 0,

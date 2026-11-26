@@ -35,6 +35,7 @@
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { displayName } from '@dither-accounts/browser';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
 import { ALG_NAMES, approverVia, Authenticator, PasskeySignIn, refusalNote, respond, secretStore, type Trigger, type Try as SignInTry, type WebauthnUp } from '@dither-accounts/passkey';
 import { NeedsYou, sha256hex, StatementsRunner, type Why, writeWhole } from '@dither-accounts/statements-common';
@@ -630,7 +631,7 @@ function status(force = false) {
   const v = view();
   const s = base ?? statusOf(v);
   const details = {
-    display: host.liveView ? `:${host.display}` : null,
+    display: host.liveView ? displayName(host.display) : null,
     page,
     pageKind: kind,
     extensionAttached: host.attached,

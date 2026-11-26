@@ -33,7 +33,10 @@ Nothing in the repo may identify the owner or describe their accounts, money, pe
 ## Working on it
 - Bun (see .github/workflows/ci.yml for the version). `bun install`, then `bun run typecheck`, `bun run web:build`
   and `bun run test`; CI runs those three. Tests that need a Nix machine's tools (Xvfb, Chromium, x11vnc, bubblewrap,
-  Radicale, Dovecot) skip elsewhere (test/needs.ts).
+  Radicale, Dovecot) skip elsewhere (test/needs.ts); CI's `nix` job runs the sandbox, browser, Haveno and Telegram
+  Desktop ones with Nix, where a missing tool fails instead (`DITHER_TESTS_NEED_ALL=1`). Their programs come from the
+  repo's pinned nixpkgs: `bun scripts/prepare-bins.ts --out <dir> --tests`, then `DITHER_BINS=<dir>` (nix/README.md).
+  `bun scripts/flake-check.ts <base> <path...>` runs only the changed tests under those paths.
 - Tests run managers on fresh temp data dirs, port 0, with fakes (test/fake-*.ts, extractors/*/test). Nothing in a
   test reaches the network or a real account.
 - Flaky tests are fixed, not retried. A test waits for the exact thing it checks (the event, the rpc, the file) and

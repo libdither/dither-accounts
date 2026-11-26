@@ -12,23 +12,27 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-/** Starts main.ts on a fresh data dir holding `toml` as config.toml; returns its first line of output. */
+/**
+ * Starts main.ts on a fresh data dir holding `toml` as config.toml; returns its start line ("dither-accounts on …"). Other
+ * lines may come first (the prepare step's, on a machine without nix-build); the build itself is off here.
+ */
 async function start(toml: string | null, flags: string[] = [], env: Record<string, string> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'dacc-config-'));
   dirs.push(dir);
   if (toml !== null) writeFileSync(join(dir, 'config.toml'), toml);
   const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('DITHER_ACCOUNTS_')));
-  const p = Bun.spawn(['bun', MAIN, '--data', dir, ...flags], { env: { ...clean, ...env }, stdout: 'pipe', stderr: 'inherit' });
+  const p = Bun.spawn(['bun', MAIN, '--data', dir, ...flags], { env: { ...clean, DITHER_ACCOUNTS_PREPARE_BINS: '0', ...env }, stdout: 'pipe', stderr: 'inherit' });
   procs.push(p);
   const reader = p.stdout.getReader();
   let out = '';
-  while (!out.includes('\n')) {
+  const started = () => out.split('\n').find((l, i, all) => i < all.length - 1 && l.startsWith('dither-accounts on '));
+  while (!started()) {
     const { value, done } = await reader.read();
     if (done) break;
     out += new TextDecoder().decode(value);
   }
   reader.releaseLock();
-  return out.split('\n')[0]!;
+  return started() ?? out;
 }
 const urlOf = (line: string) => line.match(/ on (\S+)/)![1]!;
 const pageOf = (line: string) => line.match(/ page=(\S+)/)![1]!;

@@ -175,7 +175,8 @@ reach your browser only through the page, behind its login.
 
 You need [Bun](https://bun.sh) (the version CI uses is in [.github/workflows/ci.yml](.github/workflows/ci.yml)).
 The kinds that run a sandboxed browser or native app also need Xvfb, Chromium, x11vnc, bubblewrap and pasta on the
-machine. The other kinds need nothing more.
+machine (or, on the wayland display backend, sway, wayvnc and grim in place of Xvfb and x11vnc: docs/browser.md,
+"Display backends"). The other kinds need nothing more.
 
 ```sh
 bun install

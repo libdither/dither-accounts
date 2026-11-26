@@ -8,7 +8,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { BridgeServer, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, displayName, displayState, type FreeDisplay, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
 import type { Link } from '@dither-accounts/link';
 
 export const WIDTH = 1280;
@@ -78,7 +78,7 @@ export class BrowserHost {
   private token = Buffer.from(crypto.getRandomValues(new Uint8Array(24))).toString('base64url');
   sandbox: Sandbox | null = null;
   sandboxError: string | null = null;
-  display: number | null = null;
+  display: FreeDisplay | null = null;
   liveView: { vncSocket: string; width: number; height: number } | null = null;
   startedAt = 0;
   tabs: TabReport[] = [];
@@ -128,18 +128,18 @@ export class BrowserHost {
     } catch {}
     const tried: number[] = [];
     for (let attempt = 0; attempt < 3; attempt++) {
-      let free: { display: number };
+      let free: FreeDisplay;
       try {
         free = await pickFreeDisplay(undefined, tried);
       } catch (e) {
         this.sandboxError = String((e as Error).message ?? e);
         break;
       }
-      tried.push(free.display);
-      this.display = free.display;
+      if (free.display !== null) tried.push(free.display);
+      this.display = free;
       const sb = new Sandbox({
         accountDir: link.accountDir,
-        display: free.display,
+        display: free,
         width: WIDTH,
         height: HEIGHT,
         extensionSrc: this.o.extensionSrc,
@@ -150,6 +150,8 @@ export class BrowserHost {
         flags: [`--disk-cache-dir=${cache}`],
         noSandbox: !!link.config.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',
         log: (l, m, d) => link.log(l, m, d),
+        // The live view's server down or back (it is started again): said in the status at once.
+        onScreenHealth: () => this.o.onChange?.(),
       });
       try {
         await sb.start();
@@ -160,7 +162,7 @@ export class BrowserHost {
         break;
       } catch (e) {
         this.sandboxError = String((e as Error).message ?? e).slice(0, 300);
-        link.log('warn', `sandbox on :${free.display} failed`, this.sandboxError);
+        link.log('warn', `sandbox on ${displayName(free)} failed`, this.sandboxError);
         await sb.stop();
       }
     }
@@ -237,10 +239,10 @@ export class BrowserHost {
       }
     })();
     const display: Layer = this.liveView
-      ? { name: 'display', state: 'ok', note: `Xvfb :${this.display}, live view ready` }
+      ? { name: 'display', ...displayState(this.display, this.sandbox?.screenHealth) }
       : this.sandboxError
         ? { name: 'display', state: 'failed', note: this.sandboxError }
-        : { name: 'display', state: 'waiting', note: 'starting Xvfb' };
+        : { name: 'display', state: 'waiting', note: 'starting the display' };
     const browser: Layer = !this.liveView
       ? { name: 'browser', state: this.sandboxError ? 'off' : 'waiting', note: 'not started yet' }
       : this.sandbox?.browserAlive

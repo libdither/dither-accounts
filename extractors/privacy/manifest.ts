@@ -10,6 +10,7 @@ export default {
   name: 'Privacy.com',
   interfaces: ['privacy.session', 'statements'],
   entry: 'src/main.ts',
+  screen: true,
   passkeys: true,
   add: {
     blurb:

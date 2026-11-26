@@ -51,3 +51,15 @@ export function mergeFeatureFlags(flags: string[]): string[] {
   }
   return out.map((f) => (features.has(f) ? f + features.get(f)!.join(',') : f));
 }
+
+/**
+ * Chromium's GPU flags, from whether its screen renders on the machine's GPU (Screen.chromiumFlags). Xvfb has no GL of
+ * its own, so left alone Chromium runs with WebGL off, which no ordinary desktop browser does: on x11 it is pointed at
+ * the GPU directly (a render node it can open), or at its software renderer if there is none. On Wayland the same
+ * follows the compositor's renderer: gles2 on that render node, and Chromium's WebGL reports the same Vulkan renderer
+ * as on X; a sway that fell back to pixman (wayland.ts start) has Chromium draw in software too.
+ */
+export function gpuFlags(onGpu: boolean): string[] {
+  if (onGpu) return ['--ignore-gpu-blocklist', '--use-angle=vulkan', '--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan'];
+  return ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
+}

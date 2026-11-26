@@ -35,6 +35,12 @@ export interface Manifest {
    */
   settings?: SettingInfo[];
   /**
+   * Its extractor runs sandboxes with a screen of their own (packages/browser screen.ts): a browser, a native app. Only
+   * such a kind takes the display backend (docs/browser.md "Display backends"): the account's displayBackend setting,
+   * the manager's default, a restart when either changes, and the programs the manager prepares (prepare.ts).
+   */
+  screen?: boolean;
+  /**
    * Accounts of this kind may sleep (docs/supervisor.md "Sleeping"): after `idleMinutes` with no call, nothing its
    * extractor says it is doing (a pull, a sign-in) and no live view open, its extractor stops to free its memory (a
    * browser account holds hundreds of MB), and the next call starts it again and waits for it. Its extractor says when

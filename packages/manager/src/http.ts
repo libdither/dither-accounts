@@ -18,6 +18,8 @@ import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { join, normalize, resolve } from 'node:path';
 import { consent, type Level, LEVELS } from '@dither-accounts/spec';
+import { backendList, parseBackend } from '@dither-accounts/spec/display';
+import type { BinsState } from './prepare.ts';
 import { IFACES } from '@dither-accounts/interfaces';
 import TYPES from '@dither-accounts/interfaces/types';
 import { ALG_NAMES, validCredentials } from '@dither-accounts/passkey';
@@ -135,6 +137,8 @@ export interface HttpOpts {
   startedAt: number;
   /** Tests only: the page and its API answer without a login. */
   openPage?: boolean;
+  /** How preparing the sandboxes' programs stands (prepare.ts KeptBins); null when the manager does not prepare them. */
+  bins?: () => BinsState | null;
 }
 
 let own: { at: number; ips: Set<string> } | null = null;
@@ -210,6 +214,10 @@ export class Http {
             else d.queue.push(buf);
           } else void self.router.message(ws as any, msg as any);
         },
+        drain(ws) {
+          // The page has taken what was queued for it: read the live view's socket again (openLiveView).
+          if (ws.data.kind === 'liveview') ws.data.vnc?.resume();
+        },
         close(ws) {
           const d = ws.data;
           if (d.kind === 'extractor') self.sup.detach(ws as any);
@@ -242,8 +250,14 @@ export class Http {
           for (const b of d.queue) sock.write(b);
           d.queue = [];
         },
-        data(_sock, data) {
-          ws.sendBinary(data);
+        data(sock, data) {
+          // Paced by the page: while the WebSocket is backed up, the VNC server's socket is not read, so a slow link
+          // reaches the server as a full socket and it sends fewer frames. wayvnc pushes frames on its own (continuous
+          // updates, which noVNC turns on); read without pause, its output piled up here until Bun dropped some of it
+          // at its backpressure limit, which breaks the RFB stream (docs/browser.md, "The live view over a slow link").
+          const sent = ws.sendBinary(data);
+          if (sent === -1) sock.pause();
+          else if (sent === 0) ws.close(1011, 'the live view fell behind');
         },
         close() {
           if (!d.closed) ws.close(1000, 'the live view ended');
@@ -640,6 +654,14 @@ export class Http {
           const known = new Map((this.kinds.get(a.kind)?.settings ?? []).map((x) => [x.key, x]));
           const cfg = parse<Record<string, unknown>>(a.config, {});
           for (const [k, v] of Object.entries(b.settings)) {
+            // A kind with a screen's: the one its sandboxes draw on (docs/browser.md "Display backends"); null is the
+            // manager's default.
+            if (k === 'displayBackend' && this.kinds.get(a.kind)?.screen) {
+              if (v === null) delete cfg[k];
+              else if (parseBackend(v)) cfg[k] = parseBackend(v);
+              else return bad(`displayBackend is one of ${backendList()}, or null (the manager's default)`);
+              continue;
+            }
             const info = known.get(k);
             if (!info) return bad(`${a.kind} accounts have no setting ${k}`);
             if (info.type === 'boolean' && typeof v !== 'boolean') return bad(`${k} is on or off (true or false)`);
@@ -886,6 +908,7 @@ export class Http {
       accounts,
       apps: s.all('SELECT * FROM app ORDER BY created_at').map((a) => this.appInfo(a)),
       providers: Object.fromEntries(this.providers.map((p) => [p.name, p.status()])),
+      bins: this.opts.bins?.() ?? null,
     };
   }
 

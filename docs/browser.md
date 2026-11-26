@@ -21,7 +21,7 @@ its `onCommand`, and `'browser'` in its manifest's and hello's `interfaces`.
 | `browser.click` | write | a real mouse click on an element, then wait for a page it loads |
 | `browser.type` | write | click a field and type into it with real key presses (`clear`, `enter`) |
 | `browser.select` | write | pick a `<select>`'s option |
-| `browser.key` / `browser.scroll` | write | key presses (xdotool names), or about a screen of scrolling |
+| `browser.key` / `browser.scroll` | write | key presses (xdotool's names, on either display backend), or about a screen of scrolling |
 | `browser.close` | write | close one of its tabs |
 | `browser.press` | manage | a click that may buy, pay, send or delete |
 
@@ -31,9 +31,9 @@ something only a person may give.
 ## How it stays a person's browser
 
 - **Real input.** The extension only reads the page and says where an element's middle is on the screen. The
-  extractor owns the account's display, and it moves the mouse, clicks and types there with xdotool. So the site gets
-  trusted events from an ordinary window, as it does from the owner: no synthetic events, no DevTools and no
-  automation flags. The one exception is `browser.select`, which sets a `<select>`'s value and fires its input and
+  extractor owns the account's display, and it moves the mouse, clicks and types there: with xdotool on the x11
+  backend, through the live view's own socket on the wayland one (below). So the site gets trusted events from an
+  ordinary window, as it does from the owner: no synthetic events, no DevTools and no automation flags. The one exception is `browser.select`, which sets a `<select>`'s value and fires its input and
   change events, because a native select's list is a popup outside the page.
 - **Refs.** `browser.read` lists links, buttons, fields, selects, checkboxes and ARIA widgets that are shown, in page
   order, with their role, accessible name and value. A password field shows only whether it is filled. The refs live
@@ -45,6 +45,224 @@ something only a person may give.
   site can't be read, because the extension has no access there.
 - **One call at a time.** Two callers' clicks never interleave. While the kind is pulling, anything that would bring
   a tab forward answers 409 `busy`.
+
+## Display backends
+
+Every sandbox (the browser kinds', Discord's, and the native apps': Signal Desktop, Telegram Desktop) draws on a
+screen of its own, made by one of two backends behind one abstraction (`packages/browser/src/screen.ts`). Both give
+the same things: a live view on `<account>/vnc.sock` (or `<account>/desktop/vnc.sock`) that the manager's page
+shows unchanged, real clicks at an element's middle, typed text, xdotool's key names, and a PNG of the screen.
+
+| | `x11` (the default) | `wayland` |
+|---|---|---|
+| screen | Xvfb on a free display number (`:80`–`:89`, `:100`–`:159`; Discord `:91`–`:99`) | a headless sway of the sandbox's own; its sockets in `<account>/wl` (0700), or, when the account's path leaves no room for sway's socket names, in `$XDG_RUNTIME_DIR/dither-wl/<hash>` (in `/tmp/dither-wl-<uid>/<hash>` only where there is no runtime directory); no display number |
+| live view | x11vnc on the socket | wayvnc on the same socket (no TCP or UDP port, no abstract socket) |
+| input | xdotool | an RFB client of the sandbox's own on that socket: wayvnc turns it into the seat's virtual pointer and keyboard |
+| text no US key makes (é, €, emoji) | xdotool's keysyms | an input method (input-method-v2 → the field's text-input-v3), as a person with an IME types it |
+| picture | ImageMagick's `import` | grim |
+| apps | `DISPLAY` | Chromium `--ozone-platform=wayland`; native apps get only the compositor's socket, as `<run>/wayland-0`, with Qt, GTK, SDL and Electron told to use it, and no X socket at all |
+
+**Choosing.** The manager's `display_backend` (`--display-backend`, `DITHER_ACCOUNTS_DISPLAY_BACKEND`, or
+config.toml) is the default for every account, `x11` unless set. An account's config can name its own,
+`displayBackend`: `bun packages/manager/src/cli.ts display <account> wayland` (or `default` to follow the manager),
+or `{ "settings": { "displayBackend": "wayland" } }` in a PATCH of `/api/accounts/<id>`. The account's extractor
+restarts to take it. The extractor gets the result as `DITHER_DISPLAY_BACKEND`, and the account's detail shows it
+(`process.displayBackend`). A manager that adopts extractors started with another backend restarts them one at a time,
+as it does for changed code (docs/supervisor.md). Only kinds with a screen take part: their manifest says
+`screen: true` (Telegram's only when its Desktop app is on). Any other kind (mail, calendar,
+signal-cli, the feeds) answers 400 to a `displayBackend`, gets no `DITHER_DISPLAY_BACKEND`, shows
+`process.displayBackend: null`, and is never restarted when the manager's default changes. Haveno follows it too: JavaFX draws only through X, so on wayland it gets an Xwayland of its own inside its sandbox (xwayland-satellite: docs/native-sandbox.md).
+
+**The backends are a list.** `packages/spec/src/display.ts` names them (each with its protocol, X or Wayland, and the
+label its log lines use); `packages/browser/src/screen.ts` maps each to its `Screen` class, and everything else asks
+the `Screen` (`protocol`, `chromiumFlags()`, `adjustPrefs()`, `needsOwnBus`, `runtimeDir`, `describe()`, `health()`),
+never which class it is. A new backend is an entry in each of the two, and its programs in `nix/bins.json`
+(nix/README.md).
+
+**Why sway, not cage.** cage 0.3 as nixpkgs builds it always starts Xwayland, which takes a global X display number
+and an abstract socket, the two things this backend is for getting rid of. It also has no IPC (to close a window as a
+window manager does, or to know the output and seat are ready), needs another tool to size its output, and exits when
+its one app does. sway with `xwayland disable` listens on its Wayland socket and its IPC socket and nothing else.
+
+**What a page sees.** Chromium 155 compared on both, same flags, same machine:
+
+- The same: `navigator.platform` (Linux x86_64), the user agent (Chromium still says X11 in it), client hints, the
+  screen (the sandbox's size), device pixel ratio, colour depth, fonts, and the unmasked WebGL renderer (the GPU's,
+  through ANGLE on Vulkan). A browser sandbox's sway renders with gles2 on the machine's render node for that: under
+  pixman Chromium's GPU process loses WebGL or hangs, so a browser gets pixman only where there is no render node,
+  or where a gles2 sway failed to start; Chromium's GPU flags follow the renderer sway really runs with
+  (`Screen.chromiumFlags`), so after that fallback it draws in software (SwiftShader) too.
+  A native app's sway always draws in software (pixman): the app has no render node inside its sandbox and draws in
+  software anyway, and the GPU driver is most of what a GPU-backed sway costs (docs/native-sandbox.md).
+- Made the same: a fine pointer, hover and `document.hasFocus()`. Without a pointer and keyboard on the seat a
+  Wayland page has none of them; wayvnc makes them only while a client is connected, so the sandbox keeps its own
+  connected for as long as it runs.
+- Made the same: the window's size. With Chromium's own title bar, a Wayland window counts its client-side shadows
+  in its size even when tiled (outer 1300×920 on a 1280×900 screen, wider than the screen itself), and the first
+  page after a start saw its floating size (inner 1248×771). So a profile on wayland uses the system's title bar
+  (`browser.custom_chrome_frame` off; sway draws none), and the window is the screen's size from the first frame.
+- Still different, by a pixel or three: on x11 the window is one pixel short of the screen (outer 1279×899, inner
+  1279×812 at 1280×900); on wayland it fills it (outer 1280×900, inner 1280×813). `document.hasFocus()` is false in
+  the very first script on wayland (the seat's focus lands a moment later) and true on x11.
+
+**Windows.** sway tiles the app's main window, so it fills the screen (on x11 Chromium's `--window-size` does
+that, and the native sandbox's fit loop). A window that opens while a tiled one is there floats at its own size, as
+a dialog does. That is decided once per window as it opens, one window at a time, so two that open together get one
+tiled and one floating, never both floating: a sway `for_window` rule would run again on every title change (a chat's
+unread count) and float the main window too. Both sway IPC connections, the one that watches windows opening and the
+one requests and commands go on, are opened again when they close (logged), until the screen stops; every IPC
+request has a deadline (5 s), past which it fails and its connection is closed. While the main one is being made
+again (it counts as back once sway answers on it), `health()` says so and a request waits for it.
+
+**When something dies.** wayvnc is watched: when it exits, the screen says so (`health()`: "wayvnc exited (SIGKILL);
+starting it again"), the extractor's status shows its display layer failed with that note, and it is started again
+(after 0.5 s, doubling to 30 s with each try; the wait starts over only once one has stayed up 30 s, so a server
+that dies soon after each start is not restarted twice a second for good), the sandbox's own RFB client reconnects
+and the seat's pointer and keyboard come back; clicks and keys sent meanwhile wait for it (up to 15 s) instead of
+failing at once. A try whose reconnect fails ends the server it started before the next one. x11vnc is kept the same
+way on x11. Stopping a sandbox ends every process even when its screen fails to stop, and removes the screen's files
+only after they are gone (sway, PipeWire and WirePlumber write in the compositor's directory until then). The renderer: a browser's sway uses gles2 only when this user can open the render node
+(read and write on `/dev/dri/renderD*`), and if sway still fails to start on it, it starts once more with pixman (a
+warning says so). Screen sharing: if PipeWire, WirePlumber or the portals fail to start, that is logged ("screen
+sharing is off for this run") and the sandbox starts with its own empty bus and no capture, rather than not at all.
+
+**The runtime directory fallback.** Every directory level the compositor's place is made under, from the runtime
+directory (or /tmp) down, is checked before anything goes in it: made 0700 if missing, closed if it is ours and open,
+and refused (the screen does not start) when it is a symlink, not a directory, or another user's. A level made first
+by someone else in /tmp can neither see the sockets nor point them elsewhere.
+
+**Typing in the live view.** A person's keys in the live view reach wayvnc as keysyms, which it types on its own
+keymap: `us-altgr-intl` (US, with the rest of Latin on AltGr and no dead keys). With plain `us`, é, ß, £, ñ, ü and €
+were dropped; now they arrive, and US keys are where they were. Still dropped: anything on no key of that keymap,
+which is emoji, CJK and most non-Latin scripts. Typing them from the live view needs the viewer's own input method
+to send text, which RFB has no message for; the extractor's own typing (the API's `type`) does not have this gap,
+since it goes through the input method.
+
+**Screen sharing, and the machine's session bus.** On wayland a browser sandbox's Chromium gets a session bus of its
+own (`packages/browser/src/screenshare.ts`), never the machine's. The machine's session bus has the owner's portal
+on it, and a Chromium given it (as it was, through the manager's environment) asks that portal for a screen when a
+page calls getDisplayMedia: it could share the owner's real screen. A sandbox that shares its screen (Discord's, and
+any `Sandbox` with `screenShare`) gets on that bus its own PipeWire, WirePlumber (every device monitor off: no sound
+card, camera or Bluetooth of the machine), xdg-desktop-portal and xdg-desktop-portal-wlr, the last told the sway
+socket alone with `chooser_type=none` and `output_name=HEADLESS-1`: the sandbox's one output is the only thing it can
+share, and the portal asks nothing. Chromium runs with its PipeWire capturer; its own picker still asks (Entire
+Screen, then Share, in the live view) unless a flag answers it: `--use-fake-ui-for-media-stream` does in tests, and
+it is not used in the product, since it also says yes to every camera and microphone request. The other sandboxes
+get only the empty bus. Everything is under `<compositor's directory>/share`, in nothing of the machine's.
+
+On x11 Chromium captures its Xvfb itself, with no portal (`--auto-select-desktop-capture-source=Entire screen`
+answers its picker there). An x11 sandbox's Chromium still has the manager's session bus, as before: it uses it at
+start (the portal's appearance settings), and its notifications and media keys would reach the machine's desktop.
+Moving x11 sandboxes onto a bus of their own too is the next step, left out here so x11 does not change under the
+accounts that run on it.
+
+What Discord's Go Live sends is still the device's screen through the bridge when the device shares one
+(docs/chat.md, "Video"); only when it does not does the client's own getDisplayMedia reach Chromium, and with it this
+portal. Native apps (Signal Desktop, Telegram Desktop) answer the portal's FileChooser, OpenURI and Settings from our
+own services on their bus (docs/native-sandbox.md) and have no ScreenCast yet: giving them one means forwarding
+`org.freedesktop.portal.ScreenCast` from those services to xdg-desktop-portal-wlr on the same bus, with the PipeWire
+remote's descriptor passed back, which the bus code here does not carry yet.
+
+`packages/browser/test/screenshare.test.ts` checks it end to end: a page draws an animated pattern of counters,
+shares the screen, and sends it over WebRTC to a second page that decodes every frame (each one must be a counter
+the page drew, at the screen's size, at more than 8 fps, under 500 ms median from drawing to decoding); sharing
+stops (the portal's stream leaves PipeWire) and starts again; the same for an Electron app (desktopCapturer's
+screen) and on x11. It runs under a stand-in for the machine's session bus, with a portal on it, a dbus-monitor
+watching it and `XDG_RUNTIME_DIR/bus` pointing at it too: nothing from a wayland sandbox may connect there, and no
+ScreenCast may be asked there (a Chromium given that bus, as before, is seen there within a second, so the watch
+works). Two wayland sandboxes run at once, and each one's capture decodes as its own page.
+
+**Measured side by side.** `scripts/bench-display.ts` runs one browser sandbox per backend through the same pages
+and input and writes JSON; `scripts/bench-display-report.ts` turns that into a page with charts (with
+`scripts/bench-native.ts`'s native apps and `scripts/bench-link.ts`'s slow links beside it). On a 16-thread desktop
+CPU with a mid-range AMD GPU, 1280×800, five repetitions (backend order alternating, 1-minute load 4–7.7, one x11
+repetition at 36), medians:
+
+| | x11 | wayland |
+|---|---|---|
+| start → live view up / first page ran | 180 / 707 ms | 589 / 1,246 ms (warm starts 360–590 / 810–1,250) |
+| idle: CPU, PSS of every process | 3.7%, 188 MB | 3.8%, 225 MB |
+| idle: PSS of all but Chromium | 22 MB (Xvfb 16, x11vnc 6) | 54 MB (sway 43, wayvnc 9) |
+| live view, full-screen animation: frames/s, server CPU | 39.0, 16% | 58.1, 78% (wayvnc's default `-f 30`: 29.6, 45%) |
+| live view, page scrolling: frames/s, bytes/s | 27.8, 1.6 MB/s | 58.7, 5.1 MB/s |
+| live view, 720p video: frames/s, server CPU | 19.2, 54% | 28.0, 34% |
+| live view, a still page with a viewer: server CPU | 1.4% | 0% (at 30 too) |
+| RFB press → page handler / click to photon | 7.2 / 74 ms | 1.0 / 32 ms |
+| typing, each backend's own way (35 ms a key) | 28 chars/s | 17 chars/s |
+| screen share: frames/s, drawn → decoded, CPU | 25.3, 83 ms, 152% | 26.0, 119 ms, 102% |
+| 720p VP9 video in Chromium: dropped, CPU | 0.3%, 60% | 5.0%, 32% |
+| WebGL (60 Hz display): frames/s, CPU | 60, 106% | 61, 31% |
+| screenshot (import / grim) | 99 ms | 37 ms |
+| 5 sandboxes at once: all started, PSS each | 6.3 s, 190 MB | 2.5 s, 207 MB |
+| 10 / 20 sandboxes at once | failed (below) | 2.6 s, 204 MB / 6.1 s, 197 MB, 57% idle CPU in all |
+
+So: wayland costs about 30 MB more per browser sandbox (sway on the GPU), starts slower alone and not slower many at
+a time, answers input far sooner, and draws GPU work and video with a third to a half of X's CPU (nothing is read back
+into Xvfb). Its live view now sends up to 60 frames a second (`-f 60`): twice the frames of wayvnc's default for 1.7
+times its CPU while something moves, nothing more while the screen is still. Its screen share is slower to each frame
+(PipeWire through the portal) than Chromium reading Xvfb. The x11 runs of 10 and 20 at once failed because x11vnc
+could not get System V shared memory (`shmget: No space left on device`): each x11 sandbox holds about 40 segments
+while it runs, the kernel allows `kernel.shmmni` (4096 by default) on the whole machine, and segments left by
+processes killed without cleaning up count against it too. Wayland sandboxes hold none. wayvnc's `-g` (its GPU
+features) changed nothing with ZRLE (58 frames a second at 78% either way), and its Open H.264 still delivers no frame
+on that machine: the encoder takes the first frame and never finishes it, wayvnc at 100% of a core. So the sandbox's
+wayvnc runs without `-g`; it then never offers H.264, even to noVNC, which asks for it first.
+
+**The live view over a slow link.** `scripts/bench-link.ts` puts a link between a viewer and the live view's
+socket, shaped with tc in a network namespace of its own (`scripts/bench-shaper.ts`: netem for delay and loss, tbf
+for bandwidth with a 50 ms queue; each link measured before use), and a CPU quota on the display processes alone (a
+systemd scope). The viewer asks for what the manager's page (noVNC 1.7) asks for: Tight first after Open H.264, quality
+6, compression 2, continuous updates and fences. Both servers answer with Tight; x11vnc waits for each request,
+wayvnc takes continuous updates and pushes frames as they come. Three repetitions, medians (frames a second of the
+full-screen animation / of the video, then click to photon):
+
+| link | x11 | wayland |
+|---|---|---|
+| unlimited | 35 / 35 fps, 81 ms | 59 / 28 fps, 8 ms |
+| 20 Mbit/s | 20 / 17 fps, 48 ms | 11 / 22 fps, 50 ms |
+| 5 Mbit/s | 7.3 / 5.7 fps, 55 ms | 2.8 / 4.1 fps, 193 ms |
+| 1 Mbit/s | 2.1 / 1.8 fps, 95 ms | 0.6 / 0.8 fps, 1.2 s |
+| 20 ms round trip | 24 / 23 fps, 86 ms | 59 / 28 fps, 29 ms |
+| 50 ms | 14 / 14 fps, 147 ms | 59 / 28 fps, 58 ms |
+| 150 ms | 11 / 5.7 fps, 198 ms | 52 / 26 fps, 159 ms |
+| 5 Mbit/s, 50 ms | 5.5 / 4.1 fps, 147 ms | 2.0 / 2.8 fps, 301 ms |
+| 1 Mbit/s, 150 ms | 1.8 / 1.4 fps, 250 ms | 0.4 / 0.6 fps, 1.6 s |
+| 20 Mbit/s, 50 ms, 1% loss | 3.9 / 2.9 fps, 147 ms | 1.4 / 1.8 fps, 288 ms |
+| display at 50% of a core | 35 / 35 fps, 48 ms | 59 / 28 fps, 8 ms |
+| display at 20% of a core | 17 / 14 fps, 49 ms | 25 / 28 fps, 9 ms |
+
+- Delay alone: wayland wins, and by more the farther away. Continuous updates do not wait a round trip per frame, so
+  it holds 52–59 frames a second at 150 ms, where x11vnc's request and answer fall to 11.
+- Bandwidth: x11 wins wherever the link is the limit. wayvnc's Tight is two and a half to five times the bytes of
+  x11vnc's (a still page of text, the first whole screen: 270 KB against 103 KB; the animation about 215 KB a frame
+  against 80), as it sends every changed 64×64 tile as JPEG where x11vnc sends flat areas as fills and palettes. At
+  5 Mbit/s and below a click on wayland takes 0.2–1.6 s to come back against x11's 0.05–0.25 s. Video, which JPEG
+  suits, is the exception at 20 Mbit/s. With ZRLE asked for instead, wayvnc sends the animation at 58 frames a second
+  in 0.5 MB/s, even at 5 Mbit/s and 50 ms (x11vnc 12), for more of its CPU (78% of a core); noVNC asks for Tight
+  first, so the page gets Tight.
+- Loss: TCP's own slowdown (1% loss at 50 ms leaves about 2.3 Mbit/s), so the same as bandwidth: x11 ahead.
+- A small CPU: wayland ahead. At 20% of a core x11 draws 17 frames a second and wayland 25, video 14 against 28, and
+  a click comes back in 49 ms against 9.
+- wayvnc's Open H.264 (with `-g`, asked for first as noVNC does) still sends nothing at any of these.
+- The manager's bridge (packages/manager/src/http.ts) now stops reading the VNC socket while the page's WebSocket is
+  backed up. Before, it read on regardless: x11vnc never noticed, as it sends only when asked, but wayvnc's output
+  piled up in the manager (10 MB at 5 Mbit/s and 50 ms) and at 1 Mbit/s and 150 ms passed Bun's 16 MB limit, past
+  which Bun drops what is sent (38 MB in the run), which breaks the RFB stream. Paced, wayvnc sees a full socket and
+  sends fewer frames; the frames a second are the same, the stream stays whole and the manager holds at most a few
+  hundred KB.
+
+**Programs.** Every program a screen or a sandbox starts (Xvfb, x11vnc, xdotool, ImageMagick; sway, wayvnc, grim;
+dbus, PipeWire, WirePlumber, the portals; bubblewrap, pasta, xwayland-satellite) and Chromium come from the repo's
+one pinned nixpkgs, built ahead of time: the manager builds them at its start into `<data>/bins` (`prepare_bins`, on
+by default, tried again while it fails) and gives extractors of a kind with a screen that directory as
+`DITHER_BINS`; they start once it is ready. CI's tests run the same Chromium. An extractor never runs `nix build`.
+Without it a program is looked for in its `*_BIN` override and on PATH, and one found nowhere fails the start at
+once, saying how to prepare it (nix/README.md). The native apps (Signal Desktop, Telegram Desktop, Haveno) are the
+machine's own install, not pinned (nix/README.md "What is not pinned").
+
+**Limits.** Discord's extension port is picked free on wayland (on x11 it comes from the display number). No
+clipboard tool is used on either backend. An extractor killed outright leaves its compositor's directory (its config
+and wayvnc's control socket); the next start on that account empties it.
 
 ## What it won't do
 
@@ -79,3 +297,18 @@ approves it on the manager's page for the accounts it may drive. Its token goes 
 URL off the site is refused, that the elements and their refs come back from a read, and that a select, typing and
 a real click (`isTrusted`) add to the cart. It also checks that Buy Now is refused to `browser.click`, that a stale
 ref is caught, that the screenshot is a PNG, and that a closed tab is gone.
+
+`packages/browser/test/wayland.test.ts` covers the wayland backend: its parts on their own (the key names, text split
+into keys and input-method runs, the Wayland and sway IPC wire, the RFB handshake against a stand-in server, the
+config and flags, the runtime directory checks against a hostile parent, a render node it cannot open, an IPC
+request nobody answers), then a real headless sway and wayvnc (RFB on the socket and nothing else, no TCP or abstract
+socket, the seat's pointer and keyboard, grim's PNG; two windows opening together, one tiled and one floating; wayvnc
+killed, its health down meanwhile, keys sent then still arriving, and a click after; sway stopped past a request's
+deadline, its IPC down meanwhile, and fit working once it answers again; é ß £ € ñ typed as a viewer's
+keysyms; screen sharing whose PipeWire fails, run with the bus alone), then Chromium on it: a click, Shift-held capitals, é, € and an
+emoji typed into a field arrive as trusted input with the right `code`s, and the page has a fine pointer and hover.
+`packages/sandbox/test/sandbox-wayland.test.ts` runs a native app on it and checks it sees only `wayland-0`, no X.
+Both skip without sway, wayvnc and grim (and Chromium for the last part), as on CI's runners. Both check the
+compositor's renderer: gles2 where there is a render node for a browser, pixman for a native app.
+`test/liveview-pace.test.ts` checks the live view's pacing: a stand-in VNC server sends 64 MB to a page that reads
+nothing at first; it is held back meanwhile, and every byte arrives in order once the page reads.

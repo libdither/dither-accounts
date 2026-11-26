@@ -22,6 +22,7 @@ import { join } from 'node:path';
 import { writeSecretFile } from '@dither-chat/protocol/secret-file';
 import { type FailureKind, isExtractorCode, isFailureKind, retryAfterOf } from '@dither-accounts/spec';
 import { Handover, HandoverError } from '@dither-accounts/spec/handover';
+import { DEFAULT_DISPLAY_BACKEND, DISPLAY_BACKEND_ENV, type DisplayBackend, parseBackend } from '@dither-accounts/spec/display';
 import type { SleepInfoView } from './api-types.ts';
 import type { Row, Store } from './db.ts';
 import { fingerprintEntry, sameCode } from './fingerprint.ts';
@@ -92,6 +93,10 @@ interface Running {
   survives?: boolean;
   /** The fingerprint of the code it runs (fingerprint.ts), as it was when it started. */
   fingerprint?: string;
+  /** The display backend it was started with (DITHER_DISPLAY_BACKEND); null for a kind with no screen. */
+  backend?: DisplayBackend | null;
+  /** Waiting for the sandboxes' programs to be prepared (prepare.ts) before it starts. */
+  waitingBins?: boolean;
   /** An adopted process that has not connected by then is started afresh. */
   connectBy?: number;
   /** adapter.log's size when it started: a failed exit's last lines are read from there. */
@@ -367,6 +372,8 @@ interface Found {
   accountId: string;
   token: string;
   fingerprint: string;
+  /** The display backend it was started with (DITHER_DISPLAY_BACKEND), null when it was given none. */
+  backend: DisplayBackend | null;
 }
 
 /** Restarts for changed code since this manager started, for /api/health (only counts) and the deployer. */
@@ -421,6 +428,8 @@ export class Supervisor {
   private cleanedAt = new Map<string, number>();
   /** Extractors that said they hold their events (a going manager's `manager-going`). */
   private holding = new Map<string, () => void>();
+  /** The sandboxes' programs are prepared (or failed to be): a kind with a screen starts without waiting. */
+  private binsSettled = false;
   /** The manager is going: nothing starts again, and exits of processes it leaves running are not crashes. */
   private closing = false;
   /** Accounts asleep, as the registry keeps them (table `asleep`). */
@@ -442,6 +451,13 @@ export class Supervisor {
       dataDir: string;
       /** How extractors are started (default `child`). */
       launch?: Launch;
+      /** The display backend of accounts whose config names none (default x11). */
+      displayBackend?: DisplayBackend;
+      /**
+       * The sandboxes' programs, prepared at the manager's start (prepare.ts): an extractor of a kind with a screen
+       * starts once this settles, and is given the directory (DITHER_BINS) when there is one.
+       */
+      bins?: { ready: Promise<unknown>; dir: () => string | null };
       /** The command a `scope` launch goes through (default systemd-run; tests give a stand-in). */
       systemdRun?: string;
       /** The fingerprint of a kind's code (default fingerprint.ts over repoRoot); tests give their own. */
@@ -507,6 +523,7 @@ export class Supervisor {
       starts: r?.starts ?? 0,
       lastExit: r?.lastExit ?? null,
       adopted: !!r?.adopted,
+      displayBackend: r?.pid ? (r.backend ?? null) : null,
     };
   }
 
@@ -536,6 +553,20 @@ export class Supervisor {
     let queued = 0;
     for (const q of this.outdated.values()) queued += q.length;
     return { queued, active: this.rollingNow.size, restarted, online, crashed };
+  }
+
+  /**
+   * The display backend an account's sandboxes use: its config's displayBackend, else the manager's default (x11).
+   * Null for a kind with no screen (its manifest does not say `screen`): mail, calendars, signal-cli have none to move.
+   */
+  backendOf(acc: Row): DisplayBackend | null {
+    const kind = this.kinds.get(acc.kind);
+    if (!kind || !kind.screen) return null;
+    let own: unknown;
+    try {
+      own = (JSON.parse(acc.config || '{}') as { displayBackend?: unknown }).displayBackend;
+    } catch {}
+    return parseBackend(own) ?? this.opts.displayBackend ?? DEFAULT_DISPLAY_BACKEND;
   }
 
   /** The fingerprint of the code a kind's extractor would run if started now. */
@@ -584,7 +615,7 @@ export class Supervisor {
       if (!isExtractorCmd(pid)) continue;
       const st = procStat(pid);
       if (!st || st.state === 'Z') continue;
-      found.push({ pid, start: st.start, accountId: env.DITHER_ACCOUNT_ID, token: env.DITHER_ADAPTER_TOKEN ?? '', fingerprint: env.DITHER_EXTRACTOR_FINGERPRINT ?? '' });
+      found.push({ pid, start: st.start, accountId: env.DITHER_ACCOUNT_ID, token: env.DITHER_ADAPTER_TOKEN ?? '', fingerprint: env.DITHER_EXTRACTOR_FINGERPRINT ?? '', backend: parseBackend(env[DISPLAY_BACKEND_ENV]) });
     }
     this.scan = { at: Date.now(), found };
     return found;
@@ -735,7 +766,7 @@ export class Supervisor {
     const acc = this.store.account(id);
     if (!acc || !acc.enabled) return void this.line(id).down(acc ? 'the account is disabled' : 'the account is gone');
     const cur = this.running.get(id);
-    if (cur && !cur.stopping && (cur.pid || cur.cleaning)) return;
+    if (cur && !cur.stopping && (cur.pid || cur.cleaning || cur.waitingBins)) return;
     const r: Running = cur ?? { restarts: 0, stopping: false, lastStart: 0, ...this.history.get(id) };
     clearTimeout(r.retry);
     r.stopping = false;
@@ -761,14 +792,19 @@ export class Supervisor {
       r.adopted = true;
       r.survives = true;
       r.fingerprint = f!.fingerprint;
+      // One started before kinds said whether they have a screen had x11 written in: a kind without one has no backend.
+      r.backend = this.backendOf(acc) === null ? null : (f!.backend ?? DEFAULT_DISPLAY_BACKEND);
       r.lastStart = procStartedAt(f!.start) ?? Date.now();
       r.connectBy = r.ws ? undefined : Date.now() + (this.opts.adoptConnectMs ?? ADOPT_CONNECT_MS);
       const changed = !sameCode(f!.fingerprint, this.fingerprintOf(kind));
-      appendFileSync(log, `--- ${new Date().toISOString()} dither-accounts took over the running ${acc.kind} extractor (pid ${f!.pid})${changed ? '; its code changed, so it restarts soon' : ''}\n`);
+      // A display backend changed (the account's or the manager's default) restarts it the same way as changed code.
+      // Only a kind with a screen has one to change (backendOf is null for the rest).
+      const moved = r.backend !== this.backendOf(acc);
+      appendFileSync(log, `--- ${new Date().toISOString()} dither-accounts took over the running ${acc.kind} extractor (pid ${f!.pid})${changed ? '; its code changed, so it restarts soon' : moved ? `; its display backend is now ${this.backendOf(acc)}, so it restarts soon` : ''}\n`);
       r.logFrom = fileSize(log);
       if (!r.ws) this.starting(id);
       this.watch();
-      if (changed) this.queueRestart(id);
+      if (changed || moved) this.queueRestart(id);
       // Back already (it connected before startAll got to it): what it said on its return counts now.
       if (r.resumedHeld !== undefined) this.opts.onResumed?.(id, r.resumedHeld);
       this.opts.onChange(id);
@@ -785,6 +821,21 @@ export class Supervisor {
         r.cleaning = false;
         if (this.running.get(id) === r && !r.stopping) this.start(id);
       });
+      return;
+    }
+
+    // A kind with a screen runs the programs the manager prepares at its start (prepare.ts): it waits for them.
+    const prep = this.opts.bins;
+    if (prep && kind.screen && !this.binsSettled) {
+      if (!r.waitingBins) {
+        r.waitingBins = true;
+        this.starting(id);
+        void prep.ready.finally(() => {
+          this.binsSettled = true;
+          r.waitingBins = false;
+          if (this.running.get(id) === r && !r.stopping) this.start(id);
+        });
+      }
       return;
     }
 
@@ -806,18 +857,27 @@ export class Supervisor {
       entry = realpathSync(entry);
     } catch {}
     const fingerprint = this.fingerprintOf(kind);
+    const backend = this.backendOf(acc);
+    const bins = this.opts.bins;
     const launch = this.launch;
     appendFileSync(log, `\n--- ${new Date().toISOString()} dither-accounts starting ${acc.kind} extractor\n`);
     r.logFrom = fileSize(log);
     const argv = launch === 'scope' ? [this.opts.systemdRun ?? 'systemd-run', '--user', '--scope', '--quiet', '--collect', `--unit=${scopeName(acc.id)}`, `--description=dither-accounts extractor (${acc.kind})`, 'bun', entry] : ['bun', entry];
     // Its output straight to its log: the manager going away cannot break a pipe under it.
     const fd = openSync(log, 'a', 0o600);
+    // The screen its sandboxes draw on (docs/browser.md "Display backends"): the account's, else the manager's; and the
+    // programs they run, from the manager's pinned nixpkgs (prepare.ts). A kind with no screen is given neither, nor
+    // what the manager's own environment might hand down.
+    const { [DISPLAY_BACKEND_ENV]: _b, DITHER_BINS: _d, ...inherited } = process.env;
+    const binsDir = backend ? (bins?.dir() ?? process.env.DITHER_BINS) : undefined;
+    const screenEnv: Record<string, string> = backend ? { [DISPLAY_BACKEND_ENV]: backend, ...(binsDir ? { DITHER_BINS: binsDir } : {}) } : {};
     let proc: Subprocess;
     try {
       proc = Bun.spawn(argv, {
         cwd: root,
         env: {
-          ...process.env,
+          ...inherited,
+          ...screenEnv,
           ...(kind.env ?? {}),
           DITHER_HUB_URL: this.opts.extractorUrl(),
           DITHER_ACCOUNTS_URL: this.opts.extractorUrl(),
@@ -856,6 +916,7 @@ export class Supervisor {
     r.adopted = false;
     r.survives = launch !== 'child';
     r.fingerprint = fingerprint;
+    r.backend = backend;
     r.connectBy = undefined;
     // A new process: what the last one said of itself does not hold for it.
     r.sleepSaid = undefined;
@@ -1094,7 +1155,7 @@ export class Supervisor {
   }
 
   /**
-   * Adopted extractors whose code changed restart one at a time per kind (a pause before each, each waited for until it
+   * Adopted extractors whose code (or display backend) changed restart one at a time per kind (a pause before each, each waited for until it
    * is online again, or a minute); different kinds go side by side. Never every account at once, and never two of one
    * network together, which is what looks like a bot to it.
    */
@@ -1112,7 +1173,8 @@ export class Supervisor {
         const acc = this.store.account(id);
         const k = acc && this.kinds.get(acc.kind);
         if (!r?.adopted || !r.pid || r.stopping || !acc?.enabled || !k || this.halted.has(id)) continue;
-        if (sameCode(r.fingerprint, this.fingerprintOf(k))) continue;
+        const sameScreen = r.backend === this.backendOf(acc);
+        if (sameCode(r.fingerprint, this.fingerprintOf(k)) && sameScreen) continue;
         this.rollingNow.add(id);
         try {
           // Connected first, so it hears a shutdown and ends as it would at a stop (the watch restarts one that never does).
@@ -1122,14 +1184,14 @@ export class Supervisor {
           // Calls from now on wait for the new process, and the ones the old one has get their answers first: a
           // deploy should not fail an app's call.
           const h = this.line(id);
-          h.opening('its code changed since it started: restarting it', { ms: START_OPEN_MS });
+          h.opening(`its ${sameScreen ? 'code' : 'display backend'} changed since it started: restarting it`, { ms: START_OPEN_MS });
           await h.drain(RESTART_DRAIN_MS, this.closingCtrl.signal);
           if (this.closing || !r.pid || this.running.get(id) !== r || this.halted.has(id)) {
             // Not restarted after all: what waited goes to the process that is still there.
             if (r.ws && h.state === 'opening' && this.running.get(id) === r) h.open(r.ws);
             continue;
           }
-          appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} its code changed since it started: restarting it\n`);
+          appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} its ${sameScreen ? 'code' : 'display backend'} changed since it started: restarting it\n`);
           await this.stopProcess(id);
           // Stopped on purpose meanwhile (the page, an app): it stays stopped.
           if (this.halted.has(id) || this.closing) continue;

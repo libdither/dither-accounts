@@ -1,6 +1,8 @@
 # Typecheck (the services and the page), the page's build, and tests on each push to master and each pull request.
-# Everything runs against fakes and stand-ins. Tests that need what only a Nix machine has skip here: the sandboxed
-# browsers (Xvfb, Chromium, x11vnc), the native-app sandbox, and Radicale and Dovecot from nixpkgs (test/needs.ts).
+# Everything runs against fakes and stand-ins. Tests that need what only a Nix machine has skip in `unit`: the
+# sandboxed browsers (Xvfb, Chromium, x11vnc), the native-app sandbox, both display backends, screen sharing, and
+# Radicale and Dovecot from nixpkgs (test/needs.ts). The `nix` job runs those, with Nix, beside it. `check`, the
+# status a pull request needs, passes only when both did.
 name: CI
 
 on:
@@ -13,7 +15,7 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  unit:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -37,3 +39,76 @@ jobs:
       # Flaky tests are fixed, not retried: the test files a pull request adds or changes run five times each.
       - if: github.event_name == 'pull_request'
         run: bun scripts/flake-check.ts origin/${{ github.base_ref }}
+
+  # The tests that need Nix: the sandboxes on both display backends (Xvfb and x11vnc; sway, wayvnc and grim),
+  # Chromium on them, the native-app sandbox (bubblewrap, pasta), X apps through xwayland-satellite, and screen
+  # sharing (PipeWire, WirePlumber, the portals, Chromium and Electron). Everything comes from the repo's one pinned
+  # nixpkgs (nix/pin.json, nix/README.md), the same the manager prepares its sandboxes' programs from at run time.
+  nix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the flake check compares with the base branch
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - uses: cachix/install-nix-action@v31
+      # Anything still asking for <nixpkgs> or nixpkgs# (Radicale, Dovecot, the native apps) gets the pinned one too.
+      - name: Pin nixpkgs
+        run: |
+          rev=$(bun -e 'console.log(require("./nix/pin.json").rev)')
+          echo "NIX_PATH=nixpkgs=https://github.com/NixOS/nixpkgs/archive/$rev.tar.gz" >> "$GITHUB_ENV"
+          nix registry add nixpkgs "github:NixOS/nixpkgs/$rev"
+      # Ubuntu lets no unprivileged program make a user namespace by default; bubblewrap, pasta and Chromium's
+      # sandbox each need one.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # On PATH ahead of Ubuntu's own, so the sandboxes run /nix/store programs only (sh and env among them), and so
+      # none of the runner's own copies is found: its Chromium cannot load PipeWire (no Wayland screen to share), and
+      # its pasta runs under an AppArmor profile that may exec only the system's bwrap (with nixpkgs' bwrap: "Failed to
+      # start command or shell: Permission denied"). Then the sandboxes' programs and the tests' own, prepared as the
+      # manager prepares them (scripts/prepare-bins.ts): fetched here, once, instead of inside a test's time limit.
+      - name: Programs from the pinned nixpkgs
+        run: |
+          nix-env -f ./nix -iA bash coreutils dbus bubblewrap passt xvfb imagemagick chromium
+          bun scripts/prepare-bins.ts --out /tmp/dither-bins --tests
+          echo "DITHER_BINS=/tmp/dither-bins" >> "$GITHUB_ENV"
+          command -v chromium Xvfb bwrap pasta import
+      # DITHER_TESTS_NEED_ALL: a test that would skip for a missing program fails instead (test/needs.ts).
+      - name: Tests that need Nix
+        env:
+          DITHER_TESTS_NEED_ALL: '1'
+          DITHER_SHARE_DEBUG: '1'
+          # The native apps' own output in the sandboxes' logs (stand-ins only here), and pictures of a failed click.
+          DITHER_SANDBOX_APP_LOG: '1'
+          DITHER_TEST_SHOTS: /tmp/test-shots
+          # The sandbox tests check that nothing of the user's home shows inside; their temporary directories must not
+          # be under it (install-nix-action points TMPDIR into the workspace, under /home/runner).
+          TMPDIR: /tmp
+        run: bun test packages/sandbox packages/browser test/haveno.test.ts test/telegram-desktop.test.ts
+      # The flake check for the tests above, which skip in `unit`: the ones a pull request adds or changes, five times.
+      - if: github.event_name == 'pull_request'
+        name: Flake check (tests that need Nix)
+        env:
+          DITHER_TESTS_NEED_ALL: '1'
+          TMPDIR: /tmp
+        run: bun scripts/flake-check.ts origin/${{ github.base_ref }} packages/sandbox packages/browser test/haveno.test.ts test/telegram-desktop.test.ts
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-shots
+          path: /tmp/test-shots
+          if-no-files-found: ignore
+
+  # The one status pull requests need. A job whose needs failed would be skipped, and a skipped job counts as passed,
+  # so this one always runs and fails unless both succeeded.
+  check:
+    needs: [unit, nix]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "unit: ${{ needs.unit.result }}, nix: ${{ needs.nix.result }}"
+          test "${{ needs.unit.result }}" = success && test "${{ needs.nix.result }}" = success

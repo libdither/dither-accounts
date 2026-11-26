@@ -11,6 +11,7 @@ export default {
   name: 'Amazon orders',
   interfaces: ['statements', 'browser'],
   entry: 'src/main.ts',
+  screen: true,
   add: {
     blurb:
       "Reads your Amazon order history (Your Orders and each order's details) in a sandboxed browser on this machine, once a day at a person's pace, for an app such as dither-finance. When Amazon asks for your password again the stored one answers; a captcha or a code stops the pull until you clear it in the live view. Read only: it cannot order, cancel or return.",

@@ -19,17 +19,12 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server, ServerWebSocket, Subprocess } from 'bun';
-import { resolveBins } from '../../../packages/browser/src/index.ts';
 import { seedFromRaw } from '../src/pcom.ts';
 import { CODE_MESSAGE, SIGNS_ITSELF_IN } from '../src/status.ts';
 import { type FakePrivacy, startFakePrivacy } from './fake-privacy.ts';
+import { browserBins } from '../../../test/needs.ts';
 
-let bins: ReturnType<typeof resolveBins> | null = null;
-try {
-  bins = resolveBins(() => {});
-} catch (e) {
-  console.warn(`privacy pull: skipped, ${(e as Error).message}`);
-}
+const bins = browserBins('privacy pull');
 const it = test.skipIf(!bins);
 
 const FIX = join(import.meta.dir, 'fixtures');

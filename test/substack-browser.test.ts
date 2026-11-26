@@ -10,17 +10,12 @@ import { join } from 'node:path';
 import { AccountsClient, register } from '@dither-accounts/client';
 import { chat } from '@dither-accounts/interfaces';
 import { createManager, kindOf, type Manager } from '@dither-accounts/manager';
-import { resolveBins } from '../packages/browser/src/index.ts';
 import { ANN, BEN, CAL, ME } from '../extractors/substack/test/fixtures.ts';
 import { type FakeSubstack, startFakeSubstack } from './fake-substack.ts';
+import { browserBins } from './needs.ts';
 
 const ROOT = join(import.meta.dir, '..');
-let bins: ReturnType<typeof resolveBins> | null = null;
-try {
-  bins = resolveBins(() => {});
-} catch (e) {
-  console.warn(`substack-browser: skipped, ${(e as Error).message}`);
-}
+const bins = browserBins('substack-browser');
 const it = test.skipIf(!bins);
 
 let fake: FakeSubstack;

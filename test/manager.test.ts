@@ -105,6 +105,26 @@ test("a kind's own settings: only its declared keys and values, kept in the conf
   await until(async () => (await info()).online, 10_000, 'the extractor back online');
 });
 
+test("the display backend: the manager's default (x11), an account's own from its settings, null back to the default", async () => {
+  const detail = async () => (await (await api(`/api/accounts/${account}`)).json()) as any;
+  const online = async () => !!((await (await api('/api/state')).json()) as any).accounts.find((a: any) => a.id === account)?.online;
+  expect((await detail()).process.displayBackend).toBe('x11');
+  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: 'mir' } })).status).toBe(400);
+  // The PATCH answers once the extractor was started again: on the backend it was given.
+  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: 'Wayland' } })).status).toBe(200);
+  expect((await detail()).config.displayBackend).toBe('wayland');
+  expect((await detail()).process.displayBackend).toBe('wayland');
+  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: null } })).status).toBe(200);
+  expect('displayBackend' in (await detail()).config).toBe(false);
+  expect((await detail()).process.displayBackend).toBe('x11');
+  expect(m.sup.backendOf({ kind: 'fake', config: JSON.stringify({ displayBackend: 'wayland' }) } as any)).toBe('wayland');
+  expect(m.sup.backendOf({ kind: 'fake', config: '{}' } as any)).toBe('x11');
+  expect(m.sup.backendOf({ kind: 'fake', config: 'not json' } as any)).toBe('x11');
+  // A kind with no screen has no backend, whatever its config says.
+  expect(m.sup.backendOf({ kind: 'chat-fake', config: JSON.stringify({ displayBackend: 'wayland' }) } as any)).toBeNull();
+  await until(online, 10_000, 'the extractor back online');
+});
+
 test('levels: read-only cannot write; approving narrower than asked holds', async () => {
   await approve(reader.requests[0].id, { level: 'read' });
   const { c } = client(reader.app, reader.token);

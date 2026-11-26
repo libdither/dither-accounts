@@ -9,7 +9,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { AppSandbox, type AudioDevices, type Network, pickFreeDisplay, resolveBin, runtimeDir } from '@dither-accounts/sandbox';
+import { AppSandbox, type AudioDevices, displayName, displayState, type Network, pickFreeDisplay, resolveBin, runtimeDir } from '@dither-accounts/sandbox';
 
 type Log = (level: 'debug' | 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
 type Layer = { name: string; state: 'ok' | 'waiting' | 'failed' | 'off'; note?: string };
@@ -84,7 +84,7 @@ const RESTART_MS = [2_000, 5_000, 15_000, 30_000, 60_000];
 /** How long Desktop may be without its hook (a window reloading after a crash) before it is started again. */
 const WATCHDOG_MS = 45_000;
 
-/** Signal Desktop's Electron and app.asar, from its launcher ($SIGNAL_DESKTOP_BIN, PATH, or nix build nixpkgs#signal-desktop). */
+/** Signal Desktop's Electron and app.asar, from its launcher ($SIGNAL_DESKTOP_BIN or PATH: the machine's own install, never built here). */
 export function resolveSignalDesktop(log: Log): { electron: string; asar: string } {
   const launcher = resolveBin({ name: 'signal-desktop', env: 'SIGNAL_DESKTOP_BIN', nix: 'signal-desktop' }, log);
   const text = readFileSync(launcher, 'utf8');
@@ -154,7 +154,7 @@ export class SignalDesktop implements CallsHost {
       const free = await pickFreeDisplay();
       this.sandbox = new AppSandbox({
         dir: this.dir,
-        display: free.display,
+        display: free,
         width: this.o.width ?? 1280,
         height: this.o.height ?? 800,
         // --password-store=basic: no keyring in the sandbox (Signal would wait for one), so its database key is kept as
@@ -167,6 +167,8 @@ export class SignalDesktop implements CallsHost {
         network: this.o.network,
         fitWindow: 'Signal',
         log: this.o.log,
+        // The live view's server down or back (it is started again): said in the status at once.
+        onScreenHealth: () => this.o.onChange(),
         onEvent: (ev) => {
           if (ev.t !== 'app') return;
           if (ev.state === 'running') this.restarts = 0;
@@ -294,6 +296,9 @@ export class SignalDesktop implements CallsHost {
   layer(): Layer {
     if (this.error) return { name: 'calls', state: 'failed', note: this.error };
     if (!this.sandbox) return { name: 'calls', state: 'waiting', note: 'starting Signal Desktop' };
+    // Its screen's live view's server down (it is started again): no linking or calls through it meanwhile.
+    const health = this.sandbox.screen?.health();
+    if (health && !health.ok) return { name: 'calls', ...displayState(this.sandbox.screen?.free, health) };
     if (!this.sandbox.appAlive) return { name: 'calls', state: 'waiting', note: this.restarts ? `Signal Desktop exited; starting it again (${this.restarts} so far)` : 'starting Signal Desktop' };
     if (!this.conn || !this.app?.ready) return { name: 'calls', state: 'waiting', note: 'Signal Desktop is loading' };
     if (!this.app.signedIn) return { name: 'calls', state: 'waiting', note: this.app.linkUrl ? 'link Signal Desktop: scan the code in the live view with Signal on your phone (Settings → Linked devices)' : 'Signal Desktop is linking' };
@@ -303,7 +308,7 @@ export class SignalDesktop implements CallsHost {
   details(): Record<string, string | number | boolean | null> {
     return {
       'calls body': this.ready ? 'Signal Desktop, linked' : this.app?.signedIn ? 'Signal Desktop, hook away' : 'Signal Desktop, not linked',
-      ...(this.sandbox ? { 'calls display': `:${this.sandbox.info().display}` } : {}),
+      ...(this.sandbox ? { 'calls display': displayName(this.sandbox.screen?.free) ?? 'starting' } : {}),
     };
   }
 }

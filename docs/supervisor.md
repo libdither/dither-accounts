@@ -164,8 +164,11 @@ The display backend restarts the same way, for kinds with a screen only. Each su
 `DITHER_DISPLAY_BACKEND` (one of docs/browser.md's "Display backends": its account's `displayBackend`, else the
 default picked on the manager's page, else config.toml's `display_backend`), and an adopted one started with another
 than its account now wants is restarted in the same queue, one at a time per kind. A default picked on the page
-(`PUT /api/display`) restarts the running accounts that follow it the same way, one at a time per kind with the
-first of each at once (`restartMoved`). So a new default reaches every account without moving them all at once, and
+(`PUT /api/display`) puts the running accounts that follow it in that same queue (`moveScreens`), the first of each
+kind without the pause: two quick changes, or one during a deploy's restarts, still restart one account of a kind at a
+time, and an account restarted for its code and its screen together restarts once. A moved account that does not come
+back online, with its live view again if it had one, within the minute stops its kind's queue, as a deploy's does: the
+others stay where they are. So a new default reaches every account without moving them all at once, and
 an account that names its own backend is not touched by it, and a kind with no screen (mail, calendar, signal-cli)
 never restarts for it. `DITHER_DISPLAY_BACKEND` is per account, so it is not part of the fingerprint;
 the manager's own setting (`DITHER_ACCOUNTS_DISPLAY_BACKEND`) is not either, as no `DITHER_ACCOUNTS_*` is.

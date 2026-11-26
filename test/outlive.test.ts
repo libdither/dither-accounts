@@ -533,3 +533,76 @@ test("calls to an extractor that goes away fail at once ('offline'), not after t
   await stopping;
   await m.stop();
 }, 30_000);
+
+/** Each restart of the roll as it begins, counted where it is recorded (rollingNow), not sampled. */
+function countRestarts(m: Manager) {
+  const seen = { max: 0, started: [] as string[] };
+  const rollingNow = (m.sup as any).rollingNow as Set<string>;
+  const add = rollingNow.add.bind(rollingNow);
+  rollingNow.add = (id: string) => {
+    add(id);
+    seen.started.push(id);
+    seen.max = Math.max(seen.max, rollingNow.size);
+    return rollingNow;
+  };
+  return seen;
+}
+/** Whether two of these accounts were ever down at once, from now until stop(). */
+function watchDown(m: Manager, ids: string[]) {
+  const w = { two: false, stop: () => clearInterval(t) };
+  const t = setInterval(() => {
+    if (ids.filter((id) => !online(m, id)).length > 1) w.two = true;
+  }, 5);
+  return w;
+}
+const backendNow = (m: Manager, id: string) => (m.sup as any).running.get(id)?.backend as string | undefined;
+const putDefault = (m: Manager, v: string | null) => fetch(`${m.url}/api/display`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ default: v }) });
+
+test('two new defaults in quick succession share one queue per kind: never two of a kind restarting at once', async () => {
+  const dir = tempDir('twodefaults');
+  const m = await manager(dir, { restartPauseMs: 600_000 });
+  const ids = [1, 2, 3].map((n) => `acc-td-${n}-${RUN}`);
+  for (const id of ids) insertAccount(m.store, dir, id, {});
+  for (const id of ids) m.sup.start(id);
+  await until(() => ids.every((id) => online(m, id)), 15_000, 'all online');
+  const seen = countRestarts(m);
+  const down = watchDown(m, ids);
+  expect((await putDefault(m, 'tigervnc')).status).toBe(200);
+  expect((await putDefault(m, 'wayland')).status).toBe(200);
+  // The pauses between them are let go as they come; each account ends on the last default.
+  await until(() => (endPauses(m), ids.every((id) => online(m, id) && backendNow(m, id) === 'wayland')), 30_000, 'all on wayland');
+  await until(() => (m.sup as any).rollingKinds.size === 0, 5000, 'the roll over');
+  down.stop();
+  expect(down.two).toBe(false);
+  expect(seen.max).toBe(1);
+  // One restart each, onto the default it finds by its turn (the first, asked for, may have gone to tigervnc first).
+  expect(seen.started.filter((id) => id !== ids[0])).toEqual(ids.slice(1));
+  // A screen move is not a deploy's restart for changed code.
+  expect(m.sup.codeRestarts().restarted).toBe(0);
+  await m.stop();
+}, 60_000);
+
+test('a new default during a deploy roll joins its queue: never two of a kind restarting at once', async () => {
+  const dir = tempDir('rollanddefault');
+  const m1 = await manager(dir);
+  const ids = [1, 2, 3].map((n) => `acc-rd-${n}-${RUN}`);
+  for (const id of ids) insertAccount(m1.store, dir, id, {});
+  for (const id of ids) m1.sup.start(id);
+  await until(() => ids.every((id) => online(m1, id)), 15_000, 'all online');
+  const port = m1.http.server.port!;
+  await m1.stop({ leaveExtractors: true });
+  // Changed code: every one is queued, and held at its first pause until let go.
+  const m2 = await manager(dir, { port, fingerprint: () => 'v2', restartPauseMs: 600_000 });
+  const seen = countRestarts(m2);
+  await until(() => ids.every((id) => online(m2, id)) && m2.sup.codeRestarts().queued === 3, 15_000, 'all adopted and queued');
+  const down = watchDown(m2, ids);
+  expect((await putDefault(m2, 'tigervnc')).status).toBe(200);
+  await until(() => (endPauses(m2), ids.every((id) => online(m2, id) && backendNow(m2, id) === 'tigervnc' && !m2.sup.details(id).adopted)), 30_000, 'all restarted on tigervnc');
+  await until(() => (m2.sup as any).rollingKinds.size === 0, 5000, 'the roll over');
+  down.stop();
+  expect(down.two).toBe(false);
+  expect(seen.max).toBe(1);
+  // Each restarted once: its new code and its new screen in the same restart.
+  expect([...seen.started].sort()).toEqual([...ids].sort());
+  await m2.stop();
+}, 60_000);

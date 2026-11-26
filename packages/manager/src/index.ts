@@ -170,6 +170,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     adoptConnectMs: o.adoptConnectMs,
     watchMs: o.watchMs,
     restartOnlineMs: o.restartOnlineMs,
+    screenUp: (id) => !!router?.liveView(id),
     systemdRun: o.systemdRun,
     managerGoneExitS: o.managerGoneExitS,
     sleep: o.sleep,

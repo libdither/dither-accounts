@@ -416,6 +416,8 @@ export class Supervisor {
   private rollingNow = new Set<string>();
   private pauses = new Set<{ timer: Timer; done: () => void }>();
   private rollingKinds = new Set<string>();
+  /** Queued by the page (moveScreens): the first of its kind in a roll goes without the pause. */
+  private askedNow = new Set<string>();
   /** Accounts restarted for changed code, and how often each ended on its own since (a crash on the new code). */
   private rolled = new Set<string>();
   private rolledCrashes = new Map<string, number>();
@@ -467,6 +469,11 @@ export class Supervisor {
       fingerprint?: (kind: Kind) => string;
       /** Between restarts for changed code (default 20 s). */
       restartPauseMs?: number;
+      /**
+       * Whether an account has its live view now (the router's liveView): an account moved to another screen that had
+       * one must have it again before the next of its kind moves.
+       */
+      screenUp?: (id: string) => boolean;
       /** How long an extractor restarted for changed code has to come online before its kind's restarts stop (60 s). */
       restartOnlineMs?: number;
       /** How long an adopted extractor has to connect (default 60 s). */
@@ -1162,31 +1169,16 @@ export class Supervisor {
   }
 
   /**
-   * Running accounts the page's new default backend moved to another screen: restarted one at a time per kind, each
-   * waited for until it is online again (or a minute), with a pause between them, kinds side by side, as a deploy's
-   * are (roll). The first of each kind goes at once: someone just asked for it. One whose screen no longer differs
-   * by its turn (the default moved back, or its own was set), or that was stopped meanwhile, is left as it is.
+   * Running accounts whose screen the page moved (a new default, an account's own): restarted in the same queue as a
+   * deploy's (roll), so never two of one kind at once whichever asked first. The first of a kind the page asked for
+   * goes without the pause: someone is waiting for it. One whose screen no longer differs by its turn (the default
+   * moved back, or its own was set), or that was stopped meanwhile, is left as it is.
    */
-  async restartMoved(ids: string[]) {
-    const byKind = new Map<string, string[]>();
+  moveScreens(ids: string[]) {
     for (const id of ids) {
-      const kind = this.store.account(id)?.kind;
-      if (kind) byKind.set(kind, [...(byKind.get(kind) ?? []), id]);
+      this.askedNow.add(id);
+      this.queueRestart(id);
     }
-    await Promise.all(
-      [...byKind.values()].map(async (list) => {
-        for (const [i, id] of list.entries()) {
-          if (i) await this.sleep(this.opts.restartPauseMs ?? RESTART_PAUSE_MS);
-          const acc = this.store.account(id);
-          const r = this.running.get(id);
-          if (this.closing || !acc?.enabled || !r?.pid || r.stopping || this.halted.has(id) || r.backend === this.backendOf(acc)) continue;
-          appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} the manager's default display backend is now ${this.backendOf(acc)}: restarting it\n`);
-          await this.restart(id);
-          const end = Date.now() + (this.opts.restartOnlineMs ?? RESTART_ONLINE_MS);
-          while (!this.closing && Date.now() < end && !this.running.get(id)?.ws) await Bun.sleep(250);
-        }
-      }),
-    );
   }
 
   // ---------------------------------------------------------- changed code
@@ -1206,26 +1198,34 @@ export class Supervisor {
   }
 
   /**
-   * Adopted extractors whose code (or display backend) changed restart one at a time per kind (a pause before each, each waited for until it
-   * is online again, or a minute); different kinds go side by side. Never every account at once, and never two of one
-   * network together, which is what looks like a bot to it.
+   * Extractors whose code (adopted ones) or display backend (any) changed restart one at a time per kind (a pause
+   * before each, each waited for until it is online again, or a minute); different kinds go side by side. Never every
+   * account at once, and never two of one network together, which is what looks like a bot to it. One that does not
+   * come back (online, and with its live view again if it had one) stops its kind's queue.
    */
   private async roll(kind: string) {
     if (this.rollingKinds.has(kind)) return;
     this.rollingKinds.add(kind);
+    let first = true;
     try {
       for (;;) {
         const q = this.outdated.get(kind);
         if (!q?.length || this.closing) break;
-        await this.sleep(this.opts.restartPauseMs ?? RESTART_PAUSE_MS);
+        if (!(first && this.askedNow.has(q[0]!))) await this.sleep(this.opts.restartPauseMs ?? RESTART_PAUSE_MS);
         const id = q.shift();
         if (!id || this.closing) break;
+        this.askedNow.delete(id);
         const r = this.running.get(id);
         const acc = this.store.account(id);
         const k = acc && this.kinds.get(acc.kind);
-        if (!r?.adopted || !r.pid || r.stopping || !acc?.enabled || !k || this.halted.has(id)) continue;
+        if (!r?.pid || r.stopping || !acc?.enabled || !k || this.halted.has(id)) continue;
         const sameScreen = r.backend === this.backendOf(acc);
-        if (sameCode(r.fingerprint, this.fingerprintOf(k)) && sameScreen) continue;
+        // Changed code restarts only an adopted extractor (one this manager started runs the code it started with).
+        if (sameScreen && (!r.adopted || sameCode(r.fingerprint, this.fingerprintOf(k)))) continue;
+        first = false;
+        const why = sameScreen ? 'code' : 'display backend';
+        // Its live view comes back too, when it had one: a backend it cannot start on leaves it online without one.
+        const hadScreen = !sameScreen && !!this.opts.screenUp?.(id);
         this.rollingNow.add(id);
         try {
           // Connected first, so it hears a shutdown and ends as it would at a stop (the watch restarts one that never does).
@@ -1235,26 +1235,32 @@ export class Supervisor {
           // Calls from now on wait for the new process, and the ones the old one has get their answers first: a
           // deploy should not fail an app's call.
           const h = this.line(id);
-          h.opening(`its ${sameScreen ? 'code' : 'display backend'} changed since it started: restarting it`, { ms: START_OPEN_MS });
+          h.opening(`its ${why} changed since it started: restarting it`, { ms: START_OPEN_MS });
           await h.drain(RESTART_DRAIN_MS, this.closingCtrl.signal);
           if (this.closing || !r.pid || this.running.get(id) !== r || this.halted.has(id)) {
             // Not restarted after all: what waited goes to the process that is still there.
             if (r.ws && h.state === 'opening' && this.running.get(id) === r) h.open(r.ws);
             continue;
           }
-          appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} its ${sameScreen ? 'code' : 'display backend'} changed since it started: restarting it\n`);
+          appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} its ${why} changed since it started${sameScreen ? '' : ` (now ${this.backendOf(acc)})`}: restarting it\n`);
           await this.stopProcess(id);
           // Stopped on purpose meanwhile (the page, an app): it stays stopped.
           if (this.halted.has(id) || this.closing) continue;
           this.start(id);
-          this.rolled.add(id);
-          this.rolledCrashes.delete(id);
+          // Counted as a deploy's restart (codeRestarts) only when it was for its code.
+          if (sameScreen) {
+            this.rolled.add(id);
+            this.rolledCrashes.delete(id);
+          }
           const end = Date.now() + (this.opts.restartOnlineMs ?? RESTART_ONLINE_MS);
-          while (!this.closing && Date.now() < end && !this.running.get(id)?.ws) await Bun.sleep(250);
-          // Not back on the new code: the rest of its kind keep their old code (running) rather than get this too.
-          if (!this.closing && !this.running.get(id)?.ws && !this.halted.has(id)) {
+          const back = () => !!this.running.get(id)?.ws && (!hadScreen || !!this.opts.screenUp?.(id));
+          while (!this.closing && Date.now() < end && !back()) await Bun.sleep(250);
+          // Not back on the new code (or screen): the rest of its kind keep theirs (running) rather than get this too.
+          if (!this.closing && !back() && !this.halted.has(id)) {
             const left = this.outdated.get(kind) ?? [];
-            appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} not online on its new code in ${Math.round((this.opts.restartOnlineMs ?? RESTART_ONLINE_MS) / 1000)} s: the ${left.length} other ${kind} account(s) waiting keep running their old code\n`);
+            const secs = Math.round((this.opts.restartOnlineMs ?? RESTART_ONLINE_MS) / 1000);
+            appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} ${sameScreen ? `not online on its new code in ${secs} s` : `not back with its screen on ${this.backendOf(acc)} in ${secs} s`}: the ${left.length} other ${kind} account(s) waiting keep running ${sameScreen ? 'their old code' : 'on their screen'}\n`);
+            for (const other of left) this.askedNow.delete(other);
             this.outdated.delete(kind);
             break;
           }

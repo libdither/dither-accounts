@@ -916,8 +916,8 @@ export class Http {
     const was = new Map(s.accounts().map((a) => [a.id, this.sup.backendOf(a)]));
     s.setSetting(DISPLAY_BACKEND_SETTING, v === null ? null : parseBackend(v));
     const moved = s.accounts().filter((a) => a.enabled && !this.router.inProcess.has(a.id) && this.sup.backendOf(a) !== null && this.sup.backendOf(a) !== was.get(a.id) && this.sup.state(a.id).running);
-    // One at a time per kind, as a deploy's restarts (docs/supervisor.md): the answer does not wait for them.
-    void this.sup.restartMoved(moved.map((a) => a.id));
+    // One at a time per kind, in the deploy's queue (docs/supervisor.md): the answer does not wait for them.
+    this.sup.moveScreens(moved.map((a) => a.id));
     return null;
   }
 

@@ -86,7 +86,9 @@ function frame() {
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
-say({ ev: 'page', w: innerWidth, h: innerHeight, sw: screen.width, sh: screen.height });
+// Ready once a frame is on the screen, not when the script runs: Chromium drops input that comes before the page's
+// first frame, so a click sent on an earlier report went nowhere under load (both backends).
+requestAnimationFrame(() => requestAnimationFrame(() => say({ ev: 'page', w: innerWidth, h: innerHeight, sw: screen.width, sh: screen.height })));
 
 let session = 0, busy = false;
 window.addEventListener('click', () => { say({ ev: 'click', busy, session }); if (!busy) start().catch((e) => { busy = false; say({ ev: 'error', name: e.name, message: String(e.message) }); }); });

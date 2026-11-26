@@ -216,6 +216,11 @@ export interface IdentityFact {
   nickname?: string;
   /** Your private note about them as the network keeps it (Signal's contact note, capability 'contactNotes'); '' when none. */
   note?: string;
+  /**
+   * Another native id on this network for the same account (Partiful: a chat id, `stream:<id>`, beside the user id it
+   * belongs to). The hub puts the two with one person the first time it hears this; a split made after stays.
+   */
+  sameAs?: string;
 }
 
 /** Someone seen as a member of a space. The identity fact for `who` is emitted first. */

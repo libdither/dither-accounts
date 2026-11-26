@@ -28,5 +28,11 @@ export default {
       pattern: '[A-Za-z0-9][A-Za-z0-9-]{0,39}',
       max: 40,
     },
+    {
+      key: 'logShapes',
+      label: 'Log answer shapes',
+      type: 'boolean',
+      note: "For fixing this kind: logs the first answer of each read as its field names and types only, never a value, to see what Partiful sends (docs/partiful.md). Off by default.",
+    },
   ],
 } satisfies Manifest;

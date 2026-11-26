@@ -162,27 +162,48 @@ export function world(now: number, origin: string | null = null) {
     { id: 'ntf-0001', createdAt: iso(now - 26 * H), type: 'REMINDER', title: 'Board Games Night is tomorrow', eventId: mine.id },
   ];
 
-  const streamUser = (p: Person, o: { partiful?: boolean } = {}) => ({ id: `strm-${p.id}`, name: p.name, image: pic(origin, `strm-${p.id}`), ...(o.partiful ? { partifulUserId: p.id } : {}) });
-  const meStream = { id: ME_STREAM, name: ME.name };
+  // As Partiful's Stream users are: an id of Stream's own and nothing else (no name, picture or Partiful id). One that
+  // carries its Partiful id stands for a site that might send it.
+  const streamUser = (p: Person, o: { partiful?: boolean } = {}) => ({ id: `strm-${p.id}`, role: 'user', banned: false, online: false, ...(o.partiful ? { partifulUserId: p.id } : {}) });
+  const meStream = { id: ME_STREAM, role: 'user', banned: false, online: true };
   const chats = [
     {
       channel: { id: 'dmAnnQuinn01', cid: 'messaging:dmAnnQuinn01', type: 'messaging', last_message_at: iso(now - 10 * 60_000), member_count: 2 },
-      members: [{ user_id: `strm-${ANN.id}`, user: streamUser(ANN, { partiful: true }) }, { user_id: ME_STREAM, user: meStream }],
+      members: [{ user_id: `strm-${ANN.id}`, user: streamUser(ANN) }, { user_id: ME_STREAM, user: meStream }],
       messages: [
-        { id: 'smsg-0001', text: 'Hi! Coming Saturday?', type: 'regular', user: streamUser(ANN, { partiful: true }), created_at: iso(now - 20 * 60_000), latest_reactions: [{ type: 'love', user_id: ME_STREAM, user: meStream, created_at: iso(now - 15 * 60_000) }] },
+        { id: 'smsg-0001', text: 'Hi! Coming Saturday?', type: 'regular', user: streamUser(ANN), created_at: iso(now - 20 * 60_000), latest_reactions: [{ type: 'love', user_id: ME_STREAM, user: meStream, created_at: iso(now - 15 * 60_000) }] },
         { id: 'smsg-0002', text: 'Yes!', type: 'regular', user: meStream, created_at: iso(now - 10 * 60_000), latest_reactions: [] },
       ],
       read: [{ user: meStream, last_read: iso(now - 10 * 60_000), unread_messages: 0 }],
     },
     {
       channel: { id: 'grpPotluck01', cid: 'messaging:grpPotluck01', type: 'messaging', name: 'Potluck crew', last_message_at: iso(now - 3 * H), member_count: 3 },
-      members: [{ user: streamUser(BEN) }, { user: streamUser(CAL) }, { user: meStream }],
-      messages: [{ id: 'smsg-0101', text: 'Who brings plates?', type: 'regular', user: streamUser(BEN), created_at: iso(now - 3 * H), attachments: [{ type: 'image', image_url: pic(origin, 'plates'), original_width: 300, original_height: 200 }] }],
+      members: [{ user: streamUser(BEN, { partiful: true }) }, { user: streamUser(CAL) }, { user: meStream }],
+      messages: [{ id: 'smsg-0101', text: 'Who brings plates?', type: 'regular', user: streamUser(BEN, { partiful: true }), created_at: iso(now - 3 * H), attachments: [{ type: 'image', image_url: pic(origin, 'plates'), original_width: 300, original_height: 200 }] }],
       read: [],
     },
   ];
 
-  return { now, open, hidden, mine, past, extra, explore, guests, comments, hostMessages, album, myEvents, notifications, chats };
+  // Firestore chatRequests as the runQuery REST answer gives them: who each chat is between, by user document.
+  const ref = (id: string) => ({ referenceValue: `projects/getpartiful/databases/(default)/documents/users/${id}` });
+  const chatRequests = [
+    { channel: 'dmAnnQuinn01', participants: [ANN.id, ME.id] },
+    { channel: 'grpPotluck01', participants: [ME.id, BEN.id, CAL.id] },
+  ].map((r, i) => ({
+    document: {
+      name: `projects/getpartiful/databases/(default)/documents/chatRequests/req-000${i + 1}`,
+      fields: {
+        streamChannelId: { stringValue: r.channel },
+        participants: { arrayValue: { values: r.participants.map(ref) } },
+        createdBy: ref(r.participants[0]!),
+        status: { stringValue: 'ACCEPTED' },
+        createdAt: { timestampValue: iso(now - 30 * H) },
+      },
+    },
+    readTime: iso(now),
+  }));
+
+  return { now, open, hidden, mine, past, extra, explore, guests, comments, hostMessages, album, myEvents, notifications, chats, chatRequests };
 }
 export type World = ReturnType<typeof world>;
 

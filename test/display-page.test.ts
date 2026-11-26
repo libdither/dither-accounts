@@ -7,7 +7,7 @@
  * meanwhile, so nothing moves). Whether each backend can run here is the test's to say (backendCheck), not this
  * machine's.
  *
- * Needs Chromium (prepared from the pinned nixpkgs, or on PATH); skipped without it, except in CI's nix job
+ * Needs Chromium prepared from the pinned nixpkgs (DITHER_BINS) or CHROMIUM_BIN; skipped without it, except in CI's nix job
  * (DITHER_TESTS_NEED_ALL). DITHER_PAGE_SHOTS=<dir> also saves pictures of each view (the pull request's screenshots).
  */
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from 'bun:test';
@@ -17,7 +17,7 @@ import { join, resolve } from 'node:path';
 import { createManager, kindOf, type Manager } from '@dither-accounts/manager';
 import type { DisplayBackend } from '@dither-accounts/spec/display';
 import fakeManifest from '../extractors/fake/manifest.ts';
-import { tryBin } from '../packages/browser/src/bins.ts';
+import { preparedBin } from '../packages/browser/src/bins.ts';
 import { CHROMIUM } from '../packages/browser/src/sandbox.ts';
 import { newToken } from '../packages/manager/src/db.ts';
 import type { BackendCheck } from '../packages/manager/src/http.ts';
@@ -27,8 +27,9 @@ import { why } from './needs.ts';
 setDefaultTimeout(90_000);
 
 const ROOT = resolve(import.meta.dir, '..');
-const chromium = tryBin(CHROMIUM, () => {});
-const it = test.skipIf(!why('Chromium (bun scripts/prepare-bins.ts, or on PATH)', !!chromium));
+// The pinned one only (prepared, or CHROMIUM_BIN): a runner's own may be a wrapper that cannot start headless here.
+const chromium = process.env.CHROMIUM_BIN || preparedBin(CHROMIUM);
+const it = test.skipIf(!why('Chromium from the pinned nixpkgs (bun scripts/prepare-bins.ts, then DITHER_BINS)', !!chromium));
 const SHOTS = process.env.DITHER_PAGE_SHOTS;
 
 const checks: Partial<Record<DisplayBackend, BackendCheck>> = {};

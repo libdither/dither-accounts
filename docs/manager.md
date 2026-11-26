@@ -116,7 +116,8 @@ the page's own origin; apps and extractors never log in (their own tokens, below
   in or watch it work. **Screen**, for a kind with a screen, picks the display backend its sandbox draws on, or the
   manager's default; **Screens**, at the foot of the home page, picks that default, which then wins over
   config.toml's `display_backend`. A backend built from a fork says "Experimental fork", and changing either restarts
-  the sandboxes it moves (docs/browser.md, "Display backends"). What it needs from you shows on top: a QR code to scan, and for chat accounts a new code, a
+  the sandboxes it moves (docs/browser.md, "Display backends").
+  What it needs from you shows on top: a QR code to scan, and for chat accounts a new code, a
   pairing code by phone number, or a password to sign in again. **Try it** runs any of its operations. Removing an
   account keeps its directory unless you tick "also delete it" (only for directories the manager made, never one
   imported in place).

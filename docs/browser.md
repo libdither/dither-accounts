@@ -239,255 +239,35 @@ watching it and `XDG_RUNTIME_DIR/bus` pointing at it too: nothing from a wayland
 ScreenCast may be asked there (a Chromium given that bus, as before, is seen there within a second, so the watch
 works). Two wayland sandboxes run at once, and each one's capture decodes as its own page.
 
-**Measured side by side.** `scripts/bench-display.ts` runs one browser sandbox per backend through the same pages
-and input and writes JSON; `scripts/bench-display-report.ts` turns that into a page with charts (with
-`scripts/bench-native.ts`'s native apps and `scripts/bench-link.ts`'s slow links beside it). On a 16-thread desktop
-CPU with a mid-range AMD GPU, 1280×800, five repetitions (backend order alternating, 1-minute load 4–7.7, one x11
-repetition at 36), medians:
+**What the benchmarks found.** The numbers, how they were taken and what they leave out are in
+[benchmarks/2026-11-25-display-backends.md](benchmarks/2026-11-25-display-backends.md); the scripts are
+`scripts/bench-display.ts`, `bench-link.ts`, `bench-native.ts` and `bench-lab.ts`, and `scripts/bench-tables.ts`
+makes that page's tables from their JSON. What holds across every round:
 
-| | x11 | wayland |
-|---|---|---|
-| start → live view up / first page ran | 180 / 707 ms | 589 / 1,246 ms (warm starts 360–590 / 810–1,250) |
-| idle: CPU, PSS of every process | 3.7%, 188 MB | 3.8%, 225 MB |
-| idle: PSS of all but Chromium | 22 MB (Xvfb 16, x11vnc 6) | 54 MB (sway 43, wayvnc 9) |
-| live view, full-screen animation: frames/s, server CPU | 39.0, 16% | 58.1, 78% (wayvnc's default `-f 30`: 29.6, 45%) |
-| live view, page scrolling: frames/s, bytes/s | 27.8, 1.6 MB/s | 58.7, 5.1 MB/s |
-| live view, 720p video: frames/s, server CPU | 19.2, 54% | 28.0, 34% |
-| live view, a still page with a viewer: server CPU | 1.4% | 0% (at 30 too) |
-| RFB press → page handler / click to photon | 7.2 / 74 ms | 1.0 / 32 ms |
-| typing, each backend's own way (35 ms a key) | 28 chars/s | 17 chars/s |
-| screen share: frames/s, drawn → decoded, CPU | 25.3, 83 ms, 152% | 26.0, 119 ms, 102% |
-| 720p VP9 video in Chromium: dropped, CPU | 0.3%, 60% | 5.0%, 32% |
-| WebGL (60 Hz display): frames/s, CPU | 60, 106% | 61, 31% |
-| screenshot (import / grim) | 99 ms | 37 ms |
-| 5 sandboxes at once: all started, PSS each | 6.3 s, 190 MB | 2.5 s, 207 MB |
-| 10 / 20 sandboxes at once | failed (below) | 2.6 s, 204 MB / 6.1 s, 197 MB, 57% idle CPU in all |
+- **Bytes on a thin link.** The Xvnc servers and w0vncserver send flat areas as fills and palettes and push changes
+  as they come: a still page of text is about 95 KB to a new viewer, where wayvnc sends 270 KB (every changed tile as
+  JPEG). So below about 20 Mbit/s they keep several times wayvnc's frames and answer a click in tens of
+  milliseconds where wayvnc takes 0.2–1.6 s. KasmVNC goes further (53 KB for that page, and it lowers its JPEG
+  quality as the link fills): at 5 Mbit/s it draws the animation at 27 frames a second where TigerVNC draws 7. x11vnc is as frugal but waits a round trip for each frame, so a far link
+  costs it frames; wayvnc and the Xvnc servers are not held back by distance.
+- **Shared memory segments.** x11vnc reads Xvfb's screen through System V shared memory, about 40 segments for each
+  x11 sandbox while it runs, from a machine-wide limit (`kernel.shmmni`, 4096 by default) that processes killed
+  without cleaning up also use. Every other backend holds none, so only x11 can run a machine out of them.
+- **Memory.** An Xvnc costs 20–25 MB beside Chromium (Xvfb and x11vnc together a little more); sway with wayvnc or
+  w0vncserver 45–70 MB, the upper end with sway on the GPU. Per browser sandbox, many at once, that is about 130 MB
+  on an Xvnc against about 160 MB on sway.
+- **Input.** A click from the live view reaches the page within a millisecond and shows in the viewer 20–30 ms later
+  on every backend but x11, where x11vnc takes 8–9 ms to pass it on and the change 70–80 ms to come back.
+- **Where Wayland is ahead.** With sway on the GPU, WebGL, video in Chromium and screenshots cost a third to a half
+  of what they cost on X (nothing is read back into an X server).
 
-So: wayland costs about 30 MB more per browser sandbox (sway on the GPU), starts slower alone and not slower many at
-a time, answers input far sooner, and draws GPU work and video with a third to a half of X's CPU (nothing is read back
-into Xvfb). Its live view now sends up to 60 frames a second (`-f 60`): twice the frames of wayvnc's default for 1.7
-times its CPU while something moves, nothing more while the screen is still. Its screen share is slower to each frame
-(PipeWire through the portal) than Chromium reading Xvfb. The x11 runs of 10 and 20 at once failed because x11vnc
-could not get System V shared memory (`shmget: No space left on device`): each x11 sandbox holds about 40 segments
-while it runs, the kernel allows `kernel.shmmni` (4096 by default) on the whole machine, and segments left by
-processes killed without cleaning up count against it too. Wayland sandboxes hold none. wayvnc's `-g` (its GPU
-features) changed nothing with ZRLE (58 frames a second at 78% either way), and its Open H.264 still delivers no frame
-on that machine: the encoder takes the first frame and never finishes it, wayvnc at 100% of a core. So the sandbox's
-wayvnc runs without `-g`; it then never offers H.264, even to noVNC, which asks for it first.
-
-**The live view over a slow link.** `scripts/bench-link.ts` puts a link between a viewer and the live view's
-socket, shaped with tc in a network namespace of its own (`scripts/bench-shaper.ts`: netem for delay and loss, tbf
-for bandwidth with a 50 ms queue; each link measured before use), and a CPU quota on the display processes alone (a
-systemd scope). The viewer asks for what the manager's page (noVNC 1.7) asks for: Tight first after Open H.264, quality
-6, compression 2, continuous updates and fences. Both servers answer with Tight; x11vnc waits for each request,
-wayvnc takes continuous updates and pushes frames as they come. Three repetitions, medians (frames a second of the
-full-screen animation / of the video, then click to photon):
-
-| link | x11 | wayland |
-|---|---|---|
-| unlimited | 35 / 35 fps, 81 ms | 59 / 28 fps, 8 ms |
-| 20 Mbit/s | 20 / 17 fps, 48 ms | 11 / 22 fps, 50 ms |
-| 5 Mbit/s | 7.3 / 5.7 fps, 55 ms | 2.8 / 4.1 fps, 193 ms |
-| 1 Mbit/s | 2.1 / 1.8 fps, 95 ms | 0.6 / 0.8 fps, 1.2 s |
-| 20 ms round trip | 24 / 23 fps, 86 ms | 59 / 28 fps, 29 ms |
-| 50 ms | 14 / 14 fps, 147 ms | 59 / 28 fps, 58 ms |
-| 150 ms | 11 / 5.7 fps, 198 ms | 52 / 26 fps, 159 ms |
-| 5 Mbit/s, 50 ms | 5.5 / 4.1 fps, 147 ms | 2.0 / 2.8 fps, 301 ms |
-| 1 Mbit/s, 150 ms | 1.8 / 1.4 fps, 250 ms | 0.4 / 0.6 fps, 1.6 s |
-| 20 Mbit/s, 50 ms, 1% loss | 3.9 / 2.9 fps, 147 ms | 1.4 / 1.8 fps, 288 ms |
-| display at 50% of a core | 35 / 35 fps, 48 ms | 59 / 28 fps, 8 ms |
-| display at 20% of a core | 17 / 14 fps, 49 ms | 25 / 28 fps, 9 ms |
-
-- Delay alone: wayland wins, and by more the farther away. Continuous updates do not wait a round trip per frame, so
-  it holds 52–59 frames a second at 150 ms, where x11vnc's request and answer fall to 11.
-- Bandwidth: x11 wins wherever the link is the limit. wayvnc's Tight is two and a half to five times the bytes of
-  x11vnc's (a still page of text, the first whole screen: 270 KB against 103 KB; the animation about 215 KB a frame
-  against 80), as it sends every changed 64×64 tile as JPEG where x11vnc sends flat areas as fills and palettes. At
-  5 Mbit/s and below a click on wayland takes 0.2–1.6 s to come back against x11's 0.05–0.25 s. Video, which JPEG
-  suits, is the exception at 20 Mbit/s. With ZRLE asked for instead, wayvnc sends the animation at 58 frames a second
-  in 0.5 MB/s, even at 5 Mbit/s and 50 ms (x11vnc 12), for more of its CPU (78% of a core); noVNC asks for Tight
-  first, so the page gets Tight.
-- Loss: TCP's own slowdown (1% loss at 50 ms leaves about 2.3 Mbit/s), so the same as bandwidth: x11 ahead.
-- A small CPU: wayland ahead. At 20% of a core x11 draws 17 frames a second and wayland 25, video 14 against 28, and
-  a click comes back in 49 ms against 9.
-- wayvnc's Open H.264 (with `-g`, asked for first as noVNC does) still sends nothing at any of these.
-- The manager's bridge (packages/manager/src/http.ts) now stops reading the VNC socket while the page's WebSocket is
-  backed up. Before, it read on regardless: x11vnc never noticed, as it sends only when asked, but wayvnc's output
-  piled up in the manager (10 MB at 5 Mbit/s and 50 ms) and at 1 Mbit/s and 150 ms passed Bun's 16 MB limit, past
-  which Bun drops what is sent (38 MB in the run), which breaks the RFB stream. Paced, wayvnc sees a full socket and
-  sends fewer frames; the frames a second are the same, the stream stays whole and the manager holds at most a few
-  hundred KB.
-
-**The Xvnc backends side by side.** The same benchmarks with all five backends, three repetitions (slow links two,
-native apps two), backend order rotated, 1-minute load 3–9 on the shared machine, medians. TurboVNC with
-`-deferupdate 1`; KasmVNC through a viewer that speaks its RFB, with noVNC's list plus its own WebP where noted.
-
-| | x11 | tigervnc | kasmvnc | turbovnc | wayland |
-|---|---|---|---|---|---|
-| start → live view up / first page ran (ms) | 282 / 859 | 218 / 798 | 97 / 476 | 210–1,880 / 2,140 (noisy) | 883 / 1,385 |
-| idle: PSS of all but Chromium | 22 MB | 19 MB | 19 MB | 15 MB | 54 MB |
-| idle: private memory (USS) of the sandbox | 157 MB | 159 MB | 160 MB | 154 MB | 188 MB |
-| System V shm segments held | about 42 | 0 | 0 | 0 | 0 |
-| animation, ZRLE: frames/s, server CPU | 39.5, 14% | 57.2, 34% | 17.7, 34% | 58.9, 17% | 56.9, 73% |
-| animation, Tight: frames/s, bytes/s, server CPU | 33.6, 2.7 MB/s, 26% | 57.2, 4.8 MB/s, 43% | 55.3, 1.7 MB/s, 50% | 59.2, 5.5 MB/s, 116% | 57.7, 12.7 MB/s, 36% |
-| scrolling, Tight: frames/s, bytes/s | 30.6, 3.0 MB/s | 55.1, 5.5 MB/s | 55.8, 2.7 MB/s | 59.3, 16 MB/s | 57.7, 14.8 MB/s |
-| 720p video, Tight: frames/s, bytes/s | 33, 2.7 MB/s | 39, 2.5 MB/s | 30, 3.7 MB/s | 59, 11.6 MB/s | 28, 3.0 MB/s |
-| RFB press → page handler / click to photon | 7.7 / 72 ms | 0.9 / 30 ms | 0.9 / 31 ms | 0.8 / 32 ms | 0.9 / 28 ms |
-| typing, 35 ms a key | 28 chars/s | 28 | 28 | 28 | 17 |
-| screen share: frames/s, drawn → decoded, CPU | 24, 84 ms, 142% | 24, 69 ms, 153% | 24, 83 ms, 147% | 26, 83 ms, 126% | 27, 119 ms, 109% |
-| 720p VP9 in Chromium: dropped, CPU | 0.3%, 63% | 0%, 57% | 0%, 57% | 0%, 53% | 5.3%, 24% |
-| WebGL: frames/s, CPU | 60, 92% | 60, 90% | 60, 83% | 60, 80% | 61, 26% |
-| screenshot | 99 ms | 99 ms | 87 ms | 89 ms | 34 ms |
-| 10 sandboxes at once: started, USS each | — (5: 1.6 s, 139 MB) | 11 s (one run; 5 in 1.0 s), 132 MB | 3.8 s, 131 MB | 3.4 s, 130 MB | 2.0 s, 159 MB |
-
-KasmVNC's own WebP: the animation at 55 frames a second in 1.2 MB/s. At TurboVNC's default 40 ms defer the
-animation ran at about 20 frames a second and a click came back in 73 ms. x11 stops at 5 here: five x11 sandboxes
-left the machine 31 segments short of its 4096.
-
-Over a slow link, as noVNC asks (Tight first), two repetitions: frames a second of the animation / the video, then
-click to photon.
-
-| link | x11 | tigervnc | kasmvnc | turbovnc | wayland |
-|---|---|---|---|---|---|
-| unlimited | 35 / 32, 49 ms | 56 / 35, 28 ms | 57 / 30, 24 ms | 59 / 30, 17 ms | 55 / 28, 9 ms |
-| 5 Mbit/s | 6.9 / 5.1, 55 ms | 8.1 / 6.7, 26 ms | 27.5 / 4.5, 24 ms | 9.4 / 6.3, 20 ms | 2.7 / 4.3, 195 ms |
-| 1 Mbit/s | 1.5 / 1.4, 95 ms | 2.0 / 1.2, 26 ms | 5.9 / 1.0, 24 ms | 2.0 / 1.2, 20 ms | 0.6 / 0.6, 1.2 s |
-| 50 ms round trip | 17 / 14, 147 ms | 56 / 42, 76 ms | 54 / 30, 76 ms | 58 / 30, 67 ms | 59 / 28, 59 ms |
-| 150 ms | 12 / 5.9, 197 ms | 49 / 37, 175 ms | 55 / 30, 174 ms | 55 / 27, 167 ms | 49 / 27, 159 ms |
-| 5 Mbit/s, 50 ms | 5.3 / 4.3, 146 ms | 7.6 / 4.9, 76 ms | 27 / 4.6, 73 ms | 7.7 / 5.3, 66 ms | 2.0 / 2.9, 303 ms |
-| 1 Mbit/s, 150 ms | 1.6 / 1.2, 247 ms | 1.6 / 0.8, 178 ms | 5.4 / 0.9, 175 ms | 1.6 / 0.8, 167 ms | 0.4 / 0.8, 1.6 s |
-| 20 Mbit/s, 50 ms, 1% loss | 3.7 / 3.9, 147 ms | 5.0 / 3.5, 101 ms | 16 / 2.9, 75 ms | 5.3 / 3.1, 68 ms | 1.0 / 2.0, 437 ms |
-| display at 20% of a core | 17 / 18, 47 ms | 24 / 25, 27 ms | 13 / 13, 24 ms | 15 / 26, 18 ms | 19 / 28, 10 ms |
-
-The Xvnc servers push changes as they come (like wayvnc) but code flat areas as fills and palettes (like x11vnc), so
-they keep wayland's frames on a far link and x11's clicks on a thin one; KasmVNC also lowers its JPEG quality as the
-link fills. With ZRLE at 5 Mbit/s and 50 ms TigerVNC sends the animation at 58 frames a second in 0.31 MB/s. Native
-apps (Signal Desktop, Telegram Desktop, Haveno) behave the same on every X backend: input reaches each, the display
-costs 12–24 MB against 45–78 MB on wayland. On the lab's signed-in test accounts (one read-only run per account and
-backend) the live views order the same way: TigerVNC holds 14–25 frames a second through 1 Mbit/s and 150 ms, x11
-and wayland under 9.
-
-So `tigervnc` is the pick for browser and native sandboxes alike: wayland's input and frames, x11's memory, no shm,
-and the best of both on slow links. wayland stays ahead on GPU work, video in Chromium and screenshots; `turbovnc`
-matches TigerVNC's frames for 2–4 times its Tight bytes and more CPU; `kasmvnc` is best on thin links but needs a
-viewer noVNC is not.
-
-**TigerVNC's Wayland server beside wayvnc and TigerVNC's Xvnc.** `wayland-tigervnc` measured in one session with
-`tigervnc` and `wayland` run again beside it (the table above is an earlier session's): three repetitions (slow links
-and native apps two), backend order rotated, 1-minute load 2–9 (two of wayland's slow-link runs at 32, marked busy),
-medians. The same benchmarks as above.
-
-| | tigervnc | wayland | wayland-tigervnc |
-|---|---|---|---|
-| start → live view up / first page ran (ms) | 99 / 503 | 869 / 1,475 | 343 / 826 |
-| idle: PSS of all but Chromium | 20 MB (Xvnc) | 61 MB (sway 51, wayvnc 10) | 68 MB (sway 46, w0vncserver 22) |
-| System V shm segments held | 0 | 0 | 0 |
-| animation, ZRLE: frames/s, server CPU | 58.1, 34% | 57.6, 69% | 57.3, 43% |
-| animation, Tight: frames/s, bytes/s, server CPU | 57.8, 4.8 MB/s, 44% | 58.5, 12.7 MB/s, 35% | 57.8, 4.5 MB/s, 53% |
-| scrolling, Tight: frames/s, bytes/s | 57.5, 5.5 MB/s | 58.0, 14.8 MB/s | 57.4, 5.6 MB/s |
-| 720p video, Tight: frames/s, bytes/s | 31, 2.5 MB/s | 28, 3.0 MB/s | 35, 2.4 MB/s |
-| RFB press → page handler / click to photon | 0.8 / 29 ms | 0.9 / 27 ms | 1.0 / 19 ms |
-| typing, 35 ms a key | 28 chars/s | 17 | 17 |
-| screen share: frames/s, drawn → decoded, CPU | 27, 80 ms, 136% | 27, 111 ms, 106% | 26, 111 ms, 109% |
-| 720p VP9 in Chromium: dropped, CPU | 0.3%, 53% | 5.3%, 26% | 3.3%, 28% |
-| WebGL: frames/s, CPU | 60, 87% | 61, 27% | 61, 37% |
-| screenshot | 91 ms | 33 ms | 42 ms |
-| 10 sandboxes at once: started, USS each | 2.4 s, 132 MB | 2.6 s, 159 MB | 3.4 s, 159 MB |
-
-Over a slow link, as noVNC asks (Tight first): frames a second of the animation / the video, then click to photon.
-
-| link | tigervnc | wayland | wayland-tigervnc |
-|---|---|---|---|
-| unlimited | 48 / 39, 28 ms | 57 / 28, 9 ms | 54 / 35, 19 ms |
-| 20 Mbit/s | 32 / 29, 26 ms | 11 / 22, 51 ms | 29 / 28, 18 ms |
-| 5 Mbit/s | 8.0 / 6.5, 26 ms | 2.8 / 4.2, 193 ms | 7.2 / 6.9, 17 ms |
-| 1 Mbit/s | 2.0 / 1.6, 26 ms | 0.6 / 0.7, 1.2 s | 1.9 / 1.4, 17 ms |
-| 50 ms round trip | 50 / 43, 80 ms | 43 / 28, 66 ms | 52 / 39, 68 ms |
-| 150 ms | 45 / 33, 183 ms | 50 / 25, 189 ms | 39 / 37, 167 ms |
-| 5 Mbit/s, 50 ms | 6.8 / 4.7, 81 ms | 2.0 / 2.8, 302 ms | 6.7 / 5.1, 83 ms |
-| 1 Mbit/s, 150 ms | 1.2 / 0.9, 176 ms | 0.4 / 0.6, 1.6 s | 1.3 / 0.8, 174 ms |
-| 20 Mbit/s, 50 ms, 1% loss | 4.6 / 3.7, 102 ms | 1.4 / 1.8, 230 ms | 5.1 / 2.7, 81 ms |
-| display at 50% of a core | 50 / 34, 27 ms | 39 / 28, 10 ms | 38 / 37, 18 ms |
-| display at 20% of a core | 22 / 29, 26 ms | 15 / 25, 11 ms | 15 / 22, 17 ms |
-
-w0vncserver sends what TigerVNC's Xvnc sends: the same encoders, so a still page's first whole screen is 94 KB (Xvnc
-95 KB, wayvnc 270 KB) and the animation a third of wayvnc's Tight bytes. On a thin link it keeps TigerVNC's frames
-and clicks, two to ten times wayvnc's; on a far one all three hold 40–55 frames a second. It answers a click sooner
-than either (19 ms), and with ZRLE costs 43% of a core where wayvnc costs 69%. Where it loses: it reads every frame
-into shared memory (no dmabuf), so with sway on the GPU a busy screen costs more (WebGL 37% of a core against 27%,
-screenshots 42 ms against 33) and a display held to 20% of a core draws 15 frames a second, as wayvnc does, against
-the Xvnc's 22; it holds 22 MB where wayvnc holds 10; and it lacks the clipboard (above). Starting is faster than
-wayvnc's, though the screen's start is mostly sway's.
-
-Native apps on sway with w0vncserver (`scripts/bench-native.ts`, config `w0-pixman`) behave as on sway with wayvnc:
-input reaches Signal Desktop, Telegram Desktop and Haveno, idle CPU is the app's own, and the display costs 46–78 MB
-(sway and w0vncserver; wayvnc's 45–76, Xvnc's 16–23). The first picture came at about the same time as with wayvnc
-(Haveno 3.3 s, Signal 16 s, Telegram 5.8 s; these times are noisy, one Signal run on Xvnc took 60 s).
-
-On the lab's signed-in test accounts (`scripts/bench-lab.ts`, two Proton and two Discord test accounts, read-only, one
-run each, medians over the four):
-
-| | tigervnc | wayland | wayland-tigervnc |
-|---|---|---|---|
-| pointer sweep and clicks: frames/s, bytes/s | 10, 0.06 MB/s | 9.1, 0.10 MB/s | 17\*, 0.06 MB/s |
-| 5 Mbit/s, 50 ms: frames/s | 15 | 8.5 | 18\* |
-| 1 Mbit/s, 150 ms: frames/s, first whole screen | 18, 2.1 s | 2.6, 3.3 s | 29\*, 2.1 s |
-| display memory (PSS) | 19–25 MB | 71–108 MB | 58–68 MB |
-| account online | 1.0–3.7 s | 1.1–1.6 s | 2.9–4.9 s |
-
-\* w0vncserver draws the pointer into its frames, and the sweep moves it 25 times a second, so part of its frames are
-only the pointer moving: count its bytes, which match the Xvnc's, not its frames. wayland's memory here is sway on the
-GPU (gles2) with Chromium's GPU buffers; on wayland-tigervnc it is the same sway, so the 10–40 MB between them is
-mostly what wayvnc and w0vncserver map of it. The account came online 1–3 s later on wayland-tigervnc in every run;
-not looked into (the synthetic start, above, is faster than wayvnc's).
-
-**What the benchmarks leave out.** Read the numbers above with these in mind; the first three are fixed in the
-scripts, the rest are open.
-
-- Fixed: an Xvnc's socket appears before the server answers on it (KasmVNC, walking `/usr/lib` for FFmpeg, greeted
-  5–18 s late on CI), so a screen counts as started once its live view has said "RFB" (`waitForRfbBanner`), as the
-  benchmarks' "live view up" always meant.
-- Fixed: PSS splits each shared page among every process that maps it, other programs' Chromiums included (a live
-  manager's), so it moves with whatever else runs. The scripts now record USS (pages no other process maps) beside it.
-  Neither is the cost of one more sandbox; the scale runs' per-sandbox figure is closer.
-- Fixed: `scripts/bench-lab.ts` ran each account on each backend once, in the same order. It now records the machine's
-  load at each run and takes `--first-rep` so a later pass goes through the backends in another order.
-- Synthetic pages are not apps. The animation, scrolling page, video and WebGL scene are regular and worst-case; an
-  app redraws in bursts (a hover, an avatar, a typing dot). The lab run covers two kinds of signed-in browser accounts
-  (Proton, Discord), read-only. The native apps (Signal Desktop, Telegram Desktop, Haveno) are measured only on their
-  first screen, never signed in. To close: a signed-in Signal Desktop and Telegram Desktop on test accounts in the lab.
-- Our viewer is not noVNC. The benchmarks' viewer is a Bun RFB client that counts what arrives and decodes only what
-  a measurement reads; frames a second are updates received, not frames drawn, and the cost of decoding JPEG, WebP or
-  ZRLE in a browser (on a phone, most of it) is not in them. To close: noVNC in a headless Chromium as the viewer, CPU
-  throttled to a phone's, counting its own paints.
-- The shaped link is tc on a loopback with a fixed delay and independent random loss: no jitter, reordering,
-  Wi-Fi or cellular bursts, and none of the real path's hops (the manager's WebSocket, TLS, the tailnet's WireGuard).
-  To close: the same scenes through the manager's live-view WebSocket from another machine, and netem jitter and slot
-  models for Wi-Fi and LTE.
-- Click to photon ends when the changed pixels reach our viewer's framebuffer: it leaves out the viewer's decode and
-  paint and the screen's refresh (16–50 ms more), and the change it waits for is a flat block of colour, cheap to
-  encode. To close: the same with noVNC, timed from its input event to the canvas showing the change.
-- The machine is shared. Load is taken as a repetition starts, not throughout; a repetition that could not wait for a
-  quiet machine is kept and marked busy. To close: sample CPU pressure (`/proc/pressure/cpu`) through each measurement
-  and flag the ones it rose in, or pin the benchmark to cores nothing else uses.
-- Few repetitions (three synthetic, two slow-link, one or two per account in the lab): the report shows the median and
-  the range, not a confidence interval.
-- Warm caches: every start after the first reads its programs from the page cache. A first start after a boot or a
-  deploy is slower, by seconds for a large program. To close: evict the store paths (`posix_fadvise` DONTNEED, no root
-  needed) before a cold repetition.
-- The GPU is shared with the desktop and every other Chromium on the machine, so WebGL, video and wayland's
-  gles2 numbers move with them. To close: record the GPU's busy share (`gpu_busy_percent` in sysfs) during each run.
-- Lab start times are mostly the service's: "online" waits for the account's site to load and sign in. One run per
-  account and backend (Proton B on tigervnc online in 11.6 s against 3.7 s on x11) says little about the backend.
-- One screen size (1280×800); a phone viewer scaling it down is not measured.
-- KasmVNC is measured only through its RFB on the Unix socket with our viewer speaking its pointer format: its own
-  web client's WebP, adaptive quality and UDP transport, which is how its users get it, are not.
-- w0vncserver draws the pointer into its frames (and with it sway draws it into the output, so grim's pictures have
-  it too). The scenes never move the pointer while measuring, so the cost of sending a moving pointer as picture,
-  where the other servers send a cursor shape once, is not measured. The native apps' "first picture" once took the
-  lone pointer on a black screen for the app's first frame; it now also needs the screen to be more than nearly black.
-- `wayland-tigervnc` runs a TigerVNC we patch and build (nix/w0vncserver.nix); the others run nixpkgs' or upstream's
-  builds as shipped.
+What the measurements changed in the code: wayvnc sends up to 60 frames a second (`-f 60`; its default 30 gave half
+the frames for 0.6 of the CPU while something moves, the same while nothing does), and runs without `-g` (its GPU
+features changed nothing, and its Open H.264 delivered no frame at all, so it never offers H.264, even to noVNC,
+which asks for it first). The manager's live-view bridge (packages/manager/src/http.ts) stops reading the VNC socket
+while the page's WebSocket is backed up: a server that pushes frames as they come (wayvnc, the Xvnc servers,
+w0vncserver) then sees a full socket and sends fewer, instead of piling them up in the manager (10 MB at 5 Mbit/s and
+50 ms; past Bun's 16 MB limit what is sent is dropped, which breaks the RFB stream).
 
 **Programs.** Every program a screen or a sandbox starts (Xvfb, x11vnc, xdotool, ImageMagick; sway, wayvnc, grim;
 dbus, PipeWire, WirePlumber, the portals; bubblewrap, pasta, xwayland-satellite) comes from the repo's one pinned

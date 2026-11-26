@@ -106,7 +106,7 @@ if (scale.length) {
 }
 
 if (linkRuns.length) {
-  const conds: { name: string; label: string }[] = link[0].conditions;
+  const conds = [...new Map(link.flatMap((d) => d.conditions as { name: string; label: string }[]).map((c) => [c.name, c])).values()];
   const bs = backendsOf(linkRuns);
   out.push(`\nThe live view through a shaped link (scripts/bench-link.ts, as noVNC asks: Tight first, quality 6): frames/s of the animation / of the video, then click to photon (ms); ${new Set(linkRuns.map((r) => r.rep)).size} repetitions, 1-minute load ${loads(linkRuns)}.\n`);
   out.push(
@@ -162,4 +162,10 @@ if (lab.length) {
   );
 }
 
-console.log(out.join('\n'));
+/** Prose at 118 columns, as the docs are; tables as they are. */
+const wrap = (text: string) =>
+  text
+    .split('\n')
+    .map((l) => (l.startsWith('|') || l.length <= 118 ? l : l.split(' ').reduce<string[]>((ls, w) => (ls.length && ls[ls.length - 1]!.length + 1 + w.length <= 118 ? [...ls.slice(0, -1), `${ls[ls.length - 1]} ${w}`] : [...ls, w]), []).join('\n')))
+    .join('\n');
+console.log(wrap(out.join('\n')));

@@ -3,8 +3,10 @@
  * The page for scripts/bench-display.ts's numbers: one HTML file, the results inside it, charts drawn by the page
  * itself (no network), light and dark.
  *
- *   bun scripts/bench-display-report.ts <results.json> <out dir> [--native native.json] [--link link.json]
- *                                       [--lab lab.json] [--findings findings.html]
+ *   bun scripts/bench-display-report.ts <results.json[,more.json]> <out dir> [--scale scale.json] [--native native.json]
+ *                                       [--link link.json[,more.json]] [--lab lab.json] [--findings findings.html]
+ *
+ * Several files of a kind make one: their runs together (scale runs too), conditions and backends joined.
  *
  * Writes <out dir>/index.html and a copy of each input beside it (results.json, native.json, link.json). The native
  * apps' numbers come from scripts/bench-native.ts, the constrained link's from scripts/bench-link.ts. The native runs'
@@ -24,24 +26,38 @@ const opt = (name: string) => {
 };
 const nativeIn = opt('native');
 const linkIn = opt('link');
+const scaleIn = opt('scale');
 const labIn = opt('lab');
 const findingsIn = opt('findings');
 const findings = findingsIn ? readFileSync(findingsIn, 'utf8') : '';
 const [input, outDir] = args;
 if (!input || !outDir) {
-  console.error('usage: bun scripts/bench-display-report.ts <results.json> <out dir> [--native native.json] [--link link.json]');
+  console.error('usage: bun scripts/bench-display-report.ts <results.json[,more.json]> <out dir> [--scale scale.json] [--native native.json] [--link link.json[,more.json]]');
   process.exit(2);
 }
-const results = JSON.parse(readFileSync(input, 'utf8'));
+// Several results files (a session run in parts, or one backend measured again) are one: their runs and scale runs
+// together, their backends joined in order. --scale adds a scale-only run's (bench-display.ts --only scale).
+const parts = [...input.split(','), ...(scaleIn ? scaleIn.split(',') : [])].map((f) => JSON.parse(readFileSync(f, 'utf8')));
+const results = { ...parts[0], runs: parts.flatMap((p) => p.runs ?? []), scale: parts.flatMap((p) => p.scale ?? []), backends: [...new Set(parts.flatMap((p) => p.backends))] };
 mkdirSync(outDir, { recursive: true });
-copyFileSync(input, join(outDir, 'results.json'));
+writeFileSync(join(outDir, 'results.json'), JSON.stringify(results, null, 2));
 const native = nativeIn ? JSON.parse(readFileSync(nativeIn, 'utf8')) : null;
 if (native) {
   for (const r of native.runs) delete r.gpuLines;
   writeFileSync(join(outDir, 'native.json'), JSON.stringify(native, null, 2));
 }
-const link = linkIn ? JSON.parse(readFileSync(linkIn, 'utf8')) : null;
-if (link) copyFileSync(linkIn!, join(outDir, 'link.json'));
+// Several link files (a session run in parts) are one: their runs together, their conditions and backends joined.
+const links = linkIn ? linkIn.split(',').map((f) => JSON.parse(readFileSync(f, 'utf8'))) : [];
+const link = links.length
+  ? {
+      ...links[0],
+      runs: links.flatMap((l) => l.runs),
+      checks: links.flatMap((l) => l.checks ?? []),
+      conditions: [...new Map(links.flatMap((l) => l.conditions).map((c: { name: string }) => [c.name, c])).values()],
+      backends: [...new Set(links.flatMap((l) => l.backends))],
+    }
+  : null;
+if (link) writeFileSync(join(outDir, 'link.json'), JSON.stringify(link, null, 2));
 const lab = labIn ? JSON.parse(readFileSync(labIn, 'utf8')) : null;
 if (lab) copyFileSync(labIn!, join(outDir, 'lab.json'));
 const json = (v: unknown) => JSON.stringify(v).replace(/</g, '\\u003c');

@@ -12,7 +12,7 @@ import { Router } from './router.ts';
 import { SignInRelays } from './signin.ts';
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { procAlive, procStat } from './procs.ts';
-import { acquireManagerLock, chooseLaunch, type CodeRestarts, type Launch, releaseManagerLock, Supervisor } from './supervisor.ts';
+import { acquireManagerLock, chooseLaunch, type CodeRestarts, type Launch, releaseManagerLock, type SleepOpts, Supervisor } from './supervisor.ts';
 import { NdjsonFile, setTraceSink, StallWatch } from './trace.ts';
 
 export interface ManagerOpts {
@@ -66,6 +66,11 @@ export interface ManagerOpts {
   systemdRun?: string;
   /** Tests only: how long a surviving extractor waits for a manager before it ends itself (1800 s). */
   managerGoneExitS?: number;
+  /**
+   * Idle accounts of kinds that may sleep stop until the next call or their next run (supervisor.ts SleepOpts,
+   * docs/supervisor.md "Sleeping"). On by default; main.ts reads `sleep`, `sleep_idle_minutes`, `sleep_keep_alive_hours`.
+   */
+  sleep?: SleepOpts;
 }
 
 /** What a manager that goes on a restart leaves the next one (docs/supervisor.md "Handing over"). */
@@ -147,6 +152,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     restartOnlineMs: o.restartOnlineMs,
     systemdRun: o.systemdRun,
     managerGoneExitS: o.managerGoneExitS,
+    sleep: o.sleep,
     onEvent: (id, ev) => {
       router.event(id, ev);
       if (ev.t === 'status') notices?.poke();
@@ -164,7 +170,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
       if (block) errors?.record({ source: 'uncaught', where, name: block.name, message: block.message, stack: block.frames, extra, kind: 'bug' });
       else errors?.record({ source: 'uncaught', where, name: 'Exit', message: exit.signal ? `ended by signal ${exit.signal}` : `exited with code ${exit.code}`, extra, kind: 'bug' });
     },
-    onExit: (id) => router?.processGone(id),
+    onExit: (id, asleep) => router?.processGone(id, asleep),
     // An adopted extractor back after a handover that did not name it: a gap only if it says it did not hold its events.
     // Only its first return counts: a later blip of its socket, with this manager up all along, loses nothing.
     onResumed: (id, held) => {
@@ -313,7 +319,7 @@ function takeHandover(dataDir: string): Handover | null {
   }
 }
 
-export type { CodeRestarts };
+export type { CodeRestarts, SleepOpts };
 export type { Kind, Manifest } from './kinds.ts';
 export { kindOf, loadKinds } from './kinds.ts';
 export { acquireLock, releaseLock, LOCK, type Launch } from './supervisor.ts';

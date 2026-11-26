@@ -35,6 +35,15 @@ export interface Manifest {
    */
   settings?: SettingInfo[];
   /**
+   * Accounts of this kind may sleep (docs/supervisor.md "Sleeping"): after `idleMinutes` with no call, nothing its
+   * extractor says it is doing (a pull, a sign-in) and no live view open, its extractor stops to free its memory (a
+   * browser account holds hundreds of MB), and the next call starts it again and waits for it. Its extractor says when
+   * it next needs to run by itself (link.sleep's `wakeAt`: a daily pull), and is started shortly before then; with
+   * `keepAliveHours`, also at least that often, for a site that drops a session nobody uses. Only for kinds no app
+   * expects live events from: never a chat kind. Each account may still be kept awake (its `stayAwake` setting).
+   */
+  sleep?: SleepInfo;
+  /**
    * Its browser can sign in to its site with another account here (docs/signin-relay.md): a "Continue with Google"
    * there is answered by a Google account's own browser. `sites`: the origins a sign-in's redirect may go to.
    */
@@ -42,6 +51,19 @@ export interface Manifest {
   /** Sign-in providers its browser answers for other accounts' browsers (spec/signin.ts SIGN_IN_PROVIDERS): `google`. */
   signsIn?: string[];
 }
+
+export interface SleepInfo {
+  idleMinutes: number;
+  keepAliveHours?: number;
+}
+
+/** The setting every kind that may sleep gets (Manifest.sleep): this account never sleeps. */
+export const STAY_AWAKE: SettingInfo = {
+  key: 'stayAwake',
+  label: 'Stay awake',
+  type: 'boolean',
+  note: 'Keep its extractor running when it has nothing to do, instead of stopping it until the next call or scheduled run.',
+};
 
 export interface SettingInfo {
   key: string;
@@ -107,5 +129,7 @@ export function kindOf(m: Manifest, dir: string): Kind {
     }
     for (const e of Object.keys(i.events)) eventIfaces.set(e, [...(eventIfaces.get(e) ?? []), i]);
   }
-  return { ...m, dir, ifaces, opIface, eventIfaces };
+  // A kind that may sleep offers its accounts a way to stay awake.
+  const settings = m.sleep && !m.settings?.some((x) => x.key === STAY_AWAKE.key) ? [...(m.settings ?? []), STAY_AWAKE] : m.settings;
+  return { ...m, ...(settings ? { settings } : {}), dir, ifaces, opIface, eventIfaces };
 }

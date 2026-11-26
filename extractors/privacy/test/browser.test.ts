@@ -104,11 +104,16 @@ it(
   async () => {
     await until(() => events.some((e) => e.t === 'hello'), 20_000, 'hello');
     expect(events.find((e) => e.t === 'hello')).toMatchObject({ interfaces: ['privacy.session', 'statements'], capabilities: ['liveView'] });
-    // No passkey yet: nothing pulled, and a refresh says why (pull.test.ts has the pull).
+    // No passkey yet: nothing pulled, and a refresh says why (pull.test.ts has the pull). Asked before the browser is
+    // up, the pull waits for it and says why in statements.pulled (docs/statements.md); after, the answer says why.
     expect((await call('statements.list')).result).toEqual({ files: [], next: 0 });
     const r0 = (await call('statements.refresh')).result;
-    expect(r0.started).toBe(false);
-    expect(r0.reason).toMatch(/not up yet|no passkey yet/);
+    if (r0.started) {
+      expect(r0.reason).toBe('the pull starts once its browser is up');
+      await until(() => events.some((e) => e.t === 'statements.pulled'), 60_000, 'the early pull refused');
+      expect(events.find((e) => e.t === 'statements.pulled')).toMatchObject({ ok: false, saved: 0 });
+      expect(events.find((e) => e.t === 'statements.pulled').needs).toMatch(/no passkey yet/);
+    } else expect(r0.reason).toMatch(/no passkey yet/);
 
     // 1. On /login: sign in.
     await until(() => attentionKind() === 'login', 60_000, 'the sign-in attention');

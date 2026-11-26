@@ -1,6 +1,21 @@
 /** What the manager's own page reads (GET /api/state) and sends. */
 import type { AddInfo, CallError, Level } from '@dither-accounts/spec';
 
+/** How an account that may sleep stands (AccountInfo.sleep; supervisor.ts, docs/supervisor.md "Sleeping"). */
+export interface SleepInfoView {
+  asleep: boolean;
+  /** Asleep since. */
+  since: number | null;
+  /** When it wakes by itself (null: only for a call), and what for ('its next scheduled run', 'a keep-alive'). */
+  wakeAt: number | null;
+  wakeFor: string | null;
+  /** Its idle time, after which it falls asleep. */
+  idleMinutes: number;
+  /** Awake: what keeps it so; null when nothing does, and it has been idle since `idleSince`. */
+  awake: string | null;
+  idleSince: number | null;
+}
+
 export interface OpInfo {
   name: string;
   level: Level;
@@ -48,6 +63,13 @@ export interface AccountInfo {
   enabled: boolean;
   running: boolean;
   online: boolean;
+  /** Its extractor is stopped while it has nothing to do; a call or its next scheduled run wakes it (docs/supervisor.md "Sleeping"). */
+  asleep: boolean;
+  /**
+   * For a kind that may sleep (and is let to): whether it is asleep, since when and until when (null: until a call),
+   * and while awake what keeps it so. Null for the others.
+   */
+  sleep: SleepInfoView | null;
   /** Why it is not running (its directory is locked by another process, no extractor). */
   error: string | null;
   /** The last status its extractor reported ({ status, attention }), if any. */

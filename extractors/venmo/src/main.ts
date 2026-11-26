@@ -214,11 +214,14 @@ const runner = new StatementsRunner({
   accounts: () => [{ id: 'venmo', name: 'Venmo', institution: 'Venmo', currency: 'USD', kind: 'payments' }],
   blocked: () => (host.attached ? null : 'the sandbox browser is not up yet'),
   onChange: () => status(),
+  // Asleep while idle (docs/supervisor.md "Sleeping"): not while an app's browser tabs are open.
+  busy: (): string | null => browserOps.inUse(),
 });
 
 // ------------------------------------------------------------------- status
 let lastSent = '';
 function status(force = false) {
+  runner.report();
   const base = host.baseState();
   const v = { signedIn: signedIn(), lastSignedInPull: st.lastSignedInPull ?? null, nagAfterDays, now: Date.now(), page, kind };
   const s = base ?? statusOf(v);

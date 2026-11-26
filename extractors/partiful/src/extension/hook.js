@@ -317,9 +317,12 @@
     hostMessages: (c) => fn('getEventDisplayedHostMessages', { eventId: id(c.id, 'event') }),
     album: (c) => fn('getEventMedia', { eventId: id(c.id, 'event') }),
     myEvents: () => fn('getMyUpcomingEventsForHomePage', {}, undefined, { signedIn: true }),
+    // As the app pages them: back from a time, the first page from now with no startId (Partiful answers 500 INTERNAL
+    // to a cursor without startAfterMs).
     notifications: (c) => {
-      const after = c.startAfterMs === undefined ? undefined : Number.isFinite(c.startAfterMs) && c.startAfterMs > 0 ? c.startAfterMs : bad('a time');
-      return fn('getNotifications', { cursor: { startAfterMs: after, startId: after === undefined ? undefined : cid(c.startId, 'notification') } }, undefined, { signedIn: true });
+      const first = c.startAfterMs === undefined;
+      const after = first ? Date.now() : Number.isFinite(c.startAfterMs) && c.startAfterMs > 0 ? c.startAfterMs : bad('a time');
+      return fn('getNotifications', { cursor: { startAfterMs: after, startId: first ? undefined : cid(c.startId, 'notification') } }, undefined, { signedIn: true });
     },
     users: (c) => {
       const ids = Array.isArray(c.ids) && c.ids.length && c.ids.length <= 100 ? c.ids.map((x) => id(x, 'user')) : bad('people to look up');

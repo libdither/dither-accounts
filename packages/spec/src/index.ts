@@ -263,6 +263,12 @@ export interface AccountView {
   /** The extractor's process is running / its socket is connected. */
   running: boolean;
   online: boolean;
+  /**
+   * Asleep: its kind may sleep when idle (amazon, venmo, schwab, privacy, claude) and nothing needed it for a while, so
+   * its extractor was stopped to free memory. Nothing is wrong with it: a call wakes it and waits for it, and it wakes
+   * by itself for its own schedule (docs/supervisor.md "Sleeping"). `running` and `online` are false meanwhile.
+   */
+  asleep: boolean;
   enabled: boolean;
   /** Why it is not running, when the manager knows (another process holds its directory, no extractor). */
   error: string | null;

@@ -52,6 +52,13 @@ A link job, for one `claude` account:
 Steps: `starting`, `signing-in`, `waiting-for-mail`, `opening-link`, `authorizing`, `exchanging`, then `done`,
 `needs-you` (open the live view, then relink) or `error`.
 
+**Asleep between jobs** ([supervisor.md](supervisor.md#sleeping-browser-accounts-only-needed-now-and-then)): only link
+jobs use a `claude` account, so after 15 idle minutes its browser stops. A job wakes it (its first call waits for it,
+and `starting` is asked again while the browser comes up) and holds it awake until the job ends, minutes of waiting
+for a mail included. The watchdog below reads only the hub, never the account, so it wakes nothing; a relink it starts
+is a job like any other. A signed-out claude.ai costs nothing: the next job signs in with the emailed link. Stay awake
+(a setting) keeps it running.
+
 The watchdog (every 5 minutes; `DITHER_CLIPROXY_WATCH_MS` for tests) reads `GET /auth-files`:
 
 - an account whose sign-in the hub cannot renew any more (`next_action: sign_in`, or a refresh refused with 400/401 or

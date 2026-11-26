@@ -34,6 +34,13 @@ export interface Manifest {
    * in the account's config under its key, and the extractor restarted to take it. Only keys listed here can be set.
    */
   settings?: SettingInfo[];
+  /**
+   * Its browser can sign in to its site with another account here (docs/signin-relay.md): a "Continue with Google"
+   * there is answered by a Google account's own browser. `sites`: the origins a sign-in's redirect may go to.
+   */
+  signIn?: { sites: string[] };
+  /** Sign-in providers its browser answers for other accounts' browsers (spec/signin.ts SIGN_IN_PROVIDERS): `google`. */
+  signsIn?: string[];
 }
 
 export interface SettingInfo {

@@ -34,7 +34,7 @@
  */
 import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BridgeServer, diagnoseSilence, pickFreeDisplay, type Reached, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, diagnoseSilence, pickFreeDisplay, type Reached, Sandbox, SignInAnswerer } from '@dither-accounts/browser';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
 import { Handover, HandoverError } from '@dither-accounts/spec/handover';
 import type { OutgoingMail } from '@dither-accounts/interfaces';
@@ -449,6 +449,8 @@ const bridge = new BridgeServer<Up, PageCmd | TabCmd>({
   resend: { kinds: RESEND_KINDS, when: (c) => resendable(c as { kind: string; method?: unknown; body?: unknown }) },
   log,
 });
+/** Other accounts' "Continue with Google", answered in this browser (packages/browser/src/signin.ts). */
+const signIns = new SignInAnswerer({ bridge, provider: 'google', testOrigin, log, onChange: () => status() });
 
 // ------------------------------------------------------------------- status
 const LOGIN: Attention = { kind: 'login', message: 'Sign in to Google in the live view', liveView: true };
@@ -482,6 +484,8 @@ function state(): { status: string; attention: Attention | null } {
     if (Date.now() - startedAt > ATTACH_MS) return att({ kind: 'unknown', message: 'The sandbox extension did not attach; open the live view to see the browser', liveView: true });
     return { status: 'connecting', attention: null };
   }
+  const relay = signIns.attention();
+  if (relay) return att(relay);
   const p = signPage();
   const s = who();
   const t = p.url;
@@ -1762,6 +1766,8 @@ const page = (p: any) => ({ items: p.items ?? [], ...(p.nextPageToken ? { nextPa
 
 /** Each op under its own time (deadline.ts): every page request it makes is cut to what is left of it. */
 function onCommand(cmd: Command): Promise<unknown> {
+  // Another account's sign-in, from the manager (docs/signin-relay.md): its own time, up to minutes while you answer.
+  if (cmd.t === 'signin.authorize') return signIns.authorize(cmd as { url?: unknown; redirect?: unknown; ms?: unknown });
   return withDeadline(opMs(cmd.t) - OP_MARGIN_MS, () => runOp(cmd));
 }
 
@@ -1862,7 +1868,7 @@ async function boot() {
       width: WIDTH,
       height: HEIGHT,
       extensionSrc: join(import.meta.dir, 'extension'),
-      config: { wsUrl: bridge.wsUrl, token: bridgeToken, authuser, testOrigin, testMailOrigin, peopleApiBase, fetchMs: testMailOrigin ? Number(cfg.testFetchMs) || null : null },
+      config: { wsUrl: bridge.wsUrl, token: bridgeToken, signIn: { consume: [] }, authuser, testOrigin, testMailOrigin, peopleApiBase, fetchMs: testMailOrigin ? Number(cfg.testFetchMs) || null : null },
       prepareExtension: testOrigin || testMailOrigin ? addTestOrigins : undefined,
       startUrl,
       noSandbox: !!cfg.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',

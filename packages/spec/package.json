@@ -3,5 +3,5 @@
   "license": "AGPL-3.0-or-later",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts", "./handover": "./src/handover.ts", "./memory": "./src/memory.ts" }
+  "exports": { ".": "./src/index.ts", "./handover": "./src/handover.ts", "./memory": "./src/memory.ts", "./signin": "./src/signin.ts" }
 }

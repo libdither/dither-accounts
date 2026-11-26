@@ -10,3 +10,4 @@ export { MARKER_KEY_ENV, markerHex, markerKey, markerName, stampExtension, stamp
 export { type Bins, type Log, resolveBins, resolveImport, resolveXdotool, Sandbox, type SandboxOptions } from './sandbox.ts';
 export { prepareVncSocket, SOCKET_PATH_MAX, VNC_SOCKET, vncSocketPath, waitForVncSocket, x11vncArgs } from './vnc.ts';
 export { importedScripts, profileHolder, refreshWorker, WORKER_HASH, WORKER_STORAGE, workerHash, type WorkerRefresh } from './worker.ts';
+export { addSignInPage, SIGN_IN_PAGE, SignInAnswerer, SignInAsker, signInConfig } from './signin.ts';

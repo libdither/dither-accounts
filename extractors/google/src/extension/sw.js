@@ -20,6 +20,8 @@
 
 /*@include worker-watch@*/
 
+/*@include signin-worker@*/
+
 const ROLES = ['calendar', 'gmail'];
 const NAMES = { calendar: 'Google Calendar', gmail: 'Gmail' };
 
@@ -104,7 +106,8 @@ function current(role) {
 
 async function reportTabs(force) {
   try {
-    const tabs = await chrome.tabs.query({});
+    // A sign-in's tabs (signin-worker.js) are not the site's pages.
+    const tabs = (await chrome.tabs.query({})).filter((t) => !signinRelay.owns(t.id));
     const hooked = new Map(); // tab id -> role of a port in it
     for (const p of ports) if (tabOf(p) !== null) hooked.set(tabOf(p), roleOf(p));
     const currentTabs = new Set(ROLES.map((r) => current(r)).filter(Boolean).map(tabOf));
@@ -249,6 +252,8 @@ async function connect() {
       return;
     }
     if (msg.t !== 'cmd') return; // pings only keep this worker awake
+    // Signing in with another account (signin-worker.js): the worker's own.
+    if (signinRelay.command(msg)) return;
     const cmd = msg.cmd || {};
     if (cmd.kind === 'tab.open' || cmd.kind === 'tab.reload') {
       tabCommand(msg.id, cmd);
@@ -339,4 +344,5 @@ try {
 } catch (e) {}
 
 self.addEventListener('activate', () => connect());
+signinRelay.start(sendUp, loadConfig().then((c) => c && c.signIn));
 connect();

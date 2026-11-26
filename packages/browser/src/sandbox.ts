@@ -18,6 +18,7 @@ import type { Subprocess } from 'bun';
 import { displayIsOurs } from './display.ts';
 import { MEMORY_DISABLED_FEATURES, mergeFeatureFlags } from './flags.ts';
 import { markerKey, stampExtension } from './markers.ts';
+import { addSignInPage } from './signin.ts';
 import { ChromiumNoise } from './noise.ts';
 import { prepareVncSocket, vncSocketPath, waitForVncSocket, x11vncArgs } from './vnc.ts';
 import { refreshWorker } from './worker.ts';
@@ -128,6 +129,7 @@ export class Sandbox {
     cpSync(this.opts.extensionSrc, this.extensionDir, { recursive: true });
     writeFileSync(join(this.extensionDir, 'config.json'), JSON.stringify(this.opts.config, null, 2), { mode: 0o600 });
     this.opts.prepareExtension?.(this.extensionDir);
+    addSignInPage(this.extensionDir);
     const left = stampExtension(this.extensionDir, this.opts.markerKey ?? markerKey());
     if (left.length) this.opts.log('warn', 'the extension copy still holds a name that is the same for every install', left);
   }

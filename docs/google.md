@@ -43,6 +43,11 @@ you would on your desktop (password, second step, whatever Google asks), and lea
 The account goes online once a Calendar call works. The browser profile keeps the sign-in, so this is once, until
 Google signs the browser out.
 
+That browser also answers other accounts' **Continue with Google** (Luma's: docs/signin-relay.md). The manager hands it
+a site's Google sign-in link; it opens the link in a tab of its own, in front, where Google may ask you to pick the
+account and allow the site (the account shows an attention for it), and hands back the address Google sent that tab to,
+stopped before it loaded. The extension's copy gets `webNavigation` and `declarativeNetRequest` for it.
+
 ### What runs
 
 - **The sandbox** (packages/browser, the Discord sandbox made general): a private Xvfb display, the first free one in

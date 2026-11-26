@@ -755,6 +755,8 @@ export function startFakeGoogle(opts: { web?: WebOpts } = {}) {
   let tokenRequests: string[] = [];
   const mailCalls: string[] = [];
   const mailOpened: string[] = [];
+  /** Visits to the authorize page: whose link, and whether the browser was signed in. */
+  const signIns: { clientId: string; redirectUri: string; scope: string; signedIn: boolean }[] = [];
   const stalls: Record<FakePage, Stall> = { calendar: 'off', gmail: 'off' };
   const held: Record<FakePage, (() => void)[]> = { calendar: [], gmail: [] };
   const loads = new Map<string, number>();
@@ -835,6 +837,19 @@ export function startFakeGoogle(opts: { web?: WebOpts } = {}) {
       }
 
       let m: RegExpMatchArray | null;
+      // Google's authorize page, as a browser signed in to it sees it (docs/signin-relay.md): signed in, it sends the
+      // browser straight back to the site with a code, as Google does once you have allowed that site; signed out, a
+      // sign-in page.
+      if (web && req.method === 'GET' && path === '/o/oauth2/v2/auth') {
+        const q = url.searchParams;
+        const signedIn = (req.headers.get('cookie') ?? '').includes(`SAPISID=${web.sapisid}`);
+        signIns.push({ clientId: q.get('client_id') ?? '', redirectUri: q.get('redirect_uri') ?? '', scope: q.get('scope') ?? '', signedIn });
+        if (!signedIn) return new Response('<!doctype html><title>Sign in</title><body>Sign in to continue</body>', { headers: { 'content-type': 'text/html; charset=utf-8' } });
+        const back = new URL(q.get('redirect_uri') ?? '');
+        back.searchParams.set('code', `4/fake-code-${++n}`);
+        if (q.get('state')) back.searchParams.set('state', q.get('state')!);
+        return new Response(null, { status: 302, headers: { location: back.toString() } });
+      }
       if (web && req.method === 'GET' && (m = path.match(/^\/calendar\/u\/(\d+)\/r$/))) {
         if (slowLoads.calendar) {
           const ms = slowLoads.calendar;
@@ -1169,6 +1184,8 @@ setTimeout(() => {
       server.stop(true);
       mailServer?.stop(true);
     },
+    /** web: the authorize page's visits (another account's sign-in, answered here). */
+    signIns,
     /** web: the Gmail side's origin, and the calls made to it. */
     mailUrl: mailBase,
     mailCalls,

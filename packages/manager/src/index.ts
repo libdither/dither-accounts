@@ -9,6 +9,7 @@ import { type Kind, loadKinds } from './kinds.ts';
 import { type NoticeTimes, Notices, NOTICES_KIND, noticesKind } from './notices.ts';
 import { providers as factories, type Provider } from './providers/index.ts';
 import { Router } from './router.ts';
+import { SignInRelays } from './signin.ts';
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { procAlive, procStat } from './procs.ts';
 import { acquireManagerLock, chooseLaunch, type CodeRestarts, type Launch, releaseManagerLock, Supervisor } from './supervisor.ts';
@@ -126,6 +127,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
   kinds.set(APPROVER_KIND, approverKind());
   const store = new Store(join(o.dataDir, 'accounts.sqlite'));
   let router!: Router;
+  let signIns!: SignInRelays;
   let http!: Http;
   let notices: Notices | undefined;
   const publicUrl = (o.publicUrl ?? `http://localhost:${o.port}`).replace(/\/$/, '');
@@ -170,14 +172,19 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
       resumedOnce.add(id);
       if (!held && handoverNow && !handoverNow.holding?.includes(id)) router.markGap(id);
     },
-    // The approver's questions, for kinds that hold passkeys; the manager names the account itself.
+    // An extractor's questions, for its own account (the manager names it itself): the approver's, for kinds that hold
+    // passkeys, and signing in with another account here (signin.ts), for kinds that do.
     onAsk: async (id, what, input) => {
       const a = store.account(id);
-      if (!a || !kinds.get(a.kind)?.passkeys) throw new Error('this account holds no passkeys');
+      if (!a) throw new Error('no such account');
+      if (what === 'signin.choices') return signIns.choices(id, input);
+      if (what === 'signin.relay') return signIns.relay(id, input);
+      if (!kinds.get(a.kind)?.passkeys) throw new Error('this account holds no passkeys');
       if (what === 'approver.request') return approvers.request(a, input);
       throw new Error(`the manager answers no "${what}"`);
     },
   });
+  signIns = new SignInRelays({ store, kinds, statusOf: (id) => (router?.lastStatus(id)?.status as string | undefined) ?? null, command: (id, cmd, ms): Promise<unknown> => sup.command(id, cmd, ms) });
   // An app that hears of a gap restarts the account: that start must not trust what the extractor kept (DITHER_RESYNC).
   router = new Router(store, kinds, sup, { dataDir: o.dataDir, onGap: (id) => sup.markResync(id) });
   // Links to an account's page only when the page has an address of its own (localhost is not one a phone can open).

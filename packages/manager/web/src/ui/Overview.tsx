@@ -26,7 +26,7 @@ function AccountCard({ a }: { a: AccountInfo }) {
       <Avatar a={a} size={40} />
       <span class="ov-card-text">
         <span class="ov-card-name">{named(a)}</span>
-        <span class="ov-card-sub">{c.tone === 'off' ? `${sub ?? kn} · ${c.text}` : (sub ?? c.text)}</span>
+        <span class="ov-card-sub">{c.tone === 'off' || c.tone === 'sleep' ? `${sub ?? kn} · ${c.text}` : (sub ?? c.text)}</span>
       </span>
       <span class={`ov-state ${c.tone}`} data-condition>
         <Dot tone={c.tone} title={c.text} />
@@ -59,6 +59,7 @@ export function Overview() {
     (byCat.get(c) ?? byCat.set(c, []).get(c)!).push(a);
   }
   const online = s.accounts.filter((a) => a.online).length;
+  const asleep = s.accounts.filter((a) => a.asleep).length;
   const needing = s.accounts.filter((a) => a.enabled && (a.error || attentionOf(a)));
   const asking = pending.value;
   return (
@@ -67,7 +68,7 @@ export function Overview() {
         <div>
           <h1>Accounts</h1>
           <p class="small muted">
-            {s.accounts.length ? `${online} of ${s.accounts.length} online` : 'None yet'}
+            {s.accounts.length ? `${online} of ${s.accounts.length} online${asleep ? `, ${asleep} asleep` : ''}` : 'None yet'}
             {needing.length > 0 && <span class="warn-text"> · {needing.length} need you</span>}
           </p>
         </div>
@@ -111,7 +112,7 @@ export function Overview() {
               <h2>{c.name}</h2>
               {list.length > 0 && (
                 <span class="faint small">
-                  {list.filter((a) => a.online).length}/{list.length}
+                  {list.filter((a) => a.online || a.asleep).length}/{list.length}
                 </span>
               )}
               <span class="grow" />

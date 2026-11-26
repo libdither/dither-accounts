@@ -165,6 +165,7 @@ function view(): View {
 
 let lastSent = '';
 function status(force = false) {
+  statements.report();
   const v = view();
   const s = state(v);
   const d = {
@@ -496,6 +497,8 @@ const statements = new StatementsRunner({
   accounts: () => [{ id: 'privacy', name: 'Privacy.com', institution: 'Privacy.com', currency: 'USD', kind: 'card' }],
   blocked: () => statementsBlocked({ attached: bridge.connected, passkey: auth.summary(), hold: st.hold ?? null }),
   onChange: () => status(),
+  // Asleep while idle (docs/supervisor.md "Sleeping"): not while it signs in.
+  busy: () => (signingIn ? 'a sign-in with its passkey' : null),
 });
 
 // ---------------------------------------------------------------- lifecycle
@@ -565,6 +568,8 @@ async function boot() {
     const b = statementsBlocked({ attached: bridge.connected, passkey: auth.summary(), hold: st.hold ?? null });
     if (b) return;
     if (cfg.signInOnStart !== true) return void log('info', 'no sign-in at start: each pull signs in by itself');
+    // Woken from sleep (docs/supervisor.md "Sleeping"): for its daily pull, which signs in by itself, or for a call.
+    if (process.env.DITHER_WOKE) return void log('info', 'no sign-in at start: it was woken from sleep, and a pull signs in by itself');
     // A refusal from the phone stands: the start asks nothing (the attention says what does).
     if (signin.blocked('start')) return void log('info', 'no sign-in at start: the last approval on the phone was not given');
     await ensureSignedIn('start').catch((e) => log('warn', 'automatic sign-in at start did not go through', String((e as Error)?.message ?? e).slice(0, 200)));

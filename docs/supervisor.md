@@ -1,6 +1,7 @@
 # The supervisor: extractors that outlive the manager
 
-The manager runs one extractor process per enabled account (`packages/manager/src/supervisor.ts`). Restarting the
+The manager runs one extractor process per enabled account (`packages/manager/src/supervisor.ts`), except while one
+of a kind that may sleep has nothing to do ([Sleeping](#sleeping-browser-accounts-only-needed-now-and-then)). Restarting the
 manager (a deploy, `systemctl --user restart`) does **not** restart the accounts: their extractors keep their sessions
 (a signed-in browser, a Telegram or WhatsApp connection) and the next manager takes them over. To the networks a deploy
 is then invisible; before, every deploy relaunched every browser and reconnected every account at once, a pattern
@@ -65,7 +66,8 @@ Each account's connection to its extractor follows one rule for being replaced (
   made meanwhile: calls wait (at most 10 s, `RECONNECT_OPEN_MS`), and the ones it had are answered on the new socket.
 - A call the extractor had when it ended (a crash, a stop, a Restart) fails at once, `offline`, not after its timeout:
   it may have run. A read is run again on the new process instead, once, when a Restart is under way.
-- A call to an account with no extractor running, or one stopped on purpose, fails at once (`offline`).
+- A call to an account with no extractor running, or one stopped on purpose, fails at once (`offline`). One to an
+  account asleep wakes it and waits for it ([Sleeping](#sleeping-browser-accounts-only-needed-now-and-then)).
 
 `test/extractor-swap.test.ts` cuts the connection in each of these ways with calls on it, and checks that each call is
 answered exactly once or refused with one of those words (test/cut-mid-call.ts).
@@ -171,6 +173,82 @@ failure since (a restart from the page, an app or a gap is none). The deployer (
 after a deploy of dither-accounts for those restarts, within its time; a crash of a restarted extractor rolls the
 deploy back, while restarts still under way when its time is up are only said in the notice (later crashes reach you
 through the manager's own notices). It also keeps every old release a running process still uses.
+
+## Sleeping: browser accounts only needed now and then
+
+A browser account holds 350–700 MB of memory and swap (Xvfb, Chromium, x11vnc) whether anything uses it or not. A
+kind whose accounts work only now and then says so in its manifest (`sleep: { idleMinutes, keepAliveHours? }`,
+kinds.ts), and its accounts **sleep**: the extractor stops while it has nothing to do, and starts again when something
+needs it.
+
+| kind | idle | keep-alive | |
+|---|---|---|---|
+| `amazon` | 20 min | 6 h | the daily pull and the odd `browser.*` call; woken every 6 h so its long-lived sign-in is used |
+| `venmo` | 20 min | none | the daily pull; Venmo ends an idle session after ~30 minutes whether its browser runs or not |
+| `schwab` | 20 min | none | the daily pull, which signs in with the passkey: Schwab logs an idle session out anyway |
+| `privacy` | 20 min | none | the daily pull, which signs in with the passkey: Privacy's sessions last minutes |
+| `claude` | 15 min | none | only the cliproxy provider's link jobs use it (docs/claude.md) |
+
+Never a kind apps expect live events from: the chat kinds (Discord, Signal, Telegram, WhatsApp, X…), Proton's and
+Gmail's watch. Reddit, Substack and Partiful poll their sites every few minutes for dither-chat's feed, so they stay
+awake too.
+
+**When it falls asleep.** The supervisor looks every 30 s. An account falls asleep after its kind's idle minutes during
+which all of this held:
+
+- its extractor is connected, and its last status says `online` with no `attention` (one that needs you stays up, its
+  live view with it);
+- no call is under way or waiting for it;
+- nothing holds it awake: its live view open (the page's or an app's), a cliproxy link job;
+- its extractor has said that it may (`link.sleep`, below) and is not busy: a pull, a passkey sign-in, browser tabs an
+  app opened (`browser.*`, closed after 15 idle minutes);
+- its next run is not due within the 2-minute lead plus 10 minutes (a stop and a start would cost more than they save).
+
+The idle time counts from the last moment one of those did not hold: the last call's answer, the live view's close, a
+pull's end. Falling asleep is the usual stop (`shutdown`, then everything it started ends), and the log says `idle for
+N min: asleep until …`.
+
+**What it says.** `asleep`: on the page (a ring for a dot, "Asleep"; the pane says since when and when it wakes, with
+**Wake**), in `/api/state` and `cli.ts accounts`, and to apps in their account list (spec `AccountView.asleep`, with
+`running` and `online` false and `error` null). It is neither stopped nor in trouble: the manager's notices leave it
+out, it keeps its last status (all but its live view, which went with it), and an app reads it as "a call wakes it",
+never as broken. While it falls asleep (its stop takes a few seconds) it still counts as running.
+
+**What wakes it.**
+
+- **A call** (an app's, the page's Try it, a provider's): it starts, and the call waits for it, for at most 30 s
+  (`WAKE_OPEN_MS`) within the call's own time; one that could not be sent by then fails `retry` (503), safe to send
+  again. A call that comes while it falls asleep waits for the stop, then for the start.
+- **Its own next run**: its extractor says when that is (statements' daily pull, or a failed pull's hourly retry), and
+  it is started 2 minutes before, so its browser is up by then.
+- **A keep-alive**: a kind with `keepAliveHours` is woken at least that often, and sleeps again once idle.
+- **You**: Wake, Start or Restart on the page or from an app, or turning Stay awake on. Its live view is not offered
+  while it sleeps (there is none): Wake first.
+
+A start that is a wake gets `DITHER_WOKE` (why, in words): it need not do what a start does for its own sake. Schwab and
+Privacy then sign nothing in at start; the pull they were woken for signs in by itself.
+
+**`link.sleep`.** The extractor of a kind that may sleep calls `link.sleep({ busy, wakeAt })`: what it is doing that a
+stop would cut (null: nothing), and when it next needs to run by itself (ms since the epoch; null: no time of its own).
+The link sends it when it changes and again on every connect, so a manager after a restart knows it too. An extractor
+that has never said it does not sleep. statements-common's runner says it for the statements kinds (a pull under way,
+the kind's own `busy`, the next pull or retry); claude says it while no step runs.
+
+**Through a restart.** Who sleeps is in the registry (table `asleep`: since, wake_at, wake_for). The next manager leaves
+those asleep (`startAll` starts none of them) and wakes each when the manager before would have, or at once if that
+time passed while no manager ran. One whose extractor still runs (the manager went while it fell asleep) is adopted as
+any other, and is awake. A going manager waits for an extractor that is falling asleep to stop, instead of leaving it
+running. An adopted extractor sleeps as one this manager started: its link says again what it said before.
+
+**Start, Stop, Restart, disable** keep their meaning: Stop and disable forget the sleep (a stopped account stays
+stopped: a call fails `offline` and does not start it), Start and Restart wake it, removing it forgets it. **Stay
+awake**, a setting every kind that may sleep gets, keeps one account running; it needs no restart, and turned on while
+the account sleeps it wakes it. Turned off, the idle time counts from then.
+
+**Settings** (`[manager]` in config.toml, or the flag or `DITHER_ACCOUNTS_*`): `sleep = 0` keeps every account awake;
+`sleep_idle_minutes` sets every kind's idle time; `sleep_keep_alive_hours` the keep-alive of the kinds that have one (0:
+none). `test/sleep.test.ts` covers falling asleep, a call waking it, both wakes by itself, a call, a busy extractor and
+an open live view keeping it awake, a restart and an adoption, and the page's controls.
 
 ## Discord's startup backfill
 

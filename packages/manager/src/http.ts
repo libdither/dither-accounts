@@ -28,14 +28,15 @@ import type { Approvers, ApproverSocketData } from './approvers.ts';
 import { Auth, CLI_HEADER, cookieOf, fromOwnPage, loginPage, safeNext, sessionCookie } from './auth.ts';
 import { hashToken, newId, newToken, type Row, type Store } from './db.ts';
 import { listDir, LOG, logTail, ownDir } from './files.ts';
-import type { Kind } from './kinds.ts';
+import { type Kind, STAY_AWAKE } from './kinds.ts';
 import { localNotice, type Notices } from './notices.ts';
 import type { Provider } from './providers/index.ts';
 import { CallFailure, type ConsumerSocketData, type Router } from './router.ts';
 import { accountDir, type ExtractorSocketData, LOCK, type Supervisor, writeSecret } from './supervisor.ts';
 
 /** The page's live view: a browser WebSocket carried to the account's VNC, a Unix socket on this machine. */
-type LiveViewData = { kind: 'liveview'; accountId: string; socket: string; vnc?: Socket<unknown>; queue: Uint8Array[]; closed?: boolean };
+/** `release`: while it is open, the account stays awake (supervisor.ts hold). */
+type LiveViewData = { kind: 'liveview'; accountId: string; socket: string; vnc?: Socket<unknown>; queue: Uint8Array[]; closed?: boolean; release?: () => void };
 type WsData = ConsumerSocketData | ExtractorSocketData | LiveViewData | ApproverSocketData;
 
 /**
@@ -221,6 +222,7 @@ export class Http {
           else if (d.kind === 'liveview') {
             d.closed = true;
             d.vnc?.end();
+            d.release?.();
           } else self.router.close(ws as any);
         },
       },
@@ -234,6 +236,8 @@ export class Http {
   private openLiveView(ws: ServerWebSocket<LiveViewData>) {
     const d = ws.data;
     if (!ownSocket(d.socket)) return void ws.close(1011, 'the live view is not listening');
+    // Someone watches (or signs in): the account does not fall asleep under them.
+    d.release = this.sup.hold(d.accountId, 'its live view is open');
     Bun.connect({
       unix: d.socket,
       socket: {
@@ -567,7 +571,7 @@ export class Http {
       this.router.accountsChanged();
       return json(this.state());
     }
-    if ((m = path.match(/^\/api\/accounts\/([\w-]+)(?:\/(restart|log|files|call|secret))?$/))) {
+    if ((m = path.match(/^\/api\/accounts\/([\w-]+)(?:\/(restart|wake|log|files|call|secret))?$/))) {
       const a = s.account(m[1]);
       if (!a) return bad('no such account', 404);
       // The manager's own notices (notices.ts) are not a process: nothing to restart, disable, sign in or remove.
@@ -599,6 +603,11 @@ export class Http {
       }
       if (m[2] === 'restart' && req.method === 'POST') {
         await this.sup.restart(a.id);
+        return json(this.state());
+      }
+      // An account asleep, started now (the page's Wake): as a call would wake it, and it sleeps again when idle.
+      if (m[2] === 'wake' && req.method === 'POST') {
+        if (!this.sup.wake(a.id, 'the page')) return bad(`${a.label} is not asleep`, 409);
         return json(this.state());
       }
       if (!m[2] && req.method === 'GET') return json(this.detail(a));
@@ -665,7 +674,12 @@ export class Http {
             cfg[k] = v;
           }
           s.run('UPDATE account SET config = ?, updated_at = ? WHERE id = ?', JSON.stringify(cfg), Date.now(), a.id);
-          if (a.enabled && !this.router.inProcess.has(a.id)) await this.sup.restart(a.id);
+          // Stay awake is the manager's, not the extractor's: no restart for it. Turned on while asleep, it wakes.
+          const forExtractor = Object.keys(b.settings).some((k) => k !== STAY_AWAKE.key);
+          if (a.enabled && !this.router.inProcess.has(a.id)) {
+            if (forExtractor) await this.sup.restart(a.id);
+            else if (cfg[STAY_AWAKE.key] === true) this.sup.wake(a.id, 'it was set to stay awake');
+          }
         }
         // An empty name clears the nickname: the page names it by who it is signed in as again (its kind's name is
         // what the registry keeps then, as for an account added without one).
@@ -751,6 +765,8 @@ export class Http {
       enabled: !!a.enabled,
       running: st.running,
       online: st.online,
+      asleep: st.asleep,
+      sleep: this.sup.sleepInfo(a.id),
       error: st.error,
       status: this.statusOf(a.id),
       self: selfOf(this.router.lastEvent(a.id, 'status')?.self),

@@ -91,8 +91,8 @@ async function main() {
   const up = await live();
   switch (cmd) {
     case 'accounts': {
-      const rows = up ? (await call('GET', '/api/state')).accounts : store().accounts().map((a) => ({ ...a, enabled: !!a.enabled, running: false, online: false, error: null }));
-      for (const a of rows) console.log(`${a.id}  ${a.kind.padEnd(9)} ${String(a.label).padEnd(16)} ${a.enabled ? (a.online ? 'online' : a.running ? 'running' : a.error ? `not running: ${a.error}` : 'stopped') : 'disabled'}  ${a.dir}`);
+      const rows = up ? (await call('GET', '/api/state')).accounts : store().accounts().map((a) => ({ ...a, enabled: !!a.enabled, running: false, online: false, asleep: false, error: null }));
+      for (const a of rows) console.log(`${a.id}  ${a.kind.padEnd(9)} ${String(a.label).padEnd(16)} ${a.enabled ? (a.online ? 'online' : a.asleep ? 'asleep' : a.running ? 'running' : a.error ? `not running: ${a.error}` : 'stopped') : 'disabled'}  ${a.dir}`);
       if (!up) console.log(`(the manager is not running; read from ${dataDir})`);
       return;
     }

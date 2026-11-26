@@ -120,6 +120,10 @@ CREATE TABLE IF NOT EXISTS notice (
 CREATE INDEX IF NOT EXISTS notice_at ON notice(at);
 -- Accounts whose notices are muted (notify.mute) until a time.
 CREATE TABLE IF NOT EXISTS notice_mute (subject TEXT PRIMARY KEY, until INTEGER NOT NULL);
+
+-- Accounts asleep (supervisor.ts, docs/supervisor.md "Sleeping"): since when, when they wake by themselves (null: only
+-- for a call) and what for. Kept here so a manager after a restart leaves them asleep.
+CREATE TABLE IF NOT EXISTS asleep (account TEXT PRIMARY KEY, since INTEGER NOT NULL, wake_at INTEGER, wake_for TEXT);
 `;
 
 export function newId(prefix: string): string {

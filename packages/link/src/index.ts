@@ -21,6 +21,9 @@
  *
  * For kinds that hold passkeys, `config` is live: the manager sends `{t:'config', config}` when the socket connects and
  * when the page changes it (Keep new passkeys on), and the object is updated in place.
+ *
+ * A kind that may sleep (its manifest's `sleep`, docs/supervisor.md "Sleeping") says through `sleep` what a stop would
+ * cut and when it next needs to run by itself; until it has said so once, it is never put to sleep.
  */
 import { join } from 'node:path';
 import { exitWhenManagerGone, managerHandshake, reconnectDelay, recordExitCode } from '@dither-chat/protocol/outlive';
@@ -44,6 +47,13 @@ export interface Link {
   readonly connected: boolean;
   /** A question to the manager (not to an app): its answer, or an error when it fails or none comes in `timeoutMs`. */
   ask(what: string, input?: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
+  /**
+   * For a kind that may sleep: what it is doing now that a stop would cut (a pull, a sign-in; null for nothing), and
+   * when it next needs to run by itself (ms since the epoch, as Date.now(); null for no time of its own, such as a
+   * daily pull's). The manager puts it to sleep only while it is not busy, and starts it again a little before
+   * `wakeAt`. Sent when it changes and again on every connect.
+   */
+  sleep(s: { busy: string | null; wakeAt: number | null }): void;
   close(): void;
 }
 
@@ -112,6 +122,8 @@ export function linkManager(opts: LinkOptions): Link {
   let closed = false;
   let attempt = 0;
   const config: Record<string, any> = JSON.parse(process.env.DITHER_ACCOUNT_CONFIG || '{}');
+  /** The last `sleep` frame, sent again on every connect (a new manager knows nothing of it). */
+  let sleepFrame: string | null = null;
   const asked = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: Timer }>();
 
   const send = (x: string) => {
@@ -141,6 +153,7 @@ export function linkManager(opts: LinkOptions): Link {
       gone.up();
       handshake.opened(ws!);
       while (queue.length) ws!.send(queue.shift()!);
+      if (sleepFrame) ws!.send(sleepFrame);
       opts.onConnect?.();
     };
     ws.onmessage = async (e) => {
@@ -220,6 +233,13 @@ export function linkManager(opts: LinkOptions): Link {
         asked.set(aid, { resolve, reject, timer });
         send(JSON.stringify({ t: 'ask', aid, what, input }));
       }),
+    sleep: (st) => {
+      const frame = JSON.stringify({ t: 'sleep', busy: st.busy || null, wakeAt: typeof st.wakeAt === 'number' && Number.isFinite(st.wakeAt) ? Math.round(st.wakeAt) : null });
+      if (frame === sleepFrame) return;
+      sleepFrame = frame;
+      // Not queued: only the latest counts, and it goes on every connect. (A queue that overflows loses events.)
+      if (open && ws && !handshake.holding) ws.send(frame);
+    },
     close: () => {
       closed = true;
       ws?.close();

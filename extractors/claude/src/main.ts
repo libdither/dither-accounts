@@ -238,6 +238,9 @@ async function session() {
 // ------------------------------------------------------------------- status
 let lastSent = '';
 function status(force = false) {
+  // It may sleep (docs/supervisor.md "Sleeping"): not in the middle of a step. It has no schedule of its own; the
+  // cliproxy provider's jobs wake it and hold it awake while they run.
+  if (host.attached) link.sleep({ busy: busy ? `a step (${busy})` : null, wakeAt: null });
   const v = { signedIn, email, expectedEmail, hold };
   const s = host.baseState() ?? statusOf(v);
   const details = {

@@ -46,7 +46,8 @@ export function Avatar({ a, size = 32, badge = true }: { a: AccountInfo; size?: 
   );
 }
 
-export type Tone = 'good' | 'warn' | 'danger' | 'off';
+/** `sleep`: asleep, which is fine (docs/supervisor.md "Sleeping"): not stopped, and not in trouble. */
+export type Tone = 'good' | 'warn' | 'danger' | 'off' | 'sleep';
 /** What the account needs from you, from its status's attention. */
 export function attentionOf(a: AccountInfo): { message: string; liveView: boolean } | null {
   const at = a.status?.attention as { message?: string; kind?: string; liveView?: boolean } | undefined;
@@ -56,6 +57,8 @@ export function attentionOf(a: AccountInfo): { message: string; liveView: boolea
 /** Its state in a word and a colour: disabled, not running, needs you, connecting… online. */
 export function condition(a: AccountInfo): { tone: Tone; text: string } {
   if (!a.enabled) return { tone: 'off', text: 'Disabled' };
+  // Stopped while idle, to free its memory; a call wakes it. What its last status said is from before.
+  if (a.asleep) return { tone: 'sleep', text: 'Asleep' };
   if (a.error) return { tone: 'danger', text: 'Not running' };
   if (attentionOf(a)) return { tone: 'warn', text: 'Needs you' };
   // Its extractor is connected; what it says of the service itself (still connecting, unreachable, failing) comes next.
@@ -68,7 +71,7 @@ export function condition(a: AccountInfo): { tone: Tone; text: string } {
   return { tone: 'off', text: 'Stopped' };
 }
 
-export function Dot({ tone, title }: { tone: 'good' | 'warn' | 'danger' | 'off'; title?: string }) {
+export function Dot({ tone, title }: { tone: Tone; title?: string }) {
   return <span class={`dot ${tone}`} title={title} aria-hidden="true" />;
 }
 

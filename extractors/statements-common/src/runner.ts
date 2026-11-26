@@ -5,8 +5,14 @@
  * The daily pull is at `pullAt` (config, "HH:MM" local, default 05:30) plus a jitter of up to `jitterMinutes`
  * (default 20) that is fixed per account and day, so a restart does not move it. Like a systemd timer with
  * Persistent=true, a start that finds the last pull older than the last slot pulls at once; an account that never
- * pulled waits for its first slot or a statements.refresh. A failed daily pull is tried again hourly, three times.
+ * pulled waits for its first slot or a statements.refresh. A failed daily pull is tried again hourly, three times; a
+ * retry still due when the extractor restarts (a deploy, a sleep) is kept (pulls.json `retryAt`).
  * `schedule: false` in the config turns the daily pull off (statements.refresh still works).
+ *
+ * These kinds may sleep (docs/supervisor.md "Sleeping"): the runner tells the manager (link.sleep) that a pull is under
+ * way, or whatever else the kind says it is doing (`busy`), and when the next pull or retry is due, so the manager
+ * starts it again a little before. A statements.refresh that comes before the kind's browser is up (it was just woken
+ * by that call) starts the pull once it is, instead of answering that it cannot.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -43,6 +49,8 @@ interface PullState {
   lastError: string | null;
   needs: { kind: string; message: string } | null;
   retries: number;
+  /** When the hourly retry of a failed daily pull is due, while one is. */
+  retryAt: number | null;
 }
 
 export interface RunnerOpts {
@@ -53,8 +61,13 @@ export interface RunnerOpts {
   blocked?: () => string | null;
   /** Something changed that the status shows. */
   onChange?: () => void;
+  /** What else the kind is doing that a stop would cut (a sign-in, tabs an app opened), else null: link.sleep's `busy`. */
+  busy?: () => string | null;
   now?: () => number;
 }
+
+/** How long a statements.refresh that came before the browser was up waits for it before it says the pull failed. */
+const EARLY_REFRESH_MS = 5 * 60_000;
 
 const DAY = 24 * 3600_000;
 /** What started a pull: the daily slot, statements.refresh, a missed slot, a retry, or the kind itself (Venmo pulls
@@ -68,6 +81,10 @@ export class StatementsRunner {
   nextAt: number | null = null;
   private timer: Timer | null = null;
   private stopped = false;
+  /** start() ran: the kind's browser is up, and the schedule is armed. */
+  private started = false;
+  /** A statements.refresh that came before start(): run once it is up. */
+  private early: { opts: RefreshOpts; timer: Timer } | null = null;
   private file: string;
   private now: () => number;
 
@@ -75,7 +92,7 @@ export class StatementsRunner {
     this.now = o.now ?? Date.now;
     this.spool = new Spool(o.link.accountDir, (file: StatementFile) => o.link.emit({ t: 'statements.file', file }), this.now);
     this.file = join(o.link.accountDir, 'pulls.json');
-    const empty: PullState = { lastPullAt: null, lastOk: null, lastSaved: null, lastSkipped: null, lastError: null, needs: null, retries: 0 };
+    const empty: PullState = { lastPullAt: null, lastOk: null, lastSaved: null, lastSkipped: null, lastError: null, needs: null, retries: 0, retryAt: null };
     let st = empty;
     try {
       if (existsSync(this.file)) st = { ...empty, ...JSON.parse(readFileSync(this.file, 'utf8')) };
@@ -87,7 +104,19 @@ export class StatementsRunner {
     writeWhole(this.file, JSON.stringify(this.st));
   }
   private changed() {
+    this.report();
     this.o.onChange?.();
+  }
+
+  /**
+   * What the manager needs to know to let it sleep (link.sleep): a pull under way, or what else the kind is doing,
+   * and when the next pull is due. Only once started (before, its browser is not up, and it does not sleep). Kinds
+   * call it from their status too, for their own `busy`; the link sends only changes.
+   */
+  report() {
+    if (!this.started || this.stopped) return;
+    const busy = this.pulling ? `a pull (${this.pulling.why})` : (this.o.busy?.() ?? null);
+    this.o.link.sleep({ busy, wakeAt: this.config.scheduled ? this.nextAt : null });
   }
 
   get config() {
@@ -117,12 +146,25 @@ export class StatementsRunner {
   }
 
   start() {
+    if (this.started) return;
+    this.started = true;
+    // A refresh asked for while the browser came up: now.
+    const early = this.early;
+    if (early) {
+      clearTimeout(early.timer);
+      this.early = null;
+      void this.run(early.opts, 'refresh');
+    }
     if (!this.config.scheduled) {
       this.nextAt = null;
+      this.report();
       return;
     }
     const { prev } = this.slots();
-    if (this.st.lastPullAt !== null && this.st.lastPullAt < prev) {
+    if (this.st.retries > 0 && this.st.retryAt !== null) {
+      // A failed daily pull's retry was due while it was down (a restart, a sleep): it is kept.
+      this.arm(Math.max(this.st.retryAt, this.now() + 5_000), 'retry');
+    } else if (this.st.lastPullAt !== null && this.st.lastPullAt < prev) {
       // Missed a slot while down (Persistent=true): pull shortly after start.
       this.arm(this.now() + 5_000, 'catch-up');
     } else this.arm(this.slots().next, 'daily');
@@ -130,6 +172,7 @@ export class StatementsRunner {
   stop() {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
+    if (this.early) clearTimeout(this.early.timer);
   }
   private arm(at: number, why: 'daily' | 'catch-up' | 'retry') {
     if (this.stopped) return;
@@ -145,11 +188,13 @@ export class StatementsRunner {
           const failed = !r.ok && !this.st.needs;
           if (failed && why !== 'catch-up' && this.st.retries < 3) {
             this.st.retries++;
+            this.st.retryAt = this.now() + 3600_000;
             this.save();
-            this.arm(this.now() + 3600_000, 'retry');
+            this.arm(this.st.retryAt, 'retry');
           } else {
-            if (this.st.retries) {
+            if (this.st.retries || this.st.retryAt !== null) {
               this.st.retries = 0;
+              this.st.retryAt = null;
               this.save();
             }
             this.arm(this.slots().next, 'daily');
@@ -164,6 +209,19 @@ export class StatementsRunner {
   refresh(opts: RefreshOpts, why: Why = 'refresh'): { started: boolean; reason?: string } {
     if (this.pulling) return { started: false, reason: `a pull is running (since ${new Date(this.pulling.since).toISOString()})` };
     const b = this.o.blocked?.();
+    // Asked before the browser is up (the call woke it from sleep, or it just started): the pull starts once it is,
+    // and reports through statements.pulled as any pull does. One that never comes up says so there.
+    if (b && !this.started && why === 'refresh' && !this.stopped) {
+      if (!this.early) {
+        const timer = setTimeout(() => {
+          this.early = null;
+          const ev: StatementsPulled = { ok: false, saved: 0, needs: this.o.blocked?.() ?? 'its browser did not come up' };
+          this.o.link.emit({ t: 'statements.pulled', ...ev });
+        }, EARLY_REFRESH_MS);
+        this.early = { opts, timer };
+      }
+      return { started: true, reason: 'the pull starts once its browser is up' };
+    }
     if (b) return { started: false, reason: b };
     void this.run(opts, why);
     return { started: true };

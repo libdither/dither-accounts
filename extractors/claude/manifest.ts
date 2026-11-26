@@ -18,4 +18,8 @@ export default {
     fields: [{ key: 'email', label: 'Email', placeholder: 'the email you sign in to Claude with', pattern: '^[^@\\s]+@[^@\\s]+$', hint: 'its sign-in links are read from the mail account here with this address' }],
     next: 'The cliproxy provider signs it in and links it to the hub; a check only you can answer shows up here with the live view.',
   },
+  // Only the cliproxy provider's link jobs use it (at most every few hours, each holding it awake while it runs); the
+  // hub serves Claude Code with its own tokens. Sleeping costs nothing: a signed-out claude.ai is signed in again by
+  // the next job, with the emailed link.
+  sleep: { idleMinutes: 15 },
 } satisfies Manifest;

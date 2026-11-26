@@ -20,6 +20,12 @@ display_backend = "x11"             # the screen sandboxes draw on: "x11" (Xvfb 
                                     # wayvnc); an account's config can name its own (displayBackend), docs/browser.md
 prepare_bins = true                 # build the sandboxes' programs from the repo's pinned nixpkgs into <data>/bins at
                                     # start (nix/README.md); false: they are found on PATH, or where DITHER_BINS says
+sleep = 1                           # 0: keep every account running. Else an account of a kind that may sleep (amazon,
+                                    # venmo, schwab, privacy, claude) has its extractor stopped after its kind's idle
+                                    # minutes with nothing to do, and started again by the next call, its next
+                                    # scheduled pull or a keep-alive (docs/supervisor.md "Sleeping")
+# sleep_idle_minutes = 20           # every kind's idle time instead of its own
+# sleep_keep_alive_hours = 6        # how often a kind with a keep-alive (amazon) is woken while asleep; 0: never
 
 # Extractors take their own settings from each account's config (on the page: Add account → More options), not here.
 # A few environment variables change how the sandboxes run, for machines that need it:

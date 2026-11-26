@@ -16,7 +16,7 @@
 
 import type { Subprocess } from 'bun';
 import { existsSync, unlinkSync } from 'node:fs';
-import { type ChildRegistry, type Logger, readLines, stopProcess } from './cli.ts';
+import { type ChildRegistry, isJavaOptionsNote, type Logger, readLines, stopProcess } from './cli.ts';
 import { RpcClient, RpcError } from './rpc.ts';
 
 export interface DaemonExit {
@@ -77,7 +77,7 @@ export class Daemon {
 
   private stderr(line: string) {
     const t = line.trim();
-    if (!t) return;
+    if (!t || isJavaOptionsNote(t)) return;
     // App.loadManager: "User <account> is not registered." (exit 1): the phone unlinked us.
     if (!this.ready && /^User \S+ is not registered\.?$/.test(t)) this.notRegistered = true;
     if (!/^\s+at |^\s*\.\.\.|^Caused by/.test(line) && /ERROR|WARN|Exception|Error|Failed|failed|not registered|in use/.test(t)) this.lastErr = t;

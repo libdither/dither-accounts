@@ -22,7 +22,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BridgeServer, displayName, type FreeDisplay, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, displayName, type FreeDisplay, pickFreeDisplay, Sandbox, SignInAsker, signInConfig } from '@dither-accounts/browser';
 import type * as P from '@dither-chat/protocol';
 import { EVENT_RSVP_CHOICES } from '@dither-chat/protocol';
 import { linkHub } from '@dither-chat/protocol/client';
@@ -88,6 +88,11 @@ const bridge = new BridgeServer<Up, Down>({
   resend: { kinds: READS },
 });
 
+/** "Continue with Google" on luma.com, answered by a Google account here (docs/signin-relay.md). */
+const signIns = new SignInAsker({ bridge, ask: (what, input, ms) => hub.ask(what, input, ms), log, onChange: () => status() });
+/** Tests: the origin standing for each sign-in provider (only with a test origin of Luma's own). */
+const testSignInOrigins: Record<string, string> = testOrigin && cfg.testSignInOrigins && typeof cfg.testSignInOrigins === 'object' ? cfg.testSignInOrigins : {};
+
 const fast = Number(cfg.feedEveryMs) > 0;
 /** Writes a little apart; reads (paging, opening an event) slower, one at a time. */
 const writePace = fast ? new Pace(50, 50) : new Pace(1200, 900);
@@ -139,6 +144,7 @@ function status(force = false) {
 
 // ------------------------------------------------------------------- bridge
 function onBridge(msg: Up) {
+  if (signIns.onMessage(msg)) return status();
   switch (msg.t) {
     case 'ready':
       log('info', 'extension service worker ready');
@@ -762,7 +768,7 @@ async function boot() {
       width: WIDTH,
       height: HEIGHT,
       extensionSrc: join(import.meta.dir, 'extension'),
-      config: { wsUrl: bridge.wsUrl, token: bridgeToken, testOrigin },
+      config: { wsUrl: bridge.wsUrl, token: bridgeToken, testOrigin, signIn: signInConfig(testSignInOrigins) },
       prepareExtension: testOrigin ? addTestOrigin : undefined,
       // Home: where you sign in from, and a page that marks nothing seen while the account sits there.
       startUrl: `${origin}/home`,

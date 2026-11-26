@@ -261,6 +261,7 @@ How to move a dither-chat account here and back is in dither-chat's `docs/accoun
   [auth.md](docs/auth.md) (the page's login), [supervisor.md](docs/supervisor.md) (extractors that outlive a
   restart), [notifications.md](docs/notifications.md) (the built-in notices account),
   [browser.md](docs/browser.md) (lending an account's signed-in browser to an app or agent),
+  [signin-relay.md](docs/signin-relay.md) (a site's "Continue with Google" answered by a Google account here),
   [native-sandbox.md](docs/native-sandbox.md) (native apps in a sandbox), [page-traces.md](docs/page-traces.md) and
   [page-silence.md](docs/page-silence.md) (keeping hooks out of a page's sight; a page that stops answering),
   [passkeys.md](docs/passkeys.md) and [approver.md](docs/approver.md) (passkeys held by an account, or on your phone).
@@ -274,8 +275,8 @@ How to move a dither-chat account here and back is in dither-chat's `docs/accoun
 - **Money:** [statements.md](docs/statements.md) (how the finance kinds hand over files), [simplefin.md](docs/simplefin.md),
   [schwab.md](docs/schwab.md), [privacy.md](docs/privacy.md), [venmo.md](docs/venmo.md), [amazon.md](docs/amazon.md),
   [monero.md](docs/monero.md), [haveno.md](docs/haveno.md).
-- **Other:** [github.md](docs/github.md), [njalla.md](docs/njalla.md), [bugwatch.md](docs/bugwatch.md),
-  [claude.md](docs/claude.md).
+- **Other:** [site.md](docs/site.md) (any website, kept signed in), [github.md](docs/github.md),
+  [njalla.md](docs/njalla.md), [bugwatch.md](docs/bugwatch.md), [claude.md](docs/claude.md).
 
 ## Test
 

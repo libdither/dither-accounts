@@ -5,8 +5,9 @@ something in a cart, looking at a page, or filling in one form. For those, a bro
 browser through the `browser` interface (`packages/interfaces/src/browser.ts`). An app or agent then opens a tab
 on the account's site, reads it, and clicks and types in it, as the owner would in the live view.
 
-It is offered today by the extension-only browser kinds on `statements-common`: `amazon`, `venmo` and `schwab`
-(`extractors/statements-common/src/browser-ops.ts`, plus `extension/browser.js` appended to their driver). Another
+It is offered today by the extension-only browser kinds on `statements-common`: `amazon`, `venmo` and `schwab`, and
+the general `site` kind ([site.md](site.md)), whose whole use it is (`extractors/statements-common/src/browser-ops.ts`,
+plus `extension/browser.js` appended to their driver). Another
 kind built on `BrowserHost` gets it with three lines: a `BrowserOps` beside its host, `browserOps.handle(cmd)` in
 its `onCommand`, and `'browser'` in its manifest's and hello's `interfaces`.
 

@@ -29,6 +29,11 @@ export interface HubLink {
   secret<T = Record<string, any>>(): T;
   saveSecret(value: unknown): void;
   readonly connected: boolean;
+  /**
+   * A question to the accounts manager itself, answered for this account (dither-accounts' link has the same):
+   * `signin.choices` and `signin.relay` (its docs/signin-relay.md). Fails after `timeoutMs` with no answer.
+   */
+  ask(what: string, input?: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
   close(): void;
 }
 
@@ -64,6 +69,7 @@ export function linkHub(opts: LinkOptions): HubLink {
   const accountDir = env('DITHER_ACCOUNT_DIR');
   const config = JSON.parse(process.env.DITHER_ACCOUNT_CONFIG || '{}');
   const queue: string[] = [];
+  const asked = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: Timer }>();
   let ws: WebSocket | null = null;
   let open = false;
   /** A manager's restart: events held for the next one (outlive.ts). */
@@ -105,6 +111,18 @@ export function linkHub(opts: LinkOptions): HubLink {
         return;
       }
       if (handshake.message(cmd as { t: string }, ws)) return;
+      // The manager's answer to an `ask` (it carries the ask's `aid`): not a command. A hub's `answer` (to a join
+      // request) has none and goes on to the adapter.
+      const a = cmd as unknown as { t: string; aid?: unknown; ok?: unknown; result?: unknown; error?: unknown };
+      if (a.t === 'answer' && typeof a.aid === 'string') {
+        const p = asked.get(a.aid);
+        if (!p) return;
+        asked.delete(a.aid);
+        clearTimeout(p.timer);
+        if (a.ok === true) p.resolve(a.result);
+        else p.reject(new Error(String(a.error ?? 'the manager refused')));
+        return;
+      }
       if (cmd.t === 'shutdown') {
         await opts.onShutdown?.();
         process.exit(0);
@@ -146,6 +164,16 @@ export function linkHub(opts: LinkOptions): HubLink {
     get connected() {
       return open;
     },
+    ask: (what, input = {}, timeoutMs = 30_000) =>
+      new Promise((resolve, reject) => {
+        const aid = crypto.randomUUID();
+        const timer = setTimeout(() => {
+          asked.delete(aid);
+          reject(new Error(`no answer from the manager to ${what} in ${Math.round(timeoutMs / 1000)} s`));
+        }, timeoutMs);
+        asked.set(aid, { resolve, reject, timer });
+        send(JSON.stringify({ t: 'ask', aid, what, input }));
+      }),
     close: () => {
       closed = true;
       ws?.close();

@@ -15,3 +15,4 @@ export { KeptServer, prepareVncSocket, SOCKET_PATH_MAX, VNC_SOCKET, vncSocketPat
 export { privateDir, renderNode, swayConfig, waylandDir, waylandPlace, WaylandScreen, w0vncserverArgs, w0vncserverEnv, WAYLAND_SERVERS, wayvncArgs } from './wayland.ts';
 export { browserShare, busConf, portalsConf, SHARE_BINS, SHARE_DIR, SHARE_OUTPUT, ScreenShare, type ScreenShareOptions, wireplumberConf, wlrConfig } from './screenshare.ts';
 export { importedScripts, profileHolder, refreshWorker, WORKER_HASH, WORKER_STORAGE, workerHash, type WorkerRefresh } from './worker.ts';
+export { addSignInPage, SIGN_IN_PAGE, SignInAnswerer, SignInAsker, signInConfig } from './signin.ts';

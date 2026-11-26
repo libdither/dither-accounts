@@ -47,6 +47,16 @@ export interface HostOpts {
   testOrigins?: string[];
   /** The kind's extension has a passkey (hook.js and content.js content scripts): passkeys.js goes in with the driver. */
   passkeys?: boolean;
+  /**
+   * Host permission patterns its manifest.json can't name, added the same way: the general `site` kind's own site,
+   * which each account sets.
+   */
+  origins?: string[];
+  /**
+   * The browser signs in to its site with another account here (docs/signin-relay.md): the relay's worker goes in with
+   * the driver (signin.js), and this is config.json's `signIn` (packages/browser signInConfig).
+   */
+  signIn?: { consume: unknown[] };
   onTabs?: (tabs: TabReport[]) => void;
   onChange?: () => void;
   /** Anything else the extension says (the page hooks' `webauthn` and `hook`). */
@@ -54,20 +64,20 @@ export interface HostOpts {
 }
 
 /**
- * The driver as the extension's sw.js (browser.js after it, for the `browser` interface, and passkeys.js for a kind
- * with a passkey), and in tests the fake
- * site's origins added to the host permissions and the content scripts' matches.
+ * The driver as the extension's sw.js (browser.js after it, for the `browser` interface, passkeys.js for a kind with a
+ * passkey, signin.js for one that signs in with another account), and `patterns` (and in tests the fake site's
+ * origins) added to the host permissions and the content scripts' matches.
  */
-export function prepareDriver(dir: string, opts: { passkeys?: boolean; testOrigins?: (string | null | undefined)[] } = {}) {
+export function prepareDriver(dir: string, opts: { passkeys?: boolean; signIn?: boolean; testOrigins?: (string | null | undefined)[]; patterns?: string[] } = {}) {
   const ext = join(import.meta.dir, '../extension');
-  const worker = readFileSync(join(ext, 'driver.js'), 'utf8') + readFileSync(join(ext, 'browser.js'), 'utf8') + (opts.passkeys ? readFileSync(join(ext, 'passkeys.js'), 'utf8') : '');
-  writeFileSync(join(dir, 'sw.js'), worker);
-  const origins = (opts.testOrigins ?? []).filter((o): o is string => !!o);
-  if (!origins.length) return;
+  const parts = ['driver.js', 'browser.js', ...(opts.passkeys ? ['passkeys.js'] : []), ...(opts.signIn ? ['signin.js'] : [])];
+  writeFileSync(join(dir, 'sw.js'), parts.map((f) => readFileSync(join(ext, f), 'utf8')).join(''));
+  const patterns = [...(opts.patterns ?? []), ...(opts.testOrigins ?? []).filter((o): o is string => !!o).map((o) => `${o}/*`)];
+  if (!patterns.length) return;
   const path = join(dir, 'manifest.json');
   const m = JSON.parse(readFileSync(path, 'utf8'));
-  m.host_permissions = [...(m.host_permissions ?? []), ...origins.map((o) => `${o}/*`)];
-  for (const cs of m.content_scripts ?? []) cs.matches = [...cs.matches, ...origins.map((o) => `${o}/*`)];
+  m.host_permissions = [...new Set([...(m.host_permissions ?? []), ...patterns])];
+  for (const cs of m.content_scripts ?? []) cs.matches = [...new Set([...cs.matches, ...patterns])];
   writeFileSync(path, JSON.stringify(m, null, 2));
 }
 
@@ -116,7 +126,8 @@ export class BrowserHost {
     } else this.o.onMessage?.(m as { t: string });
   }
 
-  private prepare = (dir: string) => prepareDriver(dir, { passkeys: this.o.passkeys, testOrigins: [this.o.testOrigin, ...(this.o.testOrigins ?? [])] });
+  private prepare = (dir: string) =>
+    prepareDriver(dir, { passkeys: this.o.passkeys, signIn: !!this.o.signIn, patterns: this.o.origins, testOrigins: [this.o.testOrigin, ...(this.o.testOrigins ?? [])] });
 
   async start(): Promise<boolean> {
     const { link } = this.o;
@@ -143,7 +154,7 @@ export class BrowserHost {
         width: WIDTH,
         height: HEIGHT,
         extensionSrc: this.o.extensionSrc,
-        config: { wsUrl: this.bridge.wsUrl, token: this.token },
+        config: { wsUrl: this.bridge.wsUrl, token: this.token, ...(this.o.signIn ? { signIn: this.o.signIn } : {}) },
         prepareExtension: this.prepare,
         startUrl: this.o.startUrl,
         // The HTTP cache is not the sign-in: keep it out of the account's directory.

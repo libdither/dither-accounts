@@ -33,6 +33,11 @@ export interface FakeLuma {
   continueWithGoogle(provider: string): void;
   /** The codes /google was given, in order. */
   googleCodes: string[];
+  /**
+   * With `google` (its origin): the signed-out page's own "Sign in" link (to /signin) and /signin's "Continue with
+   * Google" button, which does what continueWithGoogle does. Each press, and whether it was real input (isTrusted).
+   */
+  pressed: { what: 'sign in' | 'google'; trusted: boolean }[];
   /** The next `n` API calls answer 429. */
   rateLimit(n: number): void;
   /** A chat message someone sends now: the next message sync brings it. */
@@ -45,10 +50,11 @@ const COOKIE = 'luma.auth-session-key=fake-session';
 /** Answered without a session, as Luma's are. */
 const OPEN = new Set(['/discover/bootstrap-page', '/url', '/discover/get-paginated-events', '/event/get', '/user/profile', '/user/profile/events']);
 
-export function startFakeLuma(o: { signedIn?: boolean } = {}): FakeLuma {
+export function startFakeLuma(o: { signedIn?: boolean; google?: string } = {}): FakeLuma {
   let signedIn = o.signedIn ?? true;
   let google: string | null = null;
   const googleCodes: string[] = [];
+  const pressed: FakeLuma['pressed'] = [];
   let limited = 0;
   const now = Date.now();
   const w = world(now);
@@ -58,9 +64,26 @@ export function startFakeLuma(o: { signedIn?: boolean } = {}): FakeLuma {
   const later: any[] = [];
   let n = 0;
 
-  const page = () => `<!doctype html><html><head><title>Luma</title></head><body>
+  // Signed out, with a provider to sign in with: a link to /signin (where the Google button is), and that button.
+  const ways = (path: string) =>
+    signedIn || !o.google
+      ? ''
+      : path === '/signin'
+        ? `<p><button id="google" style="padding:12px 24px">Continue with Google</button></p>`
+        : `<nav><a id="signin" href="/signin" style="display:inline-block;padding:8px 16px">Sign in</a></nav>`;
+  const page = (path = '/') => `<!doctype html><html><head><title>Luma</title></head><body>
+${ways(path)}
 <main>${signedIn ? 'Home' : 'Sign in to Luma'}</main>
 <script>
+  for (const [id, what] of [['signin', 'sign in'], ['google', 'google']]) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('click', async (e) => {
+      const real = e.isTrusted;
+      if (what === 'sign in') e.preventDefault();
+      const r = await (await fetch('/__fake/press?what=' + encodeURIComponent(what) + '&trusted=' + (real ? 1 : 0), { method: 'POST' })).json();
+      if (r.go) location.href = r.go;
+    });
+  }
   // As Luma's sign-in does once you are in: the page comes back signed in.
   const was = ${JSON.stringify(signedIn)};
   setInterval(async () => {
@@ -78,6 +101,12 @@ export function startFakeLuma(o: { signedIn?: boolean } = {}): FakeLuma {
     async fetch(req) {
       const url = new URL(req.url);
       const p = url.pathname;
+      if (p === '/__fake/press' && req.method === 'POST') {
+        const what = url.searchParams.get('what') === 'google' ? 'google' : 'sign in';
+        pressed.push({ what, trusted: url.searchParams.get('trusted') === '1' });
+        if (what === 'sign in') return json({ go: '/signin' });
+        return json({ go: o.google ? googleLink(o.google) : null });
+      }
       if (p === '/__fake/state') {
         const go = google;
         google = null;
@@ -91,7 +120,7 @@ export function startFakeLuma(o: { signedIn?: boolean } = {}): FakeLuma {
       if (p === '/__fake/media/pixel.png') return new Response(PIXEL, { headers: { 'content-type': 'image/png' } });
       const clientType = req.headers.get('x-luma-client-type');
       if (!clientType) {
-        const res = new Response(page(), { headers: { 'content-type': 'text/html; charset=utf-8' } });
+        const res = new Response(page(p), { headers: { 'content-type': 'text/html; charset=utf-8' } });
         if (signedIn) res.headers.append('set-cookie', `${COOKIE}; Path=/; HttpOnly; SameSite=Lax`);
         return res;
       }
@@ -174,6 +203,17 @@ export function startFakeLuma(o: { signedIn?: boolean } = {}): FakeLuma {
     },
   });
 
+  function googleLink(provider: string) {
+    const u = new URL('/o/oauth2/v2/auth', provider);
+    u.searchParams.set('response_type', 'code');
+    u.searchParams.set('client_id', 'luma-web.apps.example.com');
+    u.searchParams.set('scope', 'https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email');
+    u.searchParams.set('prompt', 'select_account consent');
+    u.searchParams.set('state', 'state-123');
+    u.searchParams.set('redirect_uri', `http://127.0.0.1:${server.port}/google`);
+    return u.toString();
+  }
+
   return {
     url: `http://127.0.0.1:${server.port}`,
     calls,
@@ -182,16 +222,10 @@ export function startFakeLuma(o: { signedIn?: boolean } = {}): FakeLuma {
       signedIn = true;
     },
     continueWithGoogle(provider: string) {
-      const u = new URL('/o/oauth2/v2/auth', provider);
-      u.searchParams.set('response_type', 'code');
-      u.searchParams.set('client_id', 'luma-web.apps.example.com');
-      u.searchParams.set('scope', 'https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email');
-      u.searchParams.set('prompt', 'select_account consent');
-      u.searchParams.set('state', 'state-123');
-      u.searchParams.set('redirect_uri', `http://127.0.0.1:${server.port}/google`);
-      google = u.toString();
+      google = googleLink(provider);
     },
     googleCodes,
+    pressed,
     rateLimit(k: number) {
       limited = k;
     },

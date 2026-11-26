@@ -89,7 +89,7 @@ const bridge = new BridgeServer<Up, Down>({
 });
 
 /** "Continue with Google" on luma.com, answered by a Google account here (docs/signin-relay.md). */
-const signIns = new SignInAsker({ bridge, ask: (what, input, ms) => hub.ask(what, input, ms), log, onChange: () => status() });
+const signIns = new SignInAsker({ bridge, ask: (what, input, ms) => hub.ask(what, input, ms), screen: () => sandbox?.screen ?? null, log, onChange: () => status() });
 /** Tests: the origin standing for each sign-in provider (only with a test origin of Luma's own). */
 const testSignInOrigins: Record<string, string> = testOrigin && cfg.testSignInOrigins && typeof cfg.testSignInOrigins === 'object' ? cfg.testSignInOrigins : {};
 
@@ -464,6 +464,13 @@ async function onCommandCounted(cmd: P.AdapterCommand): Promise<unknown> {
 }
 
 async function onCommand(cmd: P.AdapterCommand): Promise<unknown> {
+  // The manager's, never an app's: start a sign-in with an account here (docs/signin-relay.md "Starting one").
+  const own = cmd as unknown as { t: string; provider?: unknown };
+  if (own.t === 'signin.start') {
+    if (page?.state === 'ready' && self) return { ok: true, note: 'already signed in' };
+    if (!bridge.connected) throw new Error('the sandbox browser is not attached yet');
+    return signIns.start(String(own.provider ?? ''));
+  }
   switch (cmd.t) {
     case 'home':
       return home(cmd.feed, cmd.cursor);

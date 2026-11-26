@@ -175,6 +175,8 @@ export class Http {
   notices: Notices | null = null;
   /** Restarts for changed code (supervisor.ts), for /api/health. */
   codeRestarts: (() => import('./supervisor.ts').CodeRestarts) | null = null;
+  /** Signing in with another account here (signin.ts): an added account's "Sign in with", and starting one. */
+  signIns: import('./signin.ts').SignInRelays | null = null;
 
   constructor(
     private store: Store,
@@ -186,6 +188,16 @@ export class Http {
     private approvers: Approvers,
   ) {
     this.auth = new Auth(store.db, opts.dataDir);
+  }
+
+  /** signin.ts begin(), or why not in a sentence. */
+  private startSignIn(id: string, provider: string, account: string) {
+    if (!this.signIns) return 'signing in with another account is not on here';
+    try {
+      return this.signIns.begin(id, provider, account);
+    } catch (e) {
+      return String((e as Error)?.message ?? e);
+    }
   }
 
   private get dataDir() {
@@ -514,16 +526,32 @@ export class Http {
       return bad('upgrade failed');
     }
 
+    // Start a sign-in with another account here (signin.ts start): POST links it and starts; GET says how it went.
+    if ((m = path.match(/^\/api\/accounts\/([\w-]+)\/sign-in$/))) {
+      if (!s.account(m[1])) return bad('no such account', 404);
+      if (req.method === 'GET') return json({ signIn: this.signIns?.starts.get(m[1]) ?? null });
+      if (req.method === 'POST') {
+        const b = await body<{ provider?: string; account?: string }>(req);
+        const r = this.startSignIn(m[1], b.provider ?? 'google', String(b.account ?? ''));
+        return typeof r === 'string' ? bad(r) : json({ signIn: r });
+      }
+    }
+
     // Add an account of a kind the page can add (Manifest.add): its form's fields go to its config, or to secret.json
     // when they are secret; it starts and asks for whatever else it needs through its status (a QR code, a sign-in in
     // the live view).
     if (path === '/api/accounts' && req.method === 'POST') {
-      const b = await body<{ kind?: string; label?: string; config?: Record<string, unknown>; secret?: Record<string, unknown> }>(req);
+      const b = await body<{ kind?: string; label?: string; config?: Record<string, unknown>; secret?: Record<string, unknown>; signInWith?: Record<string, unknown> }>(req);
       const kind = b.kind ? this.kinds.get(b.kind) : undefined;
       if (!kind) return bad(`no extractor for kind "${b.kind}"`);
       if (!kind.add) return bad(`${kind.name} accounts are added by the app that manages them`);
       const form = addForm(kind.add.fields ?? [], b.config, b.secret);
       if (typeof form === 'string') return bad(form);
+      // "Sign in with": an account here that signs it in (signin.ts start), by provider; one only, checked before it is made.
+      const signInWith = Object.entries(b.signInWith && typeof b.signInWith === 'object' ? b.signInWith : {}).filter(([, v]) => typeof v === 'string' && v);
+      if (signInWith.length > 1) return bad('sign in with one account');
+      if (signInWith.length && (!kind.signIn || !this.signIns)) return bad(`${kind.name} accounts do not sign in with other accounts`);
+      delete form.config.signInWith;
       const id = newId('acc');
       const now = Date.now();
       s.run(
@@ -539,8 +567,14 @@ export class Http {
       );
       if (form.secret) writeSecret(s.account(id)!, form.secret);
       this.sup.start(id);
+      const signIn = signInWith[0] ? this.startSignIn(id, signInWith[0][0], String(signInWith[0][1])) : null;
+      if (typeof signIn === 'string') {
+        // Refused: the account is made all the same; you sign it in in its live view.
+        this.router.accountsChanged();
+        return json({ id, state: this.state(), signIn: { error: signIn } });
+      }
       this.router.accountsChanged();
-      return json({ id, state: this.state() });
+      return json({ id, state: this.state(), ...(signIn ? { signIn } : {}) });
     }
 
     if ((m = path.match(/^\/api\/requests\/([\w-]+)\/(approve|deny)$/)) && req.method === 'POST') {
@@ -993,7 +1027,7 @@ export class Http {
     return {
       startedAt: this.opts.startedAt,
       publicUrl: this.opts.publicUrl,
-      kinds: [...this.kinds.values()].map((k) => ({ kind: k.kind, name: k.name, interfaces: k.interfaces, add: k.add ?? null, passkeys: !!k.passkeys })),
+      kinds: [...this.kinds.values()].map((k) => ({ kind: k.kind, name: k.name, interfaces: k.interfaces, add: k.add ?? null, passkeys: !!k.passkeys, signIn: !!k.signIn, signsIn: k.signsIn ?? [] })),
       interfaces: Object.values(IFACES).map((i) => ({
         name: i.name,
         version: i.version,

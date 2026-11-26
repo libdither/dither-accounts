@@ -244,6 +244,7 @@ function KindForm({ sv, way, onClose }: { sv: Service; way: Way; onClose: () => 
   const { main, more, preset } = formOf(kind ?? undefined, way);
   const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries([...main, ...more].filter((f) => f.default && choicesOf(f)).map((f) => [f.key, f.default!])));
   const [nickname, setNickname] = useState('');
+  const [signInWith, setSignInWith] = useState('');
   const [busy, setBusy] = useState(false);
   const first = useRef<HTMLInputElement>(null);
   useEffect(() => void (matchMedia('(pointer: fine)').matches && first.current?.focus()), []);
@@ -258,8 +259,8 @@ function KindForm({ sv, way, onClose }: { sv: Service; way: Way; onClose: () => 
     setBusy(true);
     const r = await act<{ id: string }>(
       '/api/accounts',
-      { method: 'POST', body: { kind: kind.kind, ...(nickname.trim() ? { label: nickname.trim() } : {}), config, ...(Object.keys(secret).length ? { secret } : {}) } },
-      `Added ${nickname.trim() || sv.name}`,
+      { method: 'POST', body: { kind: kind.kind, ...(nickname.trim() ? { label: nickname.trim() } : {}), config, ...(Object.keys(secret).length ? { secret } : {}), ...(signInWith ? { signInWith: { google: signInWith } } : {}) } },
+      `Added ${nickname.trim() || sv.name}${signInWith ? `: it signs in with ${(([a]) => a?.seenAs?.detail ?? a?.label)(s.accounts.filter((a) => a.id === signInWith)) ?? 'Google'}` : ''}`,
     );
     setBusy(false);
     if (r?.id) {
@@ -274,6 +275,7 @@ function KindForm({ sv, way, onClose }: { sv: Service; way: Way; onClose: () => 
       {main.map((f, i) => (
         <Field key={f.key} f={f} value={values[f.key] ?? ''} onChange={(v) => set(f.key, v)} inputRef={i === 0 ? first : undefined} />
       ))}
+      {kind.signIn && <SignInWith value={signInWith} onChange={setSignInWith} />}
       <details class="more" open={false}>
         <summary>More options</summary>
         <div class="add-form">
@@ -301,6 +303,33 @@ function KindForm({ sv, way, onClose }: { sv: Service; way: Way; onClose: () => 
         </button>
       </div>
     </form>
+  );
+}
+
+/**
+ * "Sign in with": a Google account here that signs the new account in (docs/signin-relay.md "Starting one"): its
+ * browser presses the site's own Continue with Google, and that Google account goes through Google's screens.
+ */
+function SignInWith({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const s = state.value!;
+  const answers = new Set(s.kinds.filter((k) => k.signsIn.includes('google')).map((k) => k.kind));
+  const google = s.accounts.filter((a) => a.enabled && answers.has(a.kind));
+  if (!google.length) return null;
+  return (
+    <div class="field" role="group" aria-label="Sign in with" data-add-field="signInWith">
+      <span class="field-label">
+        Sign in with
+        <span class="faint"> (optional)</span>
+        <Tip text="A Google account here signs it in for you: its browser presses the site's Continue with Google, and the Google account goes through Google's screens. Only when the site asks Google for no more than your name, picture and email; anything else Google asks stays yours, in its live view." />
+      </span>
+      <div class="seg">
+        {google.map((a) => (
+          <button key={a.id} type="button" class={`seg-btn ${value === a.id ? 'on' : ''}`} aria-pressed={value === a.id} title={a.label} onClick={() => onChange(value === a.id ? '' : a.id)}>
+            {a.seenAs?.detail ?? a.self?.detail ?? a.label}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 

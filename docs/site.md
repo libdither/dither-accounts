@@ -16,6 +16,10 @@ manages `site` accounts, with `config: { url }`. It opens that page in its own C
   ([signin-relay.md](signin-relay.md)). Pick one with **Link it** on (the default): the Google account's own browser
   answers, goes through Google's account chooser and Continue for you, and the site signs itself in. The next time
   the site asks, it goes ahead with no chooser at all.
+- **By itself, as you add it.** Pick a Google account under **Sign in with** in the add form (or
+  `cli.ts add site url=https://… --sign-in-with <id>`). Its browser clicks the site's own Sign in and its Continue
+  with Google, and the linked Google account does the rest ([signin-relay.md](signin-relay.md) "Starting one without
+  the live view"). For an account you already have: `cli.ts sign-in <id> --with <google id>`.
 
 ## What it may reach
 

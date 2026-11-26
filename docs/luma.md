@@ -7,8 +7,9 @@ announcements), and Luma's **chats** (event chats, direct and group) with send, 
 it RSVPs: the event page's one-click **Register**, or **Not going**. It answers the `chat` interface (docs/chat.md) for
 dither-chat's Feed and Events pages, with the event fields chat-protocol's `EventFact` names (feed.ts).
 
-Luma has no public API for a guest. The kind runs luma.com in a sandboxed browser (packages/browser: Xvfb, Chromium
-with our extension, x11vnc for the live view, as for Substack and Reddit), and every read and write is a call Luma's
+Luma has no public API for a guest. The kind runs luma.com in a sandboxed browser (packages/browser: a screen of its own
+on either display backend, Chromium with our extension, the live view, as for Substack and Reddit; docs/browser.md
+"Display backends"), and every read and write is a call Luma's
 own web app makes, from inside its page with its session, built the way the web app builds it.
 
 ## Adding it, and what you do

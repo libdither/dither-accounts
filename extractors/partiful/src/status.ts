@@ -6,7 +6,7 @@
  * Signed out is not broken here: Explore reads work without an account, so a signed-out page still answers `explore`
  * while the status asks you to sign in.
  */
-import { displayNote, type FreeDisplay, type ScreenHealth } from '@dither-accounts/browser';
+import { displayNote, displayState, type FreeDisplay, type ScreenHealth } from '@dither-accounts/browser';
 import type * as P from '@dither-chat/protocol';
 
 export type PageState = 'loading' | 'login' | 'ready';
@@ -54,7 +54,8 @@ export function compute(f: Facts): Computed {
   } else if (!s.started) {
     layers.push({ name: 'display', state: 'waiting', note: 'starting the display, the browser and the live view' });
   } else {
-    layers.push({ name: 'display', state: 'ok', note: `${displayNote(s.display)}${s.liveView ? ', live view on' : ''}` });
+    // A live view server that died shows here while it is started again (packages/browser screen.ts health).
+    layers.push({ name: 'display', ...(s.screen && !s.screen.ok ? displayState(s.display, s.screen) : { state: 'ok' as const, note: `${displayNote(s.display)}${s.liveView ? ', live view on' : ''}` }) });
     if (!s.browserAlive) {
       status = 'error';
       layers.push({ name: 'browser', state: 'failed', note: 'Chromium exited' });

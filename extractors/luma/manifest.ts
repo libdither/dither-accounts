@@ -10,6 +10,7 @@ export default {
   name: 'Luma',
   interfaces: ['chat'],
   entry: 'src/main.ts',
+  screen: true,
   add: {
     blurb: "Runs luma.com in a sandboxed browser on this machine: dither-chat's Feed shows your city's events (before you sign in too) and yours, with who hosts and who is going as Luma shows it; your notifications, your events' blasts and Luma's chats come in as conversations. You sign in to Luma once in the live view.",
     fields: [

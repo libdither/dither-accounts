@@ -103,7 +103,7 @@ test("sway's config: one output at the size, no Xwayland, nothing drawn around w
 });
 
 test("w0vncserver: its socket and no TCP port, no password, the US keymap, and no session bus (the machine's has the owner's portal)", () => {
-  expect(w0vncserverArgs('/bin/w0vncserver', '/a/vnc.sock')).toEqual(['/bin/w0vncserver', '-rfbunixpath', '/a/vnc.sock', '-rfbport', '-1', '-SecurityTypes', 'None', '-AlwaysShared', '-desktop', 'sandbox', '-FrameRate', '60']);
+  expect(w0vncserverArgs('/bin/w0vncserver', '/a/vnc.sock')).toEqual(['/bin/w0vncserver', '-rfbunixpath', '/a/vnc.sock', '-rfbport', '-1', '-SecurityTypes', 'None', '-AlwaysShared', '-desktop', 'sandbox', '-FrameRate', '60', '-SendPrimary=0']);
   const env = w0vncserverEnv('/a/wl/wayland-1', '/a/wl');
   expect(env).toMatchObject({ WAYLAND_DISPLAY: '/a/wl/wayland-1', XDG_RUNTIME_DIR: '/a/wl', HOME: '/a/wl', XKB_DEFAULT_LAYOUT: 'us', DISPLAY: undefined });
   // Both buses are a path in its own directory that nothing makes: whatever the manager's environment had is replaced.

@@ -123,7 +123,8 @@ noVNC is the viewer, over the Unix socket. KasmVNC changed RFB in ways noVNC doe
 where RFB's is 6, its own messages 253 and 254 to every viewer when another joins or leaves, the clipboard only
 through its message 180); the fork speaks standard RFB to any client that announces neither of KasmVNC's own
 pseudo-encodings (disconnect notify, direct mouse), which its own web client always sends. So noVNC and the sandbox's
-own clients get 6-byte pointer events, no 253 or 254, and the clipboard as ClientCutText and ServerCutText, and
+own clients get 6-byte pointer events, no 253 or 254, and the clipboard as ClientCutText and ServerCutText (latin-1)
+or, for a client that announces the extended clipboard as noVNC does, as UTF-8 that way (€ and emoji both ways), and
 nothing on our side knows KasmVNC is different. The fork also opens FFmpeg's libraries by name instead of walking
 `/usr/lib` at every start (5–18 s before it answered on CI), and FFmpeg is left out of the build, so its video modes
 are off.
@@ -134,11 +135,15 @@ sandbox's own RFB client for input, screen sharing through the portal) is the `w
 w0vncserver does not run there; the fork carries upstream's unreleased fixes (it no longer exits when there is no
 desktop portal to ask, and it has a clipboard on wlroots) and our own for a headless seat (it read the seat's
 keyboard's keymap, and a headless sway has no keyboard: a SIGSEGV at the first viewer; it now gives its virtual
-keyboard the default keymap, US, as the sandbox sets `XKB_DEFAULT_LAYOUT=us`). It needs no session bus and is given
+keyboard the default keymap, US, as the sandbox sets `XKB_DEFAULT_LAYOUT=us`) and for its clipboard (it kept one
+offer for the clipboard and the primary selection together, so a browser's copy, which sets both at once, cancelled
+its own read and reached no viewer). It needs no session bus and is given
 none: `DBUS_SESSION_BUS_ADDRESS` names a socket in the compositor's directory that is never made. On the machine's bus
 it would find the owner's portal and could show the owner's own screen, as a Chromium given that bus could share it
 (below). Its flags: `-rfbunixpath <socket> -rfbport -1`, `-SecurityTypes None` and `-AlwaysShared` as for the Xvnc,
-`-desktop sandbox` (else viewers are told `user@host`), `-FrameRate 60`. It draws the pointer into the picture (no
+`-desktop sandbox` (else viewers are told `user@host`), `-FrameRate 60`, and `-SendPrimary=0`: viewers get what a
+page or app copies, not every stretch of text selected in the sandbox (the live view wants the clipboard, and a
+selection would reach every viewer each time it changed). It draws the pointer into the picture (no
 cursor of its own to the viewer), copies each frame through shared memory (no dmabuf), and has no H.264.
 
 **The live view through noVNC**, as the manager's page drives it (`scripts/liveview-check.ts`: the repo's noVNC in a
@@ -148,14 +153,13 @@ headless Chromium, through a WebSocket bridged to a sandbox's socket as the mana
 |---|---|---|---|---|---|
 | click, keys (a, Shift+B, 1, Enter) | yes | yes | yes | yes | yes |
 | typed text with characters no US key has (é, €, ü as keysyms) | typed | typed | typed | é, ü (no €) | dropped |
-| clipboard, viewer → sandbox | no | yes | yes | yes | yes |
-| clipboard, sandbox → viewer | no | yes | yes | yes | no |
+| clipboard, viewer → sandbox (with € and é) | no | yes | yes | yes | yes |
+| clipboard, sandbox → viewer (with €, é and an emoji) | no | yes | yes | yes | yes |
 | the viewer asking to resize the screen | refused | refused | refused | refused | refused |
 | the screen changing size (sway's output) | (no sway) | (no sway) | (no sway) | the viewer follows | the viewer follows |
 
 A Wayland server types only keysyms on its keymap's keys, so what the live view types beyond them is lost there (the
-sandbox's own typing sends any text through the input method instead). w0vncserver takes a paste from the viewer but
-sends nothing back when the page copies.
+sandbox's own typing sends any text through the input method instead).
 
 **What a page sees.** Chromium 155 compared on both, same flags, same machine:
 
@@ -242,7 +246,8 @@ works). Two wayland sandboxes run at once, and each one's capture decodes as its
 **What the benchmarks found.** The numbers, how they were taken and what they leave out are in
 [benchmarks/2026-11-25-display-backends.md](benchmarks/2026-11-25-display-backends.md); the scripts are
 `scripts/bench-display.ts`, `bench-link.ts`, `bench-native.ts` and `bench-lab.ts`, and `scripts/bench-tables.ts`
-makes that page's tables from their JSON. What holds across every round:
+makes that page's tables from their JSON, kept beside it (through `scripts/bench-scrub.ts`, which leaves out what
+would describe the machine). What holds across every round:
 
 - **Bytes on a thin link.** The Xvnc servers and w0vncserver send flat areas as fills and palettes and push changes
   as they come: a still page of text is about 95 KB to a new viewer, where wayvnc sends 270 KB (every changed tile as

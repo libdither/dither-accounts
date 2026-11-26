@@ -34,7 +34,7 @@ const reports: any[] = [];
 let vncSocket = '';
 const PROBE = `<html><body style="margin:0">
 <input id="f" style="position:absolute;left:100px;top:100px;width:400px;height:40px">
-<span id="c" style="position:absolute;left:100px;top:300px">from-page-77</span>
+<span id="c" style="position:absolute;left:100px;top:300px">from-page-77 € é 😀</span>
 <script>
 const f = document.getElementById('f');
 const say = (o) => fetch('/report', { method: 'POST', body: JSON.stringify(o) });
@@ -68,8 +68,8 @@ const server = Bun.serve({
   async fetch(req, srv) {
     const u = new URL(req.url);
     if (u.pathname === '/report') return reports.push(await req.json()), new Response('ok');
-    if (u.pathname === '/') return new Response(PROBE, { headers: { 'content-type': 'text/html' } });
-    if (u.pathname === '/viewer') return new Response(VIEWER, { headers: { 'content-type': 'text/html' } });
+    if (u.pathname === '/') return new Response(PROBE, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+    if (u.pathname === '/viewer') return new Response(VIEWER, { headers: { 'content-type': 'text/html; charset=utf-8' } });
     if (u.pathname.startsWith('/novnc/')) {
       const p = join(NOVNC, u.pathname.slice(7));
       if (!p.startsWith(NOVNC) || !existsSync(p)) return new Response('no', { status: 404 });
@@ -185,7 +185,7 @@ for (const backend of BACKENDS) {
     await Bun.sleep(500);
     await enter('sendText');
     // clipboard: viewer → sandbox (LiveView's long-text path: clipboardPasteFrom, then Ctrl+V)
-    await v.evaluate(`(() => { rfb.clipboardPasteFrom('pasted-123'); setTimeout(() => { rfb.sendKey(0xffe3, 'ControlLeft', true); rfb.sendKey(0x76, 'KeyV', true); rfb.sendKey(0x76, 'KeyV', false); rfb.sendKey(0xffe3, 'ControlLeft', false); }, 150); })()`);
+    await v.evaluate(`(() => { rfb.clipboardPasteFrom("pasted-123 € é"); setTimeout(() => { rfb.sendKey(0xffe3, 'ControlLeft', true); rfb.sendKey(0x76, 'KeyV', true); rfb.sendKey(0x76, 'KeyV', false); rfb.sendKey(0xffe3, 'ControlLeft', false); }, 150); })()`);
     await until('paste', () => reports.some((x) => x.ev === 'paste'), 5000).catch(() => {});
     r.pasteToSandbox = reports.find((x) => x.ev === 'paste') ?? null;
     await enter('afterPaste');

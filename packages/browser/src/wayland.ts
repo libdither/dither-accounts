@@ -36,7 +36,9 @@
  *            the picture, wlr-virtual-pointer and virtual-keyboard for input, ext-data-control for the clipboard. Its
  *            flags (w0vncserverArgs), checked with `ss -lxp` and `ss -ltnup`: -rfbunixpath <path> -rfbport -1 (the
  *            socket, no TCP port), -SecurityTypes None and -AlwaysShared as for an Xvnc (vnc.ts), -desktop sandbox
- *            (else the viewer is told user@host), -FrameRate 60. Viewers cannot resize sway's output through it: it
+ *            (else the viewer is told user@host), -FrameRate 60, -SendPrimary=0 (viewers get what a page or app copies, not
+ *            every stretch of text selected: the live view wants the clipboard, a selection would reach every viewer
+ *            each time it changed, and the sandbox's Chromium sets both at once on a copy). Viewers cannot resize sway's output through it: it
  *            has no SetDesktopSize on wlroots. Its keymap is XKB_DEFAULT_LAYOUT=us.
  *   input    wayvnc (or w0vncserver) makes a virtual pointer and keyboard (wlr-virtual-pointer, virtual-keyboard) for its viewers, which
  *            the app gets as its seat's own input: trusted events, like xdotool's. The sandbox keeps one RFB client of
@@ -193,7 +195,7 @@ export function wayvncArgs(wayvnc: string, socket: string, dir: string): string[
 
 /** w0vncserver on its Unix socket only (see above). */
 export function w0vncserverArgs(w0vncserver: string, socket: string): string[] {
-  return [w0vncserver, '-rfbunixpath', socket, '-rfbport', '-1', '-SecurityTypes', 'None', '-AlwaysShared', '-desktop', 'sandbox', '-FrameRate', String(WAYVNC_MAX_FPS)];
+  return [w0vncserver, '-rfbunixpath', socket, '-rfbport', '-1', '-SecurityTypes', 'None', '-AlwaysShared', '-desktop', 'sandbox', '-FrameRate', String(WAYVNC_MAX_FPS), '-SendPrimary=0'];
 }
 
 /**

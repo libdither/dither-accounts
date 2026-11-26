@@ -168,7 +168,8 @@ The display backend restarts the same way, for kinds with a screen only. Each su
 default picked on the manager's page, else config.toml's `display_backend`), and an adopted one started with another
 than its account now wants is restarted in the same queue, one at a time per kind. A default picked on the page
 (`PUT /api/display`) puts the running accounts that follow it in that same queue (`moveScreens`), the first of each
-kind without the pause: two quick changes, or one during a deploy's restarts, still restart one account of a kind at a
+kind without the pause (and an account moved again right after its own restart: the pause is between two accounts
+of a kind, not two moves of one): two quick changes, or one during a deploy's restarts, still restart one account of a kind at a
 time, and an account restarted for its code and its screen together restarts once. A moved account that does not come
 back online, with its live view again if it had one, within the minute stops its kind's queue, as a deploy's does: the
 others stay where they are. So a new default reaches every account without moving them all at once, and

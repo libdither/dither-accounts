@@ -1171,7 +1171,8 @@ export class Supervisor {
   /**
    * Running accounts whose screen the page moved (a new default, an account's own): restarted in the same queue as a
    * deploy's (roll), so never two of one kind at once whichever asked first. The first of a kind the page asked for
-   * goes without the pause: someone is waiting for it. One whose screen no longer differs by its turn (the default
+   * goes without the pause: someone is waiting for it; so does one asked for again right after its own restart (the
+   * pause is between two accounts of a kind, not two moves of one). One whose screen no longer differs by its turn (the default
    * moved back, or its own was set), or that was stopped meanwhile, is left as it is.
    */
   moveScreens(ids: string[]) {
@@ -1207,11 +1208,13 @@ export class Supervisor {
     if (this.rollingKinds.has(kind)) return;
     this.rollingKinds.add(kind);
     let first = true;
+    // The account restarted last in this queue: the page asking to move it again is not a second account of the kind.
+    let last: string | null = null;
     try {
       for (;;) {
         const q = this.outdated.get(kind);
         if (!q?.length || this.closing) break;
-        if (!(first && this.askedNow.has(q[0]!))) await this.sleep(this.opts.restartPauseMs ?? RESTART_PAUSE_MS);
+        if (!((first || last === q[0]) && this.askedNow.has(q[0]!))) await this.sleep(this.opts.restartPauseMs ?? RESTART_PAUSE_MS);
         const id = q.shift();
         if (!id || this.closing) break;
         this.askedNow.delete(id);
@@ -1223,6 +1226,7 @@ export class Supervisor {
         // Changed code restarts only an adopted extractor (one this manager started runs the code it started with).
         if (sameScreen && (!r.adopted || sameCode(r.fingerprint, this.fingerprintOf(k)))) continue;
         first = false;
+        last = id;
         const why = sameScreen ? 'code' : 'display backend';
         // Its live view comes back too, when it had one: a backend it cannot start on leaves it online without one.
         const hadScreen = !sameScreen && !!this.opts.screenUp?.(id);

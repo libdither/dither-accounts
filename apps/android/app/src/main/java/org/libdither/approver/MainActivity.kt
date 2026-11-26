@@ -17,6 +17,7 @@ import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.WindowInsets
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -38,6 +39,8 @@ class MainActivity : Activity() {
     private var deviceName = Build.MODEL ?: "Android phone"
     private var pairMsg: String? = null
     private var pairing = false
+    private var preparing = false
+    private var keyMsg: String? = null
     private var justPaired: Pairing? = null
     private var pushMsg: String? = null
     private val onChange: () -> Unit = { render() }
@@ -154,7 +157,17 @@ class MainActivity : Activity() {
     }
 
     private fun home() {
-        for (x in Asks.pending.sortedBy { it.a.ask.expires }) ask(x)
+        val selectable = Asks.selectable()
+        if (selectable.size >= 2) {
+            val n = selectable.count { it.first.selected }
+            button(if (n > 0) "Approve selected ($n) 🔒" else "Approve selected") {
+                if (n > 0) confirm("Approve $n requests?", selectable.filter { it.first.selected }.joinToString("\n") { "• ${it.first.a.display.title}" }) {
+                    Asks.approveSelected(this); render()
+                }
+            }.isEnabled = n > 0
+            text(quickState(), muted = true)
+        }
+        for (x in Asks.pending.sortedBy { it.a.ask.expires }) ask(x, selectable.size >= 2 && selectable.any { it.first === x })
         val first = Approvals.pending.firstOrNull()
         if (first != null) request(first) else if (Asks.pending.isEmpty()) text("Nothing waiting.", muted = true)
         if (Approvals.pending.size > 1) text("${Approvals.pending.size - 1} more waiting after this one.", muted = true)
@@ -168,12 +181,15 @@ class MainActivity : Activity() {
             text(p.url, bold = true)
             text("This phone there: ${p.name.ifEmpty { "(no name)" }}, ${p.deviceId}, paired ${time(p.pairedAt)}", muted = true)
             text("Key fingerprint  ${p.fingerprint}", mono = true)
-            text(p.approvalFingerprint?.let { "Approval key     $it" } ?: "Approval key     not made yet (it needs a screen lock)", mono = true)
+            text(p.approvalFingerprint?.let { "Approval key     $it${if (p.approvalQuick) " (quick)" else ""}" } ?: "Approval key     not made yet (it needs a screen lock)", mono = true)
+            if (p.approvalAlias != null && !p.approvalQuick) migrate(p)
             text(if (p.forgotten) "The manager no longer knows this phone. Pair again." else "Link: ${Links.state(p.deviceId)}")
             row(button("Unpair", add = false) {
                 confirm("Unpair from ${p.url}?", "This phone stops answering it. Its passkeys stay until you delete them; remove the phone on the page too.") { Pairings.unpair(p); render() }
             })
         }
+
+        if (Store.pairings.any { it.approvalQuick || it.nextAlias != null }) quickSettings()
 
         heading("Wake-ups")
         val endpoint = Store.pushEndpoint
@@ -210,7 +226,7 @@ class MainActivity : Activity() {
     }
 
     /** An approval: what it is, who asks, the body and payload it signs over, a message, and one button per action. */
-    private fun ask(x: Asked) {
+    private fun ask(x: Asked, selectable: Boolean = false) {
         val d = x.a.display
         heading("Approval: ${d.title}")
         field("Kind", if (d.urgency == "normal") d.kind else "${d.kind}, urgency ${d.urgency}")
@@ -267,7 +283,89 @@ class MainActivity : Activity() {
             })
         }
         content.addView(wrap)
-        if (d.actions.any { it.signed && it.id != "deny" }) text("🔒 signs with this phone's approval key, after your fingerprint or PIN.", muted = true)
+        if (selectable) content.addView(CheckBox(this).apply {
+            text = "Include in Approve selected"
+            isChecked = x.selected
+            setOnCheckedChangeListener { _, on -> x.selected = on; render() }
+        })
+        if (d.actions.any { it.signed && it.id != "deny" }) {
+            text(if (x.p.approvalQuick) "🔒 signs with this phone's quick-approval key. ${quickState()}" else "🔒 signs with this phone's approval key, after your fingerprint or PIN.", muted = true)
+        }
+    }
+
+    /** Whether the next quick signature asks first, in words. */
+    private fun quickState(): String {
+        val left = Asks.quickRemainingMs(this) ?: return "The next approval asks for your fingerprint or PIN once (window: ${QuickWindow.label(Store.quickWindowS)})."
+        if (left == Long.MAX_VALUE) return "No prompt until the phone restarts (it must be unlocked)."
+        val sec = (left + 999) / 1000
+        val min = (left + 59_999) / 60_000
+        return "No prompt for about ${if (sec < 60) "$sec s" else if (min < 60) "$min min" else "${min / 60} h ${min % 60} min"} more."
+    }
+
+    /** How long one prompt lasts, and a button to close the window now. */
+    private fun quickSettings() {
+        heading("Quick approvals")
+        text("One fingerprint or PIN lets the quick-approval key sign without asking for:")
+        val grid = android.widget.GridLayout(this).apply { columnCount = 3 }
+        for (w in QuickWindow.CHOICES) grid.addView(Button(this).apply {
+            text = QuickWindow.label(w)
+            isAllCaps = false
+            alpha = if (w == Store.quickWindowS) 1f else 0.6f
+            setTypeface(typeface, if (w == Store.quickWindowS) Typeface.BOLD else Typeface.NORMAL)
+            setOnClickListener {
+                val set = {
+                    synchronized(Store) {
+                        Store.quickWindowS = w
+                        runCatching { Store.save() }
+                    }
+                    render()
+                }
+                if (w >= 8 * 3600 || w == QuickWindow.UNTIL_RESTART) {
+                    confirm("Approve without a prompt for ${QuickWindow.label(w)}?", "For that long after one fingerprint, anyone holding this phone unlocked can approve merges and deploys with a tap.") { set() }
+                } else set()
+            }
+        })
+        content.addView(grid)
+        text(quickState(), muted = true)
+        if (Asks.quickRemainingMs(this) != null) button("Ask again now") { Asks.lockQuick(); render() }
+    }
+
+    /**
+     * Moving a pairing from the per-use approval key to a quick-approval key. The hosts that check answers pin the
+     * key in use, so the new key is made first, pinned by hand, and only then switched to; until then nothing changes.
+     */
+    private fun migrate(p: Pairing) {
+        val next = p.nextAlias
+        if (next == null) {
+            text("Each approval asks for your fingerprint. A quick-approval key asks once per window, and lets you approve several requests at once.", muted = true)
+            button(if (preparing) "Making the key…" else "Prepare a quick-approval key") {
+                if (preparing) return@button
+                preparing = true
+                render()
+                val app = applicationContext
+                Thread {
+                    val err = Asks.prepareNext(app, p)
+                    runOnUiThread { preparing = false; keyMsg = err; render() }
+                }.start()
+            }
+            keyMsg?.let { text(it) }
+            return
+        }
+        text("New quick-approval key (not in use yet)  ${p.nextFingerprint}", mono = true)
+        text("This phone keeps signing with the current key. First add this line to the keys of every host that checks this phone's answers (the approvals keys file, dither-chat's docs/approvals.md), replacing this phone's current line, and rebuild them. Then switch.")
+        val line = Asks.nextKeysLine(p).orEmpty()
+        text(line, mono = true).setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+        row(
+            button("Copy line", add = false) {
+                getSystemService(ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newPlainText("approval key", line))
+            },
+            button("Switch to it", add = false) {
+                confirm("Switch to the new key?", "Only once the hosts have the new line: answers signed with it don't count anywhere that still pins the old key. The old key is destroyed.") {
+                    Asks.useNext(p); render()
+                }
+            },
+            button("Discard", add = false) { Asks.discardNext(p); render() },
+        )
     }
 
     private fun pair() {

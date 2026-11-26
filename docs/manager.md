@@ -150,7 +150,7 @@ docs/notifications.md, without the account needing you); the page shows each whe
 - Apps get each status's `liveView` as its width and height only, never the socket (so an app knows there is one): an
   app that runs the account opens the live view through the manager (`liveViewPath`). The page and `/api/liveview`
   keep the socket.
-- No live view listens on a TCP port. A sandbox's x11vnc or wayvnc (`packages/browser/src/vnc.ts`, `wayland.ts`) listens only on `vnc.sock` in
+- No live view listens on a TCP port. A sandbox's x11vnc, Xvnc, wayvnc or w0vncserver (`packages/browser/src/vnc.ts`, `wayland.ts`) listens only on `vnc.sock` in
   the account's directory (0700, the socket 0600), so nothing but this user reaches it, and the manager connects only
   to a Unix socket this user owns: it carries the stream to the page behind its login, and to an app on its token. (A
   VNC without a password on 127.0.0.1, as it was, let in every local process, and any web page open in a browser

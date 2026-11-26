@@ -10,6 +10,8 @@
  *   wayland  a headless sway of the sandbox's own, its socket in the account's directory and no number at all, wayvnc as
  *            the live view on the same socket path, input through that live view (rfb.ts) and wtype, pictures by grim
  *            (wayland.ts).
+ *   wayland-tigervnc
+ *            the same, but TigerVNC's Wayland server (w0vncserver, nix/w0vncserver.nix) is the live view.
  *
  * The browser sandbox (sandbox.ts), Discord's and the native-app sandbox (packages/sandbox) each start one; the
  * `browser` interface (statements-common/browser-ops.ts) drives it. Nothing outside knows which backend it is but by
@@ -19,28 +21,31 @@ import type { Subprocess } from 'bun';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DISPLAY_BINS, type Log, resolveBin, run, tryBin, withoutDisplays } from './bins.ts';
-import { type DisplayBackend, displayIsOurs, type FreeDisplay, type XDisplay } from './display.ts';
+import { type DisplayBackend, displayIsOurs, type FreeDisplay, type WaylandDisplay, type XDisplay } from './display.ts';
 import { prepareVncSocket, vncSocketPath, waitForRfbBanner, waitForVncSocket, x11vncArgs, xvncArgs } from './vnc.ts';
 import { WaylandScreen } from './wayland.ts';
 import { closeWindow } from './x11.ts';
 
-export { DISPLAY_BACKEND_ENV, DISPLAY_BACKENDS, type DisplayBackend, displayBackend, isXBackend, parseBackend, X_BACKENDS, type XBackend } from './display.ts';
+export { DISPLAY_BACKEND_ENV, DISPLAY_BACKENDS, type DisplayBackend, displayBackend, isWaylandBackend, isXBackend, parseBackend, WAYLAND_BACKENDS, type WaylandBackend, X_BACKENDS, type XBackend } from './display.ts';
 
 /** A display as a status shows it: ":80" for an X display (a number is one), "wayland" for a compositor of its own. */
 export function displayName(d: FreeDisplay | number | null | undefined): string | null {
   if (d === null || d === undefined) return null;
   if (typeof d === 'number') return `:${d}`;
-  return d.backend === 'wayland' ? 'wayland' : `:${d.display}`;
+  return d.display === null ? 'wayland' : `:${d.display}`;
 }
 
 /** The X server each X backend runs, for notes. */
 export const X_SERVER_NAME: Record<XDisplay['backend'], string> = { x11: 'Xvfb', tigervnc: 'Xvnc (TigerVNC)', kasmvnc: 'Xvnc (KasmVNC)', turbovnc: 'Xvnc (TurboVNC)' };
 
+/** What each Wayland backend runs, for notes. */
+export const WAYLAND_NOTE: Record<WaylandDisplay['backend'], string> = { wayland: 'sway (Wayland)', 'wayland-tigervnc': 'sway (Wayland, TigerVNC)' };
+
 /** What runs it, for a status layer's note: "Xvfb :80", "Xvnc (TigerVNC) :81", "sway (Wayland)". */
 export function displayNote(d: FreeDisplay | number | null | undefined): string {
   if (d === null || d === undefined) return 'no display';
   if (typeof d === 'number') return `Xvfb :${d}`;
-  return d.backend === 'wayland' ? 'sway (Wayland)' : `${X_SERVER_NAME[d.backend]} :${d.display}`;
+  return d.display === null ? WAYLAND_NOTE[d.backend] : `${X_SERVER_NAME[d.backend]} :${d.display}`;
 }
 
 /** Spawns one of the screen's processes in its owner's list, so the owner stops it and can find it after a crash. */
@@ -105,7 +110,7 @@ export interface Screen extends ScreenInput {
 
 export function makeScreen(o: ScreenOptions): Screen {
   const free: FreeDisplay = typeof o.display === 'number' ? { backend: 'x11', display: o.display } : o.display;
-  if (free.backend === 'wayland') return new WaylandScreen(o, free);
+  if (free.display === null) return new WaylandScreen(o, free);
   return new XScreen(o, free);
 }
 

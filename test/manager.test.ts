@@ -118,10 +118,15 @@ test("the display backend: the manager's default (x11), an account's own from it
   expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: ' TigerVNC ' } })).status).toBe(200);
   expect((await detail()).config.displayBackend).toBe('tigervnc');
   expect((await detail()).process.displayBackend).toBe('tigervnc');
+  // sway with TigerVNC's Wayland server as its live view.
+  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: 'Wayland-TigerVNC' } })).status).toBe(200);
+  expect((await detail()).config.displayBackend).toBe('wayland-tigervnc');
+  expect((await detail()).process.displayBackend).toBe('wayland-tigervnc');
   expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: null } })).status).toBe(200);
   expect('displayBackend' in (await detail()).config).toBe(false);
   expect((await detail()).process.displayBackend).toBe('x11');
   expect(m.sup.backendOf({ config: JSON.stringify({ displayBackend: 'wayland' }) })).toBe('wayland');
+  expect(m.sup.backendOf({ config: JSON.stringify({ displayBackend: 'wayland-tigervnc' }) })).toBe('wayland-tigervnc');
   // KasmVNC's Xvnc is not offered: the live view (noVNC) cannot drive it (display-backend.ts).
   const refused = await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: 'kasmvnc' } });
   expect(refused.status).toBe(400);

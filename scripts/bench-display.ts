@@ -40,7 +40,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { cpus, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { resolveBin } from '../packages/browser/src/bins.ts';
-import { type FreeDisplay, pickFreeDisplay } from '../packages/browser/src/display.ts';
+import { type FreeDisplay, isWaylandBackend, pickFreeDisplay } from '../packages/browser/src/display.ts';
 import type { ShareStats } from '../packages/browser/test/share-page.ts';
 import { type Backend, backendsArg, Bench, cpuDuring, cpuOver, ENC, ensureVideo, H, load1, log, memory, novncEncodings, progName, quiet as quietFor, shm, summary, tree, VIDEO, Viewer, VNC_SERVER, W, work } from './bench-lib.ts';
 
@@ -170,7 +170,7 @@ async function typing(b: Bench) {
 
 /** Chromium's picker answered: on X by the source's name, under PipeWire only by the fake UI (docs/browser.md). */
 function flagsFor(backend: Backend): string[] {
-  return backend !== 'wayland' ? ['--auto-select-desktop-capture-source=Entire screen'] : ['--use-fake-ui-for-media-stream'];
+  return !isWaylandBackend(backend) ? ['--auto-select-desktop-capture-source=Entire screen'] : ['--use-fake-ui-for-media-stream'];
 }
 
 /** In a sandbox of its own with screen sharing on (on wayland its own PipeWire and portal; on x11 nothing more). */

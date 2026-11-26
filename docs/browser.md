@@ -53,17 +53,18 @@ screen of its own, made by one of the backends behind one abstraction (`packages
 the same things: a live view on `<account>/vnc.sock` (or `<account>/desktop/vnc.sock`) that the manager's page
 shows unchanged, real clicks at an element's middle, typed text, xdotool's key names, and a PNG of the screen.
 
-| | `x11` (the default) | `tigervnc`, `turbovnc` | `wayland` |
+| | `x11` (the default) | `tigervnc`, `turbovnc` | `wayland`, `wayland-tigervnc` |
 |---|---|---|---|
 | screen | Xvfb on a free display number (`:80`–`:89`, `:100`–`:159`; Discord `:91`–`:99`) | Xvnc on a free display number from the same ranges: X server and VNC server in one process | a headless sway of the sandbox's own; its sockets in `<account>/wl` (0700), or in `$XDG_RUNTIME_DIR/dither-wl/<hash>` when the account's path leaves no room for sway's socket names; no display number, nothing in /tmp |
-| live view | x11vnc on the socket | the same Xvnc, on the socket (`-rfbunixpath`), with no TCP port (`-rfbport -1` for TigerVNC; TurboVNC opens none once given a path) | wayvnc on the same socket (no TCP or UDP port, no abstract socket) |
-| input | xdotool | xdotool | an RFB client of the sandbox's own on that socket: wayvnc turns it into the seat's virtual pointer and keyboard |
+| live view | x11vnc on the socket | the same Xvnc, on the socket (`-rfbunixpath`), with no TCP port (`-rfbport -1` for TigerVNC; TurboVNC opens none once given a path) | wayvnc (`wayland`) or TigerVNC's w0vncserver (`wayland-tigervnc`) on the same socket (no TCP or UDP port, no abstract socket) |
+| input | xdotool | xdotool | an RFB client of the sandbox's own on that socket: the live view's server turns it into the seat's virtual pointer and keyboard |
 | text no US key makes (é, €, emoji) | xdotool's keysyms, each character first put on a key of its own for the screen's life (xmodmap): bound and unbound around each press, as xdotool does alone, an app can miss it | the same | an input method (input-method-v2 → the field's text-input-v3), as a person with an IME types it |
 | picture | ImageMagick's `import` | ImageMagick's `import` | grim |
 | apps | `DISPLAY` | `DISPLAY` | Chromium `--ozone-platform=wayland`; native apps get only the compositor's socket, as `<run>/wayland-0`, with Qt, GTK, SDL and Electron told to use it, and no X socket at all |
 
 **Choosing.** The manager's `display_backend` (`--display-backend`, `DITHER_ACCOUNTS_DISPLAY_BACKEND`, or
-config.toml) is the default for every account, `x11` unless set: `x11`, `tigervnc`, `turbovnc` or `wayland`. An
+config.toml) is the default for every account, `x11` unless set: `x11`, `tigervnc`, `turbovnc`, `wayland` or
+`wayland-tigervnc`. An
 account's config can name its own, `displayBackend`: `bun packages/manager/src/cli.ts display <account> tigervnc` (or
 `default` to follow the manager), or `{ "settings": { "displayBackend": "tigervnc" } }` in a PATCH of
 `/api/accounts/<id>`. `kasmvnc` is refused there, with the reason (below). The account's extractor
@@ -91,6 +92,44 @@ once given `-rfbunixpath` and refuses `-rfbport -1`. TurboVNC runs with `-deferu
 change 40 ms to send more at once, which kept its live view near 20 frames a second and added 40 ms to every click
 (TigerVNC's default is 1 ms). The tests read `/proc/net/{tcp,tcp6,udp,udp6}` against each
 Xvnc's sockets (what `ss -p` shows): no inet socket at all.
+
+**TigerVNC on Wayland (`wayland-tigervnc`).** The same headless sway as `wayland`, with TigerVNC 1.16's Wayland
+server, w0vncserver, as the live view in wayvnc's place: everything else (sway, its directory, grim, the input method,
+the sandbox's own RFB client for input, screen sharing through the portal) is the `wayland` backend's. nixpkgs'
+w0vncserver does not run there, for two reasons, both fixed by patches in `nix/w0vncserver.nix` (nixpkgs' tigervnc,
+patched, built without its viewer and Xvnc; a minute or two):
+
+- It asks the desktop portal first (RemoteDesktop and ScreenCast) and falls back to the compositor's own protocols
+  (wlr-screencopy, wlr-virtual-pointer, virtual-keyboard) only when the portal answers without them. With no portal
+  on the bus, or no bus, its check threw and it exited at start. Patched: no portal to ask is no portal.
+- On the first viewer it makes a virtual keyboard and gives it the seat's keymap, read from the seat's keyboard. A
+  headless sway has no input devices, so its seat has no keyboard (`wl_seat.capabilities` 0), and it read a null
+  pointer: SIGSEGV in `VirtualKeyboard`'s constructor, right after `create_virtual_keyboard` (gdb). Patched: with no
+  keyboard on the seat it gives the virtual keyboard libxkbcommon's default keymap (US: the sandbox sets
+  `XKB_DEFAULT_LAYOUT=us`, as wayvnc's `-k us`); sway adds that keyboard to the seat, and w0vncserver then reads the
+  keymap back from the seat as it would on a desktop. Its keymap-echo guard (it compares the text) stops a loop.
+
+With the first patch it needs no session bus, and it is given none: `DBUS_SESSION_BUS_ADDRESS` names a socket in the
+compositor's directory that is never made. On the machine's bus it would find the owner's portal and could show the
+owner's own screen, as a Chromium given that bus could share it (below). Its flags: `-rfbunixpath <socket> -rfbport -1`
+(the socket, no TCP port), `-SecurityTypes None` and `-AlwaysShared` as for TigerVNC's Xvnc, `-desktop sandbox` (else
+viewers are told `user@host`), `-FrameRate 60`. What it lacks against wayvnc, checked through noVNC in a headless
+Chromium (`scripts/liveview-check.ts`):
+
+| through noVNC | `tigervnc` (Xvnc) | `wayland` (wayvnc) | `wayland-tigervnc` (w0vncserver) |
+|---|---|---|---|
+| click, keys (a, Shift+B, 1, Enter) | yes | yes | yes |
+| the live view's typed text with characters no US key has (é, €, ü as keysyms) | typed | dropped | dropped |
+| clipboard, viewer → sandbox (a long paste) | yes | yes | no |
+| clipboard, sandbox → viewer | yes | yes | no |
+| the viewer asking to resize the screen | refused | refused | refused |
+| the screen changing size (sway's output) | (no sway) | the viewer follows | the viewer follows |
+
+w0vncserver 1.16 has no clipboard on wlroots at all (no data-control), so the live view's paste of long or many-line
+text does nothing there; short one-line text is typed as keys and works for what a US keyboard has. Neither Wayland
+server types a keysym that is not on its keymap's keys, so é and € from the live view are lost on both (the
+sandbox's own typing sends them through the input method instead). It also draws the pointer into the picture (no
+cursor of its own to the viewer), copies each frame through shared memory (no dmabuf), and has no H.264.
 
 **KasmVNC is refused.** `kasmvnc` (KasmVNC 1.5.2, packaged from its upstream Debian build in `nix/kasmvnc.nix`,
 pinned by hash) runs in the sandbox code and in the benchmarks, but the manager does not offer it, because the live
@@ -303,6 +342,75 @@ and the best of both on slow links. wayland stays ahead on GPU work, video in Ch
 matches TigerVNC's frames for 2–4 times its Tight bytes and more CPU; `kasmvnc` is best on thin links but needs a
 viewer noVNC is not.
 
+**TigerVNC's Wayland server beside wayvnc and TigerVNC's Xvnc.** `wayland-tigervnc` measured in one session with
+`tigervnc` and `wayland` run again beside it (the table above is an earlier session's): three repetitions (slow links
+and native apps two), backend order rotated, 1-minute load 2–9 (two of wayland's slow-link runs at 32, marked busy),
+medians. The same benchmarks as above.
+
+| | tigervnc | wayland | wayland-tigervnc |
+|---|---|---|---|
+| start → live view up / first page ran (ms) | 99 / 503 | 869 / 1,475 | 343 / 826 |
+| idle: PSS of all but Chromium | 20 MB (Xvnc) | 61 MB (sway 51, wayvnc 10) | 68 MB (sway 46, w0vncserver 22) |
+| System V shm segments held | 0 | 0 | 0 |
+| animation, ZRLE: frames/s, server CPU | 58.1, 34% | 57.6, 69% | 57.3, 43% |
+| animation, Tight: frames/s, bytes/s, server CPU | 57.8, 4.8 MB/s, 44% | 58.5, 12.7 MB/s, 35% | 57.8, 4.5 MB/s, 53% |
+| scrolling, Tight: frames/s, bytes/s | 57.5, 5.5 MB/s | 58.0, 14.8 MB/s | 57.4, 5.6 MB/s |
+| 720p video, Tight: frames/s, bytes/s | 31, 2.5 MB/s | 28, 3.0 MB/s | 35, 2.4 MB/s |
+| RFB press → page handler / click to photon | 0.8 / 29 ms | 0.9 / 27 ms | 1.0 / 19 ms |
+| typing, 35 ms a key | 28 chars/s | 17 | 17 |
+| screen share: frames/s, drawn → decoded, CPU | 27, 80 ms, 136% | 27, 111 ms, 106% | 26, 111 ms, 109% |
+| 720p VP9 in Chromium: dropped, CPU | 0.3%, 53% | 5.3%, 26% | 3.3%, 28% |
+| WebGL: frames/s, CPU | 60, 87% | 61, 27% | 61, 37% |
+| screenshot | 91 ms | 33 ms | 42 ms |
+| 10 sandboxes at once: started, USS each | 2.4 s, 132 MB | 2.6 s, 159 MB | 3.4 s, 159 MB |
+
+Over a slow link, as noVNC asks (Tight first): frames a second of the animation / the video, then click to photon.
+
+| link | tigervnc | wayland | wayland-tigervnc |
+|---|---|---|---|
+| unlimited | 48 / 39, 28 ms | 57 / 28, 9 ms | 54 / 35, 19 ms |
+| 20 Mbit/s | 32 / 29, 26 ms | 11 / 22, 51 ms | 29 / 28, 18 ms |
+| 5 Mbit/s | 8.0 / 6.5, 26 ms | 2.8 / 4.2, 193 ms | 7.2 / 6.9, 17 ms |
+| 1 Mbit/s | 2.0 / 1.6, 26 ms | 0.6 / 0.7, 1.2 s | 1.9 / 1.4, 17 ms |
+| 50 ms round trip | 50 / 43, 80 ms | 43 / 28, 66 ms | 52 / 39, 68 ms |
+| 150 ms | 45 / 33, 183 ms | 50 / 25, 189 ms | 39 / 37, 167 ms |
+| 5 Mbit/s, 50 ms | 6.8 / 4.7, 81 ms | 2.0 / 2.8, 302 ms | 6.7 / 5.1, 83 ms |
+| 1 Mbit/s, 150 ms | 1.2 / 0.9, 176 ms | 0.4 / 0.6, 1.6 s | 1.3 / 0.8, 174 ms |
+| 20 Mbit/s, 50 ms, 1% loss | 4.6 / 3.7, 102 ms | 1.4 / 1.8, 230 ms | 5.1 / 2.7, 81 ms |
+| display at 50% of a core | 50 / 34, 27 ms | 39 / 28, 10 ms | 38 / 37, 18 ms |
+| display at 20% of a core | 22 / 29, 26 ms | 15 / 25, 11 ms | 15 / 22, 17 ms |
+
+w0vncserver sends what TigerVNC's Xvnc sends: the same encoders, so a still page's first whole screen is 94 KB (Xvnc
+95 KB, wayvnc 270 KB) and the animation a third of wayvnc's Tight bytes. On a thin link it keeps TigerVNC's frames
+and clicks, two to ten times wayvnc's; on a far one all three hold 40–55 frames a second. It answers a click sooner
+than either (19 ms), and with ZRLE costs 43% of a core where wayvnc costs 69%. Where it loses: it reads every frame
+into shared memory (no dmabuf), so with sway on the GPU a busy screen costs more (WebGL 37% of a core against 27%,
+screenshots 42 ms against 33) and a display held to 20% of a core draws 15 frames a second, as wayvnc does, against
+the Xvnc's 22; it holds 22 MB where wayvnc holds 10; and it lacks the clipboard (above). Starting is faster than
+wayvnc's, though the screen's start is mostly sway's.
+
+Native apps on sway with w0vncserver (`scripts/bench-native.ts`, config `w0-pixman`) behave as on sway with wayvnc:
+input reaches Signal Desktop, Telegram Desktop and Haveno, idle CPU is the app's own, and the display costs 46–78 MB
+(sway and w0vncserver; wayvnc's 45–76, Xvnc's 16–23). The first picture came at about the same time as with wayvnc
+(Haveno 3.3 s, Signal 16 s, Telegram 5.8 s; these times are noisy, one Signal run on Xvnc took 60 s).
+
+On the lab's signed-in test accounts (`scripts/bench-lab.ts`, two Proton and two Discord test accounts, read-only, one
+run each, medians over the four):
+
+| | tigervnc | wayland | wayland-tigervnc |
+|---|---|---|---|
+| pointer sweep and clicks: frames/s, bytes/s | 10, 0.06 MB/s | 9.1, 0.10 MB/s | 17\*, 0.06 MB/s |
+| 5 Mbit/s, 50 ms: frames/s | 15 | 8.5 | 18\* |
+| 1 Mbit/s, 150 ms: frames/s, first whole screen | 18, 2.1 s | 2.6, 3.3 s | 29\*, 2.1 s |
+| display memory (PSS) | 19–25 MB | 71–108 MB | 58–68 MB |
+| account online | 1.0–3.7 s | 1.1–1.6 s | 2.9–4.9 s |
+
+\* w0vncserver draws the pointer into its frames, and the sweep moves it 25 times a second, so part of its frames are
+only the pointer moving: count its bytes, which match the Xvnc's, not its frames. wayland's memory here is sway on the
+GPU (gles2) with Chromium's GPU buffers; on wayland-tigervnc it is the same sway, so the 10–40 MB between them is
+mostly what wayvnc and w0vncserver map of it. The account came online 1–3 s later on wayland-tigervnc in every run;
+not looked into (the synthetic start, above, is faster than wayvnc's).
+
 **What the benchmarks leave out.** Read the numbers above with these in mind; the first three are fixed in the
 scripts, the rest are open.
 
@@ -344,6 +452,12 @@ scripts, the rest are open.
 - One screen size (1280×800); a phone viewer scaling it down is not measured.
 - KasmVNC is measured only through its RFB on the Unix socket with our viewer speaking its pointer format: its own
   web client's WebP, adaptive quality and UDP transport, which is how its users get it, are not.
+- w0vncserver draws the pointer into its frames (and with it sway draws it into the output, so grim's pictures have
+  it too). The scenes never move the pointer while measuring, so the cost of sending a moving pointer as picture,
+  where the other servers send a cursor shape once, is not measured. The native apps' "first picture" once took the
+  lone pointer on a black screen for the app's first frame; it now also needs the screen to be more than nearly black.
+- `wayland-tigervnc` runs a TigerVNC we patch and build (nix/w0vncserver.nix); the others run nixpkgs' or upstream's
+  builds as shipped.
 
 **Limits.** Discord's extension port is picked free on wayland (on x11 it comes from the display number). No
 clipboard tool is used on either backend. An extractor killed outright leaves its compositor's directory (its config
@@ -383,13 +497,15 @@ URL off the site is refused, that the elements and their refs come back from a r
 a real click (`isTrusted`) add to the cart. It also checks that Buy Now is refused to `browser.click`, that a stale
 ref is caught, that the screenshot is a PNG, and that a closed tab is gone.
 
-`packages/browser/test/wayland.test.ts` covers the wayland backend: its parts on their own (the key names, text split
+`packages/browser/test/wayland.test.ts` covers the wayland backends: its parts on their own (the key names, text split
 into keys and input-method runs, the Wayland and sway IPC wire, the RFB handshake against a stand-in server, the
 config and flags), then a real headless sway and wayvnc (RFB on the socket and nothing else, no TCP or abstract
 socket, the seat's pointer and keyboard, grim's PNG), then Chromium on it: a click, Shift-held capitals, é, € and an
 emoji typed into a field arrive as trusted input with the right `code`s, and the page has a fine pointer and hover.
 `packages/sandbox/test/sandbox-wayland.test.ts` runs a native app on it and checks it sees only `wayland-0`, no X.
-Both skip without sway, wayvnc and grim (and Chromium for the last part), as on CI's runners. Both check the
+Both run the real-sway parts twice, with wayvnc and with w0vncserver (`wayland-tigervnc`, which must also have no
+session bus to reach), and skip without sway, grim and that server (and Chromium for the last part), as on CI's
+runners outside the `nix` job. Both check the
 compositor's renderer: gles2 where there is a render node for a browser, pixman for a native app.
 `test/liveview-pace.test.ts` checks the live view's pacing: a stand-in VNC server sends 64 MB to a page that reads
 nothing at first; it is held back meanwhile, and every byte arrives in order once the page reads.

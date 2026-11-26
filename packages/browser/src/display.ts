@@ -6,8 +6,8 @@
  * its account's directory (vnc.ts), so it has no port to find free.
  *
  * The X backends (x11, tigervnc, kasmvnc, turbovnc) share the pool: each is an X server holding /tmp/.X<n>-lock.
- * On the wayland backend there is no pool: each sandbox's compositor has its socket in the account's own directory
- * (wayland.ts), so there is nothing shared to pick, claim or leave behind.
+ * On the Wayland backends (wayland, wayland-tigervnc) there is no pool: each sandbox's compositor has its socket in the
+ * account's own directory (wayland.ts), so there is nothing shared to pick, claim or leave behind.
  */
 import { existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync, closeSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -20,12 +20,16 @@ import { join } from 'node:path';
  *   tigervnc  TigerVNC's Xvnc: the X server and the VNC server in one process
  *   kasmvnc   KasmVNC's Xvnc (a TigerVNC fork with WebP and adaptive quality; nix/kasmvnc.nix)
  *   turbovnc  TurboVNC's Xvnc (libjpeg-turbo's Tight, tuned for 3D and video)
- * wayland is a compositor of the sandbox's own (wayland.ts).
+ * Two are a headless sway of the sandbox's own (wayland.ts), and differ only in what serves the live view:
+ *   wayland           wayvnc
+ *   wayland-tigervnc  TigerVNC's Wayland server, w0vncserver (nix/w0vncserver.nix)
  */
 export type XBackend = 'x11' | 'tigervnc' | 'kasmvnc' | 'turbovnc';
-export type DisplayBackend = XBackend | 'wayland';
+export type WaylandBackend = 'wayland' | 'wayland-tigervnc';
+export type DisplayBackend = XBackend | WaylandBackend;
 export const X_BACKENDS: readonly XBackend[] = ['x11', 'tigervnc', 'kasmvnc', 'turbovnc'];
-export const DISPLAY_BACKENDS: readonly DisplayBackend[] = [...X_BACKENDS, 'wayland'];
+export const WAYLAND_BACKENDS: readonly WaylandBackend[] = ['wayland', 'wayland-tigervnc'];
+export const DISPLAY_BACKENDS: readonly DisplayBackend[] = [...X_BACKENDS, ...WAYLAND_BACKENDS];
 /** The backend an extractor's sandboxes use; the manager sets it per account (docs/supervisor.md). Default x11. */
 export const DISPLAY_BACKEND_ENV = 'DITHER_DISPLAY_BACKEND';
 
@@ -36,8 +40,11 @@ export function parseBackend(v: unknown): DisplayBackend | null {
   return (DISPLAY_BACKENDS as readonly string[]).includes(s) ? (s as DisplayBackend) : null;
 }
 
+/** True for the backends that are a compositor of the sandbox's own, with no display number. */
+export const isWaylandBackend = (b: DisplayBackend): b is WaylandBackend => (WAYLAND_BACKENDS as readonly string[]).includes(b);
+
 /** True for the backends that are an X server on a numbered display. */
-export const isXBackend = (b: DisplayBackend): b is XBackend => b !== 'wayland';
+export const isXBackend = (b: DisplayBackend): b is XBackend => !isWaylandBackend(b);
 
 /** This process's backend: DITHER_DISPLAY_BACKEND, else x11. A value that is none of them is an error, not a quiet x11. */
 export function displayBackend(env: Record<string, string | undefined> = process.env): DisplayBackend {
@@ -50,7 +57,8 @@ export function displayBackend(env: Record<string, string | undefined> = process
 
 
 /** A display for a sandbox: an X display number (and which X server), or a Wayland compositor of its own, which has none. */
-export type FreeDisplay = XDisplay | { backend: 'wayland'; display: null };
+export type FreeDisplay = XDisplay | WaylandDisplay;
+export type WaylandDisplay = { backend: WaylandBackend; display: null };
 export type XDisplay = { backend: XBackend; display: number };
 
 /** True if something already listens on the port at this host. A host this machine lacks (no IPv6) counts as free. */
@@ -113,9 +121,9 @@ export const DISPLAY_RANGES: readonly { from: number; to: number }[] = [
   { from: 100, to: 159 },
 ];
 
-/** A display on this process's backend (displayBackend()): on an X backend the first free number, on wayland one of its own. */
+/** A display on this process's backend (displayBackend()): on an X backend the first free number, on Wayland one of its own. */
 export async function pickFreeDisplay(range?: { from: number; to: number }, skip: number[] = [], backend: DisplayBackend = displayBackend()): Promise<FreeDisplay> {
-  if (backend === 'wayland') return { backend, display: null };
+  if (isWaylandBackend(backend)) return { backend, display: null };
   return pickFreeXDisplay(range, skip, backend);
 }
 

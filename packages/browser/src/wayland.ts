@@ -1,6 +1,6 @@
 /**
- * The wayland display backend (screen.ts): a headless sway of the sandbox's own, wayvnc as its live view, input through
- * that live view's socket, pictures by grim. No display number and nothing in /tmp: the compositor's sockets are in the
+ * The Wayland display backends (screen.ts): a headless sway of the sandbox's own, wayvnc (wayland) or TigerVNC's
+ * w0vncserver (wayland-tigervnc) as its live view, input through that live view's socket, pictures by grim. No display number and nothing in /tmp: the compositor's sockets are in the
  * account's own directory (<dir>/wl, 0700), so two sandboxes never meet and a crashed one leaves nothing behind that
  * a later one must step around.
  *
@@ -28,7 +28,17 @@
  *              -S <path>     its control socket in the same private directory, not $XDG_RUNTIME_DIR/wayvncctl
  *              -k us         the keymap input is typed in
  *            It listens on nothing else: no TCP or UDP port, v4 or v6, and no abstract socket. Many viewers at once.
- *   input    wayvnc makes a virtual pointer and keyboard (wlr-virtual-pointer, virtual-keyboard) for its viewers, which
+ *   w0vncserver  (wayland-tigervnc) TigerVNC 1.16's Wayland server, patched (nix/w0vncserver.nix: as nixpkgs ships it,
+ *            it exits with no desktop portal and crashes on a seat with no keyboard, which is what a headless sway has).
+ *            It asks a desktop portal first, so it is given no session bus at all (DBUS_SESSION_BUS_ADDRESS names a
+ *            socket that is not there): on the machine's bus it would find the owner's portal and show the owner's
+ *            screen. With none it uses sway's own protocols: wlr-screencopy for the picture, wlr-virtual-pointer and
+ *            virtual-keyboard for input, as wayvnc does. Its flags (w0vncserverArgs), checked with `ss -lxp` and
+ *            `ss -ltnup`: -rfbunixpath <path> -rfbport -1 (the socket, no TCP port), -SecurityTypes None and
+ *            -AlwaysShared as for TigerVNC's Xvnc (vnc.ts), -desktop sandbox (else the viewer is told user@host),
+ *            -FrameRate 60 (its default, written down). Viewers cannot resize sway's output through it: it has no
+ *            SetDesktopSize on wlroots. Its keymap is XKB_DEFAULT_LAYOUT=us, as wayvnc's -k us.
+ *   input    wayvnc (or w0vncserver) makes a virtual pointer and keyboard (wlr-virtual-pointer, virtual-keyboard) for its viewers, which
  *            the app gets as its seat's own input: trusted events, like xdotool's. The sandbox keeps one RFB client of
  *            its own connected (rfb.ts) and sends its clicks and keys through it; while it is connected the seat has a
  *            pointer and a keyboard, so pages see a fine pointer, hover and focus as on any desktop. Text no US key
@@ -41,13 +51,13 @@ import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Subprocess } from 'bun';
 import { DISPLAY_BINS, resolveBin, run, withoutDisplays } from './bins.ts';
-import type { FreeDisplay } from './display.ts';
+import type { WaylandDisplay } from './display.ts';
 import { InputMethod } from './ime.ts';
 import { parseChord, textRuns } from './keysyms.ts';
 import { RfbClient } from './rfb.ts';
 import type { Screen, ScreenOptions } from './screen.ts';
 import { EVENT_WINDOW, IPC, SwayIpc, type SwayNode, views } from './swayipc.ts';
-import { prepareVncSocket, SOCKET_PATH_MAX, vncSocketPath, waitForVncSocket } from './vnc.ts';
+import { prepareVncSocket, SOCKET_PATH_MAX, vncSocketPath, waitForRfbBanner, waitForVncSocket } from './vnc.ts';
 
 /** The compositor's directory in the sandbox's: its sockets, its config. */
 export const WAYLAND_DIR = 'wl';
@@ -114,13 +124,39 @@ export function wayvncArgs(wayvnc: string, socket: string, dir: string): string[
   return [wayvnc, '-C', join(dir, 'wayvnc.conf'), '-u', '-R', '-f', String(WAYVNC_MAX_FPS), '-k', 'us', '-S', join(dir, 'wayvnc.sock'), socket];
 }
 
+/** w0vncserver on its Unix socket only (see above). */
+export function w0vncserverArgs(w0vncserver: string, socket: string): string[] {
+  return [w0vncserver, '-rfbunixpath', socket, '-rfbport', '-1', '-SecurityTypes', 'None', '-AlwaysShared', '-desktop', 'sandbox', '-FrameRate', String(WAYVNC_MAX_FPS)];
+}
+
+/**
+ * w0vncserver's environment: the compositor's socket, and no session bus (a path in its directory that is never made),
+ * so it never reaches the machine's portal; the US keymap, whatever the manager's own XKB_DEFAULT_* say.
+ */
+export function w0vncserverEnv(waylandSocket: string, dir: string): Record<string, string | undefined> {
+  return {
+    DISPLAY: undefined,
+    WAYLAND_SOCKET: undefined,
+    WAYLAND_DISPLAY: waylandSocket,
+    XDG_RUNTIME_DIR: dir,
+    HOME: dir,
+    DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(dir, 'no-bus')}`,
+    DBUS_SYSTEM_BUS_ADDRESS: `unix:path=${join(dir, 'no-bus')}`,
+    XKB_DEFAULT_RULES: undefined,
+    XKB_DEFAULT_MODEL: undefined,
+    XKB_DEFAULT_LAYOUT: 'us',
+    XKB_DEFAULT_VARIANT: undefined,
+    XKB_DEFAULT_OPTIONS: undefined,
+  };
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export class WaylandScreen implements Screen {
-  readonly backend = 'wayland' as const;
+  readonly backend: WaylandDisplay['backend'];
   readonly display = null;
   readonly vncSocket: string;
-  readonly procNames = ['wayvnc', 'sway'] as const;
+  readonly procNames: readonly string[];
   /** The compositor's directory: its Wayland socket, its IPC socket, its config. */
   readonly dir: string;
   private waylandSocket = '';
@@ -132,8 +168,10 @@ export class WaylandScreen implements Screen {
 
   constructor(
     private o: ScreenOptions,
-    readonly free: FreeDisplay,
+    readonly free: WaylandDisplay,
   ) {
+    this.backend = free.backend;
+    this.procNames = [this.backend === 'wayland-tigervnc' ? 'w0vncserver' : 'wayvnc', 'sway'];
     this.vncSocket = o.vncSocket ?? vncSocketPath(o.dir);
     this.dir = waylandDir(o.dir);
   }
@@ -154,12 +192,12 @@ export class WaylandScreen implements Screen {
     const uid = process.getuid?.();
     if (!st.isDirectory() || (uid !== undefined && st.uid !== uid) || st.mode & 0o077) throw new Error(`the compositor's directory ${this.dir} is not this user's own`);
     writeFileSync(join(this.dir, 'sway.conf'), swayConfig(this.o.width, this.o.height), { mode: 0o600 });
-    writeFileSync(join(this.dir, 'wayvnc.conf'), '', { mode: 0o600 });
+    if (this.backend === 'wayland') writeFileSync(join(this.dir, 'wayvnc.conf'), '', { mode: 0o600 });
   }
 
   async start() {
     const sway = resolveBin(DISPLAY_BINS.sway, this.o.log);
-    const wayvnc = resolveBin(DISPLAY_BINS.wayvnc, this.o.log);
+    const vncBin = resolveBin(this.backend === 'wayland-tigervnc' ? DISPLAY_BINS.w0vncserver : DISPLAY_BINS.wayvnc, this.o.log);
     this.prepareDir();
     const conf = join(this.dir, 'sway.conf');
     const renderer = swayRenderer(this.o.gpu ?? true);
@@ -183,11 +221,18 @@ export class WaylandScreen implements Screen {
     this.watchWindows();
 
     prepareVncSocket(this.vncSocket);
-    const vnc = this.o.spawn('wayvnc', wayvncArgs(wayvnc, this.vncSocket, this.dir), {
-      match: this.vncSocket,
-      env: { DISPLAY: undefined, WAYLAND_SOCKET: undefined, WAYLAND_DISPLAY: this.waylandSocket, XDG_RUNTIME_DIR: this.dir },
-    });
-    await waitForVncSocket(this.vncSocket, vnc, 10_000, 'wayvnc');
+    if (this.backend === 'wayland-tigervnc') {
+      const vnc = this.o.spawn('w0vncserver', w0vncserverArgs(vncBin, this.vncSocket), { match: this.vncSocket, env: w0vncserverEnv(this.waylandSocket, this.dir) });
+      await waitForVncSocket(this.vncSocket, vnc, 10_000, 'w0vncserver');
+      // It listens before it has asked for a portal and found sway's protocols; its banner says it is past both.
+      await waitForRfbBanner(this.vncSocket, vnc, 10_000, 'w0vncserver');
+    } else {
+      const vnc = this.o.spawn('wayvnc', wayvncArgs(vncBin, this.vncSocket, this.dir), {
+        match: this.vncSocket,
+        env: { DISPLAY: undefined, WAYLAND_SOCKET: undefined, WAYLAND_DISPLAY: this.waylandSocket, XDG_RUNTIME_DIR: this.dir },
+      });
+      await waitForVncSocket(this.vncSocket, vnc, 10_000, 'wayvnc');
+    }
     await this.input();
     await this.waitForSeat(5000);
     this.o.log('debug', `compositor up: sway (${renderer}) on ${this.waylandSocket}`);
@@ -225,7 +270,7 @@ export class WaylandScreen implements Screen {
     throw new Error(`sway made no Wayland socket in ${this.dir}`);
   }
 
-  /** The seat has the pointer and keyboard wayvnc made for our client (wl_seat capabilities 1 and 2). */
+  /** The seat has the pointer and keyboard the live view made for our client (wl_seat capabilities 1 and 2). */
   private async waitForSeat(ms: number) {
     const deadline = Date.now() + ms;
     while (Date.now() < deadline) {
@@ -233,7 +278,7 @@ export class WaylandScreen implements Screen {
       if (seats.some((s) => (s.capabilities & 3) === 3)) return;
       await sleep(50);
     }
-    throw new Error(`the seat got no pointer and keyboard from wayvnc within ${ms} ms`);
+    throw new Error(`the seat got no pointer and keyboard from ${this.procNames[0]} within ${ms} ms`);
   }
 
   /**

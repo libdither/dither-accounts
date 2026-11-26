@@ -1,17 +1,19 @@
 /**
- * The wayland display backend (src/wayland.ts and the parts it is made of): the unit parts on their own, then a real
- * headless sway and wayvnc (skipped without sway, wayvnc and grim), then Chromium on it, driven through the screen's
- * input as the `browser` interface drives it (skipped without Chromium too). Every process it starts is gone at the end.
+ * The wayland display backends (src/wayland.ts and the parts it is made of): the unit parts on their own, then a real
+ * headless sway with each live view, wayvnc (wayland) and w0vncserver (wayland-tigervnc), skipped without sway, grim and
+ * that server, then Chromium on each, driven through the screen's input as the `browser` interface drives it (skipped
+ * without Chromium too). Every process it starts is gone at the end.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Subprocess } from 'bun';
-import { wayland, why } from '../../../test/needs.ts';
+import { w0vnc, wayland, why } from '../../../test/needs.ts';
 import { cleanEnv } from '../src/bins.ts';
-import { displayBackend, parseBackend, pickFreeDisplay } from '../src/display.ts';
+import { DISPLAY_BACKENDS as MANAGER_BACKENDS, REFUSED_BACKENDS } from '../../manager/src/display-backend.ts';
+import { DISPLAY_BACKENDS, displayBackend, parseBackend, pickFreeDisplay, type WaylandBackend } from '../src/display.ts';
 import { message, readString } from '../src/ime.ts';
 import { KEYSYM, parseChord, textRuns } from '../src/keysyms.ts';
 import { RfbClient } from '../src/rfb.ts';
@@ -19,7 +21,7 @@ import { resolveChromium, Sandbox, screenFlags, screenPrefs } from '../src/sandb
 import { displayName, displayNote, makeScreen } from '../src/screen.ts';
 import { IPC, ipcMessage, SwayIpc, views, type SwayNode } from '../src/swayipc.ts';
 import { SOCKET_PATH_MAX } from '../src/vnc.ts';
-import { swayConfig, swayRenderer, waylandDir, WaylandScreen, wayvncArgs } from '../src/wayland.ts';
+import { swayConfig, swayRenderer, w0vncserverArgs, w0vncserverEnv, waylandDir, WaylandScreen, wayvncArgs } from '../src/wayland.ts';
 import { inetSockets, unixSockets } from './inet.ts';
 
 process.env.DITHER_DISPLAY_CLAIMS = mkdtempSync(join(tmpdir(), 'display-claims-wl-'));
@@ -40,16 +42,22 @@ test('the backend: DITHER_DISPLAY_BACKEND, x11 when unset or empty, an error for
   expect(displayBackend({})).toBe('x11');
   expect(displayBackend({ DITHER_DISPLAY_BACKEND: '' })).toBe('x11');
   expect(displayBackend({ DITHER_DISPLAY_BACKEND: ' Wayland ' })).toBe('wayland');
-  expect(() => displayBackend({ DITHER_DISPLAY_BACKEND: 'xorg' })).toThrow(/must be one of x11, tigervnc, kasmvnc, turbovnc, wayland/);
+  expect(displayBackend({ DITHER_DISPLAY_BACKEND: 'Wayland-TigerVNC' })).toBe('wayland-tigervnc');
+  expect(() => displayBackend({ DITHER_DISPLAY_BACKEND: 'xorg' })).toThrow(/must be one of x11, tigervnc, kasmvnc, turbovnc, wayland, wayland-tigervnc/);
   expect(parseBackend('x11')).toBe('x11');
   expect(parseBackend(1)).toBeNull();
   // No display number to pick, claim or leave behind.
   expect(await pickFreeDisplay(undefined, [], 'wayland')).toEqual({ backend: 'wayland', display: null });
+  expect(await pickFreeDisplay(undefined, [], 'wayland-tigervnc')).toEqual({ backend: 'wayland-tigervnc', display: null });
+  expect(displayName({ backend: 'wayland-tigervnc', display: null })).toBe('wayland');
+  expect(displayNote({ backend: 'wayland-tigervnc', display: null })).toBe('sway (Wayland, TigerVNC)');
   expect(displayName({ backend: 'wayland', display: null })).toBe('wayland');
   expect(displayName({ backend: 'x11', display: 82 })).toBe(':82');
   expect(displayName(83)).toBe(':83');
   expect(displayNote({ backend: 'wayland', display: null })).toBe('sway (Wayland)');
   expect(displayNote(84)).toBe('Xvfb :84');
+  // The manager's own list (it does not depend on this package) is this one but for what it refuses.
+  expect([...MANAGER_BACKENDS, ...Object.keys(REFUSED_BACKENDS)].sort()).toEqual([...DISPLAY_BACKENDS].sort());
 });
 
 test("keys: xdotool's names and chords, text as key runs (Shift where US needs it) and input-method runs", () => {
@@ -95,6 +103,16 @@ test("sway's config: one output at the size, no Xwayland, nothing drawn around w
   expect(c).not.toMatch(/^exec/m);
   const a = wayvncArgs('/bin/wayvnc', '/a/vnc.sock', '/a/wl');
   expect(a).toEqual(['/bin/wayvnc', '-C', '/a/wl/wayvnc.conf', '-u', '-R', '-f', '60', '-k', 'us', '-S', '/a/wl/wayvnc.sock', '/a/vnc.sock']);
+});
+
+test("w0vncserver: its socket and no TCP port, no password, the US keymap, and no session bus (the machine's has the owner's portal)", () => {
+  expect(w0vncserverArgs('/bin/w0vncserver', '/a/vnc.sock')).toEqual(['/bin/w0vncserver', '-rfbunixpath', '/a/vnc.sock', '-rfbport', '-1', '-SecurityTypes', 'None', '-AlwaysShared', '-desktop', 'sandbox', '-FrameRate', '60']);
+  const env = w0vncserverEnv('/a/wl/wayland-1', '/a/wl');
+  expect(env).toMatchObject({ WAYLAND_DISPLAY: '/a/wl/wayland-1', XDG_RUNTIME_DIR: '/a/wl', HOME: '/a/wl', XKB_DEFAULT_LAYOUT: 'us', DISPLAY: undefined });
+  // Both buses are a path in its own directory that nothing makes: whatever the manager's environment had is replaced.
+  expect(env.DBUS_SESSION_BUS_ADDRESS).toBe('unix:path=/a/wl/no-bus');
+  expect(env.DBUS_SYSTEM_BUS_ADDRESS).toBe('unix:path=/a/wl/no-bus');
+  for (const k of ['XKB_DEFAULT_RULES', 'XKB_DEFAULT_MODEL', 'XKB_DEFAULT_VARIANT', 'XKB_DEFAULT_OPTIONS']) expect(k in env && env[k] === undefined).toBe(true);
 });
 
 test("sway's renderer: gles2 for an app on the GPU where there is a render node; pixman for one drawing in software, or without one", () => {
@@ -210,13 +228,19 @@ const spawn = (_name: string, cmd: string[], o: { env?: Record<string, string | 
 };
 const pngSize = (b: Buffer) => (b.subarray(1, 4).toString() === 'PNG' ? [b.readUInt32BE(16), b.readUInt32BE(20)] : null);
 
-describe.skipIf(!why('sway, wayvnc and grim', wayland))('a real headless sway and wayvnc', () => {
-  test(
+/** The wayland backends this machine can run: wayvnc's with sway and grim, w0vncserver's too when it can be built. */
+const BACKENDS: { backend: WaylandBackend; server: string; ok: () => boolean }[] = [
+  { backend: 'wayland', server: 'wayvnc', ok: () => why('sway, wayvnc and grim', wayland) },
+  { backend: 'wayland-tigervnc', server: 'w0vncserver', ok: () => why('sway, wayvnc and grim', wayland) && why('w0vncserver (nix/w0vncserver.nix)', w0vnc) },
+];
+
+describe.each(BACKENDS)('a real headless sway and its live view: $server', ({ backend, server, ok }) => {
+  test.skipIf(!ok())(
     'the live view answers RFB on its socket alone (no TCP, no abstract socket), the seat has a pointer and keyboard, grim takes the picture',
     async () => {
       const dir = tmp('screen');
       const start = procs.length;
-      const screen = makeScreen({ display: { backend: 'wayland', display: null }, dir, width: 1024, height: 700, spawn, log: () => {} });
+      const screen = makeScreen({ display: { backend, display: null }, dir, width: 1024, height: 700, spawn, log: () => {} });
       expect(screen).toBeInstanceOf(WaylandScreen);
       try {
         await screen.start();
@@ -233,7 +257,14 @@ describe.skipIf(!why('sway, wayvnc and grim', wayland))('a real headless sway an
           for (const s of unixSockets(p.pid)) expect(s.startsWith(dir)).toBe(true);
         }
         expect(unixSockets(vnc!.pid)).toContain(screen.vncSocket);
-        // A second viewer, as the manager's live view is: wayvnc lets many share it.
+        expect(screen.procNames[0]).toBe(server);
+        if (backend === 'wayland-tigervnc') {
+          // No session bus: the address it was given is a path in the compositor's directory that is not there.
+          const bus = envs.get(vnc!)?.DBUS_SESSION_BUS_ADDRESS;
+          expect(bus).toBe(`unix:path=${join(dir, 'wl', 'no-bus')}`);
+          expect(existsSync(join(dir, 'wl', 'no-bus'))).toBe(false);
+        }
+        // A second viewer, as the manager's live view is: both servers let many share it.
         const viewer = await RfbClient.connect(screen.vncSocket, 5000);
         expect([viewer.width, viewer.height]).toEqual([1024, 700]);
         viewer.close();
@@ -261,8 +292,8 @@ if (wayland) {
   }
 }
 
-describe.skipIf(!chromium)('Chromium on the wayland backend', () => {
-  test(
+describe.each(BACKENDS)('Chromium on a wayland backend: $server', ({ backend, ok }) => {
+  test.skipIf(!chromium || !ok())(
     'clicks, keys and text (é, €, emoji) arrive as trusted input in the page, which has a fine pointer, hover and the focus',
     async () => {
       const reports: Record<string, unknown>[] = [];
@@ -299,7 +330,7 @@ describe.skipIf(!chromium)('Chromium on the wayland backend', () => {
       const src = join(acc, 'src');
       mkdirSync(src, { recursive: true });
       writeFileSync(join(src, 'manifest.json'), JSON.stringify({ manifest_version: 3, name: 'probe', version: '1.0.0' }));
-      const sb = new Sandbox({ accountDir: acc, display: { backend: 'wayland', display: null }, width: 1024, height: 700, extensionSrc: src, config: {}, startUrl: `${origin}/`, log: () => {} });
+      const sb = new Sandbox({ accountDir: acc, display: { backend, display: null }, width: 1024, height: 700, extensionSrc: src, config: {}, startUrl: `${origin}/`, log: () => {} });
       const until = async (what: string, ok: () => boolean, ms = 20_000) => {
         const end = Date.now() + ms;
         while (!ok()) {
@@ -314,7 +345,7 @@ describe.skipIf(!chromium)('Chromium on the wayland backend', () => {
         await until('page', () => reports.some((r) => r.ev === 'page'));
         const full = () => reports.find((r) => r.ev === 'page');
         expect(full()).toMatchObject({ w: 1024, ow: 1024, oh: 700 });
-        // Fine pointer and hover only while the seat has the pointer wayvnc makes for the sandbox's own client.
+        // Fine pointer and hover only while the seat has the pointer the live view makes for the sandbox's own client.
         expect(full()).toMatchObject({ fine: true, hover: true });
         const screen = sb.screen!;
         // The page is the bottom innerHeight of the screen, below Chromium's own bar.

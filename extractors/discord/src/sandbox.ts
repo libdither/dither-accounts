@@ -28,8 +28,10 @@ import {
   displayBackend,
   displayTaken,
   type FreeDisplay,
+  isWaylandBackend,
   gpuFlags,
   makeScreen,
+  WAYLAND_NOTE,
   MEMORY_DISABLED_FEATURES,
   mergeFeatureFlags,
   portInUse,
@@ -195,7 +197,7 @@ export class Sandbox {
     if (this.opts.noSandbox) flags.push('--no-sandbox');
     this.spawn('chromium', [chromium, ...mergeFeatureFlags(flags), this.opts.startUrl], { ...screen.clientEnv(), ...this.share?.clientEnv() });
 
-    this.opts.log('info', `sandbox up: ${screen.backend === 'wayland' ? 'sway (Wayland)' : `display :${screen.display}`}, vnc on ${this.vncSocket}`, { chromium });
+    this.opts.log('info', `sandbox up: ${isWaylandBackend(screen.backend) ? WAYLAND_NOTE[screen.backend] : `display :${screen.display}`}, vnc on ${this.vncSocket}`, { chromium });
     return { chromium };
   }
 
@@ -253,7 +255,7 @@ export async function slotFree(n: number, port: number | null): Promise<boolean>
 }
 
 /**
- * On the wayland backend, a compositor of its own (no number, nothing to pick). On an X backend (x11, tigervnc, kasmvnc,
+ * On a Wayland backend (wayland, wayland-tigervnc), a compositor of its own (no number, nothing to pick). On an X backend (x11, tigervnc, kasmvnc,
  * turbovnc), the display from config/env
  * when set; else the account's hashed slot in :91–:99 when it is free, or the next free one after it. Two accounts can
  * hash to the same slot, and the second then failed to start ("Is port 8796 in use?", the extension port being 8700 +
@@ -265,7 +267,7 @@ export async function pickDisplay(
   opts: { portFixed?: boolean; free?: (n: number, port: number | null) => Promise<boolean>; backend?: DisplayBackend } = {},
 ): Promise<FreeDisplay> {
   const backend = opts.backend ?? displayBackend();
-  if (backend === 'wayland') return { backend: 'wayland', display: null };
+  if (isWaylandBackend(backend)) return { backend, display: null };
   const envD = process.env.DITHER_DISPLAY ? Number(process.env.DITHER_DISPLAY) : undefined;
   if (config.display || envD) return { backend, display: Number(config.display ?? envD) };
   const free = opts.free ?? slotFree;

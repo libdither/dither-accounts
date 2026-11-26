@@ -1,11 +1,11 @@
 /**
  * Which screen an account's sandboxes draw on: an X server (x11: Xvfb + x11vnc; tigervnc, turbovnc: an Xvnc, X server
- * and live view in one) or wayland (a headless sway + wayvnc), docs/browser.md
- * "Display backends". The manager has a default (display_backend, x11 unless set) and an account's config can name its
+ * and live view in one) or a headless sway (wayland: with wayvnc; wayland-tigervnc: with TigerVNC's w0vncserver),
+ * docs/browser.md "Display backends". The manager has a default (display_backend, x11 unless set) and an account's config can name its
  * own (displayBackend); the extractor gets the result as DITHER_DISPLAY_BACKEND. The same parse as
  * @dither-accounts/browser's, which the manager does not depend on.
  */
-export const DISPLAY_BACKENDS = ['x11', 'tigervnc', 'turbovnc', 'wayland'] as const;
+export const DISPLAY_BACKENDS = ['x11', 'tigervnc', 'turbovnc', 'wayland', 'wayland-tigervnc'] as const;
 export type DisplayBackend = (typeof DISPLAY_BACKENDS)[number];
 
 /**

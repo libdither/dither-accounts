@@ -20,7 +20,7 @@ import type { FreeDisplay } from './display.ts';
 import { MEMORY_DISABLED_FEATURES, mergeFeatureFlags } from './flags.ts';
 import { markerKey, stampExtension } from './markers.ts';
 import { ChromiumNoise } from './noise.ts';
-import { makeScreen, type Screen } from './screen.ts';
+import { isWaylandBackend, makeScreen, type Screen, WAYLAND_NOTE } from './screen.ts';
 import { browserShare, type ScreenShare } from './screenshare.ts';
 import { devDri } from './wayland.ts';
 import { vncSocketPath } from './vnc.ts';
@@ -108,13 +108,13 @@ export function gpuFlags(): string[] {
  * first frame. On x11 Chromium's default is left, so a profile moved back from wayland looks as it did.
  */
 export function screenPrefs(prefs: Record<string, any>, display: number | FreeDisplay): void {
-  const wayland = typeof display !== 'number' && display.backend === 'wayland';
+  const wayland = typeof display !== 'number' && display.display === null;
   if (wayland) prefs.browser = { ...prefs.browser, custom_chrome_frame: false };
   else if (prefs.browser?.custom_chrome_frame === false) delete prefs.browser.custom_chrome_frame;
 }
 
 export function screenFlags(screen: Screen): string[] {
-  return screen.backend === 'wayland' ? ['--ozone-platform=wayland', '--enable-wayland-ime', '--wayland-text-input-version=3'] : [];
+  return isWaylandBackend(screen.backend) ? ['--ozone-platform=wayland', '--enable-wayland-ime', '--wayland-text-input-version=3'] : [];
 }
 
 export class Sandbox {
@@ -253,7 +253,7 @@ export class Sandbox {
     if (this.opts.noSandbox) flags.push('--no-sandbox');
     this.spawn('chromium', [chromium, ...mergeFeatureFlags(flags), this.opts.startUrl], { ...screen.clientEnv(), ...this.share?.clientEnv() });
 
-    this.opts.log('info', `sandbox up: ${screen.backend === 'wayland' ? 'sway (Wayland)' : `display :${screen.display}`}, vnc on ${this.vncSocket}`);
+    this.opts.log('info', `sandbox up: ${isWaylandBackend(screen.backend) ? WAYLAND_NOTE[screen.backend] : `display :${screen.display}`}, vnc on ${this.vncSocket}`);
     return { chromium };
   }
 

@@ -14,7 +14,7 @@ import { sharePage } from '../packages/browser/test/share-page.ts';
 
 export const W = 1280;
 export const H = 800;
-export const BACKENDS = ['x11', 'tigervnc', 'kasmvnc', 'turbovnc', 'wayland'] as const;
+export const BACKENDS = ['x11', 'tigervnc', 'kasmvnc', 'turbovnc', 'wayland', 'wayland-tigervnc'] as const;
 export type Backend = (typeof BACKENDS)[number];
 
 /** `--backends x11,tigervnc,...` (default: every one whose programs can be had here), checked against BACKENDS. */
@@ -23,17 +23,17 @@ export function backendsArg(argv = process.argv): Backend[] {
   const want = i >= 0 ? argv[i + 1]!.split(',').map((s) => s.trim()) : [...BACKENDS];
   for (const b of want) if (!(BACKENDS as readonly string[]).includes(b)) throw new Error(`--backends: no backend "${b}" (${BACKENDS.join(', ')})`);
   return (want as Backend[]).filter((b) => {
-    const bins = b === 'x11' ? [DISPLAY_BINS.xvfb, DISPLAY_BINS.x11vnc] : b === 'wayland' ? [DISPLAY_BINS.sway, DISPLAY_BINS.wayvnc] : [DISPLAY_BINS[b]];
+    const bins = b === 'x11' ? [DISPLAY_BINS.xvfb, DISPLAY_BINS.x11vnc] : b === 'wayland' ? [DISPLAY_BINS.sway, DISPLAY_BINS.wayvnc] : b === 'wayland-tigervnc' ? [DISPLAY_BINS.sway, DISPLAY_BINS.w0vncserver] : [DISPLAY_BINS[b]];
     const ok = bins.every((x) => tryBin(x, () => {}));
     if (!ok) log(`skipping ${b}: its programs cannot be had here`);
     return ok;
   });
 }
 
-/** The live view's server, by its name in /proc (progName): x11vnc, an Xvnc (KasmVNC's is Xkasmvnc), wayvnc. */
-export const VNC_SERVER: Record<Backend, string> = { x11: 'x11vnc', tigervnc: 'Xvnc', kasmvnc: 'Xkasmvnc', turbovnc: 'Xvnc', wayland: 'wayvnc' };
+/** The live view's server, by its name in /proc (progName): x11vnc, an Xvnc (KasmVNC's is Xkasmvnc), wayvnc, w0vncserver. */
+export const VNC_SERVER: Record<Backend, string> = { x11: 'x11vnc', tigervnc: 'Xvnc', kasmvnc: 'Xkasmvnc', turbovnc: 'Xvnc', wayland: 'wayvnc', 'wayland-tigervnc': 'w0vncserver' };
 /** Every process of the display: the display server and the live view's (one and the same for an Xvnc). */
-export const DISPLAY_PROCS: Record<Backend, string[]> = { x11: ['Xvfb', 'x11vnc'], tigervnc: ['Xvnc'], kasmvnc: ['Xkasmvnc'], turbovnc: ['Xvnc'], wayland: ['sway', 'wayvnc'] };
+export const DISPLAY_PROCS: Record<Backend, string[]> = { x11: ['Xvfb', 'x11vnc'], tigervnc: ['Xvnc'], kasmvnc: ['Xkasmvnc'], turbovnc: ['Xvnc'], wayland: ['sway', 'wayvnc'], 'wayland-tigervnc': ['sway', 'w0vncserver'] };
 
 /**
  * SysV shared memory segments (/proc/sysvipc/shm): all of the machine's, and those these processes made or last

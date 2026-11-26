@@ -89,7 +89,7 @@ export class HavenoApp {
         await sb.start();
         this.sandbox = sb;
         this.startedAt = Date.now();
-        this.o.log('info', `the desktop app runs on ${sb.info().backend === 'wayland' ? 'Wayland (through xwayland-satellite)' : `display :${sb.info().display}`}`);
+        this.o.log('info', `the desktop app runs on ${sb.info().display === null ? 'Wayland (through xwayland-satellite)' : `display :${sb.info().display}`}`);
         this.o.onChange();
         return;
       } catch (e) {

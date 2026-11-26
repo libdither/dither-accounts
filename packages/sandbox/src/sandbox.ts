@@ -19,7 +19,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import type { Subprocess } from 'bun';
-import { cleanEnv, type FreeDisplay, makeScreen, pickFreeXDisplay, type Screen, vncSocketPath } from '@dither-accounts/browser';
+import { cleanEnv, type FreeDisplay, isWaylandBackend, makeScreen, pickFreeXDisplay, type Screen, vncSocketPath, WAYLAND_NOTE } from '@dither-accounts/browser';
 import { BINS, type Log, resolveBin, type SandboxBins, sandboxBins, tryBin } from './bins.ts';
 import { DBusConnection } from './dbus.ts';
 import { DesktopServices, type FileRequest, fileUri, type Notification } from './services.ts';
@@ -189,7 +189,7 @@ export class AppSandbox {
       this.o.log('warn', 'pasta is not available: the app shares the host network (and its abstract sockets)');
     }
     let display = this.o.display;
-    if (this.o.x11App && typeof display !== 'number' && display.backend === 'wayland') {
+    if (this.o.x11App && typeof display !== 'number' && display.display === null) {
       // Xwayland's abstract socket would be in the machine's network namespace without one of the sandbox's own.
       let why = this.network === 'host' ? 'no network namespace of its own' : '';
       if (!why)
@@ -251,8 +251,8 @@ export class AppSandbox {
     this.timers.push(setInterval(() => this.scanDownloads(false), 1000));
     // No window manager on X: keep the app's main window the size of the display. On Wayland sway tiles it; the same
     // call makes sure the window that matches is the one tiled.
-    if (this.o.fitWindow && (screen.backend === 'wayland' || tryBin(BINS.xdotool, this.o.log))) this.timers.push(setInterval(() => void this.fit(), 3000));
-    this.o.log('info', `sandbox up: ${screen.backend === 'wayland' ? 'sway (Wayland)' : `display :${screen.display}`}, vnc on ${this.vncSocket}, network ${this.network}`);
+    if (this.o.fitWindow && (screen.display === null || tryBin(BINS.xdotool, this.o.log))) this.timers.push(setInterval(() => void this.fit(), 3000));
+    this.o.log('info', `sandbox up: ${isWaylandBackend(screen.backend) ? WAYLAND_NOTE[screen.backend] : `display :${screen.display}`}, vnc on ${this.vncSocket}, network ${this.network}`);
     this.startApp();
   }
 
@@ -463,9 +463,9 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
     const etc = join(this.o.dir, 'etc');
     a.push('--ro-bind', join(etc, 'passwd'), '/etc/passwd', '--ro-bind', join(etc, 'group'), '/etc/group', '--ro-bind', join(etc, 'machine-id'), '/etc/machine-id');
     // The display's one socket: X's path socket, or the compositor's Wayland socket at a path of the app's own.
-    if (screen.backend !== 'wayland') a.push('--dir', '/tmp/.X11-unix', '--bind', screen.socket, screen.socket);
+    if (screen.display !== null) a.push('--dir', '/tmp/.X11-unix', '--bind', screen.socket, screen.socket);
     a.push('--dir', run, '--chmod', '0700', run, '--bind', join(this.run, 'bus'), `${run}/bus`);
-    if (screen.backend === 'wayland') a.push('--bind', screen.socket, `${run}/wayland-0`);
+    if (screen.display === null) a.push('--bind', screen.socket, `${run}/wayland-0`);
     if (this.o.audio) a.push('--dir', `${run}/pulse`, '--bind', this.pulseSocket, `${run}/pulse/native`);
     a.push('--bind', this.home, HOME, '--ro-bind', join(this.o.dir, 'bin'), BIN);
     a.push('--symlink', this.bins.sh, '/bin/sh', '--symlink', join(this.bins.coreutils, 'env'), '/usr/bin/env');
@@ -703,7 +703,7 @@ exec ${this.bins.dbusSend} --session --print-reply=literal --reply-timeout=10000
  * told to use it (Qt, GTK, SDL; Electron and Chromium by the session type and their own hint). Qt on X stays on xcb.
  */
 export function displayEnv(screen: Pick<Screen, 'backend' | 'display'>, run: string): Record<string, string> {
-  if (screen.backend !== 'wayland') return { DISPLAY: `:${screen.display}`, QT_QPA_PLATFORM: 'xcb' };
+  if (screen.display !== null) return { DISPLAY: `:${screen.display}`, QT_QPA_PLATFORM: 'xcb' };
   return {
     WAYLAND_DISPLAY: `${run}/wayland-0`,
     XDG_SESSION_TYPE: 'wayland',

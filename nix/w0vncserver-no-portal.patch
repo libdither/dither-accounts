@@ -1,0 +1,26 @@
+--- a/unix/w0vncserver/portals/PortalDesktop.cxx
++++ b/unix/w0vncserver/portals/PortalDesktop.cxx
+@@ -22,6 +22,8 @@
+ 
+ #include <assert.h>
+ 
++#include <stdexcept>
++
+ #include <gio/gio.h>
+ 
+ #include <rfb/ScreenSet.h>
+@@ -146,5 +148,13 @@
+     "org.freedesktop.portal.ScreenCast",
+   };
+ 
+-  return PortalProxy::interfacesAvailable(interfaces);
++  // No portal to ask (no session bus, or nothing on it owns
++  // org.freedesktop.portal.Desktop) means no portal desktop: say so, and
++  // let the caller try the compositor's own protocols.
++  try {
++    return PortalProxy::interfacesAvailable(interfaces);
++  } catch (std::exception& e) {
++    vlog.debug("No portal: %s", e.what());
++    return false;
++  }
+ }

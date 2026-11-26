@@ -2,7 +2,8 @@
  * What some tests need from the machine beyond bun, so they skip where it is missing (as on GitHub's runners) instead
  * of failing: Nix (Radicale and Dovecot come from nixpkgs, unless RADICALE_BIN or DOVECOT_BIN name them), the
  * native-app sandbox (bubblewrap, Xvfb, x11vnc and dbus from /nix/store: packages/sandbox), and the wayland display
- * backend (sway, wayvnc and grim: packages/browser/src/wayland.ts). A machine with Nix has them all.
+ * backends (sway, wayvnc and grim: packages/browser/src/wayland.ts; w0vncserver, built from nix/w0vncserver.nix). A
+ * machine with Nix has them all.
  *
  * Bun runs a file's beforeAll and afterAll even when its tests are skipped, so a file that skips whole returns from
  * its hooks early too.
@@ -29,6 +30,16 @@ export const sandbox = (() => {
 export const wayland = (() => {
   try {
     for (const b of [DISPLAY_BINS.sway, DISPLAY_BINS.wayvnc, DISPLAY_BINS.grim]) resolveBin(b, () => {});
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+/** The wayland-tigervnc backend's live view: w0vncserver, patched (nix/w0vncserver.nix). */
+export const w0vnc = (() => {
+  try {
+    resolveBin(DISPLAY_BINS.w0vncserver, () => {});
     return true;
   } catch {
     return false;

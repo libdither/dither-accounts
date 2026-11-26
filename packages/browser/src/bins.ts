@@ -91,6 +91,8 @@ export const DISPLAY_BINS = {
   // sway-unwrapped: NixOS's `sway` runs it under dbus-run-session, a session bus of its own we neither want nor stop.
   sway: { name: 'sway', env: 'SWAY_BIN', nix: 'sway-unwrapped', path: false },
   wayvnc: { name: 'wayvnc', env: 'WAYVNC_BIN', nix: 'wayvnc' },
+  // TigerVNC's Wayland server, patched (nix/w0vncserver.nix): nixpkgs' own, the one on PATH, crashes on a headless sway.
+  w0vncserver: { name: 'w0vncserver', env: 'W0VNCSERVER_BIN', nix: 'w0vncserver', nixFile: join(import.meta.dir, '../../../nix/w0vncserver.nix'), path: false },
   grim: { name: 'grim', env: 'GRIM_BIN', nix: 'grim' },
   // The Xvnc backends (screen.ts). TigerVNC's and TurboVNC's are both called Xvnc, so neither is taken from PATH.
   tigervnc: { name: 'Xvnc', env: 'TIGERVNC_XVNC_BIN', nix: 'tigervnc', path: false },

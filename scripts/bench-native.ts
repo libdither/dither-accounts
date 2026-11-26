@@ -41,10 +41,12 @@ const ALL_CONFIGS = [
   { name: 'turbovnc', backend: 'turbovnc' as const, gpu: false },
   { name: 'gles2', backend: 'wayland' as const, gpu: true },
   { name: 'pixman', backend: 'wayland' as const, gpu: false },
+  // sway as for native apps (pixman), with TigerVNC's w0vncserver as the live view.
+  { name: 'w0-pixman', backend: 'wayland-tigervnc' as const, gpu: false },
 ];
 const WANT = argOf('configs', ALL_CONFIGS.map((c) => c.name).join(',')).split(',');
 const CONFIGS = ALL_CONFIGS.filter((c) => WANT.includes(c.name));
-const SCREEN_PROCS = ['Xvfb', 'x11vnc', 'Xvnc', 'Xkasmvnc', 'sway', 'wayvnc', 'xwayland-satellite', 'Xwayland'];
+const SCREEN_PROCS = ['Xvfb', 'x11vnc', 'Xvnc', 'Xkasmvnc', 'sway', 'wayvnc', 'w0vncserver', 'xwayland-satellite', 'Xwayland'];
 /** A program of the screen stack, by its name in /proc, which the kernel cuts to 15 characters (xwayland-satel). */
 const screenProc = (name: string) => SCREEN_PROCS.some((p) => p.startsWith(name) && name.length >= Math.min(p.length, 14));
 const GPU_LINE = /\b(EGL|GLX|GLES|OpenGL|gbm|DRI\d?|dri|GPU|gpu_|vaapi|libva|ContextLost|context lost|swrast|llvmpipe|zink|vulkan|Vulkan|SwiftShader|ANGLE|viz|Skia)\b/;
@@ -79,6 +81,8 @@ const APP_DEFS: Record<string, App> = {
 
 const magick = resolveBin({ name: 'magick', env: 'MAGICK_BIN', nix: 'imagemagick' }, noLog);
 const colours = (png: Buffer) => Number(Bun.spawnSync([magick, 'png:-', '-format', '%k', 'info:'], { stdin: png }).stdout.toString().trim() || 0);
+/** How much of the screen is drawn: its mean brightness, 0 (black) to 1. */
+const brightness = (png: Buffer) => Number(Bun.spawnSync([magick, 'png:-', '-format', '%[fx:mean]', 'info:'], { stdin: png }).stdout.toString().trim() || 0);
 const differ = (a: Buffer, b: Buffer, dir: string) => {
   const fa = join(dir, 'a.png');
   const fb = join(dir, 'b.png');
@@ -95,7 +99,7 @@ async function one(app: App, key: string, cfg: (typeof CONFIGS)[number], rep: nu
     if (msg.startsWith('[app]')) lines.push(msg.slice(6));
     else if (level === 'warn' || level === 'error') lines.push(`(${level}) ${msg}${extra ? ` ${JSON.stringify(extra)}` : ''}`);
   };
-  const display: FreeDisplay = cfg.backend === 'wayland' ? { backend: 'wayland', display: null } : await pickFreeDisplay(undefined, [], cfg.backend);
+  const display: FreeDisplay = cfg.backend === 'wayland' || cfg.backend === 'wayland-tigervnc' ? { backend: cfg.backend, display: null } : await pickFreeDisplay(undefined, [], cfg.backend);
   const sb = new AppSandbox({ dir: join(dir, 'desktop'), display, width: W, height: H, network: 'none', gpu: cfg.gpu, log: log_ as any, onEvent: () => {}, ...app.opts(dir) });
   const out: any = { app: key, config: cfg.name, rep };
   const roots = () => ((sb as any).procs ?? []).map((p: { proc: { pid: number } }) => p.proc.pid);
@@ -104,13 +108,14 @@ async function one(app: App, key: string, cfg: (typeof CONFIGS)[number], rep: nu
     await sb.start();
     out.sandboxMs = performance.now() - t0;
     out.backend = sb.info().backend;
-    // The first picture: more than a handful of colours on the screen.
+    // The first picture: more than a handful of colours on the screen, and more of it than a pointer on black (on
+    // wayland-tigervnc sway draws the pointer into the output from the start: about 40 colours on an empty screen).
     const end = Date.now() + 90_000;
     let shot: Buffer | null = null;
     for (;;) {
       shot = Buffer.from(await sb.screen!.screenshot());
       const k = colours(shot);
-      if (k > 16) {
+      if (k > 16 && brightness(shot) > 0.02) {
         out.firstPictureMs = performance.now() - t0;
         out.colours = k;
         break;

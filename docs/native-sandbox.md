@@ -12,18 +12,47 @@ account's calls body (docs/signal.md, "Calls through Signal Desktop"), is its se
 
 | | how | what it gives us |
 |---|---|---|
-| **display and input** | a private Xvfb per account (only its path socket, no abstract one), x11vnc as the live view on `<account>/desktop/vnc.sock` and on no TCP port (bubblewrap shows the app only its home, bin/ and a few etc files, so the app can neither reach nor replace that socket); no window manager, so we keep the app's main window fitted to the display (xdotool) | the live view the page shows, where you use the real app (sign in with its own screens); screenshots; input if we ever need it |
+| **display and input** | a private screen per account, on the account's display backend (docs/browser.md, "Display backends"). On x11: an Xvfb (only its path socket, no abstract one), x11vnc as the live view; no window manager, so we keep the app's main window fitted to the display (xdotool). On wayland: a headless sway of its own (no Xwayland), wayvnc as the live view; the app is shown only the compositor's socket, as `$XDG_RUNTIME_DIR/wayland-0`, with Qt, GTK, SDL and Electron told to use it, and no X socket at all; sway tiles the main window to fill the screen and floats dialogs. Either way the live view is on `<account>/desktop/vnc.sock` and on no TCP port (bubblewrap shows the app only its home, bin/ and a few etc files, so the app can neither reach nor replace that socket) | the live view the page shows, where you use the real app (sign in with its own screens); screenshots; input if we ever need it |
 | **the session bus and its services** | a private dbus-daemon; our own services own the well-known names before the app starts (`services.ts`) | `org.freedesktop.Notifications`: every notification as it is posted, replaced, closed, and its buttons pressable for the app. `org.freedesktop.portal.Desktop`: OpenURI (links), FileChooser (open and save dialogs, through Qt's `xdgdesktopportal` theme), Settings and NetworkMonitor (so GLib and Qt get true answers). `net.dither.Sandbox.Open`: what our `xdg-open` calls |
 | **the filesystem** | bubblewrap: `/nix/store` read-only, a few `/etc` files (DNS, TLS roots, fonts, the clock), a synthetic `passwd`, `group` and `machine-id`; `HOME` is `<account>/desktop/home`; `/tmp` private | the app's data where we can read it (Telegram's tdata), and nothing of yours: not your home, your X server, your session bus or `/sys` |
 | **PATH** | `/run/dither/bin` first: `xdg-open`, `x-www-browser`, `sensible-browser` and friends, each a shell script that calls `net.dither.Sandbox.Open` with `dbus-send`; then coreutils. GLib's default handler for http(s) and mailto is a `.desktop` file pointing at the same shim (`mimeapps.list`, merged with what the app writes there) | every "open this link" an app can make, whether through Qt (`QDesktopServices` runs `xdg-open`), GLib, or a portal |
-| **the network** | its own network namespace through pasta (user-mode networking: out to the internet, nothing in, the host's loopback not mapped); `host` when pasta cannot be had (said in the status), `none` for tests | the app reaches Telegram and nothing on this machine: not the manager on 8486 (and no live view listens on a port to reach). And abstract unix sockets live in the network namespace: under the host's network, the app could reach every other Xvfb on the machine (the browser sandboxes' displays listen on abstract sockets, unauthenticated) |
-| **sound** (when asked: `audio`) | a PulseAudio server of the sandbox's own, outside it like Xvfb, with its own home and runtime directory, no default script (so nothing of the machine's sound), only the null sinks and the sources remapped from their monitors that the app's runner names, and no module loading by clients; its socket is the app's session PulseAudio (`PULSE_SERVER`) | what the app plays and records, as streams we can tap and feed: Signal Desktop's calls |
+| **the network** | its own network namespace through pasta (user-mode networking: out to the internet, nothing in, the host's loopback not mapped); `host` when pasta cannot be had (said in the status), `none` for tests | the app reaches Telegram and nothing on this machine: not the manager on 8486 (and no live view listens on a port to reach). And abstract unix sockets live in the network namespace: under the host's network, the app could reach every other Xvfb on the machine (the browser sandboxes' x11 displays listen on abstract sockets, unauthenticated; their wayland compositors listen on none) |
+| **sound** (when asked: `audio`) | a PulseAudio server of the sandbox's own, outside it like the display, with its own home and runtime directory, no default script (so nothing of the machine's sound), only the null sinks and the sources remapped from their monitors that the app's runner names, and no module loading by clients; its socket is the app's session PulseAudio (`PULSE_SERVER`) | what the app plays and records, as streams we can tap and feed: Signal Desktop's calls |
 | **processes** | the app under `bwrap --unshare-all` with `--die-with-parent`; a small environment (the extractor's own, with its manager token, never reaches even bubblewrap's init); a pid file so a later start ends what a killed extractor left | one account's app cannot see another's processes, or the extractor's secrets |
 
 `bun test packages/sandbox` checks these against a real bus and a real sandbox: what the app inside can see (its own
 home, its display, its bus; not the user's home, not the host's abstract X sockets, not `DITHER_*` anywhere, not its
 own live view's socket), RFB on that socket (0600) from an x11vnc that holds no TCP or UDP socket, a link through the
-shim and a download announced.
+shim and a download announced. `packages/sandbox/test/sandbox-wayland.test.ts` does the same on the wayland backend:
+the app sees `wayland-0` and no X socket, the compositor's own directory and the live view's socket stay hidden. `packages/sandbox/test/sandbox-satellite.test.ts` runs an X app (xev) on the wayland backend: its window is a sway
+window, RFB clicks and keys reach it as X events, grim pictures it, and its X sockets are in neither the machine's
+`/tmp/.X11-unix` nor the machine's network namespace.
+
+### Its compositor draws in software
+
+On the wayland backend a native app's sway renders with pixman, on the CPU (`AppSandboxOptions.gpu`, default
+false), where a browser sandbox's renders with gles2 on the machine's render node. The app has no render node inside
+its sandbox (`--dev /dev` holds none), so it draws in software on either; only the compositor would use the GPU, and
+loading the GPU driver is most of what a GPU-backed sway costs. Each app was checked under pixman: it draws its first
+screen as under gles2 and on x11, input reaches it, and its own output has nothing new about GL or the GPU (Telegram
+Desktop's Mesa warnings about having no render device come up the same under both). `scripts/bench-native.ts`, each
+app with no network to its first screen, three repetitions, medians:
+
+| | x11 | wayland, gles2 | wayland, pixman |
+|---|---|---|---|
+| Signal Desktop: sandbox up / first picture | 208 ms / 14.9 s | 336 ms / 13.1 s | 280 ms / 12.4 s |
+| Signal Desktop: screen stack, whole sandbox (PSS) | 23, 502 MB | 55, 527 MB | 40, 515 MB |
+| Telegram Desktop: sandbox up / first picture | 157 ms / 3.6 s | 510 ms / 9.1 s | 291 ms / 3.4 s |
+| Telegram Desktop: screen stack, whole sandbox | 19, 304 MB | 52, 364 MB | 39, 356 MB |
+| Haveno (X app; xwayland-satellite on wayland): sandbox up / first picture | 157 ms / 3.8 s | 310 ms / 3.5 s | 261 ms / 3.6 s |
+| Haveno: screen stack, whole sandbox | 19, 397 MB | 74, 478 MB | 62, 433 MB |
+
+The screen stack is the display and its live view: Xvfb and x11vnc, or sway and wayvnc (and for Haveno
+xwayland-satellite with its Xwayland, about 24 MB of it). sway itself is 41–45 MB under gles2 and 28–32 MB under
+pixman, and a sandbox with it is up 50–220 ms sooner. The first picture is the app's own start, which varies by
+seconds between runs of one configuration (Telegram Desktop 2.7–10 s on each), so it shows only that none is held
+back. Idle CPU is the app's own and the same on every configuration (Signal and Haveno about 2% of a core; Telegram
+Desktop, which with no network keeps redrawing its reconnecting spinner, 150–190%).
 
 ## The routing policy
 
@@ -89,11 +118,22 @@ None of these is built; each is a door the sandbox already has the frame for.
 
 ## Adding another native app
 
-1. Its binary from nixpkgs (resolved by `resolveBin`: environment, PATH, `nix build`), its arguments to keep its data
+1. Its binary, the machine's own install (resolved by `resolveBin`: its `*_BIN` override, then PATH, else an error
+   at once, never a build: nix/README.md "What is not pinned"; the sandbox's own programs, bubblewrap, pasta, the
+   screen's and xwayland-satellite, come prepared from the pinned nixpkgs instead), its arguments to keep its data
    under the sandbox's home and not update itself.
 2. `new AppSandbox({ dir: <account>/desktop, display, width, height, command, fitWindow, onEvent })` with a
-   display from `pickFreeDisplay` (:80–:89, then :100–:159; claimed atomically in /tmp/.dither-displays so sandboxes
-   starting together never pick the same one). Its live view is `sb.vncSocket` (`<dir>/vnc.sock`), reported as
+   display from `pickFreeDisplay`: on x11 a display number (:80–:89, then :100–:159; claimed atomically in
+   /tmp/.dither-displays so sandboxes starting together never pick the same one), on wayland none (its compositor's
+   socket is in the sandbox's own directory). Its environment comes from `displayEnv`, so a Qt, GTK or Electron app
+   needs nothing of its own for either backend. An app that draws only through X (Haveno's JavaFX) says `x11App: true`:
+   on x11 nothing changes; on wayland it gets an Xwayland of its own inside its sandbox (xwayland-satellite as `:0`,
+   started by the sandbox before the app and the way niri runs X apps; the app starts once satellite logs that it is connected to its Xwayland, since a window made before that never got a Wayland window), so each X window is an ordinary window of the
+   sandbox's sway, under the same live view, input and screenshots. Its X sockets are the sandbox's: the path one in
+   its private `/tmp`, the abstract one in its own network namespace; Xwayland admits only the sandbox's user, by its
+   name in the sandbox's `/etc/passwd`. Without a network namespace of its own (`host`, pasta missing) that abstract
+   socket would be the machine's, so the sandbox takes an X display (Xvfb) instead, as it does when xwayland-satellite
+   (`XWAYLAND_SATELLITE_BIN`, else the prepared programs, else `PATH`) cannot be had. Its live view is `sb.vncSocket` (`<dir>/vnc.sock`), reported as
    `liveView: { vncSocket, width, height }`.
 3. Its session on disk: where it is, its format, when it says "signed in", and whether its key can be used from a
    client of our own or should only be watched.

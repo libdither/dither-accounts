@@ -12,6 +12,7 @@ export default {
   entry: 'src/main.ts',
   // Each account's own site (its `url`) is where a "Continue with Google" there may send the answer.
   signIn: { siteSetting: 'url' },
+  screen: true,
   add: {
     blurb:
       "Any website in a sandboxed browser on this machine, kept signed in: you sign in once in its live view, or with a Google account you already have here when the site offers \"Continue with Google\". Use it in the live view, or let an app or agent you approve read and click in it (the browser interface). It stays on that site.",

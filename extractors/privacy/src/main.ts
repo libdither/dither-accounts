@@ -28,7 +28,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BridgeServer, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, displayName, type FreeDisplay, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
 import type { PrivacySession } from '@dither-accounts/interfaces';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
 import { NeedsYou, type PullOutcome, StatementsRunner, type Why, writeWhole } from '@dither-accounts/statements-common';
@@ -80,7 +80,7 @@ const RECLICK_MS = 10_000;
 const auth = new Authenticator(secretStore(link), DOMAINS, Date.now, 'top', undefined, approverVia(link));
 
 
-let display: number | null = null;
+let display: FreeDisplay | null = null;
 let liveView: { vncSocket: string; width: number; height: number } | null = null;
 let sandbox: Sandbox | null = null;
 let sandboxError: string | null = null;
@@ -151,6 +151,7 @@ function view(): View {
     display: liveView ? display : null,
     liveView: !!liveView,
     browserAlive: !!sandbox?.browserAlive,
+    screen: sandbox?.screenHealth,
     attached: bridge.connected,
     attachOverdue: !!liveView && !!startedAt && Date.now() - startedAt > ATTACH_MS,
     page: tab,
@@ -516,18 +517,18 @@ async function boot() {
   status();
   const tried: number[] = [];
   for (let attempt = 0; attempt < 3; attempt++) {
-    let free: { display: number };
+    let free: FreeDisplay;
     try {
       free = await pickFreeDisplay(undefined, tried);
     } catch (e) {
       sandboxError = String((e as Error).message ?? e);
       break;
     }
-    tried.push(free.display);
-    display = free.display;
+    if (free.display !== null) tried.push(free.display);
+    display = free;
     sandbox = new Sandbox({
       accountDir: link.accountDir,
-      display: free.display,
+      display: free,
       width: WIDTH,
       height: HEIGHT,
       extensionSrc: join(import.meta.dir, 'extension'),
@@ -536,6 +537,8 @@ async function boot() {
       startUrl: `${appOrigin}/`,
       noSandbox: !!cfg.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',
       log,
+      // The live view's server down or back (it is started again): said in the status at once.
+      onScreenHealth: () => status(true),
     });
     try {
       await sandbox.start();
@@ -545,7 +548,7 @@ async function boot() {
       break;
     } catch (e) {
       sandboxError = String((e as Error).message ?? e).slice(0, 300);
-      log('warn', `sandbox on :${free.display} failed`, sandboxError);
+      log('warn', `sandbox on ${displayName(free)} failed`, sandboxError);
       await sandbox.stop();
       sandbox = null;
     }

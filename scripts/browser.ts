@@ -20,8 +20,11 @@ export interface Page {
   evalWorker<T = any>(url: string, expr: string): Promise<T>;
 }
 
-/** args: extra Chromium flags, e.g. a fake microphone for call tests. */
-export async function launch(opts: { caCert?: string; host?: string; args?: string[] } = {}) {
+/**
+ * args: extra Chromium flags, e.g. a fake microphone for call tests. bin: the Chromium to run (default `chromium` on
+ * PATH). Its DevTools port is the one it picks itself (port 0), read from the profile's DevToolsActivePort.
+ */
+export async function launch(opts: { caCert?: string; host?: string; args?: string[]; bin?: string } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'dither-browser-'));
   if (opts.caCert) {
     const nss = join(home, '.pki/nssdb');
@@ -31,16 +34,23 @@ export async function launch(opts: { caCert?: string; host?: string; args?: stri
     const r = run('-A', '-d', `sql:${nss}`, '-t', 'C,,', '-n', 'dither-chat', '-i', opts.caCert);
     if (r.exitCode !== 0) throw new Error('certutil failed: ' + r.stderr.toString());
   }
-  const port = 9300 + Math.floor(Math.random() * 500);
-  const proc = Bun.spawn(['chromium', '--headless=new', `--remote-debugging-port=${port}`, `--user-data-dir=${join(home, 'profile')}`, '--no-first-run', '--no-sandbox', '--disable-gpu', ...(opts.args ?? []), 'about:blank'], {
+  const proc = Bun.spawn([opts.bin ?? 'chromium', '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${join(home, 'profile')}`, '--no-first-run', '--no-sandbox', '--disable-gpu', ...(opts.args ?? []), 'about:blank'], {
     env: { ...process.env, HOME: home },
     stdout: 'ignore',
     stderr: 'ignore',
   });
+  // The port it listens on: the first line of DevToolsActivePort, once it has written it.
+  const active = join(home, 'profile', 'DevToolsActivePort');
+  let port = 0;
+  for (let i = 0; i < 400 && !port && proc.exitCode === null; i++) {
+    port = Number((await Bun.file(active).text().catch(() => '')).split('\n')[0]) || 0;
+    if (!port) await Bun.sleep(50);
+  }
+  if (!port) throw new Error(`chromium did not start${proc.exitCode !== null ? ` (exited ${proc.exitCode})` : ''}`);
   let targets: any[] = [];
   for (let i = 0; i < 100 && !targets.length; i++) {
-    await Bun.sleep(200);
     targets = await fetch(`http://127.0.0.1:${port}/json`).then((r) => r.json() as Promise<any[]>).catch(() => []);
+    if (!targets.length) await Bun.sleep(100);
   }
   const target = targets.find((t) => t.type === 'page');
   if (!target) throw new Error('chromium did not start');

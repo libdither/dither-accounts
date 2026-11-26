@@ -14,6 +14,7 @@
     "@dither-accounts/interfaces": "workspace:*",
     "@dither-accounts/passkey": "workspace:*",
     "@dither-chat/protocol": "workspace:*",
-    "@dither-accounts/approval": "workspace:*"
+    "@dither-accounts/approval": "workspace:*",
+    "@dither-accounts/browser": "workspace:*"
   }
 }

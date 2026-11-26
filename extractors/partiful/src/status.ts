@@ -6,13 +6,14 @@
  * Signed out is not broken here: Explore reads work without an account, so a signed-out page still answers `explore`
  * while the status asks you to sign in.
  */
+import { displayNote, displayState, type FreeDisplay, type ScreenHealth } from '@dither-accounts/browser';
 import type * as P from '@dither-chat/protocol';
 
 export type PageState = 'loading' | 'login' | 'ready';
 
 export interface Facts {
   now: number;
-  sandbox: { started: boolean; error: string | null; browserAlive: boolean; display: number | null; liveView: boolean; startedAt: number };
+  sandbox: { started: boolean; error: string | null; browserAlive: boolean; screen?: ScreenHealth; display: FreeDisplay | number | null; liveView: boolean; startedAt: number };
   extensionAttached: boolean;
   /** The tab the browser shows (origin and path). */
   tab: string | null;
@@ -51,9 +52,10 @@ export function compute(f: Facts): Computed {
     attention = { kind: 'unknown', message: `The sandbox failed to start: ${s.error}`, liveView: false };
     layers.push({ name: 'display', state: 'failed', note: s.error });
   } else if (!s.started) {
-    layers.push({ name: 'display', state: 'waiting', note: 'starting Xvfb, the browser and the live view' });
+    layers.push({ name: 'display', state: 'waiting', note: 'starting the display, the browser and the live view' });
   } else {
-    layers.push({ name: 'display', state: 'ok', note: `:${s.display}${s.liveView ? ', live view on' : ''}` });
+    // A live view server that died shows here while it is started again (packages/browser screen.ts health).
+    layers.push({ name: 'display', ...(s.screen && !s.screen.ok ? displayState(s.display, s.screen) : { state: 'ok' as const, note: `${displayNote(s.display)}${s.liveView ? ', live view on' : ''}` }) });
     if (!s.browserAlive) {
       status = 'error';
       layers.push({ name: 'browser', state: 'failed', note: 'Chromium exited' });

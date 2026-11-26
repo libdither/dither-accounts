@@ -10,17 +10,12 @@ import { join } from 'node:path';
 import { AccountsClient, register } from '@dither-accounts/client';
 import { chat } from '@dither-accounts/interfaces';
 import { createManager, kindOf, type Manager } from '@dither-accounts/manager';
-import { resolveBins } from '../packages/browser/src/index.ts';
 import { ANN, BEN, CARA } from '../extractors/reddit/test/fixtures.ts';
 import { type FakeReddit, ME, MODHASH, startFakeReddit } from './fake-reddit.ts';
+import { browserBins } from './needs.ts';
 
 const ROOT = join(import.meta.dir, '..');
-let bins: ReturnType<typeof resolveBins> | null = null;
-try {
-  bins = resolveBins(() => {});
-} catch (e) {
-  console.warn(`reddit-browser: skipped, ${(e as Error).message}`);
-}
+const bins = browserBins('reddit-browser');
 const it = test.skipIf(!bins);
 
 let fake: FakeReddit;

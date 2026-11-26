@@ -8,7 +8,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statS
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Subprocess } from 'bun';
-import { pickFreeDisplay } from '../src/display.ts';
+import { pickFreeXDisplay } from '../src/display.ts';
 import { resolveBins } from '../src/sandbox.ts';
 import { prepareVncSocket, SOCKET_PATH_MAX, vncSocketPath, waitForVncSocket, x11vncArgs } from '../src/vnc.ts';
 import { inetSockets, rfbBanner } from './inet.ts';
@@ -67,7 +67,7 @@ describe.skipIf(!bins)('a real x11vnc', () => {
   });
 
   test('answers RFB on the socket (0600), and holds no TCP or UDP socket, v4 or v6', async () => {
-    const { display } = await pickFreeDisplay();
+    const { display } = await pickFreeXDisplay();
     const xvfb = Bun.spawn([bins!.xvfb, `:${display}`, '-screen', '0', '640x480x24', '-nolisten', 'tcp'], { stdout: 'ignore', stderr: 'ignore' });
     procs.push(xvfb);
     for (let i = 0; i < 80 && !existsSync(`/tmp/.X11-unix/X${display}`); i++) await Bun.sleep(100);

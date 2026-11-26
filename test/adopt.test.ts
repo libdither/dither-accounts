@@ -49,7 +49,7 @@ const until = async (f: () => boolean | Promise<boolean>, ms = 15_000, what = 'c
 
 const kinds = () => new Map([['fake', kindOf(fakeManifest, join(ROOT, 'extractors/fake'))]]);
 
-async function manager(dir: string, opts: { port?: number; code?: string; pause?: number } = {}) {
+async function manager(dir: string, opts: { port?: number; code?: string; pause?: number; displayBackend?: 'x11' | 'wayland' } = {}) {
   const m = await createManager({
     openPage: true,
     dataDir: dir,
@@ -58,6 +58,7 @@ async function manager(dir: string, opts: { port?: number; code?: string; pause?
     launch: 'detached',
     fingerprint: () => opts.code ?? 'v1',
     restartPauseMs: opts.pause ?? 50,
+    displayBackend: opts.displayBackend,
   });
   managers.push(m);
   return m;
@@ -158,6 +159,29 @@ test('an adopted extractor whose code changed restarts; one at a time', async ()
   await m2.stop();
   expect(procAlive(n1)).toBe(false);
 });
+
+test("a new default display backend restarts the adopted extractors it moves, not one whose account names its own", async () => {
+  const { dir, m1, id, pid, port } = await world('backend');
+  const id2 = 'acc-backend-own';
+  addAccount(m1, dir, id2, { displayBackend: 'x11' });
+  m1.sup.start(id2);
+  await until(() => online(m1, id2), 15_000, 'the second extractor online');
+  const pid2 = await pidOf(m1, id2);
+  pids.push(pid2);
+  expect(m1.sup.details(id).displayBackend).toBe('x11');
+  await m1.stop({ leaveExtractors: true });
+
+  const m2 = await manager(dir, { port, displayBackend: 'wayland' });
+  await until(() => online(m2, id) && !m2.sup.details(id).adopted, 30_000, 'the moved one restarted');
+  const n1 = await pidOf(m2, id);
+  pids.push(n1);
+  expect(n1).not.toBe(pid);
+  expect(m2.sup.details(id).displayBackend).toBe('wayland');
+  // Its account says x11: adopted as it was, and left running.
+  await until(() => online(m2, id2), 15_000, 'the other reconnected');
+  expect(m2.sup.details(id2)).toMatchObject({ pid: pid2, adopted: true, displayBackend: 'x11' });
+  await m2.stop();
+}, 30_000);
 
 test('a restart for changed code waits for the calls the extractor is answering', async () => {
   const { dir, m1, id, pid, port } = await world('drain', { code: 'v1' });

@@ -18,11 +18,14 @@ import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { join, normalize, resolve } from 'node:path';
 import { consent, type Level, LEVELS } from '@dither-accounts/spec';
+import { BACKEND_BINS, preparedBin, tryBin } from '@dither-accounts/browser/bins';
+import { BACKENDS, type BackendInfo, backendList, DISPLAY_BACKENDS, type DisplayBackend, fromFork, parseBackend } from '@dither-accounts/spec/display';
+import type { KeptBins } from './prepare.ts';
 import { IFACES } from '@dither-accounts/interfaces';
 import TYPES from '@dither-accounts/interfaces/types';
 import { ALG_NAMES, validCredentials } from '@dither-accounts/passkey';
 import { addForm } from './addform.ts';
-import type { AccessRequest, AccountDetail, AccountInfo, AccountPasskeys, AppInfo, ApproversState, GrantMatrix, ManagerState, MatrixCell, PageCallResult, StatusLayer } from './api-types.ts';
+import type { AccessRequest, AccountDetail, AccountInfo, AccountPasskeys, AppInfo, ApproversState, BackendView, DisplayState, GrantMatrix, ManagerState, MatrixCell, PageCallResult, StatusLayer } from './api-types.ts';
 import type { Approvers, ApproverSocketData } from './approvers.ts';
 import { Auth, CLI_HEADER, cookieOf, fromOwnPage, loginPage, safeNext, sessionCookie } from './auth.ts';
 import { hashToken, newId, newToken, type Row, type Store } from './db.ts';
@@ -31,7 +34,7 @@ import { type Kind, STAY_AWAKE } from './kinds.ts';
 import { localNotice, type Notices } from './notices.ts';
 import type { Provider } from './providers/index.ts';
 import { CallFailure, type ConsumerSocketData, type Router } from './router.ts';
-import { accountDir, type ExtractorSocketData, LOCK, type Supervisor, writeSecret } from './supervisor.ts';
+import { accountDir, DISPLAY_BACKEND_SETTING, type ExtractorSocketData, LOCK, type Supervisor, writeSecret } from './supervisor.ts';
 
 /** The page's live view: a browser WebSocket carried to the account's VNC, a Unix socket on this machine. */
 /** `release`: while it is open, the account stays awake (supervisor.ts hold). */
@@ -135,7 +138,19 @@ export interface HttpOpts {
   startedAt: number;
   /** Tests only: the page and its API answer without a login. */
   openPage?: boolean;
+  /** Preparing the sandboxes' programs (prepare.ts KeptBins); null when the manager does not prepare them. */
+  bins?: KeptBins | null;
+  /** The forks' servers, a build of their own (prepare.ts); null as bins is. */
+  forkBins?: KeptBins | null;
+  /** Tests only: whether a backend can run here, in place of backendCheck's own look. */
+  backendCheck?: (b: DisplayBackend) => BackendCheck;
 }
+
+/** Whether a display backend can run here now (BackendView). */
+export type BackendCheck = Pick<BackendView, 'availability' | 'why'>;
+
+/** How long what backendCheck found on PATH holds: it looks at the file system, and the page asks often. */
+const BACKEND_CHECK_MS = 10_000;
 
 let own: { at: number; ips: Set<string> } | null = null;
 /** An address of this machine: loopback, or one of its interfaces' (a proxy here may reach us from the tailnet address). */
@@ -210,6 +225,10 @@ export class Http {
             else d.queue.push(buf);
           } else void self.router.message(ws as any, msg as any);
         },
+        drain(ws) {
+          // The page has taken what was queued for it: read the live view's socket again (openLiveView).
+          if (ws.data.kind === 'liveview') ws.data.vnc?.resume();
+        },
         close(ws) {
           const d = ws.data;
           if (d.kind === 'extractor') self.sup.detach(ws as any);
@@ -242,8 +261,14 @@ export class Http {
           for (const b of d.queue) sock.write(b);
           d.queue = [];
         },
-        data(_sock, data) {
-          ws.sendBinary(data);
+        data(sock, data) {
+          // Paced by the page: while the WebSocket is backed up, the VNC server's socket is not read, so a slow link
+          // reaches the server as a full socket and it sends fewer frames. wayvnc pushes frames on its own (continuous
+          // updates, which noVNC turns on); read without pause, its output piled up here until Bun dropped some of it
+          // at its backpressure limit, which breaks the RFB stream (docs/browser.md, "The live view over a slow link").
+          const sent = ws.sendBinary(data);
+          if (sent === -1) sock.pause();
+          else if (sent === 0) ws.close(1011, 'the live view fell behind');
         },
         close() {
           if (!d.closed) ws.close(1000, 'the live view ended');
@@ -463,6 +488,11 @@ export class Http {
     if ((m = path.match(/^\/api\/sessions\/([\w-]+)$/)) && req.method === 'DELETE') return this.auth.revoke(m[1]) ? json({ revoked: 1 }) : bad('no such session', 404);
     if (path === '/api/state' && req.method === 'GET') return json(this.state());
     if (path === '/api/interfaces' && req.method === 'GET') return json({ types: TYPES });
+    if (path === '/api/display' && req.method === 'PUT') {
+      const b = await body<{ default?: unknown }>(req);
+      if (!('default' in b)) return bad('default is a backend, or null');
+      return (await this.setDefaultBackend(b.default)) ?? json(this.state());
+    }
 
     // The approver: paired phones, a new pairing code, forgetting one, and the recent requests (docs/approver.md).
     if (path === '/api/approvers' && req.method === 'GET') return json(await this.approversState());
@@ -640,6 +670,17 @@ export class Http {
           const known = new Map((this.kinds.get(a.kind)?.settings ?? []).map((x) => [x.key, x]));
           const cfg = parse<Record<string, unknown>>(a.config, {});
           for (const [k, v] of Object.entries(b.settings)) {
+            // A kind with a screen's: the one its sandboxes draw on (docs/browser.md "Display backends"); null is the
+            // manager's default.
+            if (k === 'displayBackend' && this.kinds.get(a.kind)?.screen) {
+              if (v === null) delete cfg[k];
+              else if (parseBackend(v)) {
+                const refused = parseBackend(v) === this.sup.ownBackend(a) ? null : this.refuseBackend(parseBackend(v)!);
+                if (refused) return refused;
+                cfg[k] = parseBackend(v);
+              } else return bad(`displayBackend is one of ${backendList()}, or null (the manager's default)`);
+              continue;
+            }
             const info = known.get(k);
             if (!info) return bad(`${a.kind} accounts have no setting ${k}`);
             if (info.type === 'boolean' && typeof v !== 'boolean') return bad(`${k} is on or off (true or false)`);
@@ -760,6 +801,7 @@ export class Http {
       ownDir: ownDir(this.dataDir, a.id, a.dir),
       createdBy: a.created_by,
       createdAt: a.created_at,
+      display: this.kinds.get(a.kind)?.screen ? { own: this.sup.ownBackend(a), uses: this.sup.backendOf(a)! } : null,
       settings: (this.kinds.get(a.kind)?.settings ?? []).map((x) => {
         const v = parse<Record<string, unknown>>(a.config, {})[x.key];
         return x.type === 'text'
@@ -868,6 +910,83 @@ export class Http {
     return { days: dayList, cells };
   }
 
+  displayState(): DisplayState {
+    const chosen = parseBackend(this.store.setting(DISPLAY_BACKEND_SETTING));
+    return {
+      backends: DISPLAY_BACKENDS.map((name) => {
+        const b: BackendInfo = BACKENDS[name];
+        const c = this.backendCheck(name);
+        return { name, label: b.label, protocol: b.protocol, experimental: b.experimental ?? null, note: b.note ?? null, ...c, available: c.availability === 'ready' };
+      }),
+      default: this.sup.defaultBackend(),
+      chosen,
+      config: this.sup.configBackend(),
+    };
+  }
+
+  private checked = new Map<DisplayBackend, { key: string; at: number; c: BackendCheck }>();
+
+  /**
+   * Whether a backend can run here now: its programs prepared (the sandboxes' build, and for one built from a fork the
+   * forks' build too, which is started only once one is picked or an account starts on one), or, where the manager
+   * prepares nothing, found as its extractors would find them (an override, DITHER_BINS, PATH).
+   */
+  backendCheck(b: DisplayBackend): BackendCheck {
+    if (this.opts.backendCheck) return this.opts.backendCheck(b);
+    const main = this.opts.bins?.state;
+    const forks = fromFork(b) ? this.opts.forkBins?.state : undefined;
+    const key = JSON.stringify([main, forks]);
+    const hit = this.checked.get(b);
+    if (hit && hit.key === key && Date.now() - hit.at < BACKEND_CHECK_MS) return hit.c;
+    const c = ((): BackendCheck => {
+      for (const [st, what] of [[main, "the sandboxes' programs"], [forks, 'its servers, built from a fork,']] as const) {
+        if (!st || st.state === 'none') continue;
+        if (st.state === 'idle') return { availability: 'unbuilt', why: 'built the first time it is picked: minutes, where no cache has it' };
+        if (st.state === 'preparing') return { availability: 'building', why: `${what} are being built` };
+        if (st.state === 'failing' && !st.dir) return { availability: 'missing', why: `${what} could not be built (${st.why ?? 'nix-build failed'}); trying again` };
+      }
+      const dirs = [this.opts.bins?.dir(), fromFork(b) ? this.opts.forkBins?.dir() : null].filter(Boolean).join(':');
+      const lacking = BACKEND_BINS[b].filter((spec) => !(dirs ? preparedBin(spec, dirs) : tryBin(spec, () => {})));
+      if (!lacking.length) return { availability: 'ready', why: null };
+      return { availability: 'missing', why: `${lacking.map((spec) => spec.name).join(', ')} ${dirs ? 'not among the prepared programs' : 'not found here (nothing is prepared: install it, or point DITHER_BINS at a prepared directory)'}` };
+    })();
+    this.checked.set(b, { key, at: Date.now(), c });
+    return c;
+  }
+
+  /**
+   * A backend to be picked (the default, an account's own): null when it can run, else the 409 that says why. One built
+   * from a fork whose servers were never built starts that build; it is picked once they are ready.
+   */
+  private refuseBackend(b: DisplayBackend): Response | null {
+    const c = this.backendCheck(b);
+    if (c.availability === 'ready') return null;
+    if (c.availability === 'unbuilt') {
+      this.opts.forkBins?.start();
+      this.checked.delete(b);
+      this.router.accountsChanged();
+      return bad(`${BACKENDS[b].label}: its servers are being built now (minutes, where no cache has them); pick it again once they are ready`, 409);
+    }
+    return bad(`${BACKENDS[b].label} cannot run here now: ${c.why}`, 409);
+  }
+
+  /**
+   * The page's default backend, or (null) config.toml's again. The running accounts that follow the default and now
+   * land on another backend restart on it; the rest are left as they are.
+   */
+  private async setDefaultBackend(v: unknown): Promise<Response | null> {
+    if (v !== null && !parseBackend(v)) return bad(`default is one of ${backendList()}, or null (config.toml's display_backend)`);
+    const refused = v === null ? null : this.refuseBackend(parseBackend(v)!);
+    if (refused) return refused;
+    const s = this.store;
+    const was = new Map(s.accounts().map((a) => [a.id, this.sup.backendOf(a)]));
+    s.setSetting(DISPLAY_BACKEND_SETTING, v === null ? null : parseBackend(v));
+    const moved = s.accounts().filter((a) => a.enabled && !this.router.inProcess.has(a.id) && this.sup.backendOf(a) !== null && this.sup.backendOf(a) !== was.get(a.id) && this.sup.state(a.id).running);
+    // One at a time per kind, in the deploy's queue (docs/supervisor.md): the answer does not wait for them.
+    this.sup.moveScreens(moved.map((a) => a.id));
+    return null;
+  }
+
   state(): ManagerState {
     const s = this.store;
     const accounts: AccountInfo[] = s.accounts().map((a) => this.accountInfo(a));
@@ -884,8 +1003,11 @@ export class Http {
         events: Object.entries(i.events).map(([name, e]) => ({ name, describe: e.describe })),
       })),
       accounts,
+      display: this.displayState(),
       apps: s.all('SELECT * FROM app ORDER BY created_at').map((a) => this.appInfo(a)),
       providers: Object.fromEntries(this.providers.map((p) => [p.name, p.status()])),
+      bins: this.opts.bins?.state ?? null,
+      forkBins: this.opts.forkBins?.state ?? null,
     };
   }
 

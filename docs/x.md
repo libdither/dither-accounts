@@ -94,7 +94,8 @@ The file names above carry hashes that change with every build; nothing here dep
 
 ## What runs
 
-- **The sandbox** (packages/browser): Xvfb (:80–:89, then :100–:159), an ordinary Chromium with its profile in
+- **The sandbox** (packages/browser): Xvfb (:80–:89, then :100–:159), or sway on the wayland display backend
+  (docs/browser.md, "Display backends"), an ordinary Chromium with its profile in
   `<data>/accounts/<id>/profile` (which keeps the sign-in) and the extension copied in each start, x11vnc for the live
   view. No CDP, no automation flags.
 - **Service workers**: Chromium goes on running the extension's service worker it first registered in a profile,

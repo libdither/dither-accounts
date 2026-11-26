@@ -10,7 +10,7 @@
  *   `SignInAnswerer` checks the link and has the extension open it in a tab of its own, which the provider's session
  *   there answers, stopped before it loads the redirect address. That address comes back. The provider may ask to
  *   pick an account and to allow the site: with `auto` (a link you set up, for a site that asks only who you are) the
- *   answerer presses those itself, with real input on its display; otherwise, and for anything else the provider asks
+ *   answerer presses those itself, with real input on its screen (screen.ts); otherwise, and for anything else the provider asks
  *   (a password, a code, a check), you answer in the live view.
  *
  * A kind takes part with its worker's `include signin-worker` comment, a line in its worker's command routing
@@ -20,12 +20,12 @@
  *
  * Never logged: the link (its state, client and scopes ride in it) or the code.
  */
-import { spawn } from 'node:child_process';
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isAnswer, onlyIdentity, readAuthorize, SIGN_IN_PROVIDERS } from '@dither-accounts/spec/signin';
-import { type Log, resolveXdotool } from './sandbox.ts';
+import type { Log } from './sandbox.ts';
+import type { ScreenInput } from './screen.ts';
 
 const PAGE_DIR = join(dirname(fileURLToPath(import.meta.url)), 'page');
 const INCLUDE = '/*@include signin-worker@*/';
@@ -179,7 +179,6 @@ const MAX_PRESSES = 6;
 export class SignInAnswerer {
   /** The sign-in being answered: for the account's status (the provider may be asking you in the live view). */
   current: { site: string; since: number; auto: boolean; yours: number | null } | null = null;
-  private xdotool: string | null = null;
 
   constructor(
     private o: {
@@ -188,8 +187,8 @@ export class SignInAnswerer {
       provider: string;
       /** Tests: the origin standing for the provider. */
       testOrigin?: string | null;
-      /** The account's display, for real input (auto); null when there is none. */
-      display?: () => number | null;
+      /** The account's screen, for real input (auto: screen.ts, X or Wayland); null when there is none. */
+      screen?: () => ScreenInput | null;
       /** Who this account is signed in as (its email): the one its chooser picks. */
       who?: () => string | null;
       log: Log;
@@ -209,7 +208,7 @@ export class SignInAnswerer {
     // The manager's word, checked again here: only a site that asks for who you are.
     // Who this account is: as the manager last saw it, else as its own page says now.
     const me = (typeof cmd.who === 'string' && cmd.who.trim() ? cmd.who.trim().slice(0, 200) : null) ?? this.o.who?.() ?? null;
-    const auto = cmd.auto === true && onlyIdentity(r.provider, r.scopes) && this.o.display?.() != null && !!me;
+    const auto = cmd.auto === true && onlyIdentity(r.provider, r.scopes) && !!this.o.screen?.() && !!me;
     const aid = crypto.randomUUID();
     this.current = { site: r.site, since: Date.now(), auto, yours: auto ? null : Date.now() };
     this.o.onChange?.();
@@ -298,21 +297,11 @@ export class SignInAnswerer {
     }
   }
 
-  /** A real click on the account's display (as the browser interface's): the mouse moves there and clicks. */
+  /** A real click on the account's screen (as the browser interface's): the pointer moves there and clicks. */
   private click(x: number, y: number): Promise<void> {
-    const display = this.o.display?.();
-    if (display === null || display === undefined) return Promise.reject(new Error('no display'));
-    this.xdotool ??= resolveXdotool(this.o.log);
-    return new Promise((resolve, reject) => {
-      const p = spawn(this.xdotool!, ['mousemove', '--sync', String(Math.round(x)), String(Math.round(y)), 'sleep', '0.15', 'click', '1'], {
-        env: { ...process.env, DISPLAY: `:${display}` },
-        stdio: ['ignore', 'ignore', 'pipe'],
-      });
-      let err = '';
-      p.stderr.on('data', (d) => (err += String(d)));
-      p.on('error', reject);
-      p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(err.trim().slice(0, 200) || `xdotool exited ${code}`))));
-    });
+    const s = this.o.screen?.();
+    if (!s) return Promise.reject(new Error('no display'));
+    return s.click(Math.round(x), Math.round(y));
   }
 
   /** What the account needs from you while a sign-in waits on you (the provider's page in the live view). */

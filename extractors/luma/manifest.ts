@@ -12,6 +12,7 @@ export default {
   entry: 'src/main.ts',
   // "Continue with Google" on luma.com, answered by a Google account here (docs/signin-relay.md).
   signIn: { sites: ['https://luma.com'] },
+  screen: true,
   add: {
     blurb: "Runs luma.com in a sandboxed browser on this machine: dither-chat's Feed shows your city's events (before you sign in too) and yours, with who hosts and who is going as Luma shows it; your notifications, your events' blasts and Luma's chats come in as conversations. You sign in to Luma once in the live view.",
     fields: [

@@ -11,19 +11,15 @@ import { join } from 'node:path';
 import { AccountsClient, register } from '@dither-accounts/client';
 import { chat } from '@dither-accounts/interfaces';
 import { createManager, kindOf, type Manager } from '@dither-accounts/manager';
-import { markerName, resolveBins } from '../packages/browser/src/index.ts';
+import { markerName } from '../packages/browser/src/index.ts';
 import { inetSockets, rfbBanner, x11vncs } from '../packages/browser/test/inet.ts';
 import { pageMarkerKey } from '../packages/manager/src/supervisor.ts';
 import { ALICE, BOB, CAROL, DAVE, DIRECT, ERIN, type FakeX, GROUP, LEGACY, PIXEL, REQUEST, SELF, startFakeX } from './fake-x.ts';
 import { ANN, CARA, DEV, EMI, FINN, TRANSLATIONS } from './fake-x-feed.ts';
+import { browserBins } from './needs.ts';
 
 const ROOT = join(import.meta.dir, '..');
-let bins: ReturnType<typeof resolveBins> | null = null;
-try {
-  bins = resolveBins(() => {});
-} catch (e) {
-  console.warn(`x-browser: skipped, ${(e as Error).message}`);
-}
+const bins = browserBins('x-browser');
 const it = test.skipIf(!bins);
 
 let fake: FakeX;

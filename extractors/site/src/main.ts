@@ -12,7 +12,7 @@
  * Logs the site's host and what happened: never a page's address past its path, its text, or what was typed.
  */
 import { join } from 'node:path';
-import { SignInAsker, signInConfig } from '@dither-accounts/browser';
+import { displayName, SignInAsker, signInConfig } from '@dither-accounts/browser';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
 import { BrowserOps } from '@dither-accounts/statements-common/browser-ops';
 import { BrowserHost } from '@dither-accounts/statements-common/tabs';
@@ -99,7 +99,7 @@ function status(force = false) {
     ...(pending ? [{ name: 'sign-in', state: 'waiting', note: 'a sign-in with another account here is under way (its chooser is in the live view)' }] : []),
   ];
   const details = {
-    display: host.liveView ? `:${host.display}` : null,
+    display: host.liveView ? displayName(host.display) : null,
     site: site?.origin ?? null,
     page,
     extensionAttached: host.attached,

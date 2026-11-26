@@ -29,6 +29,7 @@ function acct(kind: string, o: { email?: string; name?: string; layers?: StatusL
     ownDir: true,
     createdBy: null,
     createdAt: n,
+    display: null,
     settings: [],
   };
 }

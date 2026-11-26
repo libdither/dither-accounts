@@ -16,7 +16,7 @@ import { copyFileSync, cpSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server, ServerWebSocket } from 'bun';
-import { pickFreeDisplay, resolveBins, Sandbox, stampExtension } from '../packages/browser/src/index.ts';
+import { pickFreeXDisplay, resolveBins, Sandbox, stampExtension } from '../packages/browser/src/index.ts';
 
 const ROOT = join(import.meta.dir, '..');
 const HERE = join(import.meta.dir, 'page-traces');
@@ -159,7 +159,7 @@ beforeAll(async () => {
     return to;
   });
   const accountDir = join(dir, 'shared');
-  const { display } = await pickFreeDisplay();
+  const { display } = await pickFreeXDisplay();
   sb = new Sandbox({
     accountDir,
     display,

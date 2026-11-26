@@ -424,6 +424,9 @@
     },
     "packages/browser": {
       "name": "@dither-accounts/browser",
+      "dependencies": {
+        "@dither-accounts/spec": "workspace:*",
+      },
     },
     "packages/chat-protocol": {
       "name": "@dither-chat/protocol",
@@ -454,6 +457,7 @@
       "name": "@dither-accounts/manager",
       "dependencies": {
         "@dither-accounts/approval": "workspace:*",
+        "@dither-accounts/browser": "workspace:*",
         "@dither-accounts/interfaces": "workspace:*",
         "@dither-accounts/passkey": "workspace:*",
         "@dither-accounts/spec": "workspace:*",

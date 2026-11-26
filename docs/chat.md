@@ -652,7 +652,7 @@ of the hooks: [page-traces.md](page-traces.md)); an extractor started without it
 else they find themselves, so the manager's unit needs the same environment dither-chat's hub had:
 
 - **PATH** with `bun` and `nix` (`/run/current-system/sw/bin`). Binaries not on PATH are built with nix on first use:
-  - **Discord:** `Xvfb`, `x11vnc` and `chromium`. Chromium is also looked for in `/etc/profiles/per-user/$USER/bin`, so `USER` matters.
+  - **Discord:** `Xvfb`, `x11vnc` and `chromium` (on the wayland display backend `sway`, `wayvnc` and `grim` in place of the first two: docs/browser.md). All of them, Chromium too, come prepared from the repo's pinned nixpkgs (`DITHER_BINS`, which the manager sets: nix/README.md).
   - **Signal:** `signal-cli`, rebuilt weekly, with the result cached in the account directory.
   - **WhatsApp:** the bridge, cached in the account directory per source hash. An imported account keeps its cache, since the bridge sources are unchanged.
 - **Optional overrides:**

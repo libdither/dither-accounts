@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { AccountsClient, register } from '@dither-accounts/client';
 import { browser } from '@dither-accounts/interfaces';
 import { createManager, type Manager } from '@dither-accounts/manager';
-import { resolveBins, resolveXdotool } from '../packages/browser/src/index.ts';
+import { DISPLAY_BINS, resolveBin, resolveBins } from '../packages/browser/src/index.ts';
 import { type FakeGoogle, startFakeGoogle } from './fake-google.ts';
 import { type FakeLuma, startFakeLuma } from './fake-luma.ts';
 
@@ -164,9 +164,9 @@ it(
 
       // You, in the live view, once the chooser has drawn the accounts: Tab to the first account (the Google one), Enter. Real keys on the account's own display.
       await until(() => /sign-in \S+: the chooser shows the accounts$/m.test(logOf(id)), 30_000, 'the accounts drawn');
-      const display = String(statusOf(id)?.layers?.find((x: any) => x.name === 'display')?.note ?? '').match(/^:(\d+)/)?.[1];
+      const display = String(statusOf(id)?.layers?.find((x: any) => x.name === 'display')?.note ?? '').match(/:(\d+)/)?.[1];
       expect(display).toBeTruthy();
-      const xdotool = resolveXdotool(() => {});
+      const xdotool = resolveBin(DISPLAY_BINS.xdotool, () => {});
       const keys = Bun.spawnSync([xdotool, 'key', '--delay', '150', 'Tab', 'Return'], { env: { ...process.env, DISPLAY: `:${display}` } });
       expect(keys.exitCode).toBe(0);
       await until(() => other.googleCodes.length > 0, 60_000, "Google's code at this Luma's /google");
@@ -205,7 +205,7 @@ it(
       other.continueWithGoogle(google.url);
       await until(() => /sign-in \S+: the chooser shows the accounts$/m.test(logOf(id)), 30_000, 'the accounts drawn');
       const displayOf = (a: string) => String(statusOf(a)?.layers?.find((x: any) => x.name === 'display')?.note ?? '').match(/:(\d+)/)?.[1];
-      const xdotool = resolveXdotool(() => {});
+      const xdotool = resolveBin(DISPLAY_BINS.xdotool, () => {});
       const keys = (a: string, ...k: string[]) => {
         const d = displayOf(a);
         expect(d).toBeTruthy();

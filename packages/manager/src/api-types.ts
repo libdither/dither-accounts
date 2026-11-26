@@ -1,5 +1,6 @@
 /** What the manager's own page reads (GET /api/state) and sends. */
 import type { AddInfo, CallError, Level } from '@dither-accounts/spec';
+import type { DisplayBackend } from '@dither-accounts/spec/display';
 
 /** How an account that may sleep stands (AccountInfo.sleep; supervisor.ts, docs/supervisor.md "Sleeping"). */
 export interface SleepInfoView {
@@ -91,6 +92,11 @@ export interface AccountInfo {
   /** The app that made it, if one did. */
   createdBy: string | null;
   createdAt: number;
+  /**
+   * For a kind with a screen (its manifest's `screen`): the display backend its config names (null: it follows the
+   * manager's default) and the one it uses. Null for the other kinds.
+   */
+  display: { own: DisplayBackend | null; uses: DisplayBackend } | null;
   /** Its kind's own settings (the manifest's `settings`) and their values here; the page shows a switch or a text box. */
   settings: { key: string; label: string; note: string; value: boolean; type?: 'boolean' | 'text'; text?: string; placeholder?: string }[];
 }
@@ -143,6 +149,58 @@ export interface ManagerState {
   apps: AppInfo[];
   /** Provider sections (Google sign-in), each with its own status; see providers/. */
   providers: Record<string, unknown>;
+  /** The display backends (docs/browser.md "Display backends") and the manager's default. */
+  display: DisplayState;
+  /**
+   * The sandboxes' programs, built from the pinned nixpkgs at the manager's start and tried again while that fails
+   * (prepare.ts KeptBins); null when this manager does not prepare them. The page says so while they fail.
+   */
+  bins: BinsInfo | null;
+  /** The servers built from forks this project keeps, a build of their own (prepare.ts); null as bins is. */
+  forkBins: BinsInfo | null;
+}
+
+/** A display backend as the page offers it (packages/spec display.ts). */
+export interface BackendView {
+  name: DisplayBackend;
+  label: string;
+  protocol: 'x11' | 'wayland';
+  /** 'fork': its server is built from a fork this project keeps; the page shows "Experimental fork" with the note. */
+  experimental: 'fork' | null;
+  note: string | null;
+  /**
+   * Whether it can run here now (http.ts backendCheck): ready; unbuilt (a fork's servers, built the first time it is
+   * picked: picking it starts that and is refused meanwhile); building; missing (`why` says what). Only a ready one is
+   * taken by PUT /api/display or an account's PATCH; the others are refused with 409.
+   */
+  availability: 'ready' | 'unbuilt' | 'building' | 'missing';
+  available: boolean;
+  why: string | null;
+}
+
+/** GET in /api/state, PUT /api/display { default }: the default and where it comes from. */
+export interface DisplayState {
+  backends: BackendView[];
+  /** The default accounts with no backend of their own use. */
+  default: DisplayBackend;
+  /** The one chosen on the page (it wins over config.toml), or null when config.toml's (or x11) is the default. */
+  chosen: DisplayBackend | null;
+  /** config.toml's display_backend (or --display-backend), else x11. */
+  config: DisplayBackend;
+}
+
+/** How preparing the sandboxes' programs stands (prepare.ts BinsState). */
+export interface BinsInfo {
+  /**
+   * preparing, ready, failing (the last build failed), none (no nix-build here: programs from PATH), idle (not asked
+   * for yet: the forks' servers are built once a backend that needs them is in use).
+   */
+  state: 'idle' | 'preparing' | 'ready' | 'failing' | 'none';
+  /** The prepared directory kinds with a screen are given; null while there is none (they wait while failing). */
+  dir: string | null;
+  why: string | null;
+  tries: number;
+  retryAt: number | null;
 }
 
 /** GET /api/accounts/:id: everything the manager knows about one account. */
@@ -163,6 +221,8 @@ export interface AccountDetail {
     lastExit: { code: number | null; signal: string | null; at: number } | null;
     /** Started by an earlier manager and taken over by this one at its start (docs/supervisor.md). */
     adopted: boolean;
+    /** The screen its sandboxes draw on, as it was started (docs/browser.md "Display backends"); null when not running. */
+    displayBackend: DisplayBackend | null;
     /** Who holds the directory's lock, from extractor.lock. */
     lock: { pid: number; owner: string; at: string | null } | null;
   };

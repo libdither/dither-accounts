@@ -13,12 +13,19 @@
  *   - writes when asked: a comment, a chat message, a reaction, a chat's read mark, and the `rsvp` action (manage).
  * It never marks notifications read, never solves a check for people, and never reads a hidden guest list.
  *
- * Config: { city?, testOrigin?, noSandbox?, feedFirstMs?, feedEveryMs? (tests) }. Keeps partiful-state.json (ids and
- * times of what it announced) in the account directory. Logs ids, counts and statuses: never words, names or tokens.
+ * A chat's people come from Stream with Stream's own ids only; the chat requests (Firestore, as the app's chat list
+ * reads them) say which Partiful users each chat is between, so they are filed by their Partiful id, named by
+ * getUsers. People filed as `stream:<id>` before that are named too, and said to be their Partiful selves (`sameAs`).
+ * Anyone the hub was told of without a name is looked up with getUsers, a batch at a time.
+ *
+ * Config: { city?, testOrigin?, noSandbox?, feedFirstMs?, feedEveryMs? (tests), logShapes? }. Keeps
+ * partiful-state.json (ids and times of what it announced, the chat id pairs) in the account directory. Logs ids,
+ * counts and statuses: never words, names or tokens. With `logShapes`, the first answer of each kind is logged as its
+ * field names and types alone (values never; keys that look like ids as <id>), to see what the site sends.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BridgeServer, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, displayName, type FreeDisplay, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
 import type * as P from '@dither-chat/protocol';
 import { EVENT_RSVP_CHOICES } from '@dither-chat/protocol';
 import { linkHub } from '@dither-chat/protocol/client';
@@ -40,10 +47,16 @@ if (typeof cfg.city === 'string' && cfg.city.trim() && !city) log('warn', 'the c
 const STATE_FILE = join(hub.accountDir, 'partiful-state.json');
 
 interface Kept {
+  /** 2 since chats are filed by Partiful id. */
+  v?: number;
   newestNotice?: number;
   ids?: string[];
   /** Per conversation, the newest message time announced. */
   convs?: Record<string, number>;
+  /** Stream user id → Partiful user id, as the chat requests paired them. */
+  streamIds?: Record<string, string>;
+  /** Chats announced before v2, whose people the hub has as `stream:<id>`. */
+  legacyChats?: string[];
 }
 function readKept(): Kept {
   try {
@@ -56,7 +69,10 @@ const kept = readKept();
 
 const drops = new M.Drops();
 const ctx = M.newCtx(drops, testOrigin);
-let display: number | null = null;
+for (const [sid, pid] of Object.entries(kept.streamIds ?? {})) if (typeof pid === 'string' && M.isId(pid)) ctx.streamIds.set(sid, pid);
+/** Chats the hub was told of before they were filed by Partiful id: their people get named `stream:` aliases. */
+const legacyChats = new Set<string>(kept.v === undefined ? Object.keys(kept.convs ?? {}).filter((c) => c.startsWith('chat:')) : (kept.legacyChats ?? []));
+let display: FreeDisplay | null = null;
 let vncSocket: string | null = null;
 let sandbox: Sandbox | null = null;
 let sandboxError: string | null = null;
@@ -80,7 +96,7 @@ const bridge = new BridgeServer<Up, Down>({
   log,
   silence: { name: 'partiful.com', tab: true, page: true },
   // Reads the page has not said it has after 3 s are sent again; never a write.
-  resend: { kinds: ['explore', 'event', 'guests', 'mutualGuests', 'comments', 'hostMessages', 'album', 'myEvents', 'notifications', 'users', 'chatSelf', 'chats', 'chat', 'media', 'self'] },
+  resend: { kinds: ['explore', 'event', 'guests', 'mutualGuests', 'comments', 'hostMessages', 'album', 'myEvents', 'notifications', 'users', 'chatSelf', 'chatRequests', 'chats', 'chat', 'media', 'self'] },
 });
 
 /** A person's pace: writes a little apart, reads (paging, opening events) a little slower. */
@@ -115,7 +131,7 @@ let slowFor = fast ? 2_000 : 10 * 60_000;
 function facts(): Facts {
   return {
     now: Date.now(),
-    sandbox: { started: !!sandbox && !sandboxError && display !== null && startedAt > 0, error: sandboxError, browserAlive: !!sandbox?.browserAlive, display, liveView: vncSocket !== null, startedAt },
+    sandbox: { started: !!sandbox && !sandboxError && display !== null && startedAt > 0, error: sandboxError, browserAlive: !!sandbox?.browserAlive, screen: sandbox?.screenHealth, display, liveView: vncSocket !== null, startedAt },
     extensionAttached: bridge.connected,
     tab,
     page,
@@ -214,18 +230,30 @@ let keepTimer: Timer | undefined;
 function writeKept() {
   try {
     while (announced.size > 3000) announced.delete(announced.values().next().value!);
-    writeFileSync(STATE_FILE, JSON.stringify({ newestNotice: noticeNewest, ids: [...announced], convs: Object.fromEntries(convNewest) } satisfies Kept), { mode: 0o600 });
+    const state: Kept = { v: 2, newestNotice: noticeNewest, ids: [...announced], convs: Object.fromEntries(convNewest), streamIds: Object.fromEntries(ctx.streamIds), legacyChats: [...legacyChats] };
+    writeFileSync(STATE_FILE, JSON.stringify(state), { mode: 0o600 });
   } catch {}
 }
 
-/** Identity facts for everyone the answers so far named, when new or changed. */
+const aboutSent = new Map<string, string>();
+/**
+ * Identity facts for everyone the answers so far named, when new or changed; and for someone whose profile the site
+ * showed with a bio or socials, what they say about themselves (personAbout), which the same-person engine reads.
+ */
 function people() {
   for (const u of ctx.users.values()) {
     const fact = M.identityFact(u, ctx.selfId);
     const fp = JSON.stringify(fact);
-    if (peopleSent.get(u.id) === fp) continue;
-    peopleSent.set(u.id, fp);
-    hub.emit({ t: 'identity', identity: fact });
+    if (peopleSent.get(u.id) !== fp) {
+      peopleSent.set(u.id, fp);
+      hub.emit({ t: 'identity', identity: fact });
+    }
+    if (u.id === ctx.selfId || !M.isId(u.id) || (!u.bio && !Object.keys(u.socials).length)) continue;
+    const about = M.personAbout(u);
+    const afp = JSON.stringify(about);
+    if (aboutSent.get(u.id) === afp) continue;
+    aboutSent.set(u.id, afp);
+    hub.emit({ t: 'personAbout', who: u.id, about, ts: Date.now() });
   }
 }
 /** Bare identities for ids no answer described (a comment's author, a host the card only names by id). */
@@ -280,11 +308,16 @@ let busy = 0;
 let rotate = 0;
 
 class Slowed extends Error {}
+const shapesLogged = new Set<string>();
 /** A read through the page, paced; a 429 slows every read down, a check for people stops them until it is cleared. */
 async function read<T>(cmd: Down, ms = 90_000): Promise<T> {
   if (blocked?.kind === 'slow' && blocked.until && blocked.until > Date.now()) throw new Slowed(`Partiful asked us to slow down; reading again after ${new Date(blocked.until).toISOString().slice(11, 19)}`);
   try {
     const r = await readPace.run(() => bridge.request<T>(cmd, ms));
+    if (cfg.logShapes === true && !shapesLogged.has(cmd.kind)) {
+      shapesLogged.add(cmd.kind);
+      log('info', `shape of ${cmd.kind}`, { shape: M.shapeOf(r) });
+    }
     if (blocked) {
       blocked = null;
       slowFor = fast ? 2_000 : 10 * 60_000;
@@ -340,7 +373,11 @@ async function feedTick() {
       return 0;
     });
     const cm = await readUpcomingComments(ev);
-    log('info', `read: ${n} notifications, ${ev.length} events, ${ch} chats, ${cm} comments`);
+    const un = await lookUpUnnamed().catch((e) => {
+      if (!(e instanceof Slowed)) log('warn', 'looking people up failed', { error: String((e as Error).message).slice(0, 160) });
+      return 0;
+    });
+    log('info', `read: ${n} notifications, ${ev.length} events, ${ch} chats, ${cm} comments${un ? `, ${un} people without a name looked up` : ''}`);
   } catch (e) {
     feedLastError = String((e as Error).message ?? e).slice(0, 160);
     log('warn', 'periodic read failed', { error: feedLastError });
@@ -390,8 +427,10 @@ async function readMyEvents(): Promise<P.PostFact[]> {
 async function readChats(): Promise<number> {
   const r = await read<{ channels?: unknown[] }>({ kind: 'chats' });
   if (!streamSelf) streamSelf = (await read<{ user: string }>({ kind: 'chatSelf' })).user;
+  const channels = Array.isArray(r?.channels) ? r.channels : [];
+  await pairChats(channels, true);
   let n = 0;
-  for (const ch of Array.isArray(r?.channels) ? r.channels : []) {
+  for (const ch of channels) {
     const got = M.streamConversation(ch, streamSelf, ctx);
     if (!got) continue;
     n++;
@@ -402,6 +441,91 @@ async function readChats(): Promise<number> {
     messages(got.conv.nativeId, got.messages.filter((m) => !announced.has(`${got.conv.nativeId}|${m.nativeId}`)), fresh);
   }
   return n;
+}
+
+let requests: Map<string, string[]> | null = null;
+let requestsAt = 0;
+/**
+ * Who each chat's Stream members are, by the chat requests (read again on each periodic read, or when a chat is not in
+ * the last ones read): pairs Stream ids with Partiful ids, names the paired people (getUsers), and gives the people the
+ * hub has as `stream:<id>` their name and their Partiful id.
+ */
+async function pairChats(channels: unknown[], fresh: boolean) {
+  const chanId = (ch: any): string | null => (typeof ch?.channel?.id === 'string' ? ch.channel.id : null);
+  const unknown = channels.some((ch) => {
+    const id = chanId(ch);
+    return id !== null && !requests?.has(id);
+  });
+  if (!requests || fresh || (unknown && Date.now() - requestsAt > 60_000)) {
+    try {
+      requests = M.chatRequestsOf(await read<unknown>({ kind: 'chatRequests' }));
+      requestsAt = Date.now();
+    } catch (e) {
+      if (e instanceof Slowed) throw e;
+      log('warn', 'chat requests read failed; chat people stay by their chat ids', { error: String((e as Error).message).slice(0, 160) });
+      requests ??= new Map();
+    }
+  }
+  const paired: string[] = [];
+  for (const ch of channels) {
+    const id = chanId(ch);
+    if (id) paired.push(...M.pairChat(ch, requests!.get(id), streamSelf, ctx));
+  }
+  if (paired.length) {
+    log('info', `paired ${paired.length} chat people with their Partiful ids`);
+    keepSoon();
+  }
+  // Their names and pictures, before the messages that name them go out.
+  const named = [...new Set(channels.flatMap((ch: any) => (Array.isArray(ch?.members) ? ch.members : []).map((m: any) => ctx.streamIds.get(m?.user?.id ?? m?.user_id))))].filter(M.isId);
+  await lookUp(named).catch((e) => {
+    if (e instanceof Slowed) throw e;
+    log('warn', 'looking chat people up failed', { error: String((e as Error).message).slice(0, 160) });
+  });
+  people();
+  aliases(channels.filter((ch) => legacyChats.has(M.chatConv(chanId(ch) ?? ''))));
+}
+
+const aliasSent = new Map<string, string>();
+/** The people of chats announced before v2, filed as `stream:<id>`: named now, and said to be their Partiful selves. */
+function aliases(channels: unknown[]) {
+  for (const ch of channels as any[]) {
+    for (const m of Array.isArray(ch?.members) ? ch.members : []) {
+      const sid = m?.user?.id ?? m?.user_id;
+      const fact = typeof sid === 'string' ? M.streamAliasFact(sid, ctx) : null;
+      if (!fact) continue;
+      const fp = JSON.stringify(fact);
+      if (aliasSent.get(fact.nativeId) === fp) continue;
+      aliasSent.set(fact.nativeId, fp);
+      peopleSent.set(fact.nativeId, fp);
+      hub.emit({ t: 'identity', identity: fact });
+    }
+  }
+}
+
+const LOOKUP_AGAIN_MS = 24 * 3600_000;
+const lookedUp = new Map<string, number>();
+/**
+ * Names, pictures and socials (getUsers, as the app asks for people, up to 100 at a time) for people shown on the
+ * site that the hub has without a name: a comment's author, someone in a notification or a chat. Each is asked at most
+ * once a day.
+ */
+async function lookUp(ids: string[], max = 200) {
+  const now = Date.now();
+  const want = [...new Set(ids)].filter((id) => M.isId(id) && id !== ctx.selfId && id !== M.PARTIFUL_ACTOR && !ctx.users.get(id)?.name && now - (lookedUp.get(id) ?? 0) > LOOKUP_AGAIN_MS).slice(0, max);
+  for (let i = 0; i < want.length; i += 100) {
+    const batch = want.slice(i, i + 100);
+    for (const id of batch) lookedUp.set(id, now);
+    const r = await read<{ data: unknown }>({ kind: 'users', ids: batch });
+    for (const x of Array.isArray(r?.data) ? r.data : []) M.userOf(x, ctx);
+  }
+  if (want.length) people();
+}
+/** Everyone the hub was told of without a name, looked up (stubs and nameless people). */
+async function lookUpUnnamed(): Promise<number> {
+  const ids = [...peopleSent.keys()].filter((id) => M.isId(id) && !ctx.users.get(id)?.name);
+  const before = ids.length;
+  await lookUp(ids);
+  return before;
 }
 
 /** The comments under the next two upcoming events you are in, in turn, so a new one reaches the chat. */
@@ -606,8 +730,9 @@ async function profile(who: string): Promise<P.PersonAbout> {
     const r = await read<{ data: unknown }>({ kind: 'users', ids: [who] });
     const u = (Array.isArray(r.data) ? r.data : []).map((x) => M.userOf(x, ctx)).find((x) => x?.id === who);
     if (!u) throw new Error('Partiful did not give this profile');
-    people();
     const about = M.personAbout(u);
+    aboutSent.set(who, JSON.stringify(about));
+    people();
     hub.emit({ t: 'personAbout', who, about, ts: Date.now() });
     return about;
   });
@@ -640,6 +765,7 @@ async function history(conversation: string, beforeTs?: number, limit = 50, curs
     if (before !== undefined && !/^[\w-]{1,128}$/.test(before)) throw new Error('not a Partiful chat cursor');
     if (!streamSelf) streamSelf = (await read<{ user: string }>({ kind: 'chatSelf' })).user;
     const r = await read<unknown>({ kind: 'chat', id: c.id, limit: Math.min(Math.max(limit, 1), 100), ...(before ? { before } : {}) });
+    await pairChats([r], false);
     const got = M.streamConversation(r, streamSelf, ctx);
     if (!got) throw new Error('Partiful did not give this chat');
     conversation_(got.conv);
@@ -743,18 +869,18 @@ async function boot() {
   status();
   const tried: number[] = [];
   for (let attempt = 0; attempt < 3; attempt++) {
-    let free: { display: number };
+    let free: FreeDisplay;
     try {
       free = await pickFreeDisplay(undefined, tried);
     } catch (e) {
       sandboxError = String((e as Error).message ?? e);
       break;
     }
-    tried.push(free.display);
-    display = free.display;
+    if (free.display !== null) tried.push(free.display);
+    display = free;
     sandbox = new Sandbox({
       accountDir: hub.accountDir,
-      display: free.display,
+      display: free,
       width: WIDTH,
       height: HEIGHT,
       extensionSrc: join(import.meta.dir, 'extension'),
@@ -764,6 +890,8 @@ async function boot() {
       startUrl: `${origin}/explore`,
       noSandbox: !!cfg.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',
       log,
+      // The live view's server down or back (it is started again): said in the status at once.
+      onScreenHealth: () => status(true),
     });
     try {
       await sandbox.start();
@@ -773,7 +901,7 @@ async function boot() {
       break;
     } catch (e) {
       sandboxError = String((e as Error).message ?? e).slice(0, 300);
-      log('warn', `sandbox on :${free.display} failed`, sandboxError);
+      log('warn', `sandbox on ${displayName(free)} failed`, sandboxError);
       await sandbox.stop();
       sandbox = null;
       display = null;

@@ -13,17 +13,12 @@ import { join } from 'node:path';
 import { AccountsClient, register } from '@dither-accounts/client';
 import { chat } from '@dither-accounts/interfaces';
 import { createManager, kindOf, type Manager } from '@dither-accounts/manager';
-import { resolveBins } from '../packages/browser/src/index.ts';
 import { ANN, BEN, CAL, ME, ME_STREAM } from '../extractors/partiful/test/fixtures.ts';
 import { type FakePartiful, startFakePartiful } from './fake-partiful.ts';
+import { browserBins } from './needs.ts';
 
 const ROOT = join(import.meta.dir, '..');
-let bins: ReturnType<typeof resolveBins> | null = null;
-try {
-  bins = resolveBins(() => {});
-} catch (e) {
-  console.warn(`partiful-browser: skipped, ${(e as Error).message}`);
-}
+const bins = browserBins('partiful-browser');
 const it = test.skipIf(!bins);
 
 let fake: FakePartiful;
@@ -146,8 +141,17 @@ it(
       [`event:${fake.world.hidden.id}`, 'Quiet Supper'],
       [`event:${fake.world.past.id}`, 'Summer Picnic'],
     ]);
-    expect(convs.find((c) => c.nativeId === 'chat:dmAnnQuinn01')).toMatchObject({ shape: 'direct', participants: [ANN.id, `stream:${ME_STREAM}`] });
-    expect(convs.find((c) => c.nativeId === 'chat:grpPotluck01')).toMatchObject({ shape: 'group', name: 'Potluck crew' });
+    // The chat requests say who each chat is between: its people go by their Partiful ids, you as yourself.
+    expect(convs.find((c) => c.nativeId === 'chat:dmAnnQuinn01')).toMatchObject({ shape: 'direct', participants: [ANN.id, ME.id] });
+    expect(convs.find((c) => c.nativeId === 'chat:grpPotluck01')).toMatchObject({ shape: 'group', name: 'Potluck crew', participants: [BEN.id, CAL.id, ME.id] });
+    expect(fake.firestore[0]).toMatchObject({ token: true, path: '/v1/projects/getpartiful/databases/(default)/documents:runQuery' });
+    // Named by their profiles (getUsers), before the messages that name them; nobody is left a bare Stream id.
+    const named = (id: string) => evs(acc).find((e) => e.t === 'identity' && e.identity.nativeId === id && e.identity.displayName);
+    expect([named(ANN.id)?.identity.displayName, named(BEN.id)?.identity.displayName, named(CAL.id)?.identity.displayName]).toEqual(['Ann Lee', 'Ben Ortiz', 'Cal Park']);
+    expect(fnCalls('getUsers').some((c) => c.data.params.ids.includes(CAL.id))).toBe(true);
+    expect(evs(acc).filter((e) => e.t === 'identity' && e.identity.nativeId.startsWith('stream:'))).toEqual([]);
+    // What they say about themselves (socials) goes to the hub for the same-person engine.
+    expect(evs(acc).find((e) => e.t === 'personAbout' && e.who === BEN.id)?.about.links).toContainEqual(expect.objectContaining({ label: 'TikTok', value: '@benortiz.example' }));
     expect(msg(`other:ntf-0002:${ANN.id}`)).toMatchObject({ message: { conversation: 'feed', author: ANN.id, kind: 'system', body: 'Rooftop Potluck: Ann Lee replied: Bring snacks' }, live: false });
     expect(msg('s:smsg-0001')).toMatchObject({ message: { conversation: 'chat:dmAnnQuinn01', author: ANN.id, body: 'Hi! Coming Saturday?', reactions: [{ key: '❤️' }] } });
     // The periodic read also brings an upcoming event's comments.
@@ -155,6 +159,7 @@ it(
     // Each author's identity came before their first message.
     const order = evs(acc).map((e) => (e.t === 'identity' ? `id:${e.identity.nativeId}` : e.t === 'message' ? `m:${e.message.nativeId}` : ''));
     expect(order.indexOf(`id:${ANN.id}`)).toBeLessThan(order.indexOf('m:s:smsg-0001'));
+    expect(order.findIndex((x) => x === `id:${BEN.id}`)).toBeLessThan(order.indexOf('m:s:smsg-0101'));
     expect(order.indexOf('id:partiful')).toBeLessThan(order.indexOf('m:other:ntf-0001:-'));
     // Signed in, the calls carry the page's own ID token and user; the chat calls carry the chat token.
     expect(fnCalls('getMyUpcomingEventsForHomePage')[0]).toMatchObject({ token: true, data: { params: {}, userId: ME.id, client: 'web' } });

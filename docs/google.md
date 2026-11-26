@@ -53,10 +53,12 @@ never changed), and its copy gets `webNavigation`, `declarativeNetRequest` and `
 
 ### What runs
 
-- **The sandbox** (packages/browser, the Discord sandbox made general): a private Xvfb display, the first free one in
-  :80–:89, then :100–:159 (no live X server: its lock naming a running process, or a socket with no lock; and no live claim); an ordinary, non-headless Chromium with its profile in
-  `<data>/accounts/<id>/profile` and the extension copied to `<id>/extension` each start; x11vnc on
-  `<id>/vnc.sock` and no TCP port, which the manager carries to the page as the live view. Deliberately not automation: no CDP, no
+- **The sandbox** (packages/browser, the Discord sandbox made general): a private screen on the account's display
+  backend (docs/browser.md, "Display backends"): by default an Xvfb display, the first free one in :80–:89, then
+  :100–:159 (no live X server: its lock naming a running process, or a socket with no lock; and no live claim), or on
+  wayland a headless sway of its own; an ordinary, non-headless Chromium with its profile in
+  `<data>/accounts/<id>/profile` and the extension copied to `<id>/extension` each start; x11vnc (wayvnc on wayland)
+  on `<id>/vnc.sock` and no TCP port, which the manager carries to the page as the live view. Deliberately not automation: no CDP, no
   `--remote-debugging-port`, no `--enable-automation`, no Playwright. The extension is the only instrument.
 - **Service workers**: Chromium goes on running the extension's service worker it first registered in a profile,
   whatever the copy or the manifest's version says. So when the copied worker is not the one the last start ran (its
@@ -1218,5 +1220,5 @@ that used it lose it at once (dither-calendar drops its copies of those calendar
   side; `stall()`
   makes a page's API calls hang). One account there has `calendarIdleSeconds: 2`: its Calendar tab closes with the
   status still online and Gmail's page up, two calls at once open it again with one page load and are answered, the
-  Gmail page is not loaded again, and it closes again. The stall tests wait out the real 25 s, so the suite takes about three minutes. Skipped without Xvfb, chromium and x11vnc (found on PATH, through
-  `XVFB_BIN` / `X11VNC_BIN` / `CHROMIUM_BIN`, or with `nix build`).
+  Gmail page is not loaded again, and it closes again. The stall tests wait out the real 25 s, so the suite takes about three minutes. Skipped, saying so, without Xvfb, Chromium and x11vnc
+  prepared from the pinned nixpkgs (`DITHER_BINS`: nix/README.md), or `XVFB_BIN` / `X11VNC_BIN` / `CHROMIUM_BIN`.

@@ -152,6 +152,11 @@ export class Store {
 
   constructor(path: string) {
     this.db = new Database(path, { create: true });
+    // A write-ahead log, synced at checkpoints rather than on every commit: the registry is written on the manager's
+    // event loop, and a commit in the default journal waits for several fsyncs, which take seconds on a busy disk and
+    // hold every call, socket and timer meanwhile. A power cut can lose the last commits, never the file's integrity.
+    // (synchronous first: switching a new file to the log is itself a commit.)
+    this.db.exec('PRAGMA synchronous = NORMAL; PRAGMA journal_mode = WAL;');
     this.db.exec(SCHEMA);
     // Columns added after a registry was made.
     const cols = new Set(this.all<{ name: string }>('PRAGMA table_info(account)').map((c) => c.name));

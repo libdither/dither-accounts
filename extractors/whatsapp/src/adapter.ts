@@ -100,6 +100,8 @@ export interface AdapterOptions {
   expirySweepMs?: number;
   /** fetch, for profile pictures (tests replace it). */
   fetch?: typeof fetch;
+  /** Where the adapter's own database lives: state.db in the account's directory, or ':memory:' (tests). */
+  statePath?: string;
 }
 
 type Phase = 'starting' | 'linking' | 'connecting' | 'online' | 'banned' | 'replaced' | 'stopped' | 'broken';
@@ -150,7 +152,7 @@ export class WhatsAppAdapter {
     private host: AdapterHost,
     private opts: AdapterOptions,
   ) {
-    this.state = new State(join(host.accountDir, 'state.db'));
+    this.state = new State(opts.statePath ?? join(host.accountDir, 'state.db'));
     this.aliases = new Aliases(this.state);
     this.mapper = new Mapper(this.state, this.aliases, () => this.selfIds(), (id) => this.nameOf(id));
     const s = this.state.get('self');

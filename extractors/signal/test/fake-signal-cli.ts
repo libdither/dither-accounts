@@ -70,7 +70,7 @@ const ACI = process.env.FAKE_ACI ?? '5f2c7a8e-1111-4aaa-8bbb-000000000001';
 const accountsFile = join(config, 'data', 'accounts.json');
 mkdirSync(join(config, 'data'), { recursive: true });
 const record = (o: unknown) => appendFileSync(join(config, 'fake-rpc.jsonl'), JSON.stringify(o) + '\n');
-record({ t: 'argv', argv: args, pid: process.pid });
+record({ t: 'argv', argv: args, pid: process.pid, javaOptions: process.env.JDK_JAVA_OPTIONS });
 process.on('SIGTERM', () => process.exit(143));
 
 if (sub === 'link') {

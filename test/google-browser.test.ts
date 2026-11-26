@@ -736,18 +736,24 @@ it(
     const [list, ...sug] = await Promise.all([mailCall('mail.list', { mailboxId: '^i', limit: 5 }), mailCall('mail.contacts', { query: 'b' }), mailCall('mail.contacts', { query: 'c' }), mailCall('mail.contacts', { query: 'stone' })]);
     expect(list.messages.length).toBe(5);
     expect(sug.map((s) => s.contacts.map((c: any) => c.email))).toEqual([['bob.stone@example.com'], ['carol@example.com'], ['bob.stone@example.com']]);
-    // Another layout: 502 and why, details.contacts false; the next good answer puts it back.
+    // Another layout. Two odd suggestions could be two bad records: left out and counted, not a refusal (records.ts).
     fake.people.layout = 'swapped';
+    const extra = ['dora.one@example.com', 'dora.two@example.com', 'dora.three@example.com'].map((email) => ({ email, name: null }));
+    fake.people.list.push(...extra);
     try {
-      const e = (await mailCall('mail.contacts', { query: 'al' }).catch((x) => x)) as CallFailed;
+      expect(await mailCall('mail.contacts', { query: 'al' })).toEqual({ contacts: [] });
+      await until(() => statusOf(signedIn)?.details?.contactsSkipped != null, 5000, 'details.contactsSkipped');
+      // Three or more, and none read: a changed layout, 502 and why, details.contacts false; the next good answer puts it back.
+      const e = (await mailCall('mail.contacts', { query: 'dora' }).catch((x) => x)) as CallFailed;
       expect([e.code, e.status]).toEqual(['failed', 502]);
-      expect(e.message).toBe("Gmail's people suggestions answer is not laid out as this extractor knows it (at json[0][0][0][0][0][1][0]: expected an address, got a list of 2); nothing was returned rather than possibly wrong people");
+      expect(e.message).toBe("Gmail's people suggestions answer is not laid out as this extractor knows it (at json[0][0][0][0][0][1][0]: expected an address, got a list of 2, and 3 of 3 suggestions failed); nothing was returned rather than possibly wrong people");
       await until(() => statusOf(signedIn)?.details?.contacts === false, 5000, 'details.contacts false');
       expect(statusOf(signedIn).details.contactsNote).toBe(e.message);
       // Mail does not rest on it.
       expect(layerOf(signedIn, 'Gmail protocol').state).toBe('ok');
     } finally {
       fake.people.layout = 'normal';
+      fake.people.list.splice(fake.people.list.length - extra.length);
     }
     expect((await mailCall('mail.contacts', { query: 'car' })).contacts).toEqual([{ email: 'carol@example.com', name: 'Carol Ames' }]);
     await until(() => statusOf(signedIn)?.details?.contacts === true, 5000, 'details.contacts again');

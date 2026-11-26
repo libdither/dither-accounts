@@ -16,7 +16,8 @@ tag_of() { sed -n 's/^ *tag = "\(.*\)";$/\1/p' | head -1; }
 
 current=$(tag_of <"$file")
 latest=$(gh release list -R "$FORK" --exclude-drafts --exclude-pre-releases --limit 100 --json tagName -q '.[].tagName' |
-  grep -E -- '-dither\.[0-9]+$' | sort -V | tail -1 || true)
+  grep -E -- '^[A-Za-z0-9][A-Za-z0-9._+-]*-dither\.[0-9]+$' | sort -V | tail -1 || true)
+# The pattern keeps out a tag that starts with `-`, which gh and git would read as an option; `--` below as well.
 if [ -z "$latest" ]; then
   echo "::error::$FORK has no -dither.N release"
   exit 1
@@ -27,7 +28,16 @@ if [ "$latest" = "$current" ] || [ "$(printf '%s\n%s\n' "$current" "$latest" | s
 fi
 echo "$NAME: $current → $latest"
 
-gh release download "$latest" -R "$FORK" -p "$NAME.nix" -O "$file" --clobber
+# The bump already open for this release, on the base as it is now: pushing it again would only run CI again.
+if [ "${DRY_RUN:-}" != 1 ] && git fetch -q --depth=2 origin "+refs/heads/$BASE:refs/remotes/origin/$BASE" \
+  "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null &&
+  [ "$(git show "origin/$BRANCH:$file" | tag_of)" = "$latest" ] &&
+  [ "$(git rev-parse "origin/$BRANCH^")" = "$(git rev-parse "origin/$BASE")" ]; then
+  echo "$NAME: fork-bump/$NAME already carries $latest on the current $BASE"
+  exit 0
+fi
+
+gh release download -R "$FORK" -p "$NAME.nix" -O "$file" --clobber -- "$latest"
 if [ "$(tag_of <"$file")" != "$latest" ]; then
   echo "::error::$FORK's $latest release carries a $NAME.nix that does not build $latest"
   exit 1

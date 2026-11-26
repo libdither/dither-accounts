@@ -32,6 +32,11 @@ click and type there (fill a cart, say). Below `manage`, that interface won't pr
   sign-in page). Nothing here answers a captcha or a checkpoint.
 - **When it pulls**: daily at `pullAt` (05:30 + jitter), and on `statements.refresh` (`full: true` = backfill).
   Don't let another crawler read the same Amazon account on the same day: two crawlers double the captcha risk.
+- **Asleep in between** ([supervisor.md](supervisor.md#sleeping-browser-accounts-only-needed-now-and-then)): after 20
+  idle minutes its browser stops. It is woken 2 minutes before its daily pull, every 6 hours (a keep-alive, so the
+  site's long-lived sign-in is used), and by any call: a `statements.refresh` starts its pull once the browser is up,
+  and `browser.*` waits up to 20 s for it. Not while a pull runs, while a hold waits for you (an attention), or while
+  tabs an app opened are open. Stay awake (a setting) keeps it running.
 - **Status**: online, or the held pull's attention, or `login` when Amazon's header says signed out and no password is
   stored. Layers: display → browser → extension → signed in → pull.
 

@@ -24,6 +24,11 @@ export const GUARD =
 const IDLE_MS = 15 * 60_000;
 const SETTLE_MS = 1500;
 const LOAD_MS = 30_000;
+/**
+ * How long a call waits for the browser to come up (it was asleep and this call woke it, or it just started) before
+ * answering 503: within the 30 s an op without a time of its own has.
+ */
+const UP_WAIT_MS = 20_000;
 
 export interface BrowserOpsOpts {
   host: BrowserHost;
@@ -65,6 +70,11 @@ export class BrowserOps {
     clearInterval(this.timer);
   }
 
+  /** Tabs an app opened here and has not closed (closed after 15 idle minutes): a sleep would close them (link.sleep). */
+  inUse(): string | null {
+    return this.own.size ? `${this.own.size} browser tab(s) an app opened` : null;
+  }
+
   /** The `browser` ops; undefined for anything else. One at a time: two callers' clicks never interleave. */
   handle(cmd: Command): Promise<unknown> | undefined {
     if (!cmd.t.startsWith('browser.')) return undefined;
@@ -76,6 +86,7 @@ export class BrowserOps {
   private async run(cmd: Command): Promise<unknown> {
     const i = cmd as Record<string, any>;
     const { host } = this.o;
+    for (const end = Date.now() + UP_WAIT_MS; !host.attached && Date.now() < end; ) await sleep(250);
     if (!host.attached) throw new StatusError('the browser is not ready yet', 503, 'unavailable');
     switch (cmd.t) {
       case 'browser.tabs': {

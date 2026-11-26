@@ -193,11 +193,14 @@ const runner = new StatementsRunner({
     return null;
   },
   onChange: () => status(),
+  // Asleep while idle (docs/supervisor.md "Sleeping"): not while an app's browser tabs are open.
+  busy: (): string | null => browserOps.inUse(),
 });
 
 // ------------------------------------------------------------------- status
 let lastSent = '';
 function status(force = false) {
+  runner.report();
   const base = host.baseState();
   const v = { hold: st.hold ?? null, navSignedIn, hasPassword: !!cred().password, page };
   const s = base ?? statusOf(v);

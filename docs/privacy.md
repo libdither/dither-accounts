@@ -112,7 +112,13 @@ the app settled for 6 s, as above. At most **three tries**, 0 s, 20 s and 60 s a
 **Not at start.** A start signs nothing in: a session no pull uses ends within minutes, and every restart (each deploy
 restarts every extractor) would ask Privacy for the passkey again. A daily pull missed while the extractor was down
 is caught up shortly after start, and signs in like any pull. The log says "no sign-in at start: each pull signs in by
-itself". Config `signInOnStart: true` brings back a sign-in at every start that finds Privacy signed out.
+itself". Config `signInOnStart: true` brings back a sign-in at every start that finds Privacy signed out, but for a wake
+from sleep (`DITHER_WOKE`), whose pull signs in by itself.
+
+**Asleep between pulls** ([supervisor.md](supervisor.md#sleeping-browser-accounts-only-needed-now-and-then)): after 20
+idle minutes its browser stops; it is woken 2 minutes before its daily pull (or a failed pull's retry) and by any call.
+No keep-alive: Privacy's sessions last minutes, and each pull signs in with the passkey. Not while it signs in or waits
+for you. Stay awake (a setting) keeps it running.
 
 **What stops it** (`status.ts` `challengeOf`, from the page hook's `page.state`, booleans only): a visible captcha
 (reCAPTCHA, hCaptcha, Turnstile, Arkose; the invisible reCAPTCHA badge does not count); any sign-in step that is not

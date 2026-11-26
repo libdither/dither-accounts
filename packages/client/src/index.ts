@@ -110,10 +110,10 @@ export class AccountsClient {
     this.memory?.forget(account, op);
   }
 
-  /** An account whose state changed (online, running, enabled, an error, its grants) has its remembered failures forgotten. */
+  /** An account whose state changed (online, running, asleep, enabled, an error, its grants) has its remembered failures forgotten. */
   private accountsChanged(accounts: AccountView[]) {
     if (!this.memory) return;
-    const now = new Map(accounts.map((a) => [a.id, JSON.stringify([a.running, a.online, a.enabled, a.error, a.grants])]));
+    const now = new Map(accounts.map((a) => [a.id, JSON.stringify([a.running, a.online, a.asleep, a.enabled, a.error, a.grants])]));
     for (const [id, was] of this.seen) if (now.get(id) !== was) this.memory.forget(id);
     this.seen = now;
   }

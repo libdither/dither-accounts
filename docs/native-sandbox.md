@@ -128,7 +128,7 @@ None of these is built; each is a door the sandbox already has the frame for.
    socket is in the sandbox's own directory). Its environment comes from `displayEnv`, so a Qt, GTK or Electron app
    needs nothing of its own for either backend. An app that draws only through X (Haveno's JavaFX) says `x11App: true`:
    on x11 nothing changes; on wayland it gets an Xwayland of its own inside its sandbox (xwayland-satellite as `:0`,
-   started by the sandbox before the app and the way niri runs X apps), so each X window is an ordinary window of the
+   started by the sandbox before the app and the way niri runs X apps; the app starts once satellite logs that it is connected to its Xwayland, since a window made before that never got a Wayland window), so each X window is an ordinary window of the
    sandbox's sway, under the same live view, input and screenshots. Its X sockets are the sandbox's: the path one in
    its private `/tmp`, the abstract one in its own network namespace; Xwayland admits only the sandbox's user, by its
    name in the sandbox's `/etc/passwd`. Without a network namespace of its own (`host`, pasta missing) that abstract

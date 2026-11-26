@@ -146,6 +146,9 @@ interface Proc {
   match: string;
 }
 
+/** What xwayland-satellite logs once it is its Xwayland's window manager (appCommand). */
+export const SATELLITE_READY = 'Connected to Xwayland on';
+
 export class AppSandbox {
   readonly home: string;
   readonly downloads: string;
@@ -306,16 +309,25 @@ export class AppSandbox {
 
   /**
    * The app's command inside: as given, or for an X app on Wayland behind its own Xwayland (xwayland-satellite :0,
-   * which Xwayland admits only the sandbox's user into, by its name in /etc/passwd). The app is started once the X
-   * socket is there, and without WAYLAND_DISPLAY: it sees X alone.
+   * which Xwayland admits only the sandbox's user into, by its name in /etc/passwd). The app is started once satellite
+   * is Xwayland's window manager, and without WAYLAND_DISPLAY: it sees X alone.
+   *
+   * Not as soon as the X socket is there: satellite makes the socket before its Xwayland is up and before it connects
+   * to it, and an app whose window is made in between is never given a Wayland window ("Tried to set serial for
+   * unknown window"; one start in eight or so under load). So the wait is for satellite's own word that it is connected
+   * (its log, as the pinned 0.8.3 writes it), its log still going to the app's output as before.
    */
   private appCommand(): string[] {
     if (!this.satellite) return this.o.command;
-    const script = `${this.satellite} :0 &
+    const script = `log=/tmp/.xwayland-satellite.log
+: > "$log"
+${this.satellite} :0 2>>"$log" &
+sat=$!
+tail -n +1 -f --pid=$sat "$log" >&2 &
 i=0
-until [ -S /tmp/.X11-unix/X0 ]; do
-  kill -0 $! 2>/dev/null || { echo "xwayland-satellite exited" >&2; exit 1; }
-  i=$((i + 1)); [ $i -lt 400 ] || { echo "xwayland-satellite did not make :0" >&2; exit 1; }
+until case "$(cat "$log")" in *"${SATELLITE_READY}"*) true ;; *) false ;; esac; do
+  kill -0 $sat 2>/dev/null || { echo "xwayland-satellite exited" >&2; exit 1; }
+  i=$((i + 1)); [ $i -lt 800 ] || { echo "xwayland-satellite did not connect to its Xwayland" >&2; exit 1; }
   sleep 0.025
 done
 unset WAYLAND_DISPLAY

@@ -50,6 +50,7 @@ let app: AccountsClient;
 let signedIn: string;
 let signedOut: string;
 let mailOff: string;
+let idle: string;
 const events: Record<string, any[]> = {};
 const saved = process.env.DITHER_GOOGLE_BACKOFF_MS;
 const savedGap = process.env.DITHER_GOOGLE_RELOAD_GAP_MS;
@@ -124,7 +125,7 @@ afterAll(async () => {
   app?.close();
   await m?.stop();
   // Whatever a failed test left running.
-  for (const pid of processesOf([signedIn, signedOut, mailOff].filter(Boolean))) {
+  for (const pid of processesOf([signedIn, signedOut, mailOff, idle].filter(Boolean))) {
     try {
       process.kill(pid, 'SIGKILL');
     } catch {}
@@ -920,6 +921,54 @@ it(
     expect(await app.call(mailIface, signedOut, 'mail.contacts', { query: '' })).toEqual({ contacts: [] });
   },
   90_000,
+);
+
+it(
+  'the Calendar tab closes once no Calendar call came for calendarIdleSeconds, and the next call opens it again; Gmail stays',
+  async () => {
+    idle = (await app.admin({ do: 'create', kind: 'google', label: 'Google (idle Calendar)', config: config(0, { calendarIdleSeconds: 2 }) })).id;
+    await until(() => statusOf(idle)?.status === 'online' && layerOf(idle, 'Gmail page')?.state === 'ok', 60_000, 'online, the Gmail page up');
+    const loads = () => fake.pageLoads('calendar', 0);
+    const closed = async (what: string) => {
+      await until(() => statusOf(idle)?.details?.calendarTabClosed === true && statusOf(idle)?.details?.tabs === 'gmail (hook up)', 20_000, what);
+      // Still online and signed in, as Gmail's page says; Calendar's chain ok, its tab put away.
+      const st = statusOf(idle);
+      expect([st.status, st.attention]).toEqual(['online', null]);
+      expect(st.self.email).toBe(WEB.email);
+      expect(st.details).toMatchObject({ email: WEB.email, signedIn: true, calendarPage: false, page: null, gmailPage: true, gmailSignedIn: true });
+      for (const l of st.layers) if (l.state !== 'ok') expect(['Gmail protocol', 'Gmail canary']).toContain(l.name);
+      expect(layerOf(idle, 'extension')?.note).toBe('attached, in the Gmail page');
+      expect(layerOf(idle, 'Calendar API')?.note).toContain('its tab is closed while no Calendar call comes, and the next one opens it');
+    };
+    await closed('the Calendar tab closed');
+    expect(logOf(idle)).toContain('closed the Calendar tab: no Calendar call for 2 s');
+
+    // A call opens it again, and waits for it; two at once open it once.
+    const before = loads();
+    const gmailLoads = fake.pageLoads('gmail', 0);
+    const mark = events[idle]!.length;
+    const [a, b] = await Promise.all([
+      app.call(googleCalendar, idle, 'calendar.calendarList.list', { maxResults: 250 }),
+      app.call(googleCalendar, idle, 'calendar.calendarList.list', { maxResults: 250 }),
+    ]);
+    expect([a.items.map((c: any) => c.id), b.items.map((c: any) => c.id)]).toEqual([[PRIMARY], [PRIMARY]]);
+    expect(loads()).toBe(before + 1);
+    // Both tabs open, said in a status since the calls (it may close again right after: 2 s idle).
+    const bothOpen = (e: any) => e.t === 'status' && e.details?.calendarTabClosed === false && [...String(e.details?.tabs).matchAll(/(calendar|gmail) \(hook up\)/g)].length === 2;
+    await until(() => events[idle]!.slice(mark).some(bothOpen), 10_000, 'both tabs open again');
+    expect(logOf(idle)).toContain('opened the Calendar tab again');
+    // The Gmail page was not loaded again, and mail goes on meanwhile.
+    expect(fake.pageLoads('gmail', 0)).toBe(gmailLoads);
+    const mailboxes = await app.call(mailIface, idle, 'mail.mailboxes', {});
+    expect(mailboxes.mailboxes.length).toBeGreaterThan(0);
+
+    // Idle again: closed again.
+    await closed('the Calendar tab closed again');
+    expect(statusOf(idle).details.calendarReloads).toBe(0);
+    await app.admin({ do: 'stop', account: idle });
+    await until(() => processesOf([idle]).length === 0, 15_000, 'its processes gone');
+  },
+  120_000,
 );
 
 it('no cookie, key, query or event content in the logs or the statuses', () => {

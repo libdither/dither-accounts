@@ -27,8 +27,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { cpus, homedir } from 'node:os';
 import { connect, createServer, type Server } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
-import { resolveBin } from '../packages/browser/src/bins.ts';
-import { backendsArg, Bench, cpuOver, DISPLAY_PROCS, ENC, ensureVideo, log, median, novncEncodings, progName, quiet, summary, tree, Viewer, W, H, work } from './bench-lib.ts';
+import { DISPLAY_BINS, resolveBin } from '../packages/browser/src/bins.ts';
+import { argOf, backendsArg, Bench, cpuOver, DISPLAY_PROCS, ENC, ensureVideo, log, median, novncEncodings, progName, quiet, summary, tree, Viewer, W, H, work } from './bench-lib.ts';
 
 const SHAPER = resolve(import.meta.dir, 'bench-shaper.ts');
 
@@ -248,7 +248,7 @@ async function scene(b: Bench, socket: string, page: '/anim' | '/scroll' | '/vid
 async function click(b: Bench, socket: string, trials = 10) {
   await b.open('/input');
   await Bun.sleep(500);
-  const v = await Viewer.open(socket, { encodings: novncEncodings(), mode: 'novnc', kasmPointer: b.backend === 'kasmvnc' });
+  const v = await Viewer.open(socket, { encodings: novncEncodings(), mode: 'novnc' });
   try {
     await within(whole(v), 60_000, 'the first whole screen');
     const page = b.reports.find((r) => r.ev === 'page');
@@ -293,7 +293,7 @@ async function withOtherWayvnc<T>(b: Bench, args: string[], f: (socket: string, 
   const sock = join(screen.dir, `${tag}.sock`);
   const conf = join(screen.dir, `${tag}.conf`);
   writeFileSync(conf, '', { mode: 0o600 });
-  const wayvnc = resolveBin({ name: 'wayvnc', env: 'WAYVNC_BIN', nix: 'wayvnc' }, () => {});
+  const wayvnc = resolveBin(DISPLAY_BINS.wayvnc, () => {});
   const p = Bun.spawn([wayvnc, ...args, '-C', conf, '-u', '-k', 'us', '-S', join(screen.dir, `${tag}-ctl.sock`), sock], {
     env: { ...process.env, DISPLAY: undefined, WAYLAND_DISPLAY: screen.socket, XDG_RUNTIME_DIR: screen.dir },
     stdout: 'ignore',
@@ -340,10 +340,6 @@ async function encodingsAt(b: Bench, c: Condition, dir: string) {
 // ------------------------------------------------------------------------------------------------ run
 
 if (import.meta.main) {
-  const argOf = (name: string, def: string) => {
-    const i = process.argv.indexOf(`--${name}`);
-    return i >= 0 ? process.argv[i + 1]! : def;
-  };
   const OUT = argOf('out', join(homedir(), '.cache/da-bench', `link-${new Date().toISOString().replace(/[:.]/g, '-')}.json`));
   const REPS = Number(argOf('reps', '3'));
   const ONLY = new Set(argOf('only', CONDITIONS.map((c) => c.name).join(',')).split(','));

@@ -114,27 +114,52 @@ test("the display backend: the manager's default (x11), an account's own from it
   expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: 'Wayland' } })).status).toBe(200);
   expect((await detail()).config.displayBackend).toBe('wayland');
   expect((await detail()).process.displayBackend).toBe('wayland');
-  // The Xvnc backends by name, as given on the page or by the cli.
-  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: ' TigerVNC ' } })).status).toBe(200);
-  expect((await detail()).config.displayBackend).toBe('tigervnc');
-  expect((await detail()).process.displayBackend).toBe('tigervnc');
-  // sway with TigerVNC's Wayland server as its live view.
-  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: 'Wayland-TigerVNC' } })).status).toBe(200);
-  expect((await detail()).config.displayBackend).toBe('wayland-tigervnc');
-  expect((await detail()).process.displayBackend).toBe('wayland-tigervnc');
   expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: null } })).status).toBe(200);
   expect('displayBackend' in (await detail()).config).toBe(false);
   expect((await detail()).process.displayBackend).toBe('x11');
-  expect(m.sup.backendOf({ config: JSON.stringify({ displayBackend: 'wayland' }) })).toBe('wayland');
-  expect(m.sup.backendOf({ config: JSON.stringify({ displayBackend: 'wayland-tigervnc' }) })).toBe('wayland-tigervnc');
-  // KasmVNC's Xvnc is not offered: the live view (noVNC) cannot drive it (display-backend.ts).
-  const refused = await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: 'kasmvnc' } });
-  expect(refused.status).toBe(400);
-  expect(await refused.text()).toContain('live view cannot drive it');
-  expect(m.sup.backendOf({ config: JSON.stringify({ displayBackend: 'kasmvnc' }) })).toBe('x11');
-  expect(m.sup.backendOf({ config: JSON.stringify({ displayBackend: 'xvnc' }) })).toBe('x11');
-  expect(m.sup.backendOf({ config: '{}' })).toBe('x11');
-  expect(m.sup.backendOf({ config: 'not json' })).toBe('x11');
+  expect(m.sup.backendOf({ kind: 'fake', config: JSON.stringify({ displayBackend: 'wayland' }) } as any)).toBe('wayland');
+  expect(m.sup.backendOf({ kind: 'fake', config: '{}' } as any)).toBe('x11');
+  expect(m.sup.backendOf({ kind: 'fake', config: 'not json' } as any)).toBe('x11');
+  // A kind with no screen has no backend, whatever its config says.
+  expect(m.sup.backendOf({ kind: 'chat-fake', config: JSON.stringify({ displayBackend: 'wayland' }) } as any)).toBeNull();
+  await until(online, 10_000, 'the extractor back online');
+});
+
+test("the default backend: config.toml's until one is chosen on the page, which wins; moving it restarts the running accounts that follow it", async () => {
+  const st = async () => (await (await api('/api/state')).json()) as any;
+  const detail = async () => (await (await api(`/api/accounts/${account}`)).json()) as any;
+  const online = async () => !!(await st()).accounts.find((a: any) => a.id === account)?.online;
+  const s0 = await st();
+  expect(s0.display).toMatchObject({ default: 'x11', chosen: null, config: 'x11' });
+  expect(s0.display.backends.map((b: any) => b.name)).toEqual(['x11', 'tigervnc', 'kasmvnc', 'wayland', 'wayland-tigervnc']);
+  // The two built from forks this project keeps say so, with where they come from.
+  const forks = s0.display.backends.filter((b: any) => b.experimental === 'fork');
+  expect(forks.map((b: any) => b.name)).toEqual(['kasmvnc', 'wayland-tigervnc']);
+  for (const b of forks) expect(b.note).toMatch(/fork/);
+  expect(s0.accounts.find((a: any) => a.id === account).display).toEqual({ own: null, uses: 'x11' });
+  expect((await api('/api/display', 'PUT', { default: 'mir' })).status).toBe(400);
+  expect((await api('/api/display', 'PUT', {})).status).toBe(400);
+  // The PUT answers at once; the accounts it moved restart after, one at a time per kind, on the backend they were given.
+  const uses = async (b: string) => (await detail()).process.displayBackend === b;
+  expect((await api('/api/display', 'PUT', { default: ' KasmVNC ' })).status).toBe(200);
+  expect((await st()).display).toMatchObject({ default: 'kasmvnc', chosen: 'kasmvnc', config: 'x11' });
+  await until(() => uses('kasmvnc'), 10_000, 'the account restarted on kasmvnc');
+  expect((await st()).accounts.find((a: any) => a.id === account).display).toEqual({ own: null, uses: 'kasmvnc' });
+  // An account's own wins over the default, and a change of the default then leaves it running as it is.
+  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: 'tigervnc' } })).status).toBe(200);
+  expect((await detail()).process.displayBackend).toBe('tigervnc');
+  const pid = (await detail()).process.pid;
+  expect((await api('/api/display', 'PUT', { default: 'wayland-tigervnc' })).status).toBe(200);
+  expect((await detail()).process).toMatchObject({ pid, displayBackend: 'tigervnc' });
+  expect((await st()).accounts.find((a: any) => a.id === account).display).toEqual({ own: 'tigervnc', uses: 'tigervnc' });
+  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: null } })).status).toBe(200);
+  await until(() => uses('wayland-tigervnc'), 10_000, 'the account restarted on wayland-tigervnc');
+  // null: config.toml's again.
+  expect((await api('/api/display', 'PUT', { default: null })).status).toBe(200);
+  expect((await st()).display).toMatchObject({ default: 'x11', chosen: null });
+  await until(() => uses('x11'), 10_000, 'the account restarted on x11');
+  // A kind with no screen has none to show.
+  expect((await st()).accounts.filter((a: any) => a.kind === 'chat-fake').every((a: any) => a.display === null)).toBe(true);
   await until(online, 10_000, 'the extractor back online');
 });
 

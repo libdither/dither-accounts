@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 /**
  * The display backends side by side (docs/browser.md, "Display backends"): the same browser sandbox, the same
- * pages, the same input, on x11 (Xvfb, x11vnc, xdotool, import), on the Xvnc backends (tigervnc, kasmvnc, turbovnc:
+ * pages, the same input, on x11 (Xvfb, x11vnc, xdotool, import), on the Xvnc backends (tigervnc, kasmvnc:
  * one Xvnc, xdotool, import) and on wayland (sway, wayvnc, RFB input, grim), and the numbers as JSON.
  *
  *   bun scripts/bench-display.ts [--out results.json] [--reps 3] [--scale 1,5,10,20] [--only start,idle,...]
- *                                [--backends x11,tigervnc,kasmvnc,turbovnc,wayland] [--wayvnc-extras]
+ *                                [--backends x11,tigervnc,kasmvnc,wayland,wayland-tigervnc] [--wayvnc-extras]
  *                                [--max-load <load1>] [--wait-load-s 600]
  *
  * What it measures, each on every backend, `reps` times (rotating which backend goes first), median and spread:
@@ -39,17 +39,14 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { cpus, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { resolveBin } from '../packages/browser/src/bins.ts';
+import { DISPLAY_BINS, resolveBin } from '../packages/browser/src/bins.ts';
 import { type FreeDisplay, isWaylandBackend, pickFreeDisplay } from '../packages/browser/src/display.ts';
 import type { ShareStats } from '../packages/browser/test/share-page.ts';
-import { type Backend, backendsArg, Bench, cpuDuring, cpuOver, ENC, ensureVideo, H, load1, log, memory, novncEncodings, progName, quiet as quietFor, shm, summary, tree, VIDEO, Viewer, VNC_SERVER, W, work } from './bench-lib.ts';
+import { argOf, type Backend, backendsArg, Bench, cpuDuring, cpuOver, ENC, ensureVideo, H, load1, log, memory, novncEncodings, progName, quiet as quietFor, shm, summary, tree, VIDEO, Viewer, VNC_SERVER, W, work } from './bench-lib.ts';
 
 // ------------------------------------------------------------------------------------------------ options
 
-const arg = (name: string, def: string) => {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1]! : def;
-};
+const arg = (name: string, def: string) => argOf(name, def);
 const OUT = arg('out', join(homedir(), '.cache/da-bench', `results-${new Date().toISOString().replace(/[:.]/g, '-')}.json`));
 const REPS = Number(arg('reps', '3'));
 const SCALE = arg('scale', '1,5,10,20').split(',').map(Number).filter(Boolean);
@@ -94,7 +91,7 @@ async function otherWayvnc(b: Bench, args: string[], encodings: number[], page: 
   const sock = join(screen.dir, `${tag}.sock`);
   const conf = join(screen.dir, `${tag}.conf`);
   writeFileSync(conf, '', { mode: 0o600 });
-  const wayvnc = resolveBin({ name: 'wayvnc', env: 'WAYVNC_BIN', nix: 'wayvnc' }, () => {});
+  const wayvnc = resolveBin(DISPLAY_BINS.wayvnc, () => {});
   const p = Bun.spawn([wayvnc, ...args, '-C', conf, '-u', '-k', 'us', '-S', join(screen.dir, `${tag}-ctl.sock`), sock], {
     env: { ...process.env, DISPLAY: undefined, WAYLAND_DISPLAY: screen.socket, XDG_RUNTIME_DIR: screen.dir },
     stdout: 'ignore',
@@ -120,7 +117,7 @@ async function otherWayvnc(b: Bench, args: string[], encodings: number[], page: 
 async function input(b: Bench, trials = 20) {
   await b.open('/input');
   await Bun.sleep(1000);
-  const v = await Viewer.open(b.vncSocket, { encodings: [ENC.raw, ENC.desktopSize], keepPicture: true, kasmPointer: b.backend === 'kasmvnc' });
+  const v = await Viewer.open(b.vncSocket, { encodings: [ENC.raw, ENC.desktopSize], keepPicture: true });
   await new Promise<void>((r) => {
     const t = setInterval(() => v.updates > 0 && (clearInterval(t), r()), 20);
   });

@@ -46,10 +46,16 @@ export function ipcMessage(type: number, payload = ''): Buffer {
   return Buffer.concat([head, body]);
 }
 
+/** How long a request waits for its reply by default: sway answers in milliseconds, or is stuck. */
+export const IPC_REQUEST_MS = 5000;
+
 export class SwayIpc {
   private buf = Buffer.alloc(0);
   private replies: { resolve: (v: unknown) => void; reject: (e: Error) => void }[] = [];
   private ended: Error | null = null;
+  private endedNow!: (e: Error) => void;
+  /** Resolves with why, once the connection is over (sway went away, an unanswered request, close()). */
+  readonly closed = new Promise<Error>((r) => (this.endedNow = r));
   /** Events this connection subscribed to, by type. */
   onEvent: ((type: number, body: any) => void) | null = null;
 
@@ -79,41 +85,62 @@ export class SwayIpc {
   private end(why: string) {
     this.ended ??= new Error(why);
     for (const r of this.replies.splice(0)) r.reject(this.ended);
+    this.endedNow(this.ended);
   }
 
   get open() {
     return !this.ended;
   }
 
-  static connect(path: string): Promise<SwayIpc> {
+  static connect(path: string, timeoutMs = IPC_REQUEST_MS): Promise<SwayIpc> {
     return new Promise((resolve, reject) => {
       const sock = connect(path);
+      const t = setTimeout(() => {
+        sock.destroy();
+        reject(new Error(`sway's IPC socket did not take the connection within ${timeoutMs} ms`));
+      }, timeoutMs);
       sock.once('connect', () => {
-        sock.removeListener('error', reject);
+        clearTimeout(t);
+        sock.removeListener('error', fail);
         resolve(new SwayIpc(sock));
       });
-      sock.once('error', reject);
+      const fail = (e: Error) => {
+        clearTimeout(t);
+        reject(e);
+      };
+      sock.once('error', fail);
     });
   }
 
-  /** One request and its reply, parsed. */
-  request<T = unknown>(type: number, payload = ''): Promise<T> {
+  /**
+   * One request and its reply, parsed. A reply that does not come within `timeoutMs` rejects it and ends the
+   * connection: replies come in order, so a later one could not be told from the late one.
+   */
+  request<T = unknown>(type: number, payload = '', timeoutMs = IPC_REQUEST_MS): Promise<T> {
     if (this.ended) return Promise.reject(this.ended);
     return new Promise<T>((resolve, reject) => {
-      this.replies.push({ resolve: resolve as (v: unknown) => void, reject });
+      const t = setTimeout(() => {
+        this.end(`sway did not answer within ${timeoutMs} ms`);
+        this.sock.destroy();
+      }, timeoutMs);
+      const done = (f: () => void) => {
+        clearTimeout(t);
+        f();
+      };
+      this.replies.push({ resolve: (v) => done(() => resolve(v as T)), reject: (e) => done(() => reject(e)) });
       this.sock.write(ipcMessage(type, payload));
     });
   }
 
   /** sway commands (sway(5)); throws with sway's own words when one fails. */
-  async command(cmd: string): Promise<void> {
-    const r = await this.request<{ success: boolean; error?: string }[]>(IPC.RUN_COMMAND, cmd);
+  async command(cmd: string, timeoutMs?: number): Promise<void> {
+    const r = await this.request<{ success: boolean; error?: string }[]>(IPC.RUN_COMMAND, cmd, timeoutMs);
     const bad = r.find((x) => !x.success);
     if (bad) throw new Error(`sway: ${bad.error ?? 'the command failed'} (${cmd.slice(0, 120)})`);
   }
 
-  tree(): Promise<SwayNode> {
-    return this.request<SwayNode>(IPC.GET_TREE);
+  tree(timeoutMs?: number): Promise<SwayNode> {
+    return this.request<SwayNode>(IPC.GET_TREE, '', timeoutMs);
   }
 
   close() {

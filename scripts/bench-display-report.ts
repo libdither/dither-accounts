@@ -54,21 +54,21 @@ const page = `<!doctype html>
   color-scheme: light;
   --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
   --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,0.10);
-  --x11: #2a78d6; --wayland: #eb6834; --pixman: #1baf7a; --gles2: #eb6834; --tigervnc: #8a5cc2; --kasmvnc: #c2417a; --turbovnc: #a0821c; --wayland-tigervnc: #13939f; --w0-pixman: #13939f;
+  --x11: #2a78d6; --wayland: #eb6834; --pixman: #1baf7a; --gles2: #eb6834; --tigervnc: #8a5cc2; --kasmvnc: #c2417a; --wayland-tigervnc: #13939f; --w0-pixman: #13939f;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
     --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
     --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
-    --x11: #3987e5; --wayland: #d95926; --pixman: #199e70; --gles2: #d95926; --tigervnc: #a07ad6; --kasmvnc: #d9608f; --turbovnc: #c4a23a; --wayland-tigervnc: #2db3bf; --w0-pixman: #2db3bf;
+    --x11: #3987e5; --wayland: #d95926; --pixman: #199e70; --gles2: #d95926; --tigervnc: #a07ad6; --kasmvnc: #d9608f; --wayland-tigervnc: #2db3bf; --w0-pixman: #2db3bf;
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
   --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
   --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
-  --x11: #3987e5; --wayland: #d95926; --pixman: #199e70; --gles2: #d95926; --tigervnc: #a07ad6; --kasmvnc: #d9608f; --turbovnc: #c4a23a; --wayland-tigervnc: #2db3bf; --w0-pixman: #2db3bf;
+  --x11: #3987e5; --wayland: #d95926; --pixman: #199e70; --gles2: #d95926; --tigervnc: #a07ad6; --kasmvnc: #d9608f; --wayland-tigervnc: #2db3bf; --w0-pixman: #2db3bf;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -128,7 +128,7 @@ code { font-size: 12px; }
 <script>
 const R = JSON.parse(document.getElementById('data').textContent);
 const B = R.backends || ['x11', 'wayland'];
-const LABEL = { x11: 'x11: Xvfb + x11vnc', tigervnc: 'tigervnc: TigerVNC Xvnc', kasmvnc: 'kasmvnc: KasmVNC Xvnc', turbovnc: 'turbovnc: TurboVNC Xvnc', wayland: 'wayland: sway + wayvnc', 'wayland-tigervnc': 'wayland-tigervnc: sway + w0vncserver' };
+const LABEL = { x11: 'x11: Xvfb + x11vnc', tigervnc: 'tigervnc: TigerVNC Xvnc', kasmvnc: 'kasmvnc: KasmVNC Xvnc', wayland: 'wayland: sway + wayvnc', 'wayland-tigervnc': 'wayland-tigervnc: sway + w0vncserver' };
 { const lg = document.getElementById('legend'); for (const b of B) { const sp = document.createElement('span'); const sw = document.createElement('i'); sw.className = 'sw'; sw.style.background = 'var(--' + b + ')'; sp.append(sw, LABEL[b] || b); lg.append(sp); } }
 { const th = document.getElementById('thead'); for (const b of B) for (const t of [b + ' median', b + ' range']) { const c = document.createElement('th'); c.textContent = t; th.append(c); } const c = document.createElement('th'); c.textContent = 'Better'; th.append(c); }
 const NS = 'http://www.w3.org/2000/svg';
@@ -379,7 +379,7 @@ const smallTable = (parent, head, rows) => { const w = h('div', 'tablewrap', und
 const NAT = JSON.parse(document.getElementById('native-data').textContent);
 if (NAT && NAT.runs.length) {
   const root = document.getElementById('native');
-  const NL = { x11: 'x11: Xvfb, x11vnc', tigervnc: 'tigervnc', kasmvnc: 'kasmvnc', turbovnc: 'turbovnc', gles2: 'wayland, sway on the GPU (gles2)', pixman: 'wayland, sway in software (pixman): what they get', 'w0-pixman': 'wayland-tigervnc, sway in software with w0vncserver' };
+  const NL = { x11: 'x11: Xvfb, x11vnc', tigervnc: 'tigervnc', kasmvnc: 'kasmvnc', gles2: 'wayland, sway on the GPU (gles2)', pixman: 'wayland, sway in software (pixman): what they get', 'w0-pixman': 'wayland-tigervnc, sway in software with w0vncserver' };
   const S = [...new Set(NAT.runs.map((r) => r.config))].map((k) => ({ key: k, label: NL[k] || k, short: k }));
   const CFG = Object.fromEntries(S.map((x) => [x.key, x.key]));
   const APPN = { signal: 'Signal Desktop', telegram: 'Telegram Desktop', haveno: 'Haveno (X app; satellite on wayland)' };

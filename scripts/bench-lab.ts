@@ -8,7 +8,7 @@
  * live view under scrolling is measured on bench-display's /scroll page.)
  *
  *   bun scripts/bench-lab.ts --url http://127.0.0.1:<port> --data <its data dir> --accounts <id>,<id>
- *                            [--backends x11,tigervnc,turbovnc,wayland] [--reps 1] [--first-rep 0] [--out lab.json]
+ *                            [--backends x11,tigervnc,wayland] [--reps 1] [--first-rep 0] [--out lab.json]
  *                            [--no-restore]
  *
  * For each account and backend: start to usable (the setting saved, until the manager says online and until the live
@@ -22,17 +22,13 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { type Backend, DISPLAY_PROCS, Viewer, cpuOver, load1, log, memory, novncEncodings, procs, progName, tree } from './bench-lib.ts';
+import { argOf, type Backend, DISPLAY_PROCS, Viewer, cpuOver, load1, log, memory, novncEncodings, procs, progName, tree } from './bench-lib.ts';
 import { type Condition, startLink } from './bench-link.ts';
 
-const argOf = (name: string, def: string) => {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1]! : def;
-};
 const URL_ = argOf('url', '').replace(/\/$/, '');
 const DATA = argOf('data', '');
 const IDS = argOf('accounts', '').split(',').filter(Boolean);
-const BACKENDS = argOf('backends', 'x11,tigervnc,turbovnc,wayland').split(',') as Backend[];
+const BACKENDS = argOf('backends', 'x11,tigervnc,wayland').split(',') as Backend[];
 const REPS = Number(argOf('reps', '1'));
 /** The first repetition's number: a later run goes on from there, so its backend order differs from the first run's. */
 const FIRST_REP = Number(argOf('first-rep', '0'));

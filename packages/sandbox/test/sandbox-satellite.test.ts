@@ -13,7 +13,7 @@ import { AppSandbox } from '../src/sandbox.ts';
 import { BINS, resolveBin, tryBin } from '../src/bins.ts';
 import { SwayIpc, views } from '../../browser/src/swayipc.ts';
 import { decodePng, shareOf } from '../../browser/test/png.ts';
-import { satellite, sandbox, wayland, why } from '../../../test/needs.ts';
+import { satellite, sandbox, TEST_BINS, wayland, why } from '../../../test/needs.ts';
 
 const pasta = sandbox && !!tryBin(BINS.pasta, () => {});
 const ok = why('an X app on wayland (bubblewrap, pasta, sway, wayvnc, grim, xwayland-satellite, xev)', sandbox && wayland && satellite && pasta);
@@ -30,7 +30,7 @@ const log = () => join(sb.home, 'xev.log');
 beforeAll(async () => {
   if (!ok) return;
   const sh = resolveBin(BINS.sh, () => {});
-  const xev = resolveBin({ name: 'xev', env: 'XEV_BIN', nix: 'xorg.xev' }, () => {});
+  const xev = resolveBin(TEST_BINS.xev, () => {});
   const appDir = join(root, 'bin');
   mkdirSync(appDir);
   // xev, line-buffered into a file; WAYLAND_DISPLAY written down first, to show the app was not given it.

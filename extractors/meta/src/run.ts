@@ -15,7 +15,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BridgeServer, displayName, displayNote, type FreeDisplay, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, displayName, displayState, type FreeDisplay, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
 import type * as P from '@dither-chat/protocol';
 import { linkHub } from '@dither-chat/protocol/client';
 import { type Ev, Mapper, parseMediaUrl } from './map.ts';
@@ -199,7 +199,7 @@ export async function run(siteId: SiteId) {
     const out: Layer[] = [];
     out.push(
       liveView
-        ? { name: 'display', state: 'ok', note: `${displayNote(display)}, live view ready` }
+        ? { name: 'display', ...displayState(display, sandbox?.screenHealth) }
         : sandboxError && !browserFailed
           ? { name: 'display', state: 'failed', note: sandboxError }
           : browserFailed
@@ -583,6 +583,8 @@ export async function run(siteId: SiteId) {
         startUrl,
         noSandbox: !!cfg.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',
         log,
+        // The live view's server down or back (it is started again): said in the status at once.
+        onScreenHealth: () => status(true),
       });
       try {
         await sandbox.start();

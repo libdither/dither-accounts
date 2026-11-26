@@ -25,7 +25,7 @@ import { resolveChromium, Sandbox } from '../src/sandbox.ts';
 import { SwayIpc, views } from '../src/swayipc.ts';
 import { WaylandScreen } from '../src/wayland.ts';
 import { DBusConnection } from '../../sandbox/src/dbus.ts';
-import { sandbox as sandboxOk, wayland, why } from '../../../test/needs.ts';
+import { hasBackend, sandbox as sandboxOk, TEST_BINS, wayland, why } from '../../../test/needs.ts';
 import { type ShareStats, sharePage, decode, encode } from './share-page.ts';
 
 process.env.DITHER_DISPLAY_CLAIMS = mkdtempSync(join(tmpdir(), 'display-claims-share-'));
@@ -387,7 +387,7 @@ describe.skipIf(!ok)('Chromium on wayland', () => {
 
 // Every X backend shares the same way: Chromium's X capturer reads the X server's screen, whichever server it is
 // (Xvfb, or an Xvnc that is the live view too).
-const X_SHARE = (['x11', 'tigervnc', 'kasmvnc', 'turbovnc'] as const).filter((b) => b === 'x11' || (ok && why(`${b}'s Xvnc`, !!tryBin(DISPLAY_BINS[b], () => {}))));
+const X_SHARE = (['x11', 'tigervnc', 'kasmvnc'] as const).filter((b) => b === 'x11' || (ok && why(`${b}'s Xvnc`, hasBackend(b))));
 
 describe.skipIf(!ok)('x11 parity', () => {
   for (const backend of X_SHARE)
@@ -414,7 +414,7 @@ describe.skipIf(!ok)('x11 parity', () => {
 
 // ------------------------------------------------------------- Electron
 
-const ELECTRON = { name: 'electron', env: 'ELECTRON_BIN', nix: 'electron' };
+const ELECTRON = TEST_BINS.electron;
 const electron = ok && why('Electron', !!tryBin(ELECTRON, () => {})) ? resolveBin(ELECTRON, () => {}) : null;
 
 /** An Electron app as Signal Desktop or Discord's would be: getDisplayMedia answered by desktopCapturer's first screen. */

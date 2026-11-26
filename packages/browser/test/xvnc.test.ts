@@ -1,18 +1,18 @@
 /**
- * The Xvnc display backends (tigervnc, kasmvnc, turbovnc: src/screen.ts, src/vnc.ts xvncArgs), each beside x11 where
- * they must behave alike: one process that is both X server and live view, on the account's Unix socket and no inet
- * socket at all (nor, for KasmVNC, any query to the internet), no SysV shared memory, many viewers at once, the
- * clipboard both ways through the live view, pictures by import, a display left by a killed server taken over, and
- * Chromium on it driven by xdotool as the `browser` interface drives it. Each backend skips when its Xvnc cannot be
- * had (DITHER_TESTS_NEED_ALL=1 fails instead). Every process it starts is gone at the end.
+ * The Xvnc display backends (tigervnc, kasmvnc: src/screen.ts, src/vnc.ts xvncArgs), each beside x11 where they must
+ * behave alike: one process that is both X server and live view, on the account's Unix socket (0600) and no inet socket
+ * at all (nor, for KasmVNC, any query to the internet), no SysV shared memory, many viewers at once speaking standard
+ * RFB as the manager's live view (noVNC) does, the clipboard both ways through the live view, pictures by import, a
+ * display left by a killed server taken over, and Chromium on it driven by xdotool as the `browser` interface drives it
+ * and through the live view. Each backend skips when its Xvnc cannot be had (DITHER_TESTS_NEED_ALL=1 fails instead).
+ * Every process it starts is gone at the end.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { connect, type Socket } from 'node:net';
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Subprocess } from 'bun';
-import { why } from '../../../test/needs.ts';
+import { hasBackend, TEST_BINS, why } from '../../../test/needs.ts';
 import { cleanEnv, DISPLAY_BINS, resolveBin, tryBin } from '../src/bins.ts';
 import { displayTaken, parseBackend, pickFreeDisplay, type XBackend } from '../src/display.ts';
 import { RfbClient } from '../src/rfb.ts';
@@ -21,6 +21,7 @@ import { displayName, displayNote, makeScreen, type Screen } from '../src/screen
 import { xvncArgs } from '../src/vnc.ts';
 import { inetSockets, rfbBanner, unixSockets } from './inet.ts';
 import { decodePng } from './png.ts';
+import { ENC, Viewer } from './rfb-viewer.ts';
 
 process.env.DITHER_DISPLAY_CLAIMS = mkdtempSync(join(tmpdir(), 'display-claims-xvnc-'));
 const dirs: string[] = [];
@@ -61,7 +62,8 @@ const saidSince = async (start: number) => {
 };
 
 test('the backends by name, and how a status shows their displays', () => {
-  for (const b of ['tigervnc', 'KasmVNC', ' turbovnc ']) expect(parseBackend(b)).toBe(b.trim().toLowerCase() as XBackend);
+  for (const b of ['tigervnc', ' KasmVNC ']) expect(parseBackend(b)).toBe(b.trim().toLowerCase() as XBackend);
+  expect(parseBackend('turbovnc')).toBeNull();
   expect(parseBackend('xvnc')).toBeNull();
   expect(displayName({ backend: 'tigervnc', display: 83 })).toBe(':83');
   expect(displayNote({ backend: 'tigervnc', display: 83 })).toBe('Xvnc (TigerVNC) :83');
@@ -80,20 +82,15 @@ test("each Xvnc's flags: its socket and no TCP port, no password, shared; KasmVN
   // Else a connection with no user in ~/.kasmpasswd (any on the socket) gets no picture and no input.
   expect(kasm).toContain('-DisableBasicAuth');
   expect(kasm).not.toContain('-websocketPort');
-  const turbo = xvncArgs('turbovnc', '/bin/Xvnc', ':81', '/a/vnc.sock', o);
-  expect(turbo[turbo.indexOf('-rfbunixpath') + 1]).toBe('/a/vnc.sock');
-  expect(turbo).not.toContain('-rfbport');
-  expect(turbo[turbo.indexOf('-securitytypes') + 1]).toBe('none');
-  // Else it holds every change 40 ms: about 20 frames a second at most.
-  expect(turbo[turbo.indexOf('-deferupdate') + 1]).toBe('1');
   expect(xvncArgs('tigervnc', '/bin/Xvnc', ':81', '/a/vnc.sock', { ...o, pathSocketOnly: true }).join(' ')).toContain('-nolisten tcp -nolisten local');
 });
 
 // ------------------------------------------------------------------------------------------------ real servers
 
-const XCLIP = { name: 'xclip', env: 'XCLIP_BIN', nix: 'xclip' };
-const BACKENDS = (['tigervnc', 'kasmvnc', 'turbovnc'] as const).filter((b) => why(`${b}'s Xvnc`, !!tryBin(DISPLAY_BINS[b], () => {})));
-const xtools = why('xdotool, import and xclip', !!(tryBin(DISPLAY_BINS.xdotool, () => {}) && tryBin(DISPLAY_BINS.import, () => {}) && tryBin(XCLIP, () => {})));
+const BACKENDS = (['tigervnc', 'kasmvnc'] as const).filter((b) => why(`${b}'s Xvnc`, hasBackend(b)));
+const xtools = why('xdotool, import and xclip', !!(tryBin(DISPLAY_BINS.xdotool, () => {}) && tryBin(DISPLAY_BINS.import, () => {}) && tryBin(TEST_BINS.xclip, () => {})));
+/** A viewer as the manager's live view is one: standard RFB, asking for every frame, raw only, its picture kept. */
+const viewer = (socket: string) => Viewer.open(socket, { encodings: [ENC.raw, ENC.desktopSize], keepPicture: true });
 
 /** SysV shared memory segments a process made or last attached (/proc/sysvipc/shm: cpid and lpid). */
 function shmOf(pid: number): number {
@@ -104,135 +101,6 @@ function shmOf(pid: number): number {
     const f = x.trim().split(/\s+/);
     return Number(f[c]) === pid || Number(f[l]) === pid;
   }).length;
-}
-
-/**
- * A plain RFB 3.8 viewer with no authentication, shared, that can send and receive clipboard text (latin-1). `kasm`:
- * its pointer events in KasmVNC's own layout (a 16-bit button mask and two scroll fields: 11 bytes, not RFB's 6).
- */
-async function viewer(path: string, kasm = false) {
-  const sock: Socket = connect(path);
-  let buf = Buffer.alloc(0);
-  let wake: (() => void) | null = null;
-  sock.on('data', (d: Buffer) => {
-    buf = Buffer.concat([buf, d]);
-    wake?.();
-  });
-  sock.on('error', () => {});
-  const need = async (n: number) => {
-    const end = Date.now() + 10_000;
-    while (buf.length < n) {
-      if (Date.now() > end) throw new Error('the server sent too little');
-      await new Promise<void>((r) => ((wake = r), setTimeout(r, 200)));
-    }
-    const out = buf.subarray(0, n);
-    buf = buf.subarray(n);
-    return out;
-  };
-  await need(12);
-  sock.write('RFB 003.008\n');
-  const types = await need((await need(1))[0]!);
-  if (!types.includes(1)) throw new Error(`no None security type: ${[...types]}`);
-  sock.write(Buffer.from([1]));
-  if ((await need(4)).readUInt32BE(0) !== 0) throw new Error('security failed');
-  sock.write(Buffer.from([1])); // shared
-  const init = await need(24);
-  await need(init.readUInt32BE(20));
-  const cut: string[] = [];
-  const msg = async (onUpdate?: (x: number, y: number, w: number, h: number, px: Buffer) => void) => {
-    const t = (await need(1))[0];
-    if (t === 0) {
-      let n = (await need(3)).readUInt16BE(1);
-      while (n-- > 0) {
-        const r = await need(12);
-        const [x, y, w, h, enc] = [r.readUInt16BE(0), r.readUInt16BE(2), r.readUInt16BE(4), r.readUInt16BE(6), r.readInt32BE(8)];
-        if (enc !== 0) throw new Error(`encoding ${enc} though only raw was asked for`);
-        onUpdate?.(x, y, w, h, Buffer.from(await need(w * h * 4)));
-      }
-      return 'update';
-    }
-    if (t === 2) return 'bell';
-    if (t === 3) {
-      await need(3);
-      const len = (await need(4)).readInt32BE(0);
-      if (len >= 0) cut.push((await need(len)).toString('latin1'));
-      else await need(-len); // extended clipboard: caps or a notify, not text
-      return 'cut';
-    }
-    throw new Error(`server message ${t}`);
-  };
-  return {
-    width: init.readUInt16BE(0),
-    height: init.readUInt16BE(2),
-    socket: sock,
-    /** Read server messages until a ServerCutText holding `text` arrives (no update is asked for, so none comes). */
-    async waitCut(text: string) {
-      const end = Date.now() + 10_000;
-      while (!cut.includes(text)) {
-        if (Date.now() > end) throw new Error(`no ServerCutText "${text}" (got ${JSON.stringify(cut)})`);
-        await msg();
-      }
-    },
-    /** The whole screen as raw pixels (the server's own format: 32 bpp, little-endian, blue first), RGB at (x, y). */
-    async picture(): Promise<(x: number, y: number) => [number, number, number]> {
-      const pf = Buffer.alloc(20);
-      pf[0] = 0;
-      pf[4] = 32;
-      pf[5] = 24;
-      pf[7] = 1;
-      pf.writeUInt16BE(255, 8);
-      pf.writeUInt16BE(255, 10);
-      pf.writeUInt16BE(255, 12);
-      [pf[14], pf[15], pf[16]] = [16, 8, 0];
-      sock.write(pf);
-      sock.write(Buffer.from([2, 0, 0, 1, 0, 0, 0, 0])); // SetEncodings: raw only
-      const width = init.readUInt16BE(0);
-      const height = init.readUInt16BE(2);
-      const fb = Buffer.alloc(width * height * 4);
-      const req = Buffer.alloc(10);
-      req[0] = 3;
-      req.writeUInt16BE(width, 6);
-      req.writeUInt16BE(height, 8);
-      sock.write(req);
-      let area = 0;
-      while (area < width * height)
-        await msg((x, y, w, h, px) => {
-          area += w * h;
-          for (let row = 0; row < h; row++) px.copy(fb, ((y + row) * width + x) * 4, row * w * 4, (row + 1) * w * 4);
-        });
-      return (x, y) => [fb[(y * width + x) * 4 + 2]!, fb[(y * width + x) * 4 + 1]!, fb[(y * width + x) * 4]!];
-    },
-    pointer(x: number, y: number, mask: number) {
-      const b = Buffer.alloc(kasm ? 11 : 6);
-      b[0] = 5;
-      if (kasm) b.writeUInt16BE(mask, 1);
-      else b[1] = mask;
-      b.writeUInt16BE(x, kasm ? 3 : 2);
-      b.writeUInt16BE(y, kasm ? 5 : 4);
-      sock.write(b);
-    },
-    /** The next server message's type, or null when none comes within `ms`. */
-    async nextType(ms: number): Promise<number | null> {
-      const end = Date.now() + ms;
-      while (!buf.length && Date.now() < end) await new Promise<void>((r) => ((wake = r), setTimeout(r, 50)));
-      return buf.length ? buf[0]! : null;
-    },
-    key(keysym: number, down: boolean) {
-      const b = Buffer.alloc(8);
-      b[0] = 4;
-      b[1] = down ? 1 : 0;
-      b.writeUInt32BE(keysym, 4);
-      sock.write(b);
-    },
-    cutText(text: string) {
-      const b = Buffer.alloc(8 + text.length);
-      b[0] = 6;
-      b.writeUInt32BE(text.length, 4);
-      b.write(text, 8, 'latin1');
-      sock.write(b);
-    },
-    close: () => sock.destroy(),
-  };
 }
 
 const run = async (cmd: string[], env: Record<string, string | undefined>, input?: string) => {
@@ -265,19 +133,23 @@ for (const backend of BACKENDS) {
           expect(screen.procNames).toEqual(['Xvnc']);
           const pid = mine[0]!.pid;
           expect(screen.vncSocket).toBe(join(dir, 'vnc.sock'));
+          // Only this user reaches it (vnc.ts): the socket 0600, its directory 0700.
+          expect(lstatSync(screen.vncSocket).mode & 0o777).toBe(0o600);
+          expect(lstatSync(dir).mode & 0o077).toBe(0);
           expect(await rfbBanner(screen.vncSocket)).toMatch(/^RFB 003\.00\d\n/);
           expect(inetSockets(pid)).toEqual([]);
           // Its sockets: the live view's, and X's path socket and abstract one, nothing else.
           expect(unixSockets(pid).sort()).toEqual([screen.vncSocket, `/tmp/.X11-unix/X${free.display}`, `@/tmp/.X11-unix/X${free.display}`].sort());
           expect(shmOf(pid)).toBe(0);
           expect(displayTaken(free.display!)).toBe(true);
-          // Two viewers at once (the manager's live view and the page's are both connections): the first stays.
+          // Two viewers at once (the manager's live view and the page's are both connections): the first stays, and
+          // after the second has come and gone it still asks for the screen and gets it.
           const a = await viewer(screen.vncSocket);
           const b = await RfbClient.connect(screen.vncSocket, 5000);
           expect([a.width, a.height, b.width, b.height]).toEqual([1024, 700, 1024, 700]);
           b.close();
-          await Bun.sleep(200);
-          expect(a.socket.destroyed).toBe(false);
+          await a.refresh();
+          expect(a.open).toBe(true);
           a.close();
           if (xtools) {
             // A black screen comes as a 1-bit PNG, which decodePng does not read: its size from the header.
@@ -295,22 +167,24 @@ for (const backend of BACKENDS) {
       30_000,
     );
 
-    // KasmVNC drops both of RFB's clipboard messages (the classic one and the extended one noVNC sends: "Client sent
-    // old cuttext msg, ignoring") and takes text only in a message of its own (type 180, its web client's binary
-    // clipboard); docs/browser.md "Display backends".
-    test.skipIf(!xtools || backend === 'kasmvnc')(
+    // KasmVNC's own RFB has a clipboard only in its message 180; our fork speaks RFB's to a standard client
+    // (nix/kasmvnc.nix), so the live view has it on both.
+    test.skipIf(!xtools)(
       "the clipboard both ways through the live view: a viewer's text is X's CLIPBOARD, an X client's copy reaches the viewer",
       async () => {
         const dir = tmp(`${backend}-clip`);
         const start = procs.length;
         const screen = makeScreen({ display: await pickFreeDisplay(undefined, [], backend), dir, width: 640, height: 480, spawn, log: () => {} });
-        const xclip = resolveBin(XCLIP, () => {});
+        const xclip = resolveBin(TEST_BINS.xclip, () => {});
         try {
           await screen.start();
           const env = screen.clientEnv();
           const v = await viewer(screen.vncSocket);
           v.cutText('from the viewer');
+          // The server has read the text once it has answered what was sent after it.
+          await v.refresh();
           let got = '';
+          // Taking X's selection is X's own round trip, so it is read until it has it.
           for (let end = Date.now() + 10_000; got !== 'from the viewer' && Date.now() < end; await Bun.sleep(100)) got = await run([xclip, '-o', '-selection', 'clipboard'], env);
           expect(got).toBe('from the viewer');
           // xclip keeps the selection until another client takes it; it is ours to stop.
@@ -318,7 +192,7 @@ for (const backend of BACKENDS) {
           procs.push(owner);
           owner.stdin.write('from an app');
           owner.stdin.end();
-          await v.waitCut('from an app');
+          await v.until("the app's copy as ServerCutText", () => v.cut.includes('from an app'));
           v.close();
         } finally {
           for (const p of procs.slice(start)) p.kill();
@@ -329,26 +203,27 @@ for (const backend of BACKENDS) {
       30_000,
     );
 
-    test.if(backend === 'kasmvnc')(
-      "KasmVNC's RFB is its own: a second viewer gets the first one sent message 253, and a standard pointer event derails the stream",
+    test(
+      'standard RFB, as noVNC speaks it: a second viewer brings the first no message it does not know, and a 6-byte pointer event is read as one',
       async () => {
-        // Why the manager does not offer it (packages/manager/src/display-backend.ts). Should a KasmVNC come that
-        // speaks plain RFB, this fails, and the live view could have it.
-        const dir = tmp('kasm-rfb');
+        // KasmVNC's own RFB has an 11-byte pointer event and messages 253 and 254; our fork speaks standard RFB to a
+        // client that does not announce KasmVNC's own extensions (nix/kasmvnc.nix), which the live view needs.
+        const dir = tmp(`${backend}-rfb`);
         const start = procs.length;
         const screen = makeScreen({ display: await pickFreeDisplay(undefined, [], backend), dir, width: 640, height: 480, spawn, log: () => {} });
         try {
           await screen.start();
           const a = await viewer(screen.vncSocket);
           const b = await viewer(screen.vncSocket);
-          expect(await a.nextType(3000)).toBe(253);
-          // RFB's 6-byte pointer event, then a request for the whole screen: KasmVNC reads 11 bytes for the first, so
-          // the request is swallowed and no update comes.
-          b.socket.write(Buffer.from([5, 0, 0, 10, 0, 10]));
-          b.socket.write(Buffer.from([3, 0, 0, 0, 0, 0, 2, 128, 1, 224]));
-          expect(await b.nextType(2000)).toBeNull();
-          a.close();
+          // Each server message is read in order; one the viewer does not know fails it (a.error).
+          await a.refresh();
           b.close();
+          await a.refresh();
+          // RFB's 6 bytes, then an update request: read as 11, the request would be swallowed and no update would come.
+          a.pointer(10, 10, 0);
+          await a.refresh();
+          expect(a.error).toBeNull();
+          a.close();
         } finally {
           for (const p of procs.slice(start)) p.kill();
           await Promise.all(procs.slice(start).map((p) => p.exited));
@@ -474,13 +349,14 @@ for (const backend of chromium ? (['x11', ...BACKENDS] as const) : []) {
           // The live view (what the manager's page shows and sends): its own picture of the page, and a click and a key
           // through it. A server that answers RFB but grants the connection nothing sends neither (KasmVNC without
           // -DisableBasicAuth).
-          // KasmVNC's pointer events in its own layout (its web client's); noVNC's would derail it (below).
-          const live = await viewer(sb.vncSocket, backend === 'kasmvnc');
+          const live = await viewer(sb.vncSocket);
           try {
-            const px = await live.picture();
-            expect(px(600, top + 400)).toEqual([0, 255, 0]);
+            await live.refresh();
+            expect(live.pixel(600, top + 400)).toEqual([0, 255, 0]);
+            // The pointer there first, read before the press (the server has answered the request sent after it), as
+            // a hand moves before it clicks.
             live.pointer(700, top + 500, 0);
-            await Bun.sleep(100);
+            await live.refresh();
             live.pointer(700, top + 500, 1);
             live.pointer(700, top + 500, 0);
             await until('the live view\'s click', () => reports.some((r) => r.ev === 'bodydown'));

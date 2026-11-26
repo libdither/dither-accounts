@@ -37,6 +37,9 @@ export type Network = 'discord' | 'signal' | 'matrix' | 'whatsapp' | 'telegram' 
  * own; they too run only in dither-accounts.
  */
 export const NETWORKS: readonly Network[] = ['discord', 'signal', 'matrix', 'whatsapp', 'telegram', 'gmessages', 'messenger', 'instagram', 'x', 'reddit', 'calendar', 't3', 'substack', 'mastodon', 'lemmy', 'bluesky', 'zulip', 'lesswrong', 'luma', 'partiful'];
+/** Event sites (docs/events.md): their posts are events (PostFact.event), their timelines Explore and your events. */
+export const EVENT_NETWORKS: readonly Network[] = ['luma', 'partiful'];
+export const isEventNetwork = (n: string | null | undefined): boolean => n === 'luma' || n === 'partiful';
 
 /** Where a conversation sits in the social structure, independent of network. */
 export type Shape =

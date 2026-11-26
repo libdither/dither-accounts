@@ -22,15 +22,14 @@ import { dirname, join } from 'node:path';
 import type { Subprocess } from 'bun';
 import { type BinSpec, type Log, resolveBin } from './bins.ts';
 import type { Screen, ScreenSpawn } from './screen.ts';
-import { WaylandScreen } from './wayland.ts';
 
 export const SHARE_BINS = {
-  dbusDaemon: { name: 'dbus-daemon', env: 'DBUS_DAEMON_BIN', nix: 'dbus', candidates: ['/run/current-system/sw/bin/dbus-daemon'] },
-  pipewire: { name: 'pipewire', env: 'PIPEWIRE_BIN', nix: 'pipewire' },
-  wireplumber: { name: 'wireplumber', env: 'WIREPLUMBER_BIN', nix: 'wireplumber' },
+  dbusDaemon: { name: 'dbus-daemon', env: 'DBUS_DAEMON_BIN', nix: 'dbus', candidates: ['/run/current-system/sw/bin/dbus-daemon'], pinned: true },
+  pipewire: { name: 'pipewire', env: 'PIPEWIRE_BIN', nix: 'pipewire', pinned: true },
+  wireplumber: { name: 'wireplumber', env: 'WIREPLUMBER_BIN', nix: 'wireplumber', pinned: true },
   // Both live in libexec/, so neither is on PATH: found through their packages.
-  portal: { name: 'xdg-desktop-portal', env: 'XDG_DESKTOP_PORTAL_BIN', nix: 'xdg-desktop-portal', path: false, sub: 'libexec' },
-  portalWlr: { name: 'xdg-desktop-portal-wlr', env: 'XDG_DESKTOP_PORTAL_WLR_BIN', nix: 'xdg-desktop-portal-wlr', path: false, sub: 'libexec' },
+  portal: { name: 'xdg-desktop-portal', env: 'XDG_DESKTOP_PORTAL_BIN', nix: 'xdg-desktop-portal', path: false, sub: 'libexec', pinned: true },
+  portalWlr: { name: 'xdg-desktop-portal-wlr', env: 'XDG_DESKTOP_PORTAL_WLR_BIN', nix: 'xdg-desktop-portal-wlr', path: false, sub: 'libexec', pinned: true },
 } satisfies Record<string, BinSpec>;
 
 /** The sway output every sandbox has (WLR_HEADLESS_OUTPUTS=1). */
@@ -46,6 +45,8 @@ export interface ScreenShareOptions {
   waylandSocket: string;
   spawn: ScreenSpawn;
   log: Log;
+  /** Programs to run instead of the resolved ones (tests: one that fails). */
+  bins?: Partial<Record<keyof typeof SHARE_BINS, string>>;
 }
 
 /** The portal configuration: wlr for ScreenCast and Screenshot, nothing for the rest. */
@@ -76,7 +77,10 @@ export function busConf(dir: string): string {
 export class ScreenShare {
   readonly dir: string;
   readonly procNames = ['xdg-desktop-portal', 'xdg-desktop-portal-wlr', 'wireplumber', 'pipewire', 'dbus-daemon'] as const;
+  /** What this share started, so a capture that failed halfway can end its own (startOrBusOnly). */
   private procs: Subprocess[] = [];
+  /** The portal and PipeWire run (start with capture), not only the bus. */
+  capturing = false;
 
   constructor(private o: ScreenShareOptions) {
     this.dir = join(o.dir, SHARE_DIR);
@@ -104,7 +108,9 @@ export class ScreenShare {
       XDG_CACHE_HOME: join(d, 'cache'),
       XDG_CONFIG_DIRS: undefined,
       DBUS_SESSION_BUS_ADDRESS: this.busAddress,
-      DBUS_SYSTEM_BUS_ADDRESS: undefined,
+      // Not the machine's system bus either: an address with nothing there. (Left unset, libdbus would go to the
+      // system bus's well-known path.)
+      DBUS_SYSTEM_BUS_ADDRESS: `unix:path=${join(d, 'no-system-bus')}`,
       DISPLAY: undefined,
       WAYLAND_DISPLAY: undefined,
       WAYLAND_SOCKET: undefined,
@@ -142,7 +148,7 @@ export class ScreenShare {
     const bins = Object.fromEntries(
       Object.entries(SHARE_BINS)
         .filter(([k]) => capture || k === 'dbusDaemon')
-        .map(([k, spec]) => [k, resolveBin(spec, this.o.log)]),
+        .map(([k, spec]) => [k, this.o.bins?.[k as keyof typeof SHARE_BINS] ?? resolveBin(spec, this.o.log)]),
     ) as Record<keyof typeof SHARE_BINS, string>;
     this.prepare(bins.portal ?? '');
     const d = this.dir;
@@ -164,7 +170,43 @@ export class ScreenShare {
     await this.waitForName('org.freedesktop.impl.portal.desktop.wlr', wlr, bins.dbusDaemon, 10_000);
     const xdp = this.spawn('xdg-desktop-portal', [bins.portal, '-r'], d, { XDG_DESKTOP_PORTAL_DIR: join(d, 'portals'), WAYLAND_DISPLAY: this.o.waylandSocket });
     await this.waitForName('org.freedesktop.portal.Desktop', xdp, bins.dbusDaemon, 15_000);
+    this.capturing = true;
     this.o.log('debug', `screen share up: portal and PipeWire on ${this.busAddress}`);
+  }
+
+  /**
+   * With capture, and if any part of it fails (a program missing, one that misses its deadline): said in the log, what
+   * it started ended, and the bus alone started instead. Screen sharing is something the sandbox can do without; its
+   * own bus it cannot.
+   */
+  async startOrBusOnly(capture: boolean) {
+    if (!capture) return this.start({ capture: false });
+    try {
+      await this.start({ capture: true });
+    } catch (e) {
+      this.o.log('warn', `screen sharing is off for this run: ${(e as Error).message.slice(0, 300)}`);
+      await this.endOwn();
+      await this.start({ capture: false });
+    }
+  }
+
+  /** End what this share started (its owner's list keeps them too, and stops what is left at the end). */
+  private async endOwn() {
+    const procs = this.procs.splice(0);
+    for (const p of procs) {
+      try {
+        p.kill('SIGTERM');
+      } catch {}
+    }
+    const killer = setTimeout(() => {
+      for (const p of procs) {
+        try {
+          p.kill('SIGKILL');
+        } catch {}
+      }
+    }, 3000);
+    await Promise.all(procs.map((p) => p.exited.catch(() => {})));
+    clearTimeout(killer);
   }
 
   private spawn(name: string, cmd: string[], match: string, extra?: Record<string, string | undefined>): Subprocess {
@@ -203,13 +245,14 @@ export class ScreenShare {
 }
 
 /**
- * A browser sandbox's: on wayland its own session bus, with the screen share's portal and PipeWire when `capture`
- * (and the flag that has Chromium use them); on x11 nothing (Chromium captures its Xvfb itself). Started; its
- * clientEnv goes into Chromium's environment and its procNames before the screen's when stopping.
+ * A browser sandbox's: on a screen that needs a bus of its own (Screen.needsOwnBus: Wayland) that bus, with the screen
+ * share's portal and PipeWire when `capture` and they start (and the flag that has Chromium use them); elsewhere
+ * nothing (on X Chromium captures its Xvfb itself). Started; its clientEnv goes into Chromium's environment and its
+ * procNames before the screen's when stopping.
  */
 export async function browserShare(screen: Screen, o: { capture: boolean; spawn: ScreenSpawn; log: Log }): Promise<{ share: ScreenShare | null; flags: string[] }> {
-  if (!(screen instanceof WaylandScreen)) return { share: null, flags: [] };
-  const share = new ScreenShare({ dir: screen.dir, waylandSocket: screen.socket, spawn: o.spawn, log: o.log });
-  await share.start({ capture: o.capture });
-  return { share, flags: o.capture ? ['--enable-features=WebRTCPipeWireCapturer'] : [] };
+  if (!screen.needsOwnBus || !screen.runtimeDir) return { share: null, flags: [] };
+  const share = new ScreenShare({ dir: screen.runtimeDir, waylandSocket: screen.socket, spawn: o.spawn, log: o.log });
+  await share.startOrBusOnly(o.capture);
+  return { share, flags: share.capturing ? ['--enable-features=WebRTCPipeWireCapturer'] : [] };
 }

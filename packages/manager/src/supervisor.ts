@@ -11,6 +11,9 @@
  * their log, they keep their sessions while the manager restarts (a deploy), reconnect to the next one, and that one
  * adopts them (found in /proc by the data directory and token in their environment) instead of starting new ones. An
  * adopted extractor whose code changed (fingerprint.ts) restarts, one at a time; the others keep running.
+ *
+ * Accounts of a kind that may sleep (Manifest.sleep) are stopped when idle and started again by the next call, their
+ * extractor's own next run, or a keep-alive (docs/supervisor.md "Sleeping"); the registry remembers which sleep.
  */
 import type { ServerWebSocket, Subprocess } from 'bun';
 import { createHmac } from 'node:crypto';
@@ -19,9 +22,13 @@ import { join } from 'node:path';
 import { writeSecretFile } from '@dither-chat/protocol/secret-file';
 import { type FailureKind, isExtractorCode, isFailureKind, retryAfterOf } from '@dither-accounts/spec';
 import { Handover, HandoverError } from '@dither-accounts/spec/handover';
+import { DEFAULT_DISPLAY_BACKEND, DISPLAY_BACKEND_ENV, type DisplayBackend, parseBackend } from '@dither-accounts/spec/display';
+
+/** The page's choice of the default display backend, in the store's settings (Supervisor.defaultBackend). */
+export const DISPLAY_BACKEND_SETTING = 'display_backend';
+import type { SleepInfoView } from './api-types.ts';
 import type { Row, Store } from './db.ts';
 import { fingerprintEntry, sameCode } from './fingerprint.ts';
-import { type DisplayBackend, parseBackend } from './display-backend.ts';
 import { LOG } from './files.ts';
 import type { Kind } from './kinds.ts';
 import { allPids, cgroupMembers, cgroupOf, descendants, endAll, groupMembers, serviceOf, procAlive, procCmdline, procEnv, type ProcRef, procsWithEnv, procStartedAt, procStat, signalRef } from './procs.ts';
@@ -89,8 +96,10 @@ interface Running {
   survives?: boolean;
   /** The fingerprint of the code it runs (fingerprint.ts), as it was when it started. */
   fingerprint?: string;
-  /** The display backend it was started with (DITHER_DISPLAY_BACKEND). */
-  backend?: DisplayBackend;
+  /** The display backend it was started with (DITHER_DISPLAY_BACKEND); null for a kind with no screen. */
+  backend?: DisplayBackend | null;
+  /** Waiting for the sandboxes' programs to be prepared (prepare.ts) before it starts. */
+  waitingBins?: boolean;
   /** An adopted process that has not connected by then is started afresh. */
   connectBy?: number;
   /** adapter.log's size when it started: a failed exit's last lines are read from there. */
@@ -109,6 +118,38 @@ interface Running {
   /** Starts since the manager started (restarts after a crash included). */
   starts?: number;
   lastExit?: { code: number | null; signal: string | null; at: number };
+  /**
+   * What its extractor said about sleeping (link.sleep): what it is doing that a stop would cut, and when it next needs
+   * to run by itself. Until it says, it does not sleep.
+   */
+  sleepSaid?: { busy: string | null; wakeAt: number | null };
+  /** Its last status, in short: one that is not `online`, or that needs you, keeps it awake. */
+  said?: { status: string; attention: boolean };
+  /** When it last did something (connected, a call, busy, held awake): it sleeps its kind's idle time after that. */
+  activeAt?: number;
+}
+
+/** An account asleep (docs/supervisor.md "Sleeping"): since when, and when and why it wakes by itself (null: a call). */
+interface Asleep {
+  since: number;
+  wakeAt: number | null;
+  wakeFor: string | null;
+}
+
+/** Sleeping, as the manager runs it (ManagerOpts.sleep, main.ts's `sleep` keys). Kinds say whether theirs may. */
+export interface SleepOpts {
+  /** False: no account sleeps (`sleep = 0`). Default true. */
+  enabled?: boolean;
+  /** Every kind's idle time, instead of its own (`sleep_idle_minutes`; tests). */
+  idleMs?: number;
+  /** The keep-alive of every kind that has one, instead of its own (`sleep_keep_alive_hours`); 0: none. */
+  keepAliveMs?: number;
+  /** How long before the time its extractor gave (a daily pull) it is started, so its browser is up by then (2 min). */
+  leadMs?: number;
+  /** It is not put to sleep for less than this: a stop and a start cost more than they save (10 min). */
+  minMs?: number;
+  /** How often idle accounts and due wakes are looked at (30 s). */
+  checkMs?: number;
 }
 
 /** How many of an extractor's last log lines are kept for a crash record. */
@@ -166,6 +207,14 @@ const START_OPEN_MS = 20_000;
  * answers could only come on a socket it does not seem to open.
  */
 const RECONNECT_OPEN_MS = 10_000;
+/**
+ * How long a call waits for an account it woke: what is left of its sleep's stop (up to its 8 s grace and 2 s to kill),
+ * then the start (its link connects a second or two after it starts). Past this, waiting calls are refused 'retry'.
+ */
+const WAKE_OPEN_MS = 30_000;
+const SLEEP_LEAD_MS = 2 * 60_000;
+const SLEEP_MIN_MS = 10 * 60_000;
+const SLEEP_CHECK_MS = 30_000;
 /** An extractor that outlives its manager ends itself after this long without one (its link, DITHER_MANAGER_GONE_EXIT_S). */
 const MANAGER_GONE_EXIT_S = 1800;
 /** How long a going manager waits for its extractors to say they hold their events. */
@@ -326,8 +375,8 @@ interface Found {
   accountId: string;
   token: string;
   fingerprint: string;
-  /** The display backend it was started with (DITHER_DISPLAY_BACKEND; none: x11). */
-  backend: DisplayBackend;
+  /** The display backend it was started with (DITHER_DISPLAY_BACKEND), null when it was given none. */
+  backend: DisplayBackend | null;
 }
 
 /** Restarts for changed code since this manager started, for /api/health (only counts) and the deployer. */
@@ -382,8 +431,17 @@ export class Supervisor {
   private cleanedAt = new Map<string, number>();
   /** Extractors that said they hold their events (a going manager's `manager-going`). */
   private holding = new Map<string, () => void>();
+  /** The sandboxes' programs are prepared (or failed to be): a kind with a screen starts without waiting. */
+  private binsSettled = false;
   /** The manager is going: nothing starts again, and exits of processes it leaves running are not crashes. */
   private closing = false;
+  /** Accounts asleep, as the registry keeps them (table `asleep`). */
+  private asleep = new Map<string, Asleep>();
+  /** What holds an account awake besides its own work (its live view open, a provider's job), by holder. */
+  private holds = new Map<string, Map<object, string>>();
+  /** Accounts woken from sleep, and why, until their extractor starts: it gets DITHER_WOKE. */
+  private woke = new Map<string, string>();
+  private sleepTimer?: Timer;
 
   constructor(
     private store: Store,
@@ -398,6 +456,11 @@ export class Supervisor {
       launch?: Launch;
       /** The display backend of accounts whose config names none (default x11). */
       displayBackend?: DisplayBackend;
+      /**
+       * The sandboxes' programs, prepared at the manager's start (prepare.ts): an extractor of a kind with a screen
+       * starts once this settles, and is given the directory (DITHER_BINS) when there is one.
+       */
+      bins?: { ready: Promise<unknown>; dir: () => string | null };
       /** The command a `scope` launch goes through (default systemd-run; tests give a stand-in). */
       systemdRun?: string;
       /** The fingerprint of a kind's code (default fingerprint.ts over repoRoot); tests give their own. */
@@ -412,12 +475,17 @@ export class Supervisor {
       watchMs?: number;
       /** Seconds an extractor that outlives the manager waits for one before it ends itself (default 1800). */
       managerGoneExitS?: number;
+      /** Sleeping idle accounts of kinds that may (docs/supervisor.md "Sleeping"); on by default. */
+      sleep?: SleepOpts;
       /** Events (not replies or logs) from an account's extractor. */
       onEvent: (accountId: string, ev: ExtractorEvent) => void;
       /** Running or online changed. */
       onChange: (accountId: string) => void;
-      /** An extractor process ended: what it last said of itself (its status) no longer holds. */
-      onExit?: (accountId: string) => void;
+      /**
+       * An extractor process ended: what it last said of itself (its status) no longer holds. `asleep`: it was stopped
+       * to sleep, so its last status still says how it was (all but its live view, which went with it).
+       */
+      onExit?: (accountId: string, asleep: boolean) => void;
       /** An extractor's process ended on its own and is being started again. */
       onCrash?: (accountId: string) => void;
       /**
@@ -437,12 +505,14 @@ export class Supervisor {
     } catch {
       this.dataDir = opts.dataDir;
     }
+    for (const a of store.all<{ account: string; since: number; wake_at: number | null; wake_for: string | null }>('SELECT * FROM asleep')) this.asleep.set(a.account, { since: a.since, wakeAt: a.wake_at, wakeFor: a.wake_for });
   }
 
+  /** `asleep` once its extractor has stopped: while it falls asleep (its stop takes a few seconds) it still runs. */
   state(id: string) {
-    if (this.inProcess.has(id)) return { running: true, online: true, error: null };
+    if (this.inProcess.has(id)) return { running: true, online: true, error: null, asleep: false };
     const r = this.running.get(id);
-    return { running: !!r?.pid, online: !!r?.ws, error: r?.error ?? null };
+    return { running: !!r?.pid, online: !!r?.ws, error: r?.error ?? null, asleep: this.asleep.has(id) && !r?.pid };
   }
 
   /** The process side of an account, for the account pane. */
@@ -488,16 +558,41 @@ export class Supervisor {
     return { queued, active: this.rollingNow.size, restarted, online, crashed };
   }
 
-  /** The fingerprint of the code a kind's extractor would run if started now. */
-  /** The display backend an account's sandboxes use: its config's displayBackend, else the manager's default (x11). */
-  backendOf(acc: Row): DisplayBackend {
-    let own: unknown;
-    try {
-      own = (JSON.parse(acc.config || '{}') as { displayBackend?: unknown }).displayBackend;
-    } catch {}
-    return parseBackend(own) ?? this.opts.displayBackend ?? 'x11';
+  /**
+   * The display backend an account's sandboxes use: its config's displayBackend, else the manager's default
+   * (defaultBackend). Null for a kind with no screen (its manifest does not say `screen`): mail, calendars, signal-cli
+   * have none to move.
+   */
+  backendOf(acc: Row): DisplayBackend | null {
+    const kind = this.kinds.get(acc.kind);
+    if (!kind || !kind.screen) return null;
+    return this.ownBackend(acc) ?? this.defaultBackend();
   }
 
+  /** The backend an account's config names (its displayBackend), or null when it follows the manager's default. */
+  ownBackend(acc: Row): DisplayBackend | null {
+    try {
+      return parseBackend((JSON.parse(acc.config || '{}') as { displayBackend?: unknown }).displayBackend);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The manager's default display backend (docs/browser.md "Display backends"): the one chosen on the page, else
+   * config.toml's display_backend (or its flag), else x11. The page's choice wins because it is the later one, made
+   * where the default is shown; Use config.toml's on the page forgets it.
+   */
+  defaultBackend(): DisplayBackend {
+    return parseBackend(this.store.setting(DISPLAY_BACKEND_SETTING)) ?? this.configBackend();
+  }
+
+  /** config.toml's display_backend (or --display-backend), else x11. */
+  configBackend(): DisplayBackend {
+    return this.opts.displayBackend ?? DEFAULT_DISPLAY_BACKEND;
+  }
+
+  /** The fingerprint of the code a kind's extractor would run if started now. */
   fingerprintOf(kind: Kind): string {
     if (this.opts.fingerprint) return this.opts.fingerprint(kind);
     try {
@@ -510,10 +605,21 @@ export class Supervisor {
   /**
    * Every enabled account's extractor: an earlier manager's still running is adopted, the rest start. Extractors an
    * earlier manager left running for accounts that are now disabled, gone or of a kind that no longer loads are stopped.
+   * An account asleep stays so (it wakes when it would have), unless its kind no longer sleeps or an extractor of it
+   * still runs (an earlier manager went while it fell asleep): then it starts, or is adopted, as any other.
    */
   startAll() {
     this.sweep();
-    for (const a of this.store.accounts()) if (a.enabled) this.start(a.id);
+    for (const a of this.store.accounts()) {
+      if (!a.enabled) {
+        this.forgetSleep(a.id);
+        continue;
+      }
+      if (this.asleep.has(a.id) && this.sleepOf(a) && !this.found().some((f) => f.accountId === a.id && f.token === a.token)) continue;
+      this.start(a.id);
+    }
+    for (const id of this.asleep.keys()) if (!this.store.account(id)) this.forgetSleep(id);
+    this.sleepTimer ??= setInterval(() => this.sleepSweep(), this.opts.sleep?.checkMs ?? SLEEP_CHECK_MS);
   }
 
   /**
@@ -532,7 +638,7 @@ export class Supervisor {
       if (!isExtractorCmd(pid)) continue;
       const st = procStat(pid);
       if (!st || st.state === 'Z') continue;
-      found.push({ pid, start: st.start, accountId: env.DITHER_ACCOUNT_ID, token: env.DITHER_ADAPTER_TOKEN ?? '', fingerprint: env.DITHER_EXTRACTOR_FINGERPRINT ?? '', backend: parseBackend(env.DITHER_DISPLAY_BACKEND) ?? 'x11' });
+      found.push({ pid, start: st.start, accountId: env.DITHER_ACCOUNT_ID, token: env.DITHER_ADAPTER_TOKEN ?? '', fingerprint: env.DITHER_EXTRACTOR_FINGERPRINT ?? '', backend: parseBackend(env[DISPLAY_BACKEND_ENV]) });
     }
     this.scan = { at: Date.now(), found };
     return found;
@@ -673,6 +779,8 @@ export class Supervisor {
   start(id: string) {
     this.halted.delete(id);
     if (this.inProcess.has(id) || this.closing) return;
+    // Started (a wake, the page, an app): it is not asleep any more.
+    this.forgetSleep(id);
     // A stop of it is under way: this start follows it.
     if (this.stops.has(id)) {
       this.startAfter.add(id);
@@ -681,7 +789,7 @@ export class Supervisor {
     const acc = this.store.account(id);
     if (!acc || !acc.enabled) return void this.line(id).down(acc ? 'the account is disabled' : 'the account is gone');
     const cur = this.running.get(id);
-    if (cur && !cur.stopping && (cur.pid || cur.cleaning)) return;
+    if (cur && !cur.stopping && (cur.pid || cur.cleaning || cur.waitingBins)) return;
     const r: Running = cur ?? { restarts: 0, stopping: false, lastStart: 0, ...this.history.get(id) };
     clearTimeout(r.retry);
     r.stopping = false;
@@ -699,6 +807,7 @@ export class Supervisor {
       // A second one of the same account (it should never be): ended in the account's line, sparing the adopted one.
       for (const m of more) void this.serially(id, () => this.end(id, { pid: m.pid, start: m.start }, 8000, f!.pid));
       acquireLock(acc.dir, 'dither-accounts', acc.id, found.map((x) => x.pid));
+      this.woke.delete(id);
       r.proc = undefined;
       r.pid = f!.pid;
       r.pstart = f!.start;
@@ -706,12 +815,14 @@ export class Supervisor {
       r.adopted = true;
       r.survives = true;
       r.fingerprint = f!.fingerprint;
-      r.backend = f!.backend;
+      // One started before kinds said whether they have a screen had x11 written in: a kind without one has no backend.
+      r.backend = this.backendOf(acc) === null ? null : (f!.backend ?? DEFAULT_DISPLAY_BACKEND);
       r.lastStart = procStartedAt(f!.start) ?? Date.now();
       r.connectBy = r.ws ? undefined : Date.now() + (this.opts.adoptConnectMs ?? ADOPT_CONNECT_MS);
       const changed = !sameCode(f!.fingerprint, this.fingerprintOf(kind));
       // A display backend changed (the account's or the manager's default) restarts it the same way as changed code.
-      const moved = f!.backend !== this.backendOf(acc);
+      // Only a kind with a screen has one to change (backendOf is null for the rest).
+      const moved = r.backend !== this.backendOf(acc);
       appendFileSync(log, `--- ${new Date().toISOString()} dither-accounts took over the running ${acc.kind} extractor (pid ${f!.pid})${changed ? '; its code changed, so it restarts soon' : moved ? `; its display backend is now ${this.backendOf(acc)}, so it restarts soon` : ''}\n`);
       r.logFrom = fileSize(log);
       if (!r.ws) this.starting(id);
@@ -736,6 +847,21 @@ export class Supervisor {
       return;
     }
 
+    // A kind with a screen runs the programs the manager prepares at its start (prepare.ts): it waits for them.
+    const prep = this.opts.bins;
+    if (prep && kind.screen && !this.binsSettled) {
+      if (!r.waitingBins) {
+        r.waitingBins = true;
+        this.starting(id);
+        void prep.ready.finally(() => {
+          this.binsSettled = true;
+          r.waitingBins = false;
+          if (this.running.get(id) === r && !r.stopping) this.start(id);
+        });
+      }
+      return;
+    }
+
     const held = acquireLock(acc.dir, 'dither-accounts', acc.id);
     if (held) {
       // Another process runs it (dither-chat's hub, before it lets go): look again, and take over once it is gone.
@@ -755,18 +881,26 @@ export class Supervisor {
     } catch {}
     const fingerprint = this.fingerprintOf(kind);
     const backend = this.backendOf(acc);
+    const bins = this.opts.bins;
     const launch = this.launch;
     appendFileSync(log, `\n--- ${new Date().toISOString()} dither-accounts starting ${acc.kind} extractor\n`);
     r.logFrom = fileSize(log);
     const argv = launch === 'scope' ? [this.opts.systemdRun ?? 'systemd-run', '--user', '--scope', '--quiet', '--collect', `--unit=${scopeName(acc.id)}`, `--description=dither-accounts extractor (${acc.kind})`, 'bun', entry] : ['bun', entry];
     // Its output straight to its log: the manager going away cannot break a pipe under it.
     const fd = openSync(log, 'a', 0o600);
+    // The screen its sandboxes draw on (docs/browser.md "Display backends"): the account's, else the manager's; and the
+    // programs they run, from the manager's pinned nixpkgs (prepare.ts). A kind with no screen is given neither, nor
+    // what the manager's own environment might hand down.
+    const { [DISPLAY_BACKEND_ENV]: _b, DITHER_BINS: _d, ...inherited } = process.env;
+    const binsDir = backend ? (bins?.dir() ?? process.env.DITHER_BINS) : undefined;
+    const screenEnv: Record<string, string> = backend ? { [DISPLAY_BACKEND_ENV]: backend, ...(binsDir ? { DITHER_BINS: binsDir } : {}) } : {};
     let proc: Subprocess;
     try {
       proc = Bun.spawn(argv, {
         cwd: root,
         env: {
-          ...process.env,
+          ...inherited,
+          ...screenEnv,
           ...(kind.env ?? {}),
           DITHER_HUB_URL: this.opts.extractorUrl(),
           DITHER_ACCOUNTS_URL: this.opts.extractorUrl(),
@@ -774,8 +908,6 @@ export class Supervisor {
           DITHER_ADAPTER_TOKEN: acc.token,
           DITHER_ACCOUNT_DIR: acc.dir,
           DITHER_ACCOUNT_CONFIG: acc.config,
-          // The screen its sandboxes draw on (docs/browser.md "Display backends"): the account's, else the manager's.
-          DITHER_DISPLAY_BACKEND: backend,
           DITHER_ACCOUNT_LABEL: acc.label,
           DITHER_MARKER_KEY: pageMarkerKey(this.store, acc.id),
           // What a later manager reads in /proc to know it as one of its own, and whether its code is still current.
@@ -785,6 +917,8 @@ export class Supervisor {
           ...(launch === 'child' ? {} : { DITHER_MANAGER_GONE_EXIT_S: String(this.opts.managerGoneExitS ?? MANAGER_GONE_EXIT_S) }),
           // Started after an app heard of a gap: what it kept from before (Discord's backfill memory) is not trusted.
           ...(this.resync.delete(id) ? { DITHER_RESYNC: '1' } : {}),
+          // A wake from sleep, and why: its next run or a call comes, so it need not do what a start does (a sign-in).
+          ...(this.woke.has(id) ? { DITHER_WOKE: this.woke.get(id)! } : {}),
         },
         stdin: 'ignore',
         stdout: fd,
@@ -797,6 +931,7 @@ export class Supervisor {
     } finally {
       closeSync(fd);
     }
+    this.woke.delete(id);
     r.proc = proc;
     r.pid = proc.pid;
     r.pstart = procStat(proc.pid)?.start;
@@ -806,6 +941,10 @@ export class Supervisor {
     r.fingerprint = fingerprint;
     r.backend = backend;
     r.connectBy = undefined;
+    // A new process: what the last one said of itself does not hold for it.
+    r.sleepSaid = undefined;
+    r.said = undefined;
+    r.activeAt = Date.now();
     this.starting(id);
     // Its scope exists once systemd-run has made it, just before it runs the extractor.
     if (launch === 'scope') {
@@ -885,12 +1024,14 @@ export class Supervisor {
     r.cgroup = undefined;
     r.adopted = false;
     r.connectBy = undefined;
+    r.sleepSaid = undefined;
+    r.said = undefined;
     r.lastExit = { code, signal: sig, at: Date.now() };
     this.lost(id, `its extractor exited (code ${code}, signal ${sig})`);
     // A stop under way (a restart) decides what comes next; otherwise nothing is coming until a start.
     if (!r.stopping) this.line(id).down('its extractor exited');
     if (log) appendFileSync(log, `--- exited code=${code} signal=${sig}\n`);
-    this.opts.onExit?.(id);
+    this.opts.onExit?.(id, this.asleep.has(id));
     this.opts.onChange(id);
     if (r.stopping || !acc?.enabled || this.closing) {
       if (acc) releaseLock(acc.dir);
@@ -919,6 +1060,9 @@ export class Supervisor {
   async stop(id: string) {
     this.halted.add(id);
     this.startAfter.delete(id);
+    this.woke.delete(id);
+    // Stopped, not asleep: nothing wakes it but a start.
+    if (this.forgetSleep(id)) this.opts.onChange(id);
     this.line(id).down('it was stopped');
     await this.stopProcess(id);
   }
@@ -948,7 +1092,7 @@ export class Supervisor {
     this.history.set(id, { starts: r.starts, lastExit: r.lastExit });
     const acc = this.store.account(id);
     if (acc) releaseLock(acc.dir);
-    this.opts.onExit?.(id);
+    this.opts.onExit?.(id, this.asleep.has(id));
     this.opts.onChange(id);
   }
 
@@ -961,6 +1105,9 @@ export class Supervisor {
     this.closing = true;
     clearInterval(this.watcher);
     this.watcher = undefined;
+    // Accounts asleep stay so in the registry: the next manager wakes them when this one would have.
+    clearInterval(this.sleepTimer);
+    this.sleepTimer = undefined;
     this.outdated.clear();
     for (const p of this.pauses) {
       clearTimeout(p.timer);
@@ -970,7 +1117,8 @@ export class Supervisor {
     this.closingCtrl.abort();
     const ids = [...this.running.keys()];
     for (const id of ids) clearTimeout(this.running.get(id)!.retry);
-    const left = ids.filter((id) => o.leave && this.running.get(id)?.survives && this.running.get(id)?.pid);
+    // One being stopped (falling asleep, a Restart's stop) is not left: its stop is waited for below.
+    const left = ids.filter((id) => o.leave && this.running.get(id)?.survives && this.running.get(id)?.pid && !this.running.get(id)?.stopping);
     const holding: string[] = [];
     if (left.length) {
       // Every frame an extractor sent before its answer has arrived by then (one socket, in order).
@@ -1011,6 +1159,34 @@ export class Supervisor {
     await Bun.sleep(1);
     if (this.halted.has(id)) return;
     this.start(id);
+  }
+
+  /**
+   * Running accounts the page's new default backend moved to another screen: restarted one at a time per kind, each
+   * waited for until it is online again (or a minute), with a pause between them, kinds side by side, as a deploy's
+   * are (roll). The first of each kind goes at once: someone just asked for it. One whose screen no longer differs
+   * by its turn (the default moved back, or its own was set), or that was stopped meanwhile, is left as it is.
+   */
+  async restartMoved(ids: string[]) {
+    const byKind = new Map<string, string[]>();
+    for (const id of ids) {
+      const kind = this.store.account(id)?.kind;
+      if (kind) byKind.set(kind, [...(byKind.get(kind) ?? []), id]);
+    }
+    await Promise.all(
+      [...byKind.values()].map(async (list) => {
+        for (const [i, id] of list.entries()) {
+          if (i) await this.sleep(this.opts.restartPauseMs ?? RESTART_PAUSE_MS);
+          const acc = this.store.account(id);
+          const r = this.running.get(id);
+          if (this.closing || !acc?.enabled || !r?.pid || r.stopping || this.halted.has(id) || r.backend === this.backendOf(acc)) continue;
+          appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} the manager's default display backend is now ${this.backendOf(acc)}: restarting it\n`);
+          await this.restart(id);
+          const end = Date.now() + (this.opts.restartOnlineMs ?? RESTART_ONLINE_MS);
+          while (!this.closing && Date.now() < end && !this.running.get(id)?.ws) await Bun.sleep(250);
+        }
+      }),
+    );
   }
 
   // ---------------------------------------------------------- changed code
@@ -1115,6 +1291,7 @@ export class Supervisor {
     }
     r.ws = ws;
     r.onlineSince = Date.now();
+    r.activeAt = Date.now();
     r.connectBy = undefined;
     this.running.set(ws.data.accountId, r);
     // The new socket is the account's connection now: what waited for it goes. Calls still out on an older socket of
@@ -1204,6 +1381,19 @@ export class Supervisor {
       void this.answer(ws, ev);
       return;
     }
+    if (ev.t === 'sleep') {
+      // Its word on sleeping (link.sleep), for the manager only: what a stop would cut, and when it next runs by itself.
+      const r = this.running.get(id);
+      if (r) {
+        r.sleepSaid = { busy: typeof ev.busy === 'string' && ev.busy ? ev.busy.slice(0, 200) : null, wakeAt: typeof ev.wakeAt === 'number' && Number.isFinite(ev.wakeAt) ? ev.wakeAt : null };
+        r.activeAt = Date.now();
+      }
+      return;
+    }
+    if (ev.t === 'status') {
+      const r = this.running.get(id);
+      if (r) r.said = { status: String(ev.status ?? ''), attention: !!ev.attention };
+    }
     if (ev.t === 'log') {
       // A finished span from the extractor (trace.ts): into the trace with the manager's, not its log.
       if (ev.msg === 'trace') {
@@ -1241,17 +1431,162 @@ export class Supervisor {
    * starts, restarts or reconnects, the call waits for it (START_OPEN_MS, RECONNECT_OPEN_MS); one that could not be
    * sent fails 'retry' (503), and is safe to send again. One its extractor had when it ended fails 'offline' (it may
    * have run), unless it is `repeatable` (a read) and a new process is on its way: then it runs again there, once.
-   * With no extractor running, or one stopped on purpose, a call fails at once 'offline'.
+   * With no extractor running, or one stopped on purpose, a call fails at once 'offline'. One to an account asleep wakes
+   * it and waits for it as for a start (WAKE_OPEN_MS).
    */
   command(accountId: string, cmd: Record<string, unknown> & { t: string }, timeoutMs = 30_000, o: { repeatable?: boolean } = {}): Promise<unknown> {
+    this.wake(accountId, `a call (${String(cmd.t).slice(0, 60)})`);
     const h = this.line(accountId);
     if (!this.running.get(accountId) || h.state === 'down') return Promise.reject(new ExtractorError('the account is not connected', 'offline', undefined, 'expected'));
     const deadline = Date.now() + timeoutMs;
-    return h.run((ws, a) => this.send(accountId, ws, cmd, deadline, timeoutMs, a.signal), { deadline, repeatable: o.repeatable }).catch((e) => {
-      if (!(e instanceof HandoverError)) throw e;
-      // 'unsure' keeps the manager's 'offline', which apps already read as "it may have run".
-      throw e.code === 'retry' ? new ExtractorError(e.message, 'retry', 503, 'transient') : new ExtractorError(e.message, 'offline', undefined, 'expected');
-    });
+    return h
+      .run((ws, a) => this.send(accountId, ws, cmd, deadline, timeoutMs, a.signal), { deadline, repeatable: o.repeatable })
+      .catch((e) => {
+        if (!(e instanceof HandoverError)) throw e;
+        // 'unsure' keeps the manager's 'offline', which apps already read as "it may have run".
+        throw e.code === 'retry' ? new ExtractorError(e.message, 'retry', 503, 'transient') : new ExtractorError(e.message, 'offline', undefined, 'expected');
+      })
+      .finally(() => {
+        // Its idle time counts from its last call's answer.
+        const r = this.running.get(accountId);
+        if (r) r.activeAt = Date.now();
+      });
+  }
+
+  // ---------------------------------------------------------- sleeping
+
+  /**
+   * How an account sleeps, or null when it does not: its kind may not (Manifest.sleep), sleeping is off, or the
+   * account is to stay awake (its `stayAwake` setting).
+   */
+  private sleepOf(acc: Row): { idleMs: number; keepAliveMs: number | null } | null {
+    const o = this.opts.sleep ?? {};
+    const k = this.kinds.get(acc.kind)?.sleep;
+    if (o.enabled === false || !k || this.inProcess.has(acc.id)) return null;
+    try {
+      if (JSON.parse(acc.config || '{}')?.stayAwake === true) return null;
+    } catch {}
+    const keep = k.keepAliveHours ? (o.keepAliveMs ?? k.keepAliveHours * 3_600_000) : 0;
+    return { idleMs: o.idleMs ?? k.idleMinutes * 60_000, keepAliveMs: keep > 0 ? keep : null };
+  }
+
+  /**
+   * Why an account that runs is not idle now (null: it is): something keeps it awake, or it cannot be told. An
+   * account sleeps only once this has been null for its kind's idle time.
+   */
+  awakeBecause(id: string): string | null {
+    const r = this.running.get(id);
+    if (!r?.pid) return 'it is not running';
+    if (r.stopping || r.cleaning) return 'it is being stopped';
+    if (!r.ws) return 'it is starting';
+    if (this.rollingNow.has(id)) return 'it is restarting for changed code';
+    const h = this.lines.get(id);
+    if (h && h.inFlight + h.queued > 0) return 'a call is under way';
+    const held = this.holds.get(id);
+    if (held?.size) return [...held.values()][0]!;
+    if (!r.said) return 'it has not said how it is yet';
+    if (r.said.attention) return 'it needs you';
+    if (r.said.status !== 'online') return `it says it is ${r.said.status || 'not online'}`;
+    if (!r.sleepSaid) return 'its extractor has not said that it may sleep';
+    if (r.sleepSaid.busy) return r.sleepSaid.busy;
+    const wake = r.sleepSaid.wakeAt;
+    if (wake !== null && wake - (this.opts.sleep?.leadMs ?? SLEEP_LEAD_MS) - Date.now() < (this.opts.sleep?.minMs ?? SLEEP_MIN_MS)) return 'its next run is due soon';
+    return null;
+  }
+
+  /**
+   * For the account pane: null for an account that does not sleep; else whether it is asleep, since when and until
+   * when, or while awake what keeps it so (`awake`; null: nothing, and it has been idle since `idleSince`).
+   */
+  sleepInfo(id: string): SleepInfoView | null {
+    const acc = this.store.account(id);
+    const s = acc?.enabled ? this.sleepOf(acc) : null;
+    if (!s) return null;
+    const idleMinutes = s.idleMs / 60_000;
+    const a = this.asleep.get(id);
+    if (a && !this.running.get(id)?.pid) return { asleep: true, since: a.since, wakeAt: a.wakeAt, wakeFor: a.wakeFor, idleMinutes, awake: null, idleSince: null };
+    if (a) return { asleep: false, since: null, wakeAt: null, wakeFor: null, idleMinutes, awake: 'it is falling asleep', idleSince: null };
+    const why = this.awakeBecause(id);
+    return { asleep: false, since: null, wakeAt: null, wakeFor: null, idleMinutes, awake: why, idleSince: why === null ? (this.running.get(id)?.activeAt ?? null) : null };
+  }
+
+  /**
+   * Keeps an account awake while held (its live view is open, a provider's job runs on it), waking it if it sleeps.
+   * Call what it returns to let go; its idle time counts from then.
+   */
+  hold(id: string, why: string): () => void {
+    const key = {};
+    const m = this.holds.get(id) ?? this.holds.set(id, new Map()).get(id)!;
+    m.set(key, why);
+    this.wake(id, why);
+    return () => {
+      if (!m.delete(key)) return;
+      if (!m.size && this.holds.get(id) === m) this.holds.delete(id);
+      const r = this.running.get(id);
+      if (r) r.activeAt = Date.now();
+    };
+  }
+
+  /** Starts an account asleep: calls from now on wait for it (WAKE_OPEN_MS). False if it was not asleep. */
+  wake(id: string, why: string): boolean {
+    if (!this.asleep.has(id) || this.closing) return false;
+    const acc = this.store.account(id);
+    if (acc) appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} waking: ${why}\n`);
+    this.woke.set(id, why.slice(0, 200));
+    this.line(id).opening(`it is waking (${why})`, { ms: WAKE_OPEN_MS });
+    this.start(id);
+    this.opts.onChange(id);
+    return true;
+  }
+
+  /**
+   * Idle accounts fall asleep, and asleep ones whose time came wake. An account is idle while nothing keeps it awake
+   * (awakeBecause), counted from the last time something did.
+   */
+  private sleepSweep() {
+    if (this.closing) return;
+    const now = Date.now();
+    for (const [id, a] of [...this.asleep]) if (a.wakeAt !== null && now >= a.wakeAt) this.wake(id, a.wakeFor ?? 'its time came');
+    for (const [id, r] of [...this.running]) {
+      const acc = this.store.account(id);
+      const s = acc?.enabled ? this.sleepOf(acc) : null;
+      if (this.asleep.has(id)) continue;
+      // One that may not sleep now (Stay awake) is not idle: once it may, its idle time counts from then.
+      if (!s || this.awakeBecause(id) !== null || r.activeAt === undefined) {
+        r.activeAt = now;
+        continue;
+      }
+      if (now - r.activeAt >= s.idleMs) void this.fallAsleep(id, s).catch((e) => console.error(`[${id}] falling asleep failed: ${(e as Error).message}`));
+    }
+  }
+
+  /**
+   * Stops an idle account's extractor (the usual stop: shutdown, then everything it started ends), remembering it as
+   * asleep until its extractor's next run less the lead, or the keep-alive, whichever comes first. A call meanwhile
+   * wakes it (after the stop, if one is under way).
+   */
+  private async fallAsleep(id: string, s: { idleMs: number; keepAliveMs: number | null }) {
+    const r = this.running.get(id);
+    const acc = this.store.account(id);
+    if (!r || !acc || this.asleep.has(id)) return;
+    const now = Date.now();
+    const own = r.sleepSaid?.wakeAt != null ? r.sleepSaid.wakeAt - (this.opts.sleep?.leadMs ?? SLEEP_LEAD_MS) : null;
+    const keep = s.keepAliveMs !== null ? now + s.keepAliveMs : null;
+    const wakeAt = own !== null && (keep === null || own <= keep) ? own : keep;
+    const a: Asleep = { since: now, wakeAt, wakeFor: wakeAt === null ? null : wakeAt === own ? 'its next scheduled run' : 'a keep-alive' };
+    this.asleep.set(id, a);
+    this.store.run('INSERT INTO asleep (account, since, wake_at, wake_for) VALUES (?, ?, ?, ?) ON CONFLICT(account) DO UPDATE SET since = excluded.since, wake_at = excluded.wake_at, wake_for = excluded.wake_for', id, a.since, a.wakeAt, a.wakeFor);
+    appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} idle for ${Math.round((now - (r.activeAt ?? now)) / 60_000)} min: asleep until ${wakeAt === null ? 'the next call' : `${new Date(wakeAt).toISOString()} (${a.wakeFor}) or the next call`}\n`);
+    this.line(id).down('it is falling asleep');
+    this.opts.onChange(id);
+    await this.stopProcess(id);
+  }
+
+  /** It is not asleep (any more): forgotten here and in the registry. True if it was. */
+  private forgetSleep(id: string): boolean {
+    if (!this.asleep.delete(id)) return false;
+    this.store.run('DELETE FROM asleep WHERE account = ?', id);
+    return true;
   }
 
   private send(accountId: string, ws: Socket, cmd: Record<string, unknown> & { t: string }, deadline: number, timeoutMs: number, signal: AbortSignal): Promise<unknown> {

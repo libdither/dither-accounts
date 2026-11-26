@@ -7,10 +7,10 @@
  * Two pages, each a role: 'calendar' (calendar.google.com) and 'gmail' (mail.google.com). A port's role is what its
  * hook announced (from its page's host), and until then what its sender's address says. A command for a page carries
  * its role (`page`, default 'calendar') and goes to that role's current port only (the newest: a reload or a
- * replacement takes over), never to every tab: a write must happen once. Commands of kind `tab.open` and `tab.reload`
- * are this worker's own: open a role's tab if it has none, or send it back to its start address (or close it and open
- * a new one), so the extractor can bring one page back without touching the other; `tab.state` says how Chromium sees
- * a role's tab. Each command handed to a page's port is reported up as `got` (at 'worker'), and the page reports it
+ * replacement takes over), never to every tab: a write must happen once. Commands of kind `tab.open`, `tab.reload`
+ * and `tab.close` are this worker's own: open a role's tab if it has none, send it back to its start address (or close
+ * it and open a new one), or close it while nothing needs it (never the browser's last tab), so the extractor can
+ * bring one page back, or put one away, without touching the other; `tab.state` says how Chromium sees a role's tab. Each command handed to a page's port is reported up as `got` (at 'worker'), and the page reports it
  * again when it arrives (at 'page'), so a command never answered says how far it got (packages/browser's
  * page/worker-watch.js, put in below).
  *
@@ -178,6 +178,32 @@ async function tabCommand(id, cmd) {
 }
 
 /**
+ * tab.close: the role's tab closed, so its page's renderer goes (the extractor asks it of a page no call needed for a
+ * while). Never the browser's last tab: closing that would end the browser. Answers whether it closed one.
+ */
+async function closeTab(id, cmd) {
+  const role = ROLES.includes(cmd.page) ? cmd.page : 'calendar';
+  try {
+    const t = await tabFor(role, cmd.tabId);
+    if (!t) {
+      sendUp({ t: 'reply', id, ok: true, result: { closed: false, why: 'no such tab' } });
+      return;
+    }
+    const all = await chrome.tabs.query({});
+    if (all.length < 2) {
+      sendUp({ t: 'reply', id, ok: true, result: { closed: false, why: "it is the browser's last tab" } });
+      return;
+    }
+    tabRoles.delete(t.id);
+    await chrome.tabs.remove(t.id);
+    sendUp({ t: 'reply', id, ok: true, result: { closed: true, tabId: t.id } });
+    tabsChanged();
+  } catch (err) {
+    sendUp({ t: 'reply', id, ok: false, error: String((err && err.message) || err) });
+  }
+}
+
+/**
  * tab.state: what Chromium says of the role's tab (loading or not, discarded, frozen, active, its origin and path template),
  * and how many ports its page has open, for a log line when the page stops answering.
  */
@@ -226,6 +252,10 @@ async function connect() {
     const cmd = msg.cmd || {};
     if (cmd.kind === 'tab.open' || cmd.kind === 'tab.reload') {
       tabCommand(msg.id, cmd);
+      return;
+    }
+    if (cmd.kind === 'tab.close') {
+      closeTab(msg.id, cmd);
       return;
     }
     if (cmd.kind === 'tab.state') {

@@ -5,13 +5,13 @@
  * kind's signed-in layer has).
  */
 import type * as P from '@dither-chat/protocol';
-import { displayName, type FreeDisplay } from '@dither-accounts/browser';
+import { displayName, displayState, type FreeDisplay, type ScreenHealth } from '@dither-accounts/browser';
 
 export type PageState = 'loading' | 'login' | 'ready';
 
 export interface Facts {
   now: number;
-  sandbox: { started: boolean; error: string | null; browserAlive: boolean; display: FreeDisplay | number | null; liveView: boolean; startedAt: number };
+  sandbox: { started: boolean; error: string | null; browserAlive: boolean; screen?: ScreenHealth; display: FreeDisplay | number | null; liveView: boolean; startedAt: number };
   extensionAttached: boolean;
   /** The tab the browser shows (origin and path). */
   tab: string | null;
@@ -50,7 +50,8 @@ export function compute(f: Facts): Computed {
   } else if (!s.started) {
     layers.push({ name: 'display', state: 'waiting', note: 'starting the display, the browser and the live view' });
   } else {
-    layers.push({ name: 'display', state: 'ok', note: `${displayName(s.display)}${s.liveView ? ', live view on' : ''}` });
+    // A live view server that died shows here while it is started again (packages/browser screen.ts health).
+    layers.push({ name: 'display', ...(s.screen && !s.screen.ok ? displayState(s.display, s.screen) : { state: 'ok' as const, note: `${displayName(s.display)}${s.liveView ? ', live view on' : ''}` }) });
     if (!s.browserAlive) {
       status = 'error';
       layers.push({ name: 'browser', state: 'failed', note: 'Chromium exited' });

@@ -115,7 +115,7 @@ let slowFor = fast ? 2_000 : 10 * 60_000;
 function facts(): Facts {
   return {
     now: Date.now(),
-    sandbox: { started: !!sandbox && !sandboxError && display !== null && startedAt > 0, error: sandboxError, browserAlive: !!sandbox?.browserAlive, display, liveView: vncSocket !== null, startedAt },
+    sandbox: { started: !!sandbox && !sandboxError && display !== null && startedAt > 0, error: sandboxError, browserAlive: !!sandbox?.browserAlive, screen: sandbox?.screenHealth, display, liveView: vncSocket !== null, startedAt },
     extensionAttached: bridge.connected,
     tab,
     page,
@@ -764,6 +764,8 @@ async function boot() {
       startUrl: `${origin}/explore`,
       noSandbox: !!cfg.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',
       log,
+      // The live view's server down or back (it is started again): said in the status at once.
+      onScreenHealth: () => status(true),
     });
     try {
       await sandbox.start();

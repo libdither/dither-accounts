@@ -17,7 +17,7 @@
  * (packages/passkey signin.ts) is the attention `approval`, saying what asks it again.
  */
 import { type PasskeySummary, refusalMessage, refusalNote, type StandingRefusal } from '@dither-accounts/passkey';
-import { displayName, displayNote, type FreeDisplay } from '@dither-accounts/browser';
+import { displayName, displayState, type FreeDisplay, type ScreenHealth } from '@dither-accounts/browser';
 
 export const SETTLE_MS = 6000;
 /** Paths of the app that are about signing in, not a signed-in page. */
@@ -51,6 +51,8 @@ export interface View {
   /** The sandbox is up and its live view listens. */
   liveView: boolean;
   browserAlive: boolean;
+  /** The live view's server: down while it is started again (packages/browser Screen.health). */
+  screen?: ScreenHealth;
   attached: boolean;
   /** The extension should have attached by now. */
   attachOverdue: boolean;
@@ -170,7 +172,7 @@ export function layers(v: View): Layer[] {
   const p = v.passkey;
   const display: Layer =
     v.liveView
-      ? { name: 'display', state: 'ok', note: `${displayNote(v.display)}, live view ready` }
+      ? { name: 'display', ...displayState(v.display, v.screen) }
       : v.sandboxError
         ? { name: 'display', state: 'failed', note: v.sandboxError }
         : { name: 'display', state: 'waiting', note: 'starting the display' };

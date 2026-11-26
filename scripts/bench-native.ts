@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
 /**
  * The native apps' sandboxes (packages/sandbox) on each display: Signal Desktop, Telegram Desktop and Haveno (an X
- * app, through xwayland-satellite on wayland), each on x11, on each Xvnc (tigervnc, kasmvnc, turbovnc), on wayland
+ * app, through xwayland-satellite on wayland), each on x11, on each Xvnc (tigervnc, kasmvnc), on wayland
  * with sway on the GPU (gles2) and on wayland with sway drawing in software (pixman, what they get:
  * AppSandboxOptions.gpu). No network (`none`), a fresh temporary home, never signed in: each app gets as far as its
  * first screen.
  *
  *   bun scripts/bench-native.ts [--out native.json] [--reps 3] [--apps signal,telegram,haveno] [--shots <dir>]
- *                               [--configs x11,tigervnc,kasmvnc,turbovnc,gles2,pixman] [--max-load <load1>] [--wait-load-s 600]
+ *                               [--configs x11,tigervnc,kasmvnc,gles2,pixman] [--max-load <load1>] [--wait-load-s 600]
  *
  * For each: the sandbox up (screen, bus, audio), the app's first picture (a screenshot with more than a few colours),
  * then after 15 s CPU over 10 s and memory (PSS) by program, and whether input reaches it (a click on Telegram's Start
@@ -20,12 +20,8 @@ import { dirname, join } from 'node:path';
 import { type FreeDisplay, pickFreeDisplay, resolveBin } from '../packages/sandbox/src/index.ts';
 import { AppSandbox, type AppSandboxOptions } from '../packages/sandbox/src/sandbox.ts';
 import { AUDIO, resolveSignalDesktop } from '../extractors/signal/src/desktop/desktop.ts';
-import { cpuOver, log, memory, progName, quiet, tree, work } from './bench-lib.ts';
+import { argOf, cpuOver, log, memory, progName, quiet, tree, work } from './bench-lib.ts';
 
-const argOf = (name: string, def: string) => {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1]! : def;
-};
 const OUT = argOf('out', join(homedir(), '.cache/da-bench', `native-${new Date().toISOString().replace(/[:.]/g, '-')}.json`));
 const REPS = Number(argOf('reps', '3'));
 const APPS = argOf('apps', 'signal,telegram,haveno').split(',');
@@ -38,7 +34,6 @@ const ALL_CONFIGS = [
   { name: 'x11', backend: 'x11' as const, gpu: false },
   { name: 'tigervnc', backend: 'tigervnc' as const, gpu: false },
   { name: 'kasmvnc', backend: 'kasmvnc' as const, gpu: false },
-  { name: 'turbovnc', backend: 'turbovnc' as const, gpu: false },
   { name: 'gles2', backend: 'wayland' as const, gpu: true },
   { name: 'pixman', backend: 'wayland' as const, gpu: false },
   // sway as for native apps (pixman), with TigerVNC's w0vncserver as the live view.

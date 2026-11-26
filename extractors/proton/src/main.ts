@@ -20,7 +20,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BridgeServer, displayName, displayNote, type FreeDisplay, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, displayName, displayState, type FreeDisplay, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
 import { SendOnce } from '@dither-accounts/link/once';
 import { type ApiAnswer, type ApiRequest, ProtonApi, ProtonError } from './api.ts';
@@ -351,7 +351,7 @@ function layers(): Layer[] {
   const s = current();
   const browserFailed = !!sandboxError && /chromium/i.test(sandboxError);
   const screen: Layer = liveView
-    ? { name: 'display', state: 'ok', note: `${displayNote(display)}, live view ready` }
+    ? { name: 'display', ...displayState(display, sandbox?.screenHealth) }
     : sandboxError && !browserFailed
       ? { name: 'display', state: 'failed', note: sandboxError }
       : browserFailed
@@ -824,6 +824,8 @@ async function boot() {
       startUrl: `${mailOrigin}/`,
       noSandbox: !!cfg.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',
       log,
+      // The live view's server down or back (it is started again): said in the status at once.
+      onScreenHealth: () => status(true),
     });
     try {
       await sandbox.start();

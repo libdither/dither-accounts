@@ -330,7 +330,7 @@ test.skipIf(!systemd)('real systemd: main.ts as a service: a restart leaves its 
   units.push(unit);
   // Its output to a file: the start line says which launch it chose, and why.
   const out = join(dir, 'manager.out');
-  const run = Bun.spawnSync(['systemd-run', '--user', '--quiet', `--unit=${unit}`, '--collect', `--setenv=PATH=${process.env.PATH}`, `--working-directory=${ROOT}`, `--property=StandardOutput=append:${out}`, `--property=StandardError=append:${out}`, process.execPath, MAIN, '--data', dir, '--port', String(port), '--trace', '0', '--errors', '0'], { stdout: 'pipe', stderr: 'pipe' });
+  const run = Bun.spawnSync(['systemd-run', '--user', '--quiet', `--unit=${unit}`, '--collect', `--setenv=PATH=${process.env.PATH}`, `--working-directory=${ROOT}`, `--property=StandardOutput=append:${out}`, `--property=StandardError=append:${out}`, process.execPath, MAIN, '--data', dir, '--port', String(port), '--trace', '0', '--errors', '0', '--prepare-bins', '0'], { stdout: 'pipe', stderr: 'pipe' });
   expect(run.exitCode).toBe(0);
   const said = () => (existsSync(out) ? readFileSync(out, 'utf8') : '');
   const adapterLog = join(dir, `accounts/acc-svc-1-${RUN}/adapter.log`);
@@ -384,7 +384,7 @@ test('main.ts without systemd: SIGTERM leaves a detached launch running, and sto
     insertAccount(s, dir, `acc-main-${launch}-${RUN}`, {});
     s.db.close();
     const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('DITHER_ACCOUNTS_') && k !== 'INVOCATION_ID'));
-    const p = Bun.spawn(['bun', MAIN, '--data', dir, '--port', '0', '--launch', launch, '--trace', '0', '--errors', '0'], { env: clean, stdout: 'ignore', stderr: 'ignore' });
+    const p = Bun.spawn(['bun', MAIN, '--data', dir, '--port', '0', '--launch', launch, '--trace', '0', '--errors', '0', '--prepare-bins', '0'], { env: clean, stdout: 'ignore', stderr: 'ignore' });
     const extractors = () => ofDir(dir).filter((r) => readFileSync(`/proc/${r.pid}/cmdline`, 'utf8').includes('/src/main.ts'));
     await until(() => extractors().length === 1, 20_000, `${launch}: its extractor`);
     const [x] = extractors();

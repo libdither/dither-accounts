@@ -11,6 +11,7 @@ export default {
   name: 'Partiful',
   interfaces: ['chat'],
   entry: 'src/main.ts',
+  screen: true,
   add: {
     blurb:
       "Runs partiful.com in a sandboxed browser on this machine: Explore for a city (works before you sign in), your parties with who is going as Partiful shows it, each party's comments and host texts, and Partiful's chats, for dither-chat. You sign in to Partiful once in the live view with the code it texts you.",

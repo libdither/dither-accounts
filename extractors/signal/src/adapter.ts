@@ -24,7 +24,7 @@ import { ADD_MEMBERS_MAX, createGroupProblem, GROUP_RULES, PIN_DURATIONS, pollDr
 import { errorText, groupIdOfLink, isMessageRequest, joinError, lookupError, signalError, wantsCaptcha } from './add.ts';
 import { answerJoinParams, approvalParams, groupLeaving, groupModeration, isAdmin, joinRequests, labelOf, labelParams, moderateParams, ownLabel, parseJoinRequest, picturePath, quitParams } from './groups.ts';
 import { attachmentArg } from './attach.ts';
-import { ChildRegistry, type Logger } from './cli.ts';
+import { ChildRegistry, type Logger, signalCliEnv } from './cli.ts';
 import { Daemon, type DaemonExit } from './daemon.ts';
 import { DesktopCalls } from './desktop/calls.ts';
 import { type CallsHost, type DesktopOptions, SignalDesktop } from './desktop/desktop.ts';
@@ -277,7 +277,7 @@ export class SignalAdapter {
     // Keep the user's own ~/.config/signal-cli/config.json (account, output, ...) out of our runs.
     const globalCfg = join(host.accountDir, 'signal-cli.global.json');
     if (!existsSync(globalCfg)) writeFileSync(globalCfg, '{}\n', { mode: 0o600 });
-    this.env = { ...process.env, SIGNAL_CLI_CONFIG: globalCfg };
+    this.env = signalCliEnv({ ...process.env, SIGNAL_CLI_CONFIG: globalCfg });
     if (host.config.calls === true || this.callsOnly) {
       const make = opts.desktop ?? ((o: DesktopOptions) => new SignalDesktop(o));
       this.desktop = make({

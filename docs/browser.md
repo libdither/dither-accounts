@@ -53,103 +53,109 @@ screen of its own, made by one of the backends behind one abstraction (`packages
 the same things: a live view on `<account>/vnc.sock` (or `<account>/desktop/vnc.sock`) that the manager's page
 shows unchanged, real clicks at an element's middle, typed text, xdotool's key names, and a PNG of the screen.
 
-| | `x11` (the default) | `tigervnc`, `turbovnc` | `wayland`, `wayland-tigervnc` |
+| | `x11` (the default) | `tigervnc`, `kasmvnc` | `wayland`, `wayland-tigervnc` |
 |---|---|---|---|
-| screen | Xvfb on a free display number (`:80`–`:89`, `:100`–`:159`; Discord `:91`–`:99`) | Xvnc on a free display number from the same ranges: X server and VNC server in one process | a headless sway of the sandbox's own; its sockets in `<account>/wl` (0700), or in `$XDG_RUNTIME_DIR/dither-wl/<hash>` when the account's path leaves no room for sway's socket names; no display number, nothing in /tmp |
-| live view | x11vnc on the socket | the same Xvnc, on the socket (`-rfbunixpath`), with no TCP port (`-rfbport -1` for TigerVNC; TurboVNC opens none once given a path) | wayvnc (`wayland`) or TigerVNC's w0vncserver (`wayland-tigervnc`) on the same socket (no TCP or UDP port, no abstract socket) |
+| screen | Xvfb on a free display number (`:80`–`:89`, `:100`–`:159`; Discord `:91`–`:99`) | an Xvnc on a free display number from the same ranges: X server and VNC server in one process | a headless sway of the sandbox's own; its sockets in `<account>/wl` (0700), or in `$XDG_RUNTIME_DIR/dither-wl/<hash>` when the account's path leaves no room for sway's socket names; no display number, nothing in /tmp |
+| live view | x11vnc on the socket | the same Xvnc, on the socket (`-rfbunixpath`), with no TCP port (`-rfbport -1`) | wayvnc (`wayland`) or TigerVNC's w0vncserver (`wayland-tigervnc`) on the same socket (no TCP or UDP port, no abstract socket) |
 | input | xdotool | xdotool | an RFB client of the sandbox's own on that socket: the live view's server turns it into the seat's virtual pointer and keyboard |
 | text no US key makes (é, €, emoji) | xdotool's keysyms, each character first put on a key of its own for the screen's life (xmodmap): bound and unbound around each press, as xdotool does alone, an app can miss it | the same | an input method (input-method-v2 → the field's text-input-v3), as a person with an IME types it |
 | picture | ImageMagick's `import` | ImageMagick's `import` | grim |
 | apps | `DISPLAY` | `DISPLAY` | Chromium `--ozone-platform=wayland`; native apps get only the compositor's socket, as `<run>/wayland-0`, with Qt, GTK, SDL and Electron told to use it, and no X socket at all |
+| built from | nixpkgs | `tigervnc`: nixpkgs; `kasmvnc`: a fork (below) | sway, wayvnc, grim: nixpkgs; w0vncserver: a fork (below) |
 
-**Choosing.** The manager's `display_backend` (`--display-backend`, `DITHER_ACCOUNTS_DISPLAY_BACKEND`, or
-config.toml) is the default for every account, `x11` unless set: `x11`, `tigervnc`, `turbovnc`, `wayland` or
-`wayland-tigervnc`. An
-account's config can name its own, `displayBackend`: `bun packages/manager/src/cli.ts display <account> tigervnc` (or
-`default` to follow the manager), or `{ "settings": { "displayBackend": "tigervnc" } }` in a PATCH of
-`/api/accounts/<id>`. `kasmvnc` is refused there, with the reason (below). The account's extractor
-restarts to take it. The extractor gets the result as `DITHER_DISPLAY_BACKEND`, and the account's detail shows it
-(`process.displayBackend`). A manager that adopts extractors started with another backend restarts them one at a time,
-as it does for changed code (docs/supervisor.md). Haveno follows it too: JavaFX draws only through X, so on wayland it gets an Xwayland of its own inside its sandbox (xwayland-satellite: docs/native-sandbox.md).
+**Choosing.** The default for every account is, first, the one picked on the manager's page (**Screens**, at the
+foot of the home page: `PUT /api/display` with `{ "default": "<backend>" }`, or `null` to go back), then the
+manager's `display_backend` (`--display-backend`, `DITHER_ACCOUNTS_DISPLAY_BACKEND`, or config.toml), then `x11`:
+`x11`, `tigervnc`, `kasmvnc`, `wayland` or `wayland-tigervnc`. The page's pick is kept in the manager's database, so
+it outlives a restart, and it wins over config.toml until **config.toml's** is picked again. Changing it restarts the
+running accounts that follow it, one at a time per kind (docs/supervisor.md). An account's config can name its own,
+`displayBackend`: its pane's **Screen**, `bun packages/manager/src/cli.ts display <account> tigervnc` (or `default` to
+follow the manager), or `{ "settings": { "displayBackend": "tigervnc" } }` in a PATCH of `/api/accounts/<id>`; its
+extractor restarts to take it. The extractor gets the result as `DITHER_DISPLAY_BACKEND`, and the account's detail
+shows it (`process.displayBackend`). A manager that adopts extractors started with another backend restarts them one
+at a time, as it does for changed code (docs/supervisor.md). Only kinds with a screen take part: their manifest says
+`screen: true` (Telegram's only when its Desktop app is on). Any other kind (mail, calendar, signal-cli, the feeds)
+answers 400 to a `displayBackend`, gets no `DITHER_DISPLAY_BACKEND`, shows `process.displayBackend: null`, has no
+**Screen**, and is never restarted when the default changes. Haveno follows it too: JavaFX draws only through X, so
+on wayland it gets an Xwayland of its own inside its sandbox (xwayland-satellite: docs/native-sandbox.md).
+
+**The backends are a list.** `packages/spec/src/display.ts` names them (each with its protocol, X or Wayland, the
+label its log lines and the page use, and `experimental: 'fork'` with a note for one built from a fork);
+`packages/browser/src/screen.ts` maps each to its `Screen` class, and everything else asks the `Screen` (`protocol`,
+`chromiumFlags()`, `adjustPrefs()`, `needsOwnBus`, `runtimeDir`, `describe()`, `health()`), never which class it is.
+Within a class, what differs between backends is one record: `X_SERVERS` (Xvfb or an Xvnc, and the Xvnc's own flags)
+and `WAYLAND_SERVERS` (wayvnc or w0vncserver: program, flags, environment, files). A new backend is an entry in the
+list and in one of those, and its programs in `nix/bins.json` and `BACKEND_BINS` (`packages/browser/src/bins.ts`;
+nix/README.md).
+
+**Experimental: built from a fork.** `kasmvnc` and `wayland-tigervnc` run a VNC server built from a fork this project
+keeps ([zyansheep/KasmVNC](https://github.com/zyansheep/KasmVNC),
+[zyansheep/tigervnc](https://github.com/zyansheep/tigervnc)): upstream's latest stable release with our commits on
+top, rebuilt, smoke-tested and released by the fork's own CI, and brought here by a daily pull request
+(nix/README.md, "Forks"). They are marked experimental, and the page says "Experimental fork" beside them, because
+what runs is not a build any distribution ships or upstream supports: our patches carry the risk, a new upstream
+release reaches them only once the fork's rebase and smoke test pass, and they have had far less use than x11,
+tigervnc and wayland.
 
 **Why sway, not cage.** cage 0.3 as nixpkgs builds it always starts Xwayland, which takes a global X display number
 and an abstract socket, the two things this backend is for getting rid of. It also has no IPC (to close a window as a
 window manager does, or to know the output and seat are ready), needs another tool to size its output, and exits when
 its one app does. sway with `xwayland disable` listens on its Wayland socket and its IPC socket and nothing else.
 
-**The Xvnc backends.** `tigervnc` (TigerVNC's Xvnc, nixpkgs `tigervnc`) and `turbovnc` (TurboVNC's, nixpkgs
-`turbovnc`) are X servers with the VNC server inside: to an app they are an X display like Xvfb, so everything x11
-does works the same way on them (xdotool, `import`, the clipboard through xclip both ways, X-only apps such as Haveno,
+**The Xvnc backends.** `tigervnc` (TigerVNC's Xvnc, nixpkgs `tigervnc`) and `kasmvnc` (KasmVNC's, `Xkasmvnc` from the
+fork) are X servers with the VNC server inside: to an app they are an X display like Xvfb, so everything x11 does
+works the same way on them (xdotool, `import`, the clipboard through xclip both ways, X-only apps such as Haveno,
 display picking and its locks, Chromium capturing the screen for a share, a takeover after a hard kill), and the
-tests run each of those on each Xvnc (`packages/browser/test/xvnc.test.ts`, `packages/sandbox/test/sandbox-xvnc.test.ts`,
-`screenshare.test.ts`). What changes is the live view: no x11vnc reading the screen back through System V shared
-memory, so an Xvnc sandbox holds no shm segment (an x11 one about 42, from a machine-wide limit of 4096), and one
-process instead of two. Each runs with `-nolisten tcp`, no security type (the socket is the account's, 0700), always
-shared (the manager's view and a sandbox's own client at once), and `HOME` in `<account>/xvnc-home`, where it keeps
-what it writes. TigerVNC answers noVNC's list (Tight first) with its JPEG encoding for photo-like areas and Tight for
-the rest; TurboVNC with Tight and JPEG subrects. `-rfbport -1` is TigerVNC's way to open no port; TurboVNC opens none
-once given `-rfbunixpath` and refuses `-rfbport -1`. TurboVNC runs with `-deferupdate 1`: by default it holds each
-change 40 ms to send more at once, which kept its live view near 20 frames a second and added 40 ms to every click
-(TigerVNC's default is 1 ms). The tests read `/proc/net/{tcp,tcp6,udp,udp6}` against each
-Xvnc's sockets (what `ss -p` shows): no inet socket at all.
+tests run each of those on each Xvnc (`packages/browser/test/xvnc.test.ts`,
+`packages/sandbox/test/sandbox-xvnc.test.ts`, `screenshare.test.ts`). What changes is the live view: no x11vnc reading
+the screen back through System V shared memory, so an Xvnc sandbox holds no shm segment (an x11 one about 42, from a
+machine-wide limit of 4096), and one process instead of two. Each runs with `-nolisten tcp`, no security type (the
+socket is the account's, 0700, and itself 0600), always shared (the manager's view and a sandbox's own client at
+once), `-AcceptSetDesktopSize=0` (the sandbox sets the screen's size, not a viewer), and `HOME` in
+`<account>/xvnc-home`, where it keeps what it writes. A screen counts as started once its live view has said "RFB"
+on the socket, not when the socket appears. The tests read `/proc/net/{tcp,tcp6,udp,udp6}` against each Xvnc's
+sockets (what `ss -p` shows): no inet socket at all.
 
-**TigerVNC on Wayland (`wayland-tigervnc`).** The same headless sway as `wayland`, with TigerVNC 1.16's Wayland
-server, w0vncserver, as the live view in wayvnc's place: everything else (sway, its directory, grim, the input method,
-the sandbox's own RFB client for input, screen sharing through the portal) is the `wayland` backend's. nixpkgs'
-w0vncserver does not run there, for two reasons, both fixed by patches in `nix/w0vncserver.nix` (nixpkgs' tigervnc,
-patched, built without its viewer and Xvnc; a minute or two):
+KasmVNC needs two more flags: `-DisableBasicAuth` (with no user in `~/.kasmpasswd` a viewer gets no picture and no
+input, and nothing is logged, even with no security type) and `-publicIP 127.0.0.1` (else it asks STUN servers for
+its public address at every start). Its web client and its HTTP and WebSocket listener are not built: the manager's
+noVNC is the viewer, over the Unix socket. KasmVNC changed RFB in ways noVNC does not speak (an 11-byte pointer event
+where RFB's is 6, its own messages 253 and 254 to every viewer when another joins or leaves, the clipboard only
+through its message 180); the fork speaks standard RFB to any client that announces neither of KasmVNC's own
+pseudo-encodings (disconnect notify, direct mouse), which its own web client always sends. So noVNC and the sandbox's
+own clients get 6-byte pointer events, no 253 or 254, and the clipboard as ClientCutText and ServerCutText, and
+nothing on our side knows KasmVNC is different. The fork also opens FFmpeg's libraries by name instead of walking
+`/usr/lib` at every start (5–18 s before it answered on CI), and FFmpeg is left out of the build, so its video modes
+are off.
 
-- It asks the desktop portal first (RemoteDesktop and ScreenCast) and falls back to the compositor's own protocols
-  (wlr-screencopy, wlr-virtual-pointer, virtual-keyboard) only when the portal answers without them. With no portal
-  on the bus, or no bus, its check threw and it exited at start. Patched: no portal to ask is no portal.
-- On the first viewer it makes a virtual keyboard and gives it the seat's keymap, read from the seat's keyboard. A
-  headless sway has no input devices, so its seat has no keyboard (`wl_seat.capabilities` 0), and it read a null
-  pointer: SIGSEGV in `VirtualKeyboard`'s constructor, right after `create_virtual_keyboard` (gdb). Patched: with no
-  keyboard on the seat it gives the virtual keyboard libxkbcommon's default keymap (US: the sandbox sets
-  `XKB_DEFAULT_LAYOUT=us`, as wayvnc's `-k us`); sway adds that keyboard to the seat, and w0vncserver then reads the
-  keymap back from the seat as it would on a desktop. Its keymap-echo guard (it compares the text) stops a loop.
-
-With the first patch it needs no session bus, and it is given none: `DBUS_SESSION_BUS_ADDRESS` names a socket in the
-compositor's directory that is never made. On the machine's bus it would find the owner's portal and could show the
-owner's own screen, as a Chromium given that bus could share it (below). Its flags: `-rfbunixpath <socket> -rfbport -1`
-(the socket, no TCP port), `-SecurityTypes None` and `-AlwaysShared` as for TigerVNC's Xvnc, `-desktop sandbox` (else
-viewers are told `user@host`), `-FrameRate 60`. What it lacks against wayvnc, checked through noVNC in a headless
-Chromium (`scripts/liveview-check.ts`):
-
-| through noVNC | `tigervnc` (Xvnc) | `wayland` (wayvnc) | `wayland-tigervnc` (w0vncserver) |
-|---|---|---|---|
-| click, keys (a, Shift+B, 1, Enter) | yes | yes | yes |
-| the live view's typed text with characters no US key has (é, €, ü as keysyms) | typed | dropped | dropped |
-| clipboard, viewer → sandbox (a long paste) | yes | yes | no |
-| clipboard, sandbox → viewer | yes | yes | no |
-| the viewer asking to resize the screen | refused | refused | refused |
-| the screen changing size (sway's output) | (no sway) | the viewer follows | the viewer follows |
-
-w0vncserver 1.16 has no clipboard on wlroots at all (no data-control), so the live view's paste of long or many-line
-text does nothing there; short one-line text is typed as keys and works for what a US keyboard has. Neither Wayland
-server types a keysym that is not on its keymap's keys, so é and € from the live view are lost on both (the
-sandbox's own typing sends them through the input method instead). It also draws the pointer into the picture (no
+**TigerVNC on Wayland (`wayland-tigervnc`).** The same headless sway as `wayland`, with TigerVNC's Wayland server,
+w0vncserver, as the live view in wayvnc's place: everything else (sway, its directory, grim, the input method, the
+sandbox's own RFB client for input, screen sharing through the portal) is the `wayland` backend's. The released
+w0vncserver does not run there; the fork carries upstream's unreleased fixes (it no longer exits when there is no
+desktop portal to ask, and it has a clipboard on wlroots) and our own for a headless seat (it read the seat's
+keyboard's keymap, and a headless sway has no keyboard: a SIGSEGV at the first viewer; it now gives its virtual
+keyboard the default keymap, US, as the sandbox sets `XKB_DEFAULT_LAYOUT=us`). It needs no session bus and is given
+none: `DBUS_SESSION_BUS_ADDRESS` names a socket in the compositor's directory that is never made. On the machine's bus
+it would find the owner's portal and could show the owner's own screen, as a Chromium given that bus could share it
+(below). Its flags: `-rfbunixpath <socket> -rfbport -1`, `-SecurityTypes None` and `-AlwaysShared` as for the Xvnc,
+`-desktop sandbox` (else viewers are told `user@host`), `-FrameRate 60`. It draws the pointer into the picture (no
 cursor of its own to the viewer), copies each frame through shared memory (no dmabuf), and has no H.264.
 
-**KasmVNC is refused.** `kasmvnc` (KasmVNC 1.5.2, packaged from its upstream Debian build in `nix/kasmvnc.nix`,
-pinned by hash) runs in the sandbox code and in the benchmarks, but the manager does not offer it, because the live
-view cannot drive it: KasmVNC changed RFB in ways noVNC (the manager's page and dither-chat's live view) does not speak.
+**The live view through noVNC**, as the manager's page drives it (`scripts/liveview-check.ts`: the repo's noVNC in a
+headless Chromium, through a WebSocket bridged to a sandbox's socket as the manager bridges it):
 
-- Pointer events are 11 bytes (a 16-bit button mask, x, y, and two 16-bit scroll fields) where RFB's are 6: the
-  first mouse move from noVNC desynchronises the client-to-server stream, and the server reads garbage from then on.
-- It sends every viewer its own messages 253 and 254 when another viewer joins or leaves; noVNC drops the connection
-  on an unknown message, and the manager's page and a sandbox's own input client are two viewers.
-- The clipboard goes only through its message 180 (binary clipboard). It drops RFB's ClientCutText, plain and
-  extended ("Client sent old cuttext msg, ignoring"), so noVNC's clipboard does nothing.
-- With no user in `~/.kasmpasswd` a viewer gets no picture and no input, and nothing is logged; `-DisableBasicAuth`
-  is needed even with no security type.
+| through noVNC | `x11` | `tigervnc` | `kasmvnc` | `wayland` | `wayland-tigervnc` |
+|---|---|---|---|---|---|
+| click, keys (a, Shift+B, 1, Enter) | yes | yes | yes | yes | yes |
+| typed text with characters no US key has (é, €, ü as keysyms) | typed | typed | typed | é, ü (no €) | dropped |
+| clipboard, viewer → sandbox | no | yes | yes | yes | yes |
+| clipboard, sandbox → viewer | no | yes | yes | yes | no |
+| the viewer asking to resize the screen | refused | refused | refused | refused | refused |
+| the screen changing size (sway's output) | (no sway) | (no sway) | (no sway) | the viewer follows | the viewer follows |
 
-Its own web client speaks all that, but it is served from KasmVNC's built-in HTTP and WebSocket listener, which takes
-a TCP port (`-websocketPort`); the bridge carries the Unix socket's RFB only. It also asks STUN servers for its public
-address at every start unless given `-publicIP` (the sandbox gives `127.0.0.1`), and the packaging patches its
-hardcoded `/usr/bin/xkbcomp`. Its video mode is left without FFmpeg: it looks for `libavformat.so` by walking
-`/usr/lib/` and `/usr/lib64` whole at every start, before it answers on its socket (5–18 s on an Ubuntu CI runner),
-so the packaging points both at an empty directory.
+A Wayland server types only keysyms on its keymap's keys, so what the live view types beyond them is lost there (the
+sandbox's own typing sends any text through the input method instead). w0vncserver takes a paste from the viewer but
+sends nothing back when the page copies.
 
 **What a page sees.** Chromium 155 compared on both, same flags, same machine:
 
@@ -172,8 +178,32 @@ so the packaging points both at an empty directory.
 
 **Windows.** sway tiles the app's main window, so it fills the screen (on x11 Chromium's `--window-size` does
 that, and the native sandbox's fit loop). A window that opens while a tiled one is there floats at its own size, as
-a dialog does. That is decided once per window as it opens: a sway `for_window` rule would run again on every title
-change (a chat's unread count) and float the main window too.
+a dialog does. That is decided once per window as it opens, one window at a time, so two that open together get one
+tiled and one floating, never both floating: a sway `for_window` rule would run again on every title change (a chat's
+unread count) and float the main window too. The sway IPC connection that watches windows opening is opened again
+when it closes (logged), until the screen stops; every IPC request has a deadline (5 s), past which it fails and the
+connection is closed.
+
+**When something dies.** wayvnc is watched: when it exits, the screen says so (`health()`: "wayvnc exited (SIGKILL);
+starting it again"), the extractor's status shows its display layer failed with that note, and it is started again
+(after 0.5 s, doubling to 30 s while it keeps failing), the sandbox's own RFB client reconnects and the seat's pointer
+and keyboard come back; clicks and keys sent meanwhile wait for it (up to 15 s) instead of failing at once. x11vnc is
+kept the same way on x11. The renderer: a browser's sway uses gles2 only when this user can open the render node
+(read and write on `/dev/dri/renderD*`), and if sway still fails to start on it, it starts once more with pixman (a
+warning says so). Screen sharing: if PipeWire, WirePlumber or the portals fail to start, that is logged ("screen
+sharing is off for this run") and the sandbox starts with its own empty bus and no capture, rather than not at all.
+
+**The runtime directory fallback.** Every directory level the compositor's place is made under, from the runtime
+directory (or /tmp) down, is checked before anything goes in it: made 0700 if missing, closed if it is ours and open,
+and refused (the screen does not start) when it is a symlink, not a directory, or another user's. A level made first
+by someone else in /tmp can neither see the sockets nor point them elsewhere.
+
+**Typing in the live view.** A person's keys in the live view reach wayvnc as keysyms, which it types on its own
+keymap: `us-altgr-intl` (US, with the rest of Latin on AltGr and no dead keys). With plain `us`, é, ß, £, ñ, ü and €
+were dropped; now they arrive, and US keys are where they were. Still dropped: anything on no key of that keymap,
+which is emoji, CJK and most non-Latin scripts. Typing them from the live view needs the viewer's own input method
+to send text, which RFB has no message for; the extractor's own typing (the API's `type`) does not have this gap,
+since it goes through the input method.
 
 **Screen sharing, and the machine's session bus.** On wayland a browser sandbox's Chromium gets a session bus of its
 own (`packages/browser/src/screenshare.ts`), never the machine's. The machine's session bus has the owner's portal
@@ -459,6 +489,13 @@ scripts, the rest are open.
 - `wayland-tigervnc` runs a TigerVNC we patch and build (nix/w0vncserver.nix); the others run nixpkgs' or upstream's
   builds as shipped.
 
+**Programs.** Every program a screen or a sandbox starts (Xvfb, x11vnc, xdotool, ImageMagick; sway, wayvnc, grim;
+dbus, PipeWire, WirePlumber, the portals; bubblewrap, pasta, xwayland-satellite) comes from the repo's one pinned
+nixpkgs, built ahead of time: the manager builds them at its start into `<data>/bins` (`prepare_bins`, on by default)
+and gives extractors of a kind with a screen that directory as `DITHER_BINS`; they start once it is ready. An
+extractor never runs `nix build`. Without it a program is looked for in its `*_BIN` override and on PATH, and one
+found nowhere fails the start at once, saying how to prepare it (nix/README.md).
+
 **Limits.** Discord's extension port is picked free on wayland (on x11 it comes from the display number). No
 clipboard tool is used on either backend. An extractor killed outright leaves its compositor's directory (its config
 and wayvnc's control socket); the next start on that account empties it.
@@ -499,8 +536,11 @@ ref is caught, that the screenshot is a PNG, and that a closed tab is gone.
 
 `packages/browser/test/wayland.test.ts` covers the wayland backends: its parts on their own (the key names, text split
 into keys and input-method runs, the Wayland and sway IPC wire, the RFB handshake against a stand-in server, the
-config and flags), then a real headless sway and wayvnc (RFB on the socket and nothing else, no TCP or abstract
-socket, the seat's pointer and keyboard, grim's PNG), then Chromium on it: a click, Shift-held capitals, é, € and an
+config and flags, the runtime directory checks against a hostile parent, a render node it cannot open, an IPC
+request nobody answers), then a real headless sway and wayvnc (RFB on the socket and nothing else, no TCP or abstract
+socket, the seat's pointer and keyboard, grim's PNG; two windows opening together, one tiled and one floating; wayvnc
+killed, its health down meanwhile, keys sent then still arriving, and a click after; é ß £ € ñ typed as a viewer's
+keysyms; screen sharing whose PipeWire fails, run with the bus alone), then Chromium on it: a click, Shift-held capitals, é, € and an
 emoji typed into a field arrive as trusted input with the right `code`s, and the page has a fine pointer and hover.
 `packages/sandbox/test/sandbox-wayland.test.ts` runs a native app on it and checks it sees only `wayland-0`, no X.
 Both run the real-sway parts twice, with wayvnc and with w0vncserver (`wayland-tigervnc`, which must also have no

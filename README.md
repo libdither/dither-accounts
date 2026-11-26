@@ -246,7 +246,7 @@ bun packages/manager/src/cli.ts apps                # apps, their grants and req
 bun packages/manager/src/cli.ts approve <request>   # or on the page
 bun packages/manager/src/cli.ts import-dither-chat --hub-data <dither-chat data dir> --accounts <id>
 bun packages/manager/src/cli.ts forget <id>         # hand an account back (its directory stays)
-bun packages/manager/src/cli.ts set <id> <setting> on|off   # a kind's own setting (its manifest's `settings`, e.g. Signal's calls); restarts it
+bun packages/manager/src/cli.ts set <id> <setting> on|off|<text>   # a kind's own setting (its manifest's `settings`, e.g. Signal's calls, Luma's city; "" clears a text one); restarts it
 bun packages/manager/src/cli.ts set-password --file <file>   # the page's password (or on stdin); signs every browser out
 bun packages/manager/src/cli.ts sessions | revoke-sessions   # the page's signed-in browsers
 bun packages/manager/src/cli.ts export-to-dither-chat <id> --hub-data <dither-chat data dir>
@@ -268,7 +268,7 @@ How to move a dither-chat account here and back is in dither-chat's `docs/accoun
   [whatsapp.md](docs/whatsapp.md), [telegram.md](docs/telegram.md), [gmessages.md](docs/gmessages.md),
   [x.md](docs/x.md), [reddit.md](docs/reddit.md), [substack.md](docs/substack.md), [lesswrong.md](docs/lesswrong.md), [messenger.md](docs/messenger.md) (and Instagram), [t3.md](docs/t3.md),
   [mastodon.md](docs/mastodon.md), [lemmy.md](docs/lemmy.md), [bluesky.md](docs/bluesky.md), [zulip.md](docs/zulip.md),
-  [partiful.md](docs/partiful.md).
+  [partiful.md](docs/partiful.md), [luma.md](docs/luma.md).
 - **Mail, calendars, contacts:** [google.md](docs/google.md), [proton.md](docs/proton.md), [mail.md](docs/mail.md),
   [dav.md](docs/dav.md), [ics.md](docs/ics.md).
 - **Money:** [statements.md](docs/statements.md) (how the finance kinds hand over files), [simplefin.md](docs/simplefin.md),

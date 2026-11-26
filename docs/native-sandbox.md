@@ -118,7 +118,9 @@ None of these is built; each is a door the sandbox already has the frame for.
 
 ## Adding another native app
 
-1. Its binary from nixpkgs (resolved by `resolveBin`: environment, PATH, `nix build`), its arguments to keep its data
+1. Its binary from nixpkgs (resolved by `resolveBin`: environment, PATH, `nix build`; the sandbox's own programs,
+   bubblewrap, pasta, the screen's and xwayland-satellite, come prepared from the pinned nixpkgs instead and are
+   never built in the extractor: nix/README.md), its arguments to keep its data
    under the sandbox's home and not update itself.
 2. `new AppSandbox({ dir: <account>/desktop, display, width, height, command, fitWindow, onEvent })` with a
    display from `pickFreeDisplay`: on x11 a display number (:80–:89, then :100–:159; claimed atomically in
@@ -126,12 +128,12 @@ None of these is built; each is a door the sandbox already has the frame for.
    socket is in the sandbox's own directory). Its environment comes from `displayEnv`, so a Qt, GTK or Electron app
    needs nothing of its own for either backend. An app that draws only through X (Haveno's JavaFX) says `x11App: true`:
    on x11 nothing changes; on wayland it gets an Xwayland of its own inside its sandbox (xwayland-satellite as `:0`,
-   started by the sandbox before the app and the way niri runs X apps), so each X window is an ordinary window of the
+   started by the sandbox before the app and the way niri runs X apps; the app starts once satellite logs that it is connected to its Xwayland, since a window made before that never got a Wayland window), so each X window is an ordinary window of the
    sandbox's sway, under the same live view, input and screenshots. Its X sockets are the sandbox's: the path one in
    its private `/tmp`, the abstract one in its own network namespace; Xwayland admits only the sandbox's user, by its
    name in the sandbox's `/etc/passwd`. Without a network namespace of its own (`host`, pasta missing) that abstract
    socket would be the machine's, so the sandbox takes an X display (Xvfb) instead, as it does when xwayland-satellite
-   (`XWAYLAND_SATELLITE_BIN`, else `PATH`, else `nixpkgs#xwayland-satellite`) cannot be had. Its live view is `sb.vncSocket` (`<dir>/vnc.sock`), reported as
+   (`XWAYLAND_SATELLITE_BIN`, else the prepared programs, else `PATH`) cannot be had. Its live view is `sb.vncSocket` (`<dir>/vnc.sock`), reported as
    `liveView: { vncSocket, width, height }`.
 3. Its session on disk: where it is, its format, when it says "signed in", and whether its key can be used from a
    client of our own or should only be watched.

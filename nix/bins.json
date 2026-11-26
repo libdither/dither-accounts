@@ -1,0 +1,33 @@
+{
+  "note": "The packages the sandboxes run (nix/README.md). Each is a BinSpec's `nix` attribute with `pinned: true` (packages/browser bins.ts, packages/sandbox bins.ts); a test checks both lists agree.",
+  "run": [
+    "xvfb",
+    "x11vnc",
+    "xdotool",
+    "imagemagick",
+    "sway-unwrapped",
+    "wayvnc",
+    "grim",
+    "dbus",
+    "pipewire",
+    "wireplumber",
+    "xdg-desktop-portal",
+    "xdg-desktop-portal-wlr",
+    "bubblewrap",
+    "passt",
+    "pulseaudio",
+    "bash",
+    "coreutils",
+    "xwayland-satellite",
+    "xmodmap",
+    "tigervnc",
+    "kasmvnc",
+    "w0vncserver"
+  ],
+  "test": [
+    "electron",
+    "xorg.xev",
+    "wev",
+    "xclip"
+  ]
+}

@@ -1,5 +1,5 @@
 /**
- * The native-app sandbox on each Xvnc backend (tigervnc, kasmvnc, turbovnc: packages/browser/src/screen.ts), as an
+ * The native-app sandbox on each Xvnc backend (tigervnc, kasmvnc: packages/browser/src/screen.ts), as an
  * X-only app sees it: its display's path socket bound in and nothing else of the machine's X (no abstract socket under
  * pasta), DISPLAY set, the live view on its socket with the Xvnc holding no inet socket, and xdotool's clicks and keys
  * arriving in the app. xev stands in for the app. Skipped without the native-app sandbox, pasta, xev or that Xvnc.
@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DISPLAY_BINS, pickFreeDisplay } from '@dither-accounts/browser';
+import { hasBackend } from '../../../test/needs.ts';
 import { AppSandbox } from '../src/sandbox.ts';
 import { BINS, resolveBin, tryBin } from '../src/bins.ts';
 import { inetSockets, rfbBanner } from '../../browser/test/inet.ts';
@@ -16,7 +17,7 @@ import { sandbox, satellite, why } from '../../../test/needs.ts';
 
 const pasta = sandbox && !!tryBin(BINS.pasta, () => {});
 const ok = why('an X app in the native-app sandbox (bubblewrap, pasta, xev)', sandbox && satellite && pasta);
-const BACKENDS = ok ? (['tigervnc', 'kasmvnc', 'turbovnc'] as const).filter((b) => why(`${b}'s Xvnc`, !!tryBin(DISPLAY_BINS[b], () => {}))) : [];
+const BACKENDS = ok ? (['tigervnc', 'kasmvnc'] as const).filter((b) => why(`${b}'s Xvnc`, hasBackend(b))) : [];
 
 const root = mkdtempSync(join(tmpdir(), 'dacc-sbx-xvnc-'));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -60,7 +61,9 @@ for (const backend of BACKENDS) {
           const r = Object.fromEntries(readFileSync(env, 'utf8').trim().split('\n').map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
           expect(r.display).toBe(`:${free.display}`);
           expect(r.x!.trim()).toBe(`X${free.display}`);
-          if (sb.info().network === 'pasta') expect(r.abstract).toBe('0');
+          // pasta is there (the file skips without it): the app's network namespace is its own, so it sees no abstract X socket.
+          expect(sb.info().network).toBe('pasta');
+          expect(r.abstract).toBe('0');
           const log = join(sb.home, 'xev.log');
           await until(() => existsSync(log));
           // xev's window on the screen (mapped and viewable), then one click: it lands in it.
@@ -72,8 +75,10 @@ for (const backend of BACKENDS) {
           await sb.screen!.type('qZ');
           await until(() => /keysym 0x71, q\)[\s\S]*keysym 0x5a, Z\)/.test(readFileSync(log, 'utf8')));
           // The Xvnc: one process of the sandbox's, no TCP or UDP socket.
-          const xvnc = (sb as any).procs?.find?.((p: { name: string }) => p.name === 'Xvnc')?.proc?.pid as number | undefined;
-          if (xvnc) expect(inetSockets(xvnc)).toEqual([]);
+          const { procs } = JSON.parse(readFileSync(join(dir, 'sandbox.json'), 'utf8')) as { procs: { name: string; pid: number }[] };
+          const xvnc = procs.filter((p) => p.name === 'Xvnc');
+          expect(xvnc.length).toBe(1);
+          expect(inetSockets(xvnc[0]!.pid)).toEqual([]);
         } finally {
           await sb.stop();
         }

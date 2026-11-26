@@ -18,24 +18,25 @@ import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { join, normalize, resolve } from 'node:path';
 import { consent, type Level, LEVELS } from '@dither-accounts/spec';
+import { BACKENDS, type BackendInfo, backendList, DISPLAY_BACKENDS, parseBackend } from '@dither-accounts/spec/display';
 import { IFACES } from '@dither-accounts/interfaces';
 import TYPES from '@dither-accounts/interfaces/types';
 import { ALG_NAMES, validCredentials } from '@dither-accounts/passkey';
 import { addForm } from './addform.ts';
-import type { AccessRequest, AccountDetail, AccountInfo, AccountPasskeys, AppInfo, ApproversState, GrantMatrix, ManagerState, MatrixCell, PageCallResult, StatusLayer } from './api-types.ts';
+import type { AccessRequest, AccountDetail, AccountInfo, AccountPasskeys, AppInfo, ApproversState, DisplayState, GrantMatrix, ManagerState, MatrixCell, PageCallResult, StatusLayer } from './api-types.ts';
 import type { Approvers, ApproverSocketData } from './approvers.ts';
 import { Auth, CLI_HEADER, cookieOf, fromOwnPage, loginPage, safeNext, sessionCookie } from './auth.ts';
 import { hashToken, newId, newToken, type Row, type Store } from './db.ts';
 import { listDir, LOG, logTail, ownDir } from './files.ts';
-import type { Kind } from './kinds.ts';
+import { type Kind, STAY_AWAKE } from './kinds.ts';
 import { localNotice, type Notices } from './notices.ts';
 import type { Provider } from './providers/index.ts';
 import { CallFailure, type ConsumerSocketData, type Router } from './router.ts';
-import { DISPLAY_BACKENDS, parseBackend, REFUSED_BACKENDS } from './display-backend.ts';
-import { accountDir, type ExtractorSocketData, LOCK, type Supervisor, writeSecret } from './supervisor.ts';
+import { accountDir, DISPLAY_BACKEND_SETTING, type ExtractorSocketData, LOCK, type Supervisor, writeSecret } from './supervisor.ts';
 
 /** The page's live view: a browser WebSocket carried to the account's VNC, a Unix socket on this machine. */
-type LiveViewData = { kind: 'liveview'; accountId: string; socket: string; vnc?: Socket<unknown>; queue: Uint8Array[]; closed?: boolean };
+/** `release`: while it is open, the account stays awake (supervisor.ts hold). */
+type LiveViewData = { kind: 'liveview'; accountId: string; socket: string; vnc?: Socket<unknown>; queue: Uint8Array[]; closed?: boolean; release?: () => void };
 type WsData = ConsumerSocketData | ExtractorSocketData | LiveViewData | ApproverSocketData;
 
 /**
@@ -221,6 +222,7 @@ export class Http {
           else if (d.kind === 'liveview') {
             d.closed = true;
             d.vnc?.end();
+            d.release?.();
           } else self.router.close(ws as any);
         },
       },
@@ -234,6 +236,8 @@ export class Http {
   private openLiveView(ws: ServerWebSocket<LiveViewData>) {
     const d = ws.data;
     if (!ownSocket(d.socket)) return void ws.close(1011, 'the live view is not listening');
+    // Someone watches (or signs in): the account does not fall asleep under them.
+    d.release = this.sup.hold(d.accountId, 'its live view is open');
     Bun.connect({
       unix: d.socket,
       socket: {
@@ -470,6 +474,11 @@ export class Http {
     if ((m = path.match(/^\/api\/sessions\/([\w-]+)$/)) && req.method === 'DELETE') return this.auth.revoke(m[1]) ? json({ revoked: 1 }) : bad('no such session', 404);
     if (path === '/api/state' && req.method === 'GET') return json(this.state());
     if (path === '/api/interfaces' && req.method === 'GET') return json({ types: TYPES });
+    if (path === '/api/display' && req.method === 'PUT') {
+      const b = await body<{ default?: unknown }>(req);
+      if (!('default' in b)) return bad('default is a backend, or null');
+      return (await this.setDefaultBackend(b.default)) ?? json(this.state());
+    }
 
     // The approver: paired phones, a new pairing code, forgetting one, and the recent requests (docs/approver.md).
     if (path === '/api/approvers' && req.method === 'GET') return json(await this.approversState());
@@ -567,7 +576,7 @@ export class Http {
       this.router.accountsChanged();
       return json(this.state());
     }
-    if ((m = path.match(/^\/api\/accounts\/([\w-]+)(?:\/(restart|log|files|call|secret))?$/))) {
+    if ((m = path.match(/^\/api\/accounts\/([\w-]+)(?:\/(restart|wake|log|files|call|secret))?$/))) {
       const a = s.account(m[1]);
       if (!a) return bad('no such account', 404);
       // The manager's own notices (notices.ts) are not a process: nothing to restart, disable, sign in or remove.
@@ -599,6 +608,11 @@ export class Http {
       }
       if (m[2] === 'restart' && req.method === 'POST') {
         await this.sup.restart(a.id);
+        return json(this.state());
+      }
+      // An account asleep, started now (the page's Wake): as a call would wake it, and it sleeps again when idle.
+      if (m[2] === 'wake' && req.method === 'POST') {
+        if (!this.sup.wake(a.id, 'the page')) return bad(`${a.label} is not asleep`, 409);
         return json(this.state());
       }
       if (!m[2] && req.method === 'GET') return json(this.detail(a));
@@ -642,12 +656,12 @@ export class Http {
           const known = new Map((this.kinds.get(a.kind)?.settings ?? []).map((x) => [x.key, x]));
           const cfg = parse<Record<string, unknown>>(a.config, {});
           for (const [k, v] of Object.entries(b.settings)) {
-            // Every kind's: the screen its sandboxes draw on (docs/browser.md "Display backends"); null is the manager's.
-            if (k === 'displayBackend') {
+            // A kind with a screen's: the one its sandboxes draw on (docs/browser.md "Display backends"); null is the
+            // manager's default.
+            if (k === 'displayBackend' && this.kinds.get(a.kind)?.screen) {
               if (v === null) delete cfg[k];
               else if (parseBackend(v)) cfg[k] = parseBackend(v);
-              else if (typeof v === 'string' && REFUSED_BACKENDS[v.trim().toLowerCase()]) return bad(`displayBackend ${v.trim().toLowerCase()} is not offered: ${REFUSED_BACKENDS[v.trim().toLowerCase()]}`);
-              else return bad(`displayBackend is one of ${DISPLAY_BACKENDS.join(', ')}, or null (the manager's default)`);
+              else return bad(`displayBackend is one of ${backendList()}, or null (the manager's default)`);
               continue;
             }
             const info = known.get(k);
@@ -665,7 +679,12 @@ export class Http {
             cfg[k] = v;
           }
           s.run('UPDATE account SET config = ?, updated_at = ? WHERE id = ?', JSON.stringify(cfg), Date.now(), a.id);
-          if (a.enabled && !this.router.inProcess.has(a.id)) await this.sup.restart(a.id);
+          // Stay awake is the manager's, not the extractor's: no restart for it. Turned on while asleep, it wakes.
+          const forExtractor = Object.keys(b.settings).some((k) => k !== STAY_AWAKE.key);
+          if (a.enabled && !this.router.inProcess.has(a.id)) {
+            if (forExtractor) await this.sup.restart(a.id);
+            else if (cfg[STAY_AWAKE.key] === true) this.sup.wake(a.id, 'it was set to stay awake');
+          }
         }
         // An empty name clears the nickname: the page names it by who it is signed in as again (its kind's name is
         // what the registry keeps then, as for an account added without one).
@@ -751,6 +770,8 @@ export class Http {
       enabled: !!a.enabled,
       running: st.running,
       online: st.online,
+      asleep: st.asleep,
+      sleep: this.sup.sleepInfo(a.id),
       error: st.error,
       status: this.statusOf(a.id),
       self: selfOf(this.router.lastEvent(a.id, 'status')?.self),
@@ -763,6 +784,7 @@ export class Http {
       ownDir: ownDir(this.dataDir, a.id, a.dir),
       createdBy: a.created_by,
       createdAt: a.created_at,
+      display: this.kinds.get(a.kind)?.screen ? { own: this.sup.ownBackend(a), uses: this.sup.backendOf(a)! } : null,
       settings: (this.kinds.get(a.kind)?.settings ?? []).map((x) => {
         const v = parse<Record<string, unknown>>(a.config, {})[x.key];
         return x.type === 'text'
@@ -871,6 +893,34 @@ export class Http {
     return { days: dayList, cells };
   }
 
+  displayState(): DisplayState {
+    const chosen = parseBackend(this.store.setting(DISPLAY_BACKEND_SETTING));
+    return {
+      backends: DISPLAY_BACKENDS.map((name) => {
+        const b: BackendInfo = BACKENDS[name];
+        return { name, label: b.label, protocol: b.protocol, experimental: b.experimental ?? null, note: b.note ?? null };
+      }),
+      default: this.sup.defaultBackend(),
+      chosen,
+      config: this.sup.configBackend(),
+    };
+  }
+
+  /**
+   * The page's default backend, or (null) config.toml's again. The running accounts that follow the default and now
+   * land on another backend restart on it; the rest are left as they are.
+   */
+  private async setDefaultBackend(v: unknown): Promise<Response | null> {
+    if (v !== null && !parseBackend(v)) return bad(`default is one of ${backendList()}, or null (config.toml's display_backend)`);
+    const s = this.store;
+    const was = new Map(s.accounts().map((a) => [a.id, this.sup.backendOf(a)]));
+    s.setSetting(DISPLAY_BACKEND_SETTING, v === null ? null : parseBackend(v));
+    const moved = s.accounts().filter((a) => a.enabled && !this.router.inProcess.has(a.id) && this.sup.backendOf(a) !== null && this.sup.backendOf(a) !== was.get(a.id) && this.sup.state(a.id).running);
+    // One at a time per kind, as a deploy's restarts (docs/supervisor.md): the answer does not wait for them.
+    void this.sup.restartMoved(moved.map((a) => a.id));
+    return null;
+  }
+
   state(): ManagerState {
     const s = this.store;
     const accounts: AccountInfo[] = s.accounts().map((a) => this.accountInfo(a));
@@ -887,6 +937,7 @@ export class Http {
         events: Object.entries(i.events).map(([name, e]) => ({ name, describe: e.describe })),
       })),
       accounts,
+      display: this.displayState(),
       apps: s.all('SELECT * FROM app ORDER BY created_at').map((a) => this.appInfo(a)),
       providers: Object.fromEntries(this.providers.map((p) => [p.name, p.status()])),
     };

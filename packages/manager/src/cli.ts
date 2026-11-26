@@ -7,7 +7,7 @@
  *   bun packages/manager/src/cli.ts grant <app> <interface> <level> [--accounts a,b] [--kinds k,l] [--dry-run]
  *   bun packages/manager/src/cli.ts import-dither-chat --hub-data <dir> (--accounts id,id | --all) [--dry-run]
  *   bun packages/manager/src/cli.ts forget <account>      stop it and drop it from the registry; its directory stays
- *   bun packages/manager/src/cli.ts display <account> <backend>|default   the screen its sandboxes draw on: x11, tigervnc, turbovnc, wayland or wayland-tigervnc (restarts it)
+ *   bun packages/manager/src/cli.ts display <account> <backend>|default   the screen its sandboxes draw on: x11, tigervnc, kasmvnc, wayland or wayland-tigervnc (restarts it)
  *   bun packages/manager/src/cli.ts export-to-dither-chat <account> --hub-data <dir>
  *   bun packages/manager/src/cli.ts set-password [--file <file>]   the page's password, from the file or stdin (never argv)
  *   bun packages/manager/src/cli.ts sessions                       the page's signed-in browsers
@@ -36,6 +36,7 @@ import { Database } from 'bun:sqlite';
 import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
+import { DISPLAY_BACKENDS, parseBackend } from '@dither-accounts/spec/display';
 import { CLI_HEADER, CLI_TOKEN_FILE, ensureSessionTable, LOGIN_FILE, MIN_PASSWORD, setPassword } from './auth.ts';
 import { newToken, Store } from './db.ts';
 import { ownDir } from './files.ts';
@@ -91,8 +92,8 @@ async function main() {
   const up = await live();
   switch (cmd) {
     case 'accounts': {
-      const rows = up ? (await call('GET', '/api/state')).accounts : store().accounts().map((a) => ({ ...a, enabled: !!a.enabled, running: false, online: false, error: null }));
-      for (const a of rows) console.log(`${a.id}  ${a.kind.padEnd(9)} ${String(a.label).padEnd(16)} ${a.enabled ? (a.online ? 'online' : a.running ? 'running' : a.error ? `not running: ${a.error}` : 'stopped') : 'disabled'}  ${a.dir}`);
+      const rows = up ? (await call('GET', '/api/state')).accounts : store().accounts().map((a) => ({ ...a, enabled: !!a.enabled, running: false, online: false, asleep: false, error: null }));
+      for (const a of rows) console.log(`${a.id}  ${a.kind.padEnd(9)} ${String(a.label).padEnd(16)} ${a.enabled ? (a.online ? 'online' : a.asleep ? 'asleep' : a.running ? 'running' : a.error ? `not running: ${a.error}` : 'stopped') : 'disabled'}  ${a.dir}`);
       if (!up) console.log(`(the manager is not running; read from ${dataDir})`);
       return;
     }
@@ -137,7 +138,7 @@ async function main() {
     }
     case 'display': {
       const [id, value] = rest;
-      if (!id || !value || !['x11', 'tigervnc', 'turbovnc', 'wayland', 'wayland-tigervnc', 'default'].includes(value)) die('display <account> x11|tigervnc|turbovnc|wayland|wayland-tigervnc|default');
+      if (!id || !value || (value !== 'default' && !parseBackend(value))) die(`display <account> ${DISPLAY_BACKENDS.join('|')}|default`);
       if (!up) die(`the manager is not running at ${url}`);
       await call('PATCH', `/api/accounts/${encodeURIComponent(id)}`, { settings: { displayBackend: value === 'default' ? null : value } });
       console.log(`${id}: display ${value === 'default' ? "the manager's default" : value} (its extractor restarts to take it)`);

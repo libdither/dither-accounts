@@ -1,6 +1,6 @@
 /**
- * A sandbox's live view: x11vnc (or, on the wayland backend, wayvnc: wayland.ts) on a Unix socket in the account's own
- * directory, and on no TCP port at all.
+ * A sandbox's live view: x11vnc (or an Xvnc, its own X server: xvncArgs below; or, on a Wayland backend, wayvnc or
+ * w0vncserver: wayland.ts) on a Unix socket in the account's own directory, and on no TCP port at all.
  *
  * It used to listen on 127.0.0.1:5900+display with -nopw, which let anything on this machine in: any local process, and
  * any web page open in a browser here, since libvncserver also takes a WebSocket upgrade on that port from any Origin.
@@ -80,11 +80,11 @@ export async function waitForVncSocket(socket: string, server: Subprocess, timeo
 }
 
 
-
 /**
- * Wait until the VNC server on the socket says its first words ("RFB 003.008\n"). An Xvnc listens on its socket before
- * it has finished starting (its keyboard map; KasmVNC also times its encoders), and answers a connection only then: the
- * live view works from here, not from when the socket appeared. Fails at once if the server exits.
+ * Wait until the VNC server on the socket says its first words ("RFB 003.008\n"). A server can have its socket's file
+ * before it answers there: bind() makes it before listen() (wayvnc on a loaded machine refused a connection then), an
+ * Xvnc listens before it has finished starting (its keyboard map), w0vncserver before it has found sway's protocols.
+ * The live view works from here, not from when the socket appeared. Fails at once if the server exits.
  */
 export async function waitForRfbBanner(socket: string, server: Subprocess, timeoutMs: number, name: string) {
   const deadline = Date.now() + timeoutMs;
@@ -106,32 +106,151 @@ export async function waitForRfbBanner(socket: string, server: Subprocess, timeo
   throw new Error(`${name}'s live view did not answer within ${timeoutMs}ms (${last})`);
 }
 
+/** The Xvnc backends (screen.ts): an X server with its VNC server built in. */
+export type XvncBackend = 'tigervnc' | 'kasmvnc';
+
 /**
- * An Xvnc for a display (the tigervnc, kasmvnc and turbovnc backends: screen.ts): the X server with its VNC server built
- * in, so one process where x11 has two, and the picture read where it is drawn instead of copied out through MIT-SHM
- * (x11vnc holds about 40 SysV shared memory segments, a machine-wide count with a limit; an Xvnc holds none).
- *
- * Each one's flags, checked with `ss -lntup`, `ss -lxp` and strace (socket, bind, connect, sendto):
- *   common     :<n> -geometry WxH -depth 24, -nolisten tcp (and -nolisten local for a sandbox shown the path socket
- *              only), -dpi 96 as for Xvfb (Chromium sizes its window by it)
- *   tigervnc   -rfbunixpath <path> and -rfbport -1: the socket, and no TCP port (without -rfbport -1 it takes 5900+n).
- *              -SecurityTypes None (the manager carries the socket, behind its login, as with x11vnc), -AlwaysShared
- *              (a viewer asking for the screen alone does not push the others off), -AcceptSetDesktopSize=0 (viewers
- *              cannot resize it, as wayvnc's -R)
- *   kasmvnc    the same (KasmVNC is TigerVNC's fork, its RFB on the Unix socket unchanged), and:
- *              -publicIP 127.0.0.1: without it, it asks STUN servers on the internet (stun.l.google.com and others)
- *              for the machine's public address at every start, for a UDP transport only its own web client uses.
- *              -DisableBasicAuth: else it gives a connection the rights its user has in ~/.kasmpasswd, and one with no
- *              user (any on the Unix socket) gets none: no picture, no input, and nothing said about it.
- *              With no -websocketPort it opens no websocket or HTTP listener, nor any UDP socket.
- *   turbovnc   -rfbunixpath <path> alone opens no TCP port (TurboVNC listens on TCP only when given no Unix path);
- *              its options are lowercase and its own: -securitytypes none, -alwaysshared, -noreverse, and no
- *              -rfbport -1, which it refuses. -deferupdate 1: it holds each change 40 ms by default to send more at
- *              once, which caps the live view near 20 frames a second and adds 40 ms to every click; TigerVNC's is 1 ms
+ * What each Xvnc is given beyond TigerVNC's flags (xvncArgs). KasmVNC is TigerVNC's fork, its RFB on the Unix socket
+ * the same once our fork speaks standard RFB to a standard client (nix/kasmvnc.nix), and:
+ *   -publicIP 127.0.0.1   without it, it asks STUN servers on the internet (stun.l.google.com and others) for the
+ *                         machine's public address at every start, for a UDP transport only its own web client uses
+ *   -DisableBasicAuth     else it gives a connection the rights its user has in ~/.kasmpasswd, and one with no user
+ *                         (any on the Unix socket) gets none: no picture, no input, and nothing said about it
+ * With no -websocketPort it opens no websocket or HTTP listener, nor any UDP socket.
  */
-export function xvncArgs(backend: 'tigervnc' | 'kasmvnc' | 'turbovnc', bin: string, display: string, socket: string, o: { width: number; height: number; pathSocketOnly?: boolean }): string[] {
-  const common = [bin, display, '-geometry', `${o.width}x${o.height}`, '-depth', '24', '-nolisten', 'tcp', ...(o.pathSocketOnly ? ['-nolisten', 'local'] : []), '-dpi', '96', '-desktop', 'sandbox'];
-  if (backend === 'turbovnc') return [...common, '-rfbunixpath', socket, '-securitytypes', 'none', '-alwaysshared', '-noreverse', '-deferupdate', '1'];
-  const tiger = [...common, '-rfbunixpath', socket, '-rfbport', '-1', '-SecurityTypes', 'None', '-AlwaysShared', '-AcceptSetDesktopSize=0'];
-  return backend === 'kasmvnc' ? [...tiger, '-publicIP', '127.0.0.1', '-DisableBasicAuth'] : tiger;
+export const XVNC_EXTRA: Record<XvncBackend, readonly string[]> = {
+  tigervnc: [],
+  kasmvnc: ['-publicIP', '127.0.0.1', '-DisableBasicAuth'],
+};
+
+/**
+ * An Xvnc for a display: the X server with its VNC server built in, so one process where x11 has two, and the picture
+ * read where it is drawn instead of copied out through MIT-SHM (x11vnc holds about 40 SysV shared memory segments, a
+ * machine-wide count with a limit; an Xvnc holds none). Its flags, checked with `ss -lntup`, `ss -lxp` and strace:
+ *   :<n> -geometry WxH -depth 24, -nolisten tcp (and -nolisten local for a sandbox shown the path socket only),
+ *   -dpi 96 as for Xvfb (Chromium sizes its window by it), -desktop sandbox (else the viewer is told user@host)
+ *   -rfbunixpath <path> -rfbport -1   the socket, and no TCP port (without -rfbport -1 it takes 5900+n)
+ *   -SecurityTypes None   the manager carries the socket, behind its login, as with x11vnc
+ *   -AlwaysShared         a viewer asking for the screen alone does not push the others off
+ *   -AcceptSetDesktopSize=0   viewers cannot resize it, as wayvnc's -R
+ * and what XVNC_EXTRA adds for each.
+ */
+export function xvncArgs(backend: XvncBackend, bin: string, display: string, socket: string, o: { width: number; height: number; pathSocketOnly?: boolean }): string[] {
+  return [
+    bin,
+    display,
+    '-geometry',
+    `${o.width}x${o.height}`,
+    '-depth',
+    '24',
+    '-nolisten',
+    'tcp',
+    ...(o.pathSocketOnly ? ['-nolisten', 'local'] : []),
+    '-dpi',
+    '96',
+    '-desktop',
+    'sandbox',
+    '-rfbunixpath',
+    socket,
+    '-rfbport',
+    '-1',
+    '-SecurityTypes',
+    'None',
+    '-AlwaysShared',
+    '-AcceptSetDesktopSize=0',
+    ...XVNC_EXTRA[backend],
+  ];
+}
+
+/**
+ * A live view's server kept running: started once (a failure then is the screen's start failing), and if it dies
+ * afterwards, started again, waiting 0.5 s, then twice as long after each failed try, up to 30 s. On Wayland every
+ * click and key goes through it too (wayland.ts), so while it is down health() says so, a status shows it, and input
+ * waits for it (ready) rather than failing on a socket that is gone.
+ */
+export class KeptServer {
+  private proc: Subprocess | null = null;
+  private down: string | null = null;
+  private stopped = false;
+  private back: Promise<void> | null = null;
+  private wake: (() => void) | null = null;
+
+  constructor(
+    private o: {
+      name: string;
+      /** Spawn it and wait until it serves; resolves to its process. */
+      start: () => Promise<Subprocess>;
+      /** After a restart, before it counts as up: what the screen needs of it again (its input client). */
+      after?: () => Promise<void>;
+      log: (level: 'debug' | 'info' | 'warn' | 'error', msg: string) => void;
+      onHealth?: (h: { ok: true } | { ok: false; note: string }) => void;
+      /** The first wait before a restart (tests make it short). */
+      firstWaitMs?: number;
+    },
+  ) {}
+
+  async start() {
+    this.watch(await this.o.start());
+  }
+
+  health(): { ok: true } | { ok: false; note: string } {
+    return this.down ? { ok: false, note: this.down } : { ok: true };
+  }
+
+  /** Resolves once it serves (at once when it does); rejects after `ms` or once stopped. */
+  async ready(ms = 15_000): Promise<void> {
+    if (!this.back) return;
+    let t: Timer | undefined;
+    try {
+      await Promise.race([this.back, new Promise<never>((_, reject) => (t = setTimeout(() => reject(new Error(`the live view's server (${this.o.name}) is down: ${this.down}`)), ms)))]);
+    } finally {
+      clearTimeout(t);
+    }
+    if (this.stopped) throw new Error(`the live view's server (${this.o.name}) is stopped`);
+  }
+
+  stop() {
+    this.stopped = true;
+    this.wake?.();
+  }
+
+  private watch(p: Subprocess) {
+    this.proc = p;
+    void p.exited.then(() => {
+      if (this.stopped || this.proc !== p) return;
+      this.down = `${this.o.name} exited (${p.signalCode ?? p.exitCode}); starting it again`;
+      this.o.log('warn', `the live view's server ${this.down}`);
+      this.o.onHealth?.(this.health());
+      this.back = this.restart().finally(() => (this.back = null));
+    });
+  }
+
+  private async restart() {
+    let wait = this.o.firstWaitMs ?? 500;
+    for (let tries = 1; !this.stopped; tries++) {
+      await new Promise<void>((r) => {
+        const t = setTimeout(r, wait);
+        this.wake = () => {
+          clearTimeout(t);
+          r();
+        };
+      });
+      this.wake = null;
+      if (this.stopped) return;
+      try {
+        const p = await this.o.start();
+        if (this.stopped) return;
+        await this.o.after?.();
+        this.down = null;
+        this.o.log('info', `the live view's server (${this.o.name}) is back, after ${tries} ${tries === 1 ? 'try' : 'tries'}`);
+        this.o.onHealth?.(this.health());
+        this.watch(p);
+        return;
+      } catch (e) {
+        this.down = `${this.o.name} did not start again (${(e as Error).message.slice(0, 160)}); trying again`;
+        this.o.log('warn', `the live view's server ${this.down}`);
+        wait = Math.min(wait * 2, 30_000);
+      }
+    }
+  }
 }

@@ -16,11 +16,19 @@ launch = "auto"                     # how extractors start: "scope" (a systemd u
                                     # restart and the next manager adopts them), "detached", "child" (stopped with the
                                     # manager); auto: scope when it is a systemd service's main process, else child
                                     # (docs/supervisor.md)
-display_backend = "x11"             # the screen sandboxes draw on: "x11" (Xvfb + x11vnc), "tigervnc" or "turbovnc"
-                                    # (an Xvnc: X server and live view in one), or "wayland" (a headless
-                                    # sway + wayvnc) or "wayland-tigervnc" (sway + TigerVNC's w0vncserver,
-                                    # nix/w0vncserver.nix); an account's config can name its own (displayBackend),
-                                    # docs/browser.md "Display backends"
+display_backend = "x11"             # the screen sandboxes draw on: "x11" (Xvfb + x11vnc), "tigervnc" (TigerVNC's Xvnc),
+                                    # "wayland" (a headless sway + wayvnc), or experimental, built from forks:
+                                    # "kasmvnc" (KasmVNC's Xvnc), "wayland-tigervnc" (sway + w0vncserver). A default
+                                    # picked on the manager's page wins over this one; an account's config can name its
+                                    # own (displayBackend). docs/browser.md "Display backends"
+prepare_bins = true                 # build the sandboxes' programs from the repo's pinned nixpkgs into <data>/bins at
+                                    # start (nix/README.md); false: they are found on PATH, or where DITHER_BINS says
+sleep = 1                           # 0: keep every account running. Else an account of a kind that may sleep (amazon,
+                                    # venmo, schwab, privacy, claude) has its extractor stopped after its kind's idle
+                                    # minutes with nothing to do, and started again by the next call, its next
+                                    # scheduled pull or a keep-alive (docs/supervisor.md "Sleeping")
+# sleep_idle_minutes = 20           # every kind's idle time instead of its own
+# sleep_keep_alive_hours = 6        # how often a kind with a keep-alive (amazon) is woken while asleep; 0: never
 
 # Extractors take their own settings from each account's config (on the page: Add account → More options), not here.
 # A few environment variables change how the sandboxes run, for machines that need it:

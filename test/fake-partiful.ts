@@ -6,7 +6,9 @@
  *     does, and it reloads when someone signs in (`signIn()`, as in the live view);
  *   - the Cloud Functions under /__api/<name> (api.partiful.com on the real site), the callable envelope both ways,
  *     the ones that need a sign-in refusing a call without the page's ID token;
- *   - Stream Chat's REST under /__stream (chat.stream-io-api.com), needing the chat token getStreamUserToken gave.
+ *   - Stream Chat's REST under /__stream (chat.stream-io-api.com), needing the chat token getStreamUserToken gave;
+ *   - Firestore's runQuery under /__firestore (firestore.googleapis.com), the chatRequests query only, needing the
+ *     page's ID token and asking for the signed-in user's own requests.
  *
  * Every call is recorded (function or path, params, whether the page's token went with it), so a test can tell the
  * hook made the app's own calls with the page's session, and which calls were never made.
@@ -25,10 +27,16 @@ export interface StreamCall {
   body: any;
   token: boolean;
 }
+export interface FirestoreCall {
+  path: string;
+  body: any;
+  token: boolean;
+}
 export interface FakePartiful {
   url: string;
   fns: FnCall[];
   stream: StreamCall[];
+  firestore: FirestoreCall[];
   pages: string[];
   world: World;
   signIn(): void;
@@ -44,6 +52,7 @@ export function startFakePartiful(o: { signedIn?: boolean } = {}): FakePartiful 
   let signedIn = o.signedIn ?? true;
   const fns: FnCall[] = [];
   const stream: StreamCall[] = [];
+  const firestore: FirestoreCall[] = [];
   const pages: string[] = [];
   const now = Date.now();
   let url = '';
@@ -171,6 +180,20 @@ export function startFakePartiful(o: { signedIn?: boolean } = {}): FakePartiful 
         const auth = req.headers.get('authorization');
         return fn(p.slice(7), body?.data, auth === `Bearer ${ID_TOKEN}`);
       }
+      if (p.startsWith('/__firestore/')) {
+        const body = await req.json().catch(() => null);
+        const token = req.headers.get('authorization') === `Bearer ${ID_TOKEN}`;
+        const path = decodeURIComponent(p.slice(12));
+        firestore.push({ path, body, token });
+        if (!signedIn || !token) return json({ error: { code: 403, status: 'PERMISSION_DENIED', message: 'Missing or insufficient permissions.' } }, 403);
+        const q = body?.structuredQuery;
+        const mine = `projects/getpartiful/databases/(default)/documents/users/${ME.id}`;
+        const asked = req.method === 'POST' && path === '/v1/projects/getpartiful/databases/(default)/documents:runQuery' && q?.from?.[0]?.collectionId === 'chatRequests';
+        const filter = q?.where?.fieldFilter;
+        if (!asked || filter?.field?.fieldPath !== 'participants' || filter?.op !== 'ARRAY_CONTAINS' || filter?.value?.referenceValue !== mine)
+          return json({ error: { code: 403, status: 'PERMISSION_DENIED', message: 'Missing or insufficient permissions.' } }, 403);
+        return json(w.chatRequests);
+      }
       if (p.startsWith('/__stream/')) {
         const body = req.method === 'GET' || req.method === 'DELETE' ? null : await req.json().catch(() => null);
         return sc(req, p.slice(9), Object.fromEntries(u.searchParams), body);
@@ -191,6 +214,7 @@ export function startFakePartiful(o: { signedIn?: boolean } = {}): FakePartiful 
     url,
     fns,
     stream,
+    firestore,
     pages,
     get world() {
       return w;

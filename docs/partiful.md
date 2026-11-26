@@ -36,7 +36,12 @@ domain `api.partiful.com`: `POST /<name>` with `{data: {params, paging?, userId,
 `Authorization: Bearer <ID token>`, answered `{result: {data, paging?}}`.
 
 Chats are Stream Chat: the function `getStreamUserToken` gives a token, and the page talks to
-`chat.stream-io-api.com` with it (`?user_id=&api_key=`, `Authorization: <token>`, `stream-auth-type: jwt`).
+`chat.stream-io-api.com` with it (`?user_id=&api_key=`, `Authorization: <token>`, `stream-auth-type: jwt`). Partiful's
+Stream users have Stream's own ids (the app gets one with `getOrCreateStreamUserId({userId})`) and no name, picture or
+Partiful id. Who a chat is between, by Partiful user, is in Firestore (project `getpartiful`): the collection
+`chatRequests`, one document per chat with its `streamChannelId` and its `participants` (references to `users/<uid>`);
+the app's chat list keeps the query `participants array-contains users/<you>` open, and the chat screen shows the
+participant who is not you.
 
 ### The calls this kind makes
 
@@ -56,6 +61,7 @@ Chats are Stream Chat: the function `getStreamUserToken` gives a token, and the 
 | React | `updateCommentReaction`, `updateHostMessageReaction` | `{eventId, commentId \| hostMessageId, reaction: {emoji, active}}` |
 | RSVP | `addGuest` | `{eventId, rsvp: {status, count: 1, message?}}` |
 | Chat token | `getStreamUserToken` | `{}` |
+| Chat requests | Firestore `POST /v1/projects/getpartiful/databases/(default)/documents:runQuery`, the ID token | `chatRequests` where `participants` ARRAY_CONTAINS your user document; only each chat's id and its participants' ids leave the page |
 | Chats | Stream `POST /channels` | `filter_conditions {type: 'messaging', members: {$in: [me]}}`, newest first |
 | A chat | Stream `POST /channels/messaging/<id>/query`, `/message`, `/read` | as the chat page |
 | Chat reactions | Stream `POST /messages/<id>/reaction`, `DELETE /messages/<id>/reaction/<type>` | |
@@ -94,8 +100,16 @@ test/partiful-browser.test.ts that no such call is made and no note reaches an a
   past ones, latest first. `foryou` is refused.
 - **Event conversations** (`event:<id>`, a group): comments (`c:<id>`, answers as replies), host messages (`h:<id>`,
   `extra.blast`), album photos (`m:<id>`, as media).
-- **Chats** (`chat:<channel id>`): direct when there are two members, otherwise a group; messages `s:<id>`. A Stream
-  user is keyed by the Partiful id it carries, else as `stream:<id>`.
+- **Chats** (`chat:<channel id>`): direct when there are two members, otherwise a group; messages `s:<id>`. A chat's
+  people go by their Partiful ids: the chat requests pair each Stream member with a Partiful participant (you with
+  yourself, then the one member left with the one participant left), as does a Partiful id a Stream user carries.
+  Anyone left unpaired is `stream:<id>`. The pairs are kept in the account's state file.
+- **People filed before that** (chats announced before state v2, as `stream:<id>`): each, once paired, goes out again
+  with the name and picture of their Partiful profile and `sameAs: <user id>`, so the hub puts the old id with their
+  person (yours with you).
+- **Names.** Anyone the hub was told of without a name (a comment's author, a chat's person, someone in a
+  notification) is looked up with `getUsers`, up to 100 at a time, at most once a day each. Someone whose profile the
+  site showed with a bio or socials goes out as `personAbout` too, which the same-person engine reads.
 - **Notifications** (`feed`, read-only): each a system message from whoever caused it, or from Partiful.
 - **Profiles**: name, picture, bio, socials as links, parties hosted and attended.
 - **RSVP** is the action `rsvp` (`{eventId, status: going | maybe | declined | interested, note?}`) at `manage`; it
@@ -104,7 +118,8 @@ test/partiful-browser.test.ts that no such call is made and no note reaches an a
 ## Pace and what it never does
 
 Reads go one at a time, 1.5 to 4 s apart; writes 1.2 to 2.1 s apart. The periodic read (notifications, your events,
-chats, and two upcoming events' comments in turn) runs every 4 to 8 minutes. A 429 stops every read for 10 minutes,
+the chat requests and chats, two upcoming events' comments in turn, and people without a name) runs every 4 to 8
+minutes. A 429 stops every read for 10 minutes,
 doubling to an hour, and says so in the status; a page asking for a check stops it until you clear it in the live view.
 It never solves a check, never signs in or up, and never marks notifications read.
 
@@ -113,15 +128,22 @@ It never solves a check, never signs in or up, and never marks notifications rea
 Layers: display, browser, extension, signed in, notifications. Signed out: attention `login`. A check: attention
 `captcha`. A 429: `rate_limited` until the wait ends.
 
+## Settings
+
+- `city`: the explore place.
+- `logShapes`: for fixing this kind, the first answer of each read is logged as its field names and types only, never
+  a value (keys that look like ids as `<id>`), to see what the site sends without a debugger in the sandbox.
+
 ## Tests
 
 - extractors/partiful/test/map.test.ts: the mapping, from invented fixtures (extractors/partiful/test/fixtures.ts).
 - test/partiful-browser.test.ts: the extractor in a real manager and Chromium against test/fake-partiful.ts, signed out
-  then signed in: Explore and paging, your events, a shown and a hidden guest list, comments, reactions, chats, the
-  RSVP refused below `manage`, a profile, pictures, a 429. Skipped without Xvfb, Chromium and x11vnc.
+  then signed in: Explore and paging, your events, a shown and a hidden guest list, comments, reactions, chats and
+  their people by Partiful id (the chat requests, `getUsers` names), the RSVP refused below `manage`, a profile,
+  pictures, a 429. Skipped without Xvfb, Chromium and x11vnc.
 
 ## Not yet seen on a signed-in account
 
 Read from the bundle, not yet from a live answer: `getEventMedia`'s answer shape, what `createComment` answers,
-which `rsvp` fields `addGuest` needs beyond status and count, and whether Stream users carry their Partiful id (if not,
-a chat's people stay `stream:<id>` and are not matched to event guests).
+which `rsvp` fields `addGuest` needs beyond status and count. The chat requests' REST answer is shaped after Firestore's
+runQuery format and the bundle's query, not yet seen live (`logShapes` shows it).

@@ -179,20 +179,61 @@ test('notifications: one read-only feed message each, in Partiful’s words, by 
   expect(M.feedConversation()).toEqual({ nativeId: 'feed', shape: 'channel', variant: 'feed', name: 'Notifications' });
 });
 
-test('chats (Stream): a direct chat and a group, people by Partiful id where Stream carries it, reactions as emoji', () => {
+test('chats (Stream): Stream ids alone until the chat requests pair them, then people by Partiful id, reactions as emoji', () => {
+  // Unpaired, a chat's people are Stream's (Partiful's Stream users carry no name or Partiful id), but one that carries
+  // its Partiful id is filed by it.
+  const bare = fresh();
+  const before = M.streamConversation(w.chats[0], ME_STREAM, bare)!;
+  expect(before.conv.participants).toEqual([`stream:strm-${ANN.id}`, `stream:${ME_STREAM}`]);
+  expect(bare.users.get(`stream:strm-${ANN.id}`)).toMatchObject({ name: null, photo: null });
+
   const ctx = fresh();
+  const requests = M.chatRequestsOf({ requests: [{ channel: 'dmAnnQuinn01', participants: [ANN.id, ME.id] }, { channel: 'grpPotluck01', participants: [ME.id, BEN.id, CAL.id] }, { channel: 'bad id!?', participants: [ANN.id] }] });
+  expect([...requests.keys()]).toEqual(['dmAnnQuinn01', 'grpPotluck01']);
+  // You with yourself, then the one Stream member left with the one participant left.
+  expect(M.pairChat(w.chats[0], requests.get('dmAnnQuinn01'), ME_STREAM, ctx)).toEqual([ME_STREAM, `strm-${ANN.id}`]);
+  expect(M.pairChat(w.chats[0], requests.get('dmAnnQuinn01'), ME_STREAM, ctx)).toEqual([]);
+  M.userOf(user(ANN, null), ctx);
   const dm = M.streamConversation(w.chats[0], ME_STREAM, ctx)!;
-  expect(dm.conv).toEqual({ nativeId: 'chat:dmAnnQuinn01', shape: 'direct', participants: [ANN.id, `stream:${ME_STREAM}`], lastMessageAt: NOW - 10 * 60_000 });
+  expect(dm.conv).toEqual({ nativeId: 'chat:dmAnnQuinn01', shape: 'direct', participants: [ANN.id, ME.id], lastMessageAt: NOW - 10 * 60_000 });
   expect(dm.messages.map((m) => [m.nativeId, m.author, m.body])).toEqual([
     ['s:smsg-0001', ANN.id, 'Hi! Coming Saturday?'],
-    ['s:smsg-0002', `stream:${ME_STREAM}`, 'Yes!'],
+    ['s:smsg-0002', ME.id, 'Yes!'],
   ]);
-  expect(dm.messages[0]!.reactions).toEqual([{ key: '❤️', authors: [`stream:${ME_STREAM}`], at: { [`stream:${ME_STREAM}`]: NOW - 15 * 60_000 } }]);
+  expect(dm.messages[0]!.reactions).toEqual([{ key: '❤️', authors: [ME.id], at: { [ME.id]: NOW - 15 * 60_000 } }]);
   expect(dm.lastRead).toBe(NOW - 10 * 60_000);
+  // Her Partiful profile names her, not Stream.
+  expect(ctx.users.get(ANN.id)).toMatchObject({ name: 'Ann Lee', photo: expect.stringContaining(ANN.id) });
+
+  // In the group Ben's Stream user carries his Partiful id; Cal is then the one left.
+  expect(M.pairChat(w.chats[1], requests.get('grpPotluck01'), ME_STREAM, ctx)).toEqual([`strm-${BEN.id}`, `strm-${CAL.id}`]);
   const grp = M.streamConversation(w.chats[1], ME_STREAM, ctx)!;
-  expect(grp.conv).toMatchObject({ nativeId: 'chat:grpPotluck01', shape: 'group', name: 'Potluck crew', participants: [`stream:strm-${BEN.id}`, `stream:strm-${CAL.id}`, `stream:${ME_STREAM}`] });
-  expect(grp.messages[0]).toMatchObject({ kind: 'text', attachments: [{ kind: 'image', width: 300, height: 200 }] });
+  expect(grp.conv).toMatchObject({ nativeId: 'chat:grpPotluck01', shape: 'group', name: 'Potluck crew', participants: [BEN.id, CAL.id, ME.id] });
+  expect(grp.messages[0]).toMatchObject({ author: BEN.id, kind: 'text', attachments: [{ kind: 'image', width: 300, height: 200 }] });
+  // Two left unpaired on each side: nobody is guessed.
+  const two = fresh();
+  expect(M.pairChat(w.chats[1], [ME.id, CAL.id, ANN.id], ME_STREAM, two)).toEqual([ME_STREAM, `strm-${BEN.id}`]);
+  expect(two.streamIds.has(`strm-${CAL.id}`)).toBe(false);
   expect([M.streamType('❤️'), M.streamType('🎉'), M.streamEmoji('haha')]).toEqual(['love', '🎉', '😂']);
+});
+
+test('people filed as stream:<id> before are named and said to be their Partiful selves', () => {
+  const ctx = fresh();
+  expect(M.streamAliasFact(`strm-${ANN.id}`, ctx)).toBeNull();
+  M.pairChat(w.chats[0], [ANN.id, ME.id], ME_STREAM, ctx);
+  M.userOf(user(ANN, null), ctx);
+  expect(M.streamAliasFact(`strm-${ANN.id}`, ctx)).toEqual({ nativeId: `stream:strm-${ANN.id}`, displayName: 'Ann Lee', avatarUrl: expect.stringContaining(ANN.id), sameAs: ANN.id });
+  expect(M.streamAliasFact(ME_STREAM, ctx)).toMatchObject({ nativeId: `stream:${ME_STREAM}`, sameAs: ME.id });
+});
+
+test('an answer’s shape: field names and types, never a value; id-like keys folded', () => {
+  expect(M.shapeOf({ channel: { id: 'dmAnnQuinn01', member_count: 2 }, members: [{ user: { id: 'strm-x', name: 'Ann Lee' } }, {}], read: { annLee000001x9: { last: 1 }, benOrtiz000001: { last: 2 } }, none: null })).toEqual({
+    channel: { id: 'string', member_count: 'number' },
+    members: [{ user: { id: 'string', name: 'string' } }, '×2'],
+    read: { '<id>': [{ last: 'number' }, '×2'] },
+    none: 'null',
+  });
+  expect(JSON.stringify(M.shapeOf(w.chats))).not.toContain('Hi! Coming');
 });
 
 test('RSVP statuses both ways', () => {

@@ -6,7 +6,9 @@
  *   - Firebase Cloud Functions at https://api.partiful.com/<name>, called the way the Firebase SDK's httpsCallable
  *     calls them: POST, `{ data: { params, paging?, userId, client: 'web' } }`, `Authorization: Bearer <ID token>`
  *     when signed in, the answer `{ result: { data, paging? } }`;
- *   - Stream Chat (chat.stream-io-api.com) for chats, with the token getStreamUserToken gives.
+ *   - Stream Chat (chat.stream-io-api.com) for chats, with the token getStreamUserToken gives;
+ *   - Firestore (project getpartiful) for the chat requests: which Partiful users each chat is between, the query the
+ *     app's chat list keeps open (`chatRequests` where `participants` holds your user), signed with the ID token.
  * docs/partiful.md lists every call and where in the bundle it was read.
  *
  * This hook makes only the calls in CALLS below, each as the app makes it for the same screen, with ids, cursors and
@@ -25,7 +27,7 @@
   /*@include main-world@*/
   /*@include command-watch@*/
   if (!cloak.once()) return;
-  const HOOK_VERSION = 1;
+  const HOOK_VERSION = 2;
   const settings = { testOrigin: null };
   // The page's fetch as it was at document_start, before any of its scripts ran.
   const pageFetch = window.fetch;
@@ -38,6 +40,9 @@
   const watch = commandWatch({ post, log });
   const fnBase = () => (settings.testOrigin ? settings.testOrigin + '/__api' : 'https://api.partiful.com');
   const streamBase = () => (settings.testOrigin ? settings.testOrigin + '/__stream' : 'https://chat.stream-io-api.com');
+  const firestoreBase = () => (settings.testOrigin ? settings.testOrigin + '/__firestore' : 'https://firestore.googleapis.com');
+  // Partiful's Firebase project, as the app's firebase config names it (a public value, in the bundle).
+  const FIRESTORE_DOCS = 'projects/getpartiful/databases/(default)/documents';
 
   // ------------------------------------------------------------- who is in
   /** The Firebase SDK's signed-in user: { uid, token, expires }, or null. Never opens a database that is not there. */
@@ -156,6 +161,46 @@
       }),
       paging: result && result.paging ? { nextCursor: typeof result.paging.nextCursor === 'string' ? result.paging.nextCursor : null } : null,
     };
+  }
+
+  // ------------------------------------------------------------ Firestore
+  /**
+   * The chat requests: each chat's Stream channel id and the Partiful users it is between, as the app's chat list reads
+   * them (collection `chatRequests`, `participants` array-contains your user document). Only those ids leave the page.
+   */
+  async function chatRequests() {
+    const auth = await authUser();
+    if (!auth) throw new Error('Partiful is not signed in (live view)');
+    const me = FIRESTORE_DOCS + '/users/' + id(auth.uid, 'user');
+    const query = {
+      structuredQuery: {
+        from: [{ collectionId: 'chatRequests' }],
+        where: { fieldFilter: { field: { fieldPath: 'participants' }, op: 'ARRAY_CONTAINS', value: { referenceValue: me } } },
+        limit: 300,
+      },
+    };
+    const res = await pageFetch.call(window, firestoreBase() + '/v1/' + FIRESTORE_DOCS + ':runQuery', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + auth.token },
+      body: JSON.stringify(query),
+    });
+    if (!res.ok) throw Object.assign(new Error('Partiful answered ' + res.status + ' (chat requests)'), { status: res.status });
+    const rows = await res.json();
+    const userOfRef = (v) => {
+      const ref = v && (v.referenceValue || v.stringValue);
+      const m = typeof ref === 'string' ? /(?:^|\/users\/)([A-Za-z0-9_-]{6,64})$/.exec(ref) : null;
+      return m ? m[1] : null;
+    };
+    const requests = [];
+    for (const r of Array.isArray(rows) ? rows : []) {
+      const f = r && r.document && r.document.fields;
+      if (!f) continue;
+      const channel = f.streamChannelId && f.streamChannelId.stringValue;
+      const ps = (f.participants && f.participants.arrayValue && f.participants.arrayValue.values) || [];
+      if (typeof channel !== 'string' || !SID.test(channel)) continue;
+      requests.push({ channel, participants: ps.map(userOfRef).filter(Boolean) });
+    }
+    return { requests };
   }
 
   // -------------------------------------------------------------- calls
@@ -305,8 +350,8 @@
 
   /**
    * Every call this hook makes. Reads: Explore, an event, its guests (shown lists only), mutual guests, comments, host
-   * messages, album, your events, notifications, people, chats. Writes: a comment, a reaction on a comment or a host
-   * message, an RSVP, a chat message, a chat reaction, a chat's read mark.
+   * messages, album, your events, notifications, people, chats and their requests. Writes: a comment, a reaction on a
+   * comment or a host message, an RSVP, a chat message, a chat reaction, a chat's read mark.
    */
   const CALLS = {
     explore: (c) => explore(c),
@@ -341,6 +386,7 @@
       return serial(() => fn('addGuest', { eventId: id(c.event, 'event'), rsvp: { status, count: 1, message: note, guestId: c.guestId === undefined ? undefined : id(c.guestId, 'guest') } }, undefined, { signedIn: true }));
     },
     chatSelf: () => streamAuth(false).then((s) => ({ user: s.user })),
+    chatRequests: () => chatRequests(),
     chats: (c) => {
       const offset = c.offset === undefined ? 0 : Number.isInteger(c.offset) && c.offset >= 0 && c.offset < 1000 ? c.offset : bad('an offset');
       return streamAuth(false).then((s) =>

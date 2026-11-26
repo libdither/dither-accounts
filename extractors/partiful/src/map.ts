@@ -69,8 +69,10 @@ export interface Ctx {
   /** Album photo id → its picture, for comments that show photos. */
   photos: Map<string, P.AttachmentFact>;
   selfId: string | null;
+  /** Stream user id → Partiful user id, as the chat requests pair them (chatRequests, pairChat). */
+  streamIds: Map<string, string>;
 }
-export const newCtx = (drops = new Drops(), testOrigin: string | null = null): Ctx => ({ drops, testOrigin, users: new Map(), events: new Map(), comments: new Map(), photos: new Map(), selfId: null });
+export const newCtx = (drops = new Drops(), testOrigin: string | null = null): Ctx => ({ drops, testOrigin, users: new Map(), events: new Map(), comments: new Map(), photos: new Map(), selfId: null, streamIds: new Map() });
 
 const rec = (v: unknown): Record<string, any> | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, any>) : null);
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v : null);
@@ -647,18 +649,85 @@ export function feedMessage(e: FeedEntry): P.MessageFact {
 export const feedConversation = (): P.ConversationFact => ({ nativeId: FEED_CONV, shape: 'channel', variant: 'feed', name: 'Notifications' });
 
 // ------------------------------------------------------------------ Stream chat
-/** A Stream user as a person: their Partiful id when Stream carries it, else `stream:<id>`. */
+const STREAM_ID = /^[\w@.-]{1,128}$/;
+/**
+ * A Stream user as a person: their Partiful id when it is known, else `stream:<id>`. Stream's own user ids are not
+ * Partiful's (the app asks getOrCreateStreamUserId for one), and Partiful's Stream users carry no name, picture or
+ * Partiful id: the chat requests pair them (pairChat), or a Partiful id the Stream user carries.
+ */
 export function streamPerson(v: unknown, ctx: Ctx): string | null {
   const u = rec(v);
-  if (!u || typeof u.id !== 'string' || !/^[\w@.-]{1,128}$/.test(u.id)) return null;
-  // Stream's own user ids are not Partiful's (the app asks getOrCreateStreamUserId for one): only a Partiful id the
-  // Stream user carries joins the two; otherwise the person is Stream's.
-  const pid = [u.partifulUserId, u.partifulId, u.userId].find(isId) ?? null;
+  if (!u || typeof u.id !== 'string' || !STREAM_ID.test(u.id)) return null;
+  const carried = [u.partifulUserId, u.partifulId, u.userId].find(isId) ?? null;
+  if (carried) ctx.streamIds.set(u.id, carried);
+  const pid = carried ?? ctx.streamIds.get(u.id) ?? null;
   const nativeId = pid ?? `stream:${u.id}`;
   const was = ctx.users.get(nativeId);
+  const name = str(u.name)?.slice(0, 200) ?? null;
   const photo = mediaUrl(u.image, ctx.testOrigin);
-  ctx.users.set(nativeId, { id: nativeId, name: str(u.name)?.slice(0, 200) ?? was?.name ?? null, photo: photo ?? was?.photo ?? null, bio: was?.bio ?? null, socials: was?.socials ?? {}, ...(was?.hosted !== undefined ? { hosted: was.hosted } : {}), ...(was?.attended !== undefined ? { attended: was.attended } : {}) });
+  // A Partiful profile's own name and picture win over what Stream has.
+  ctx.users.set(nativeId, {
+    id: nativeId,
+    name: pid ? (was?.name ?? name) : (name ?? was?.name ?? null),
+    photo: pid ? (was?.photo ?? photo) : (photo ?? was?.photo ?? null),
+    bio: was?.bio ?? null,
+    socials: was?.socials ?? {},
+    ...(was?.hosted !== undefined ? { hosted: was.hosted } : {}),
+    ...(was?.attended !== undefined ? { attended: was.attended } : {}),
+  });
   return nativeId;
+}
+
+/** The chat requests (Firestore `chatRequests` as the hook hands them on): each chat's Partiful participants. */
+export function chatRequestsOf(v: unknown): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const r of Array.isArray(rec(v)?.requests) ? rec(v)!.requests : []) {
+    const x = rec(r);
+    if (!x || typeof x.channel !== 'string' || !/^[\w!-]{1,128}$/.test(x.channel)) continue;
+    const ps = (Array.isArray(x.participants) ? x.participants : []).filter(isId);
+    if (ps.length) out.set(x.channel, [...new Set<string>(ps)]);
+  }
+  return out;
+}
+
+/**
+ * Who is who in one chat (a Stream channel as the chats read gives it), as the app's chat screen works it out: its
+ * request names the chat's people by Partiful id, Stream by its own ids. You are paired with yourself; then, when one
+ * Stream member and one Partiful participant are left unpaired, they are the same person. Gives the newly paired
+ * Stream ids.
+ */
+export function pairChat(v: unknown, participants: string[] | undefined, selfStream: string | null, ctx: Ctx): string[] {
+  const neu: string[] = [];
+  const pair = (sid: string, pid: string) => {
+    if (ctx.streamIds.get(sid) === pid) return;
+    ctx.streamIds.set(sid, pid);
+    neu.push(sid);
+  };
+  if (selfStream && ctx.selfId) pair(selfStream, ctx.selfId);
+  const rows = Array.isArray(rec(v)?.members) ? (rec(v)!.members as unknown[]) : [];
+  // A Stream user that carries its Partiful id is paired by it.
+  for (const m of rows) {
+    const u = rec(rec(m)?.user);
+    const carried = u && [u.partifulUserId, u.partifulId, u.userId].find(isId);
+    if (carried && typeof u.id === 'string' && STREAM_ID.test(u.id)) pair(u.id, carried);
+  }
+  if (!participants?.length) return neu;
+  const members = rows
+    .map((m: any) => (typeof m?.user?.id === 'string' ? m.user.id : m?.user_id))
+    .filter((x: unknown): x is string => typeof x === 'string' && STREAM_ID.test(x));
+  const paired = new Set(ctx.streamIds.values());
+  const sLeft = members.filter((s: string) => !ctx.streamIds.has(s));
+  const pLeft = participants.filter((p) => !paired.has(p));
+  if (sLeft.length === 1 && pLeft.length === 1) pair(sLeft[0]!, pLeft[0]!);
+  return neu;
+}
+
+/** A chat's person as it was filed before they were known (`stream:<id>`), now named and said to be their Partiful self. */
+export function streamAliasFact(streamId: string, ctx: Ctx): P.IdentityFact | null {
+  const pid = ctx.streamIds.get(streamId);
+  if (!pid) return null;
+  const u = ctx.users.get(pid);
+  return { nativeId: `stream:${streamId}`, ...(u?.name ? { displayName: u.name } : {}), ...(u?.photo ? { avatarUrl: u.photo } : {}), sameAs: pid };
 }
 
 const STREAM_EMOJI: Record<string, string> = { like: '👍', love: '❤️', haha: '😂', wow: '😮', sad: '😢', angry: '😠' };
@@ -739,4 +808,28 @@ export function streamConversation(v: unknown, selfStream: string | null, ctx: C
   const messages = (Array.isArray(r.messages) ? r.messages : []).map((m: unknown) => streamMessage(m, nativeId, ctx)).filter((m: P.MessageFact | null): m is P.MessageFact => !!m);
   const mine = (Array.isArray(r.read) ? r.read : []).find((x: any) => x?.user?.id === selfStream);
   return { conv, messages, lastRead: pfTime(mine?.last_read) };
+}
+
+/**
+ * An answer's shape for the log (config `logShapes`): its field names and the types of their values, never a value.
+ * Keys that look like ids (long, or with digits among letters) are written <id>; an array shows its first item's
+ * shape and its length.
+ */
+export function shapeOf(v: unknown, depth = 0): unknown {
+  if (v === null) return 'null';
+  if (Array.isArray(v)) return v.length ? [shapeOf(v[0], depth + 1), `×${v.length}`] : [];
+  if (typeof v !== 'object') return typeof v;
+  if (depth > 8) return 'object';
+  const out: Record<string, unknown> = {};
+  let ids = 0;
+  for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+    const idLike = !/^[A-Za-z_$][\w$]{0,40}$/.test(k) || (k.length >= 12 && /\d/.test(k) && /[A-Za-z]/.test(k));
+    if (idLike) {
+      if (!ids++) out['<id>'] = shapeOf(x, depth + 1);
+      continue;
+    }
+    out[k] = shapeOf(x, depth + 1);
+  }
+  if (ids > 1) out['<id>'] = [out['<id>'], `×${ids}`];
+  return out;
 }

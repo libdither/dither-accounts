@@ -7,7 +7,6 @@
  */
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { AccountsClient, register } from '@dither-accounts/client';
 import { chat } from '@dither-accounts/interfaces';
@@ -17,6 +16,7 @@ import { kindOf } from '@dither-accounts/manager/kinds';
 import manifest from '../extractors/lemmy/manifest.ts';
 import { totp, totpSecret } from '../extractors/lemmy/src/map.ts';
 import { type FakeLemmy, startFakeLemmy } from '../extractors/lemmy/test/fake-lemmy.ts';
+import { ramdir } from './ram.ts';
 
 setDefaultTimeout(30_000);
 const ROOT = resolve(import.meta.dir, '..');
@@ -73,7 +73,7 @@ beforeAll(async () => {
   fake.comments.set(13, { id: 13, post: 1, creator: 2, content: 'hey @quinn look', path: '0.13', published: ago(60) });
   fake.replies.push({ id: 1, comment: 10, recipient: 1 }, { id: 2, comment: 12, recipient: 1 });
   fake.mentions.push({ id: 1, comment: 13, recipient: 1 });
-  dir = mkdtempSync(join(tmpdir(), 'dacc-lemmy-'));
+  dir = mkdtempSync(join(ramdir, 'dacc-lemmy-'));
   m = await createManager({ openPage: true, dataDir: dir, port: 0, kinds: new Map([['lemmy', kindOf(manifest, join(ROOT, 'extractors/lemmy'))]]) });
   const reg = await register(m.url, { name: 'dither-chat', requests: [{ interface: 'chat', level: 'manage', accounts: '*' }] });
   for (const r of reg.requests) await fetch(`${m.url}/api/requests/${r.id}/approve`, { method: 'POST', body: '{}' });

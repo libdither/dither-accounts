@@ -398,12 +398,13 @@ describe.skipIf(!ok)('x11 parity', () => {
         try {
           expectGood(await share(p, 1), 1024, 700);
           expect(monitored.join('')).not.toContain('org.freedesktop.portal.ScreenCast');
+          // An X sandbox's Chromium has a session bus of its own too, so it never came to the machine's.
+          await flushHostBus();
+          expect(await whoIsOnHostBus()).toEqual({});
         } finally {
           await p.sb.stop();
           p.server.stop(true);
-          // An X sandbox's Chromium still has the machine's session bus (unchanged here: docs/browser.md), so it was
-          // there; its capture is X's own and asked no portal. Its connections are counted as known from here on, pass
-          // or fail, so the Electron test below sees only its own.
+          // Whatever came, pass or fail, is counted as known from here on, so the Electron test below sees only its own.
           await flushHostBus();
           ownNames = new Set([...ownNames, ...strangersOnHostBus()]);
         }

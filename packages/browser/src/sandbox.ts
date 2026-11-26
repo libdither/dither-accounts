@@ -22,7 +22,7 @@ import { markerKey, stampExtension } from './markers.ts';
 import { addSignInPage } from './signin.ts';
 import { ChromiumNoise } from './noise.ts';
 import { makeScreen, type Screen, type ScreenHealth } from './screen.ts';
-import { browserShare, type ScreenShare } from './screenshare.ts';
+import { browserShare, noHostSession, type ScreenShare } from './screenshare.ts';
 import { vncSocketPath } from './vnc.ts';
 import { refreshWorker } from './worker.ts';
 
@@ -50,11 +50,12 @@ export interface SandboxOptions {
   /** Set if the chromium suid sandbox is unavailable. */
   noSandbox?: boolean;
   /**
-   * On a screen that needs a bus of its own (Wayland): the sandbox's own portal and PipeWire (screenshare.ts), so
-   * getDisplayMedia can share this sandbox's screen and nothing else. Chromium's own picker still asks (its Entire
-   * Screen tab, then Share) unless the flags say otherwise. Without it, or when those fail to start (said in the log,
-   * and the sandbox starts without them), Chromium still gets a session bus of its own, an empty one: never the
-   * machine's, where the owner's portal could share the owner's real screen. On x11 Chromium captures its Xvfb.
+   * On Wayland: the sandbox's own portal and PipeWire (screenshare.ts), so getDisplayMedia can share this sandbox's
+   * screen and nothing else. Chromium's own picker still asks (its Entire Screen tab, then Share) unless the flags say
+   * otherwise. Without it, or when those fail to start (said in the log, and the sandbox starts without them), Chromium
+   * still gets a session of its own, a bus with nothing on it and a silent audio server: never the machine's, where the
+   * owner's portal could share the owner's real screen. On X Chromium captures its X server itself, and has the same
+   * session of its own.
    */
   screenShare?: boolean;
   /** The screen's live view's server went down or came back (Screen.health). */
@@ -158,8 +159,10 @@ export class Sandbox {
     // Nothing new once it is stopping (a live view's server started again, say): it would outlive the stop.
     if (this.stopped) throw new Error(`the sandbox is stopping: ${name} is not started`);
     this.opts.log('debug', `spawn ${name}`, cmd.join(' '));
+    // Nothing it starts has the machine's session (its buses, its audio server), unless given one (the share's).
+    const rt = this.screen_?.runtimeDir;
     const proc = Bun.spawn(cmd, {
-      env: cleanEnv({ ...process.env, ...env }),
+      env: cleanEnv({ ...process.env, ...(rt ? noHostSession(rt) : {}), ...env }),
       stdout: 'pipe',
       stderr: 'pipe',
       onExit: (_p, code, signal) => {
@@ -216,8 +219,8 @@ export class Sandbox {
     this.screen_ = screen;
     this.writePrefs(screen);
     await screen.start();
-    // Where the screen needs one (Wayland), a session bus of its own, with the screen share's portal on it when asked
-    // for and it starts (screenshare.ts).
+    // A session of its own (a bus, an audio server, a runtime directory), with the screen share's portal on its bus
+    // when asked for on Wayland and it starts (screenshare.ts).
     const shared = await browserShare(screen, { capture: !!this.opts.screenShare, spawn: (name, cmd, o) => this.spawn(name, cmd, o.env), log: this.opts.log });
     this.share = shared.share;
 

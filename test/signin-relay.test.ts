@@ -284,3 +284,88 @@ it(
   },
   120_000,
 );
+
+it(
+  "an account added with a Google account to sign in with signs itself in: its browser presses Luma's Sign in and Continue with Google, the Google account the rest",
+  async () => {
+    const other = startFakeLuma({ signedIn: false, google: google.url });
+    let id = '';
+    try {
+      const pressed = google.presses.length;
+      const before = google.signIns.length;
+      // As the page's add form sends it.
+      const r = await fetch(`${m!.url}/api/accounts`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'luma', label: 'Luma (signs itself in)', config: { testOrigin: other.url, testSignInOrigins: { google: google.url } }, signInWith: { google: g } }),
+      });
+      expect(r.status).toBe(200);
+      const added = (await r.json()) as { id: string; signIn: { running: boolean; account: string } };
+      id = added.id;
+      made.push(id);
+      expect(added.signIn).toMatchObject({ running: true, account: g, provider: 'google' });
+      expect(JSON.parse(m!.store.account(id)!.config).signInWith).toEqual({ google: g });
+
+      // Nobody touches either screen: the site's own Sign in and its Google button, then Google's chooser and Continue.
+      await until(() => other.googleCodes.length > 0, 90_000, "Google's code at Luma's /google");
+      expect(other.pressed).toEqual([
+        { what: 'sign in', trusted: true },
+        { what: 'google', trusted: true },
+      ]);
+      expect(google.signIns.length).toBe(before + 1);
+      expect(google.signIns.at(-1)).toMatchObject({ redirectUri: `${other.url}/google`, signedIn: true });
+      expect(google.presses.slice(pressed)).toEqual([
+        { step: 'choose', trusted: true },
+        { step: 'consent', trusted: true },
+      ]);
+      const done = await until(async () => {
+        const s = ((await (await fetch(`${m!.url}/api/accounts/${id}/sign-in`)).json()) as { signIn: { running: boolean; ok: boolean; note: string } }).signIn;
+        return s && !s.running ? s : null;
+      }, 30_000, 'the started sign-in to end');
+      expect(done).toMatchObject({ ok: true });
+      await until(() => statusOf(id)?.status === 'online', 60_000, 'Luma signed in');
+      expect(logOf(id)).toContain("pressed the site's own Sign in");
+      expect(logOf(id)).toContain("pressed the site's Google button");
+      for (const secret of [other.googleCodes[0]!, 'state-123', 'luma-web.apps.example.com']) expect(logOf(id)).not.toContain(secret);
+    } finally {
+      if (id) await app.admin({ do: 'delete', account: id });
+      other.stop();
+    }
+  },
+  150_000,
+);
+
+it(
+  'a website account signs in when asked to with a Google account here, which is then linked for it',
+  async () => {
+    const other = startFakeLuma({ signedIn: false, google: google.url });
+    let id = '';
+    try {
+      id = await create('site', 'Website (asked to sign in)', { url: `${other.url}/`, testOrigin: other.url, testSignInOrigins: { google: google.url } });
+      made.push(id);
+      await until(() => statusOf(id)?.status === 'online', 60_000, 'the site online');
+      // A Google account it cannot be: refused at once, and nothing linked.
+      const wrong = await fetch(`${m!.url}/api/accounts/${id}/sign-in`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ account: id }) });
+      expect(wrong.status).toBe(400);
+      expect(JSON.parse(m!.store.account(id)!.config).signInWith).toBeUndefined();
+
+      const r = await fetch(`${m!.url}/api/accounts/${id}/sign-in`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: 'google', account: g }) });
+      expect(r.status).toBe(200);
+      await until(() => other.googleCodes.length > 0, 90_000, "Google's code at the site's /google");
+      expect(other.pressed).toEqual([
+        { what: 'sign in', trusted: true },
+        { what: 'google', trusted: true },
+      ]);
+      expect(JSON.parse(m!.store.account(id)!.config).signInWith).toEqual({ google: g });
+      const done = await until(async () => {
+        const s = ((await (await fetch(`${m!.url}/api/accounts/${id}/sign-in`)).json()) as { signIn: { running: boolean; ok: boolean } }).signIn;
+        return s && !s.running ? s : null;
+      }, 30_000, 'the started sign-in to end');
+      expect(done.ok).toBe(true);
+    } finally {
+      if (id) await app.admin({ do: 'delete', account: id });
+      other.stop();
+    }
+  },
+  150_000,
+);

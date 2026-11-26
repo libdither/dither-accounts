@@ -263,6 +263,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
   if (handover) router.restoreHeld(handover.held ?? {});
   handoverNow = handover;
   http.notices = notices;
+  http.signIns = signIns;
   http.codeRestarts = () => sup.codeRestarts();
   http.start();
   if (o.startAccounts !== false) {

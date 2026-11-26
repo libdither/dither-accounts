@@ -17,6 +17,9 @@
  * it stands, and the site asks the provider for no more than who you are (spec/signin.ts onlyIdentity), the answering
  * browser goes through the provider's own screens for you (picks that account, presses Continue), with `auto`. Logs
  * name the accounts, the provider and the site: never the link, its state or the code.
+ *
+ * start() sets that link up by your word (the add form's "Sign in with", the CLI's `sign-in`) and has the asking
+ * browser press its site's own "Continue with Google" (`signin.start`), so a new account signs itself in.
  */
 import { type Authorize, isAnswer, onlyIdentity, readAuthorize, scopeWords, SIGN_IN_PROVIDERS } from '@dither-accounts/spec/signin';
 import type { Row, Store } from './db.ts';
@@ -24,6 +27,9 @@ import type { Kind } from './kinds.ts';
 
 /** How long a relay may take: Google can ask you to pick an account and to allow it, in its live view. */
 export const RELAY_MS = 5 * 60_000;
+/** How long start() keeps trying an account whose browser is still starting, and how often. */
+export const START_WAIT_MS = 4 * 60_000;
+const START_RETRY_MS = 5_000;
 
 export interface SignInChoice {
   id: string;
@@ -61,8 +67,35 @@ const httpsOrigin = (v: unknown) => {
   }
 };
 
+/** A sign-in start() began: under way, or how it ended. */
+export interface SignInStart {
+  provider: string;
+  account: string;
+  at: number;
+  running: boolean;
+  ok: boolean | null;
+  note: string | null;
+}
+
 export class SignInRelays {
+  /** Each asking account's last start(), for whoever asked for it (the CLI waits on it). */
+  readonly starts = new Map<string, SignInStart>();
+
   constructor(private d: SignInDeps) {}
+
+  /** start() in the background, its outcome kept in `starts`; checks first, so a wrong pick is refused at once. */
+  begin(askerId: string, provider: string, account: string, waitMs = START_WAIT_MS): SignInStart {
+    this.linkable(askerId, provider, account);
+    const was = this.starts.get(askerId);
+    if (was?.running) return was;
+    const s: SignInStart = { provider, account, at: Date.now(), running: true, ok: null, note: null };
+    this.starts.set(askerId, s);
+    this.start(askerId, provider, account, waitMs).then(
+      (o) => Object.assign(s, { running: false, ok: o.ok, note: o.note }),
+      (e) => Object.assign(s, { running: false, ok: false, note: String((e as Error)?.message ?? e).slice(0, 400) }),
+    );
+    return s;
+  }
 
   private log(msg: string) {
     (this.d.log ?? ((m: string) => console.log(`[signin] ${m}`)))(msg);
@@ -144,6 +177,49 @@ export class SignInRelays {
     const error = new URL(url).searchParams.get('error');
     this.log(`${asker.id}: ${p.name} answered${error ? ` with an error (${error.slice(0, 40)})` : ' with a code'}; it goes to ${asker.id}'s browser`);
     return { url };
+  }
+
+  /**
+   * Link `account` to answer `provider` for this asker (as a pick with Link it on does), and start a sign-in with it:
+   * the asker's browser presses its site's "Continue with Google" itself (SignInAsker.start), and, the account being
+   * linked, the rest goes ahead with nothing for you to press. For an account just added, whose browser is still
+   * starting, it tries again until `waitMs`. Answers how it ended.
+   */
+  async start(askerId: string, provider: string, account: string, waitMs = START_WAIT_MS): Promise<{ ok: boolean; note: string }> {
+    const who = this.linkable(askerId, provider, account);
+    const asker = this.d.store.account(askerId)!;
+    this.remember(asker, provider, who.id);
+    const p = SIGN_IN_PROVIDERS[provider]!;
+    this.log(`${asker.id} (${asker.kind}): starting a sign-in with ${who.id}'s ${p.name}`);
+    const end = Date.now() + waitMs;
+    let last = '';
+    for (;;) {
+      try {
+        const r = (await this.d.command(asker.id, { t: 'signin.start', provider }, RELAY_MS + 90_000)) as { ok?: unknown; note?: unknown } | null;
+        const out = { ok: r?.ok === true, note: typeof r?.note === 'string' ? r.note.slice(0, 400) : r?.ok === true ? 'signed in' : 'it did not say' };
+        this.log(`${asker.id}: the sign-in it started ${out.ok ? 'went through' : `did not: ${out.note}`}`);
+        return out;
+      } catch (e) {
+        last = String((e as Error)?.message ?? e).slice(0, 200);
+        if (Date.now() + START_RETRY_MS >= end || !this.d.store.account(asker.id)?.enabled) {
+          this.log(`${asker.id}: could not start a sign-in: ${last}`);
+          throw new Error(`Could not start the sign-in: ${last}`);
+        }
+      }
+      await Bun.sleep(START_RETRY_MS);
+    }
+  }
+
+  /** The answering account for a link you set up by hand: one that can answer `provider`, for an asker that asks. */
+  linkable(askerId: string, provider: string, account: string): Row {
+    const asker = this.d.store.account(askerId);
+    if (!asker) throw new Error('no such account');
+    if (!this.d.kinds.get(asker.kind)?.signIn) throw new Error(`${asker.kind} accounts do not sign in with other accounts`);
+    const p = SIGN_IN_PROVIDERS[provider];
+    if (!p) throw new Error(`no sign-in provider "${provider}"`);
+    const who = this.d.store.account(account);
+    if (!who || !who.enabled || !this.d.kinds.get(who.kind)?.signsIn?.includes(provider)) throw new Error(`That account cannot sign in with ${p.name} here`);
+    return who;
   }
 
   /** Keep (or forget, with null) which account answers `provider` for this asker. */

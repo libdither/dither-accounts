@@ -41,6 +41,10 @@ export interface KindInfo {
   add: AddInfo | null;
   /** Its extractor holds passkeys for its site (Manifest.passkeys): the pane offers Keep new passkeys on. */
   passkeys: boolean;
+  /** Its site's "Continue with Google" can be answered by an account here (Manifest.signIn): the add form offers Sign in with. */
+  signIn: boolean;
+  /** The providers its accounts sign others in with (Manifest.signsIn): `google`. */
+  signsIn: string[];
 }
 /**
  * One link of an account's dependency chain, from its status's `layers` (outermost first: display, browser,

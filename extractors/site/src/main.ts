@@ -79,7 +79,7 @@ const host = new BrowserHost({
 });
 
 /** "Continue with Google" on the site: the chooser, and the manager's relay to the account you pick. */
-const signIns = new SignInAsker({ bridge: host.bridge, ask: (what, input, ms) => link.ask(what, input, ms), log, onChange: () => status() });
+const signIns = new SignInAsker({ bridge: host.bridge, ask: (what, input, ms) => link.ask(what, input, ms), screen: () => host.sandbox?.screen ?? null, log, onChange: () => status() });
 
 /** The `browser` interface (docs/browser.md): its own tabs on the site, one call at a time. */
 const browserOps = new BrowserOps({ host, log, busy: () => null });
@@ -115,6 +115,11 @@ function status(force = false) {
 }
 
 async function onCommand(cmd: Command): Promise<unknown> {
+  // The manager's, never an app's: start a sign-in with an account here (docs/signin-relay.md "Starting one").
+  if (cmd.t === 'signin.start') {
+    if (!host.attached) throw new Error('the sandbox browser is not attached yet');
+    return signIns.start(String((cmd as { provider?: unknown }).provider ?? ''));
+  }
   const b = browserOps.handle(cmd);
   if (b) return b;
   throw new StatusError(`site has no operation "${cmd.t}"`, 400);

@@ -88,6 +88,7 @@ test("each Xvnc's flags: its socket and no TCP port, no password, shared; KasmVN
 // ------------------------------------------------------------------------------------------------ real servers
 
 const BACKENDS = (['tigervnc', 'kasmvnc'] as const).filter((b) => why(`${b}'s Xvnc`, hasBackend(b)));
+const importer = why('ImageMagick\'s import', !!tryBin(DISPLAY_BINS.import, () => {}));
 const xtools = why('xdotool, import and xclip', !!(tryBin(DISPLAY_BINS.xdotool, () => {}) && tryBin(DISPLAY_BINS.import, () => {}) && tryBin(TEST_BINS.xclip, () => {})));
 /** A viewer as the manager's live view is one: standard RFB, asking for every frame, raw only, its picture kept. */
 const viewer = (socket: string) => Viewer.open(socket, { encodings: [ENC.raw, ENC.desktopSize], keepPicture: true });
@@ -116,7 +117,7 @@ const run = async (cmd: string[], env: Record<string, string | undefined>, input
 for (const backend of BACKENDS) {
   describe(`a real ${backend} Xvnc`, () => {
     test(
-      'one process; RFB on its socket (0600) and no inet socket; no shared memory; viewers share it; import takes the picture',
+      'one process; RFB on its socket (0600) and no inet socket; no shared memory; viewers share it',
       async () => {
         const dir = tmp(`${backend}-screen`);
         const start = procs.length;
@@ -151,11 +152,6 @@ for (const backend of BACKENDS) {
           await a.refresh();
           expect(a.open).toBe(true);
           a.close();
-          if (xtools) {
-            // A black screen comes as a 1-bit PNG, which decodePng does not read: its size from the header.
-            const png = await screen.screenshot();
-            expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([1024, 700]);
-          }
         } finally {
           for (const p of procs.slice(start)) p.kill();
           await Promise.all(procs.slice(start).map((p) => p.exited));
@@ -163,6 +159,26 @@ for (const backend of BACKENDS) {
         }
         // Stopped, its display is free again for the next sandbox.
         expect(displayTaken(free.display!)).toBe(false);
+      },
+      30_000,
+    );
+
+    test.skipIf(!importer)(
+      'import takes the picture',
+      async () => {
+        const dir = tmp(`${backend}-shot`);
+        const start = procs.length;
+        const screen = makeScreen({ display: await pickFreeDisplay(undefined, [], backend), dir, width: 1024, height: 700, spawn, log: () => {} });
+        try {
+          await screen.start();
+          // A black screen comes as a 1-bit PNG, which decodePng does not read: its size from the header.
+          const png = await screen.screenshot();
+          expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([1024, 700]);
+        } finally {
+          for (const p of procs.slice(start)) p.kill();
+          await Promise.all(procs.slice(start).map((p) => p.exited));
+          await screen.stop();
+        }
       },
       30_000,
     );

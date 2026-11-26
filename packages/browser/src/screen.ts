@@ -144,13 +144,13 @@ const SCREENS: { [K in DisplayBackend]: (o: ScreenOptions, free: K extends XBack
 };
 
 /**
- * What differs between the X backends: what serves the live view. x11's is x11vnc beside Xvfb, kept running on its own
- * (KeptServer); an Xvnc's is the X server itself, so it lives and dies with the display.
+ * What differs between the X backends: what serves the live view, and so how the screen starts. x11's is x11vnc beside
+ * Xvfb, kept running on its own (KeptServer); an Xvnc's is the X server itself, so it lives and dies with the display.
  */
-const X_SERVERS: Record<XBackend, { procNames: readonly string[] } & ({ kind: 'xvfb' } | { kind: 'xvnc'; xvnc: XvncBackend })> = {
-  x11: { kind: 'xvfb', procNames: ['x11vnc', 'Xvfb'] },
-  tigervnc: { kind: 'xvnc', xvnc: 'tigervnc', procNames: ['Xvnc'] },
-  kasmvnc: { kind: 'xvnc', xvnc: 'kasmvnc', procNames: ['Xvnc'] },
+const X_SERVERS: Record<XBackend, { procNames: readonly string[]; start: (s: XScreen) => Promise<void> }> = {
+  x11: { procNames: ['x11vnc', 'Xvfb'], start: (s) => s.startXvfb() },
+  tigervnc: { procNames: ['Xvnc'], start: (s) => s.startXvnc('tigervnc') },
+  kasmvnc: { procNames: ['Xvnc'], start: (s) => s.startXvnc('kasmvnc') },
 };
 
 export function makeScreen(o: ScreenOptions): Screen {
@@ -211,8 +211,12 @@ class XScreen implements Screen {
     return this.vnc?.health() ?? { ok: true };
   }
 
-  async start() {
-    if (this.server.kind === 'xvnc') return this.startXvnc(this.server.xvnc);
+  start() {
+    return this.server.start(this);
+  }
+
+  /** Xvfb, then x11vnc beside it (X_SERVERS: x11). */
+  async startXvfb() {
     const d = `:${this.display}`;
     const xvfbBin = resolveBin(DISPLAY_BINS.xvfb, this.o.log);
     const x11vncBin = resolveBin(DISPLAY_BINS.x11vnc, this.o.log);
@@ -242,8 +246,9 @@ class XScreen implements Screen {
    * display's lock and its socket both come up before its live view's socket, which it makes once its VNC extension
    * runs, and it answers there once it has finished starting: all three are waited for. Not started again when it
    * dies, as Xvfb is not: the display and every window on it go with it, and the sandbox's own watch sees that.
+   * (X_SERVERS: tigervnc, kasmvnc.)
    */
-  private async startXvnc(xvnc: XvncBackend) {
+  async startXvnc(xvnc: XvncBackend) {
     const bin = resolveBin(DISPLAY_BINS[xvnc], this.o.log);
     prepareVncSocket(this.vncSocket);
     const d = `:${this.display}`;

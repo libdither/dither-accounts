@@ -951,7 +951,10 @@ it(
       app.call(googleCalendar, idle, 'calendar.calendarList.list', { maxResults: 250 }),
       app.call(googleCalendar, idle, 'calendar.calendarList.list', { maxResults: 250 }),
     ]);
-    expect([a.items.map((c: any) => c.id), b.items.map((c: any) => c.id)]).toEqual([[PRIMARY], [PRIMARY]]);
+    // The fake's calendars are shared with the tests before this one, which add their own: both answers name them all.
+    const ids = fake.calendarIds();
+    expect(ids).toContain(PRIMARY);
+    expect([a.items.map((c: any) => c.id).sort(), b.items.map((c: any) => c.id).sort()]).toEqual([ids, ids]);
     expect(loads()).toBe(before + 1);
     // Both tabs open, said in a status since the calls (it may close again right after: 2 s idle).
     const bothOpen = (e: any) => e.t === 'status' && e.details?.calendarTabClosed === false && [...String(e.details?.tabs).matchAll(/(calendar|gmail) \(hook up\)/g)].length === 2;

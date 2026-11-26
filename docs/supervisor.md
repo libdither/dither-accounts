@@ -38,7 +38,11 @@ nix/README.md). Its start waits until that build is done (a few seconds when the
 tried again in the background (30 s later, then twice as long each time, up to 30 min) until one succeeds: meanwhile
 these kinds run on the last good directory, or, with none, wait for the build, and the manager's page says the build
 is failing. A machine without `nix-build` skips it, and the sandboxes look on PATH. Every
-other kind starts at once and gets neither.
+other kind starts at once and gets neither. An account on a backend built from a fork (`kasmvnc`,
+`wayland-tigervnc`) also asks for the forks' servers, a second build made after the first and only once something
+needs it (`<data>/bins-forks`), waits for that too, and gets both directories (`DITHER_BINS=<data>/bins:<data>/bins-forks`).
+A move onto such a backend (below) waits for that build's first try before it stops the account, and when it fails
+the account and the others of its kind waiting stay where they are.
 
 One manager per data directory: `<data>/manager.lock` names it, and a second one refuses to start (it would adopt and
 stop the first one's extractors).
@@ -163,11 +167,18 @@ to either network; every account at once, or two of one network together, is. On
 stopped (so does one stopped while a Restart waits for its stop). One whose code did not change keeps running, across
 any number of deploys.
 
-The display backend restarts the same way, for kinds with a screen only. Each such extractor is started with `DITHER_DISPLAY_BACKEND` (`x11` or
-`wayland`: its account's `displayBackend`, else the manager's `display_backend`; docs/browser.md, "Display
-backends"), and an adopted one started with another than its account now wants is restarted in the same queue, one
-at a time per kind. So a new default reaches every account without moving them all at once, and an account that names
-its own backend is not touched by it, and a kind with no screen (mail, calendar, signal-cli) never restarts for it. `DITHER_DISPLAY_BACKEND` is per account, so it is not part of the fingerprint;
+The display backend restarts the same way, for kinds with a screen only. Each such extractor is started with
+`DITHER_DISPLAY_BACKEND` (one of docs/browser.md's "Display backends": its account's `displayBackend`, else the
+default picked on the manager's page, else config.toml's `display_backend`), and an adopted one started with another
+than its account now wants is restarted in the same queue, one at a time per kind. A default picked on the page
+(`PUT /api/display`) puts the running accounts that follow it in that same queue (`moveScreens`), the first of each
+kind without the pause (and an account moved again right after its own restart: the pause is between two accounts
+of a kind, not two moves of one): two quick changes, or one during a deploy's restarts, still restart one account of a kind at a
+time, and an account restarted for its code and its screen together restarts once. A moved account that does not come
+back online, with its live view again if it had one, within the minute stops its kind's queue, as a deploy's does: the
+others stay where they are. So a new default reaches every account without moving them all at once, and
+an account that names its own backend is not touched by it, and a kind with no screen (mail, calendar, signal-cli)
+never restarts for it. `DITHER_DISPLAY_BACKEND` is per account, so it is not part of the fingerprint;
 the manager's own setting (`DITHER_ACCOUNTS_DISPLAY_BACKEND`) is not either, as no `DITHER_ACCOUNTS_*` is.
 
 `/api/health` says how that goes, in counts only: `codeRestarts: {queued, active, restarted, online, crashed}`

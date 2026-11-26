@@ -158,7 +158,7 @@ export class DesktopSession implements DesktopHost {
         await this.sandbox?.stop().catch(() => {});
         this.sandbox = null;
         // Another display only helps when an X display was the trouble.
-        if (!free || !isXBackend(free.backend) || !/display|Xvfb/i.test(this.sandboxError)) break;
+        if (!free || !isXBackend(free.backend) || !/display|Xvfb|Xvnc/i.test(this.sandboxError)) break;
       }
     }
     this.readSignIn();

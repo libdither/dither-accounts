@@ -431,6 +431,28 @@ select.inline {
   background: var(--accent-soft);
   color: var(--accent);
 }
+/* A display backend built from a fork this project keeps (Display.tsx). */
+.pill.fork {
+  background: color-mix(in oklab, var(--warn) 18%, transparent);
+  color: var(--warn);
+}
+.screen-pick > span {
+  white-space: nowrap;
+}
+.screen-pick > select {
+  min-width: 0;
+  max-width: 100%;
+}
+.screens-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--center);
+  max-width: 640px;
+}
 .dot {
   display: inline-block;
   width: 8px;

@@ -1,5 +1,5 @@
 {
-  "note": "The packages the sandboxes run (nix/README.md). Each is a BinSpec's `nix` attribute with `pinned: true` (packages/browser bins.ts and sandbox.ts, packages/sandbox bins.ts); a test checks both lists agree.",
+  "note": "The packages the sandboxes run (nix/README.md). Each is a BinSpec's `nix` attribute with `pinned: true` (packages/browser bins.ts, packages/sandbox bins.ts); a test checks the lists agree. `run` is dither-bins, built at the manager's start; `forks` is dither-bins-forks, the servers built from forks this project keeps, built after it and only once a backend that needs them is in use; `test` is what only the tests run.",
   "run": [
     "xvfb",
     "x11vnc",
@@ -19,7 +19,18 @@
     "bash",
     "coreutils",
     "xwayland-satellite",
+    "xmodmap",
+    "tigervnc",
     "chromium"
   ],
-  "test": ["electron", "xorg.xev", "wev"]
+  "forks": [
+    "kasmvnc",
+    "w0vncserver"
+  ],
+  "test": [
+    "electron",
+    "xorg.xev",
+    "wev",
+    "xclip"
+  ]
 }

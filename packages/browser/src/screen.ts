@@ -4,9 +4,14 @@
  *
  *   x11      Xvfb on a numbered display from the shared pool (display.ts), x11vnc as the live view (vnc.ts), xdotool
  *            for input, ImageMagick's import for pictures. The default.
+ *   tigervnc, kasmvnc
+ *            the same, but the X server is an Xvnc that serves the live view itself (vnc.ts xvncArgs): TigerVNC's,
+ *            or KasmVNC's from the owner's fork. One process instead of two, and no shared memory segments.
  *   wayland  a headless sway of the sandbox's own, its socket in the account's directory and no number at all, wayvnc as
  *            the live view on the same socket path, input through that live view (rfb.ts) and, for what no key types,
  *            an input method (ime.ts), pictures by grim (wayland.ts).
+ *   wayland-tigervnc
+ *            the same, with TigerVNC's Wayland server (w0vncserver, from the owner's fork) as the live view.
  *
  * The browser sandbox (sandbox.ts), Discord's and the native-app sandbox (packages/sandbox) each start one; the
  * `browser` interface (statements-common/browser-ops.ts) drives it. Nothing outside asks which backend it is: what
@@ -14,9 +19,11 @@
  * is a class here and a line in SCREENS.
  */
 import type { Subprocess } from 'bun';
-import { DISPLAY_BINS, type Log, resolveBin, run, withoutDisplays } from './bins.ts';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { DISPLAY_BINS, type Log, resolveBin, run, tryBin, withoutDisplays } from './bins.ts';
 import { BACKENDS, type DisplayBackend, displayIsOurs, type FreeDisplay, type WaylandBackend, type WaylandDisplay, type XBackend, type XDisplay } from './display.ts';
-import { KeptServer, prepareVncSocket, vncSocketPath, waitForVncSocket, x11vncArgs } from './vnc.ts';
+import { KeptServer, prepareVncSocket, vncSocketPath, waitForRfbBanner, waitForVncSocket, x11vncArgs, xvncArgs, type XvncBackend } from './vnc.ts';
 import { renderNode, WaylandScreen } from './wayland.ts';
 import { gpuFlags } from './flags.ts';
 import { closeWindow } from './x11.ts';
@@ -141,7 +148,20 @@ export interface Screen extends ScreenInput {
 /** Each backend's screen: the type checker says when a backend in packages/spec has none. */
 const SCREENS: { [K in DisplayBackend]: (o: ScreenOptions, free: K extends XBackend ? XDisplay : K extends WaylandBackend ? WaylandDisplay : never) => Screen } = {
   x11: (o, free) => new XScreen(o, free),
+  tigervnc: (o, free) => new XScreen(o, free),
+  kasmvnc: (o, free) => new XScreen(o, free),
   wayland: (o, free) => new WaylandScreen(o, free),
+  'wayland-tigervnc': (o, free) => new WaylandScreen(o, free),
+};
+
+/**
+ * What differs between the X backends: what serves the live view, and so how the screen starts. x11's is x11vnc beside
+ * Xvfb, kept running on its own (KeptServer); an Xvnc's is the X server itself, so it lives and dies with the display.
+ */
+const X_SERVERS: Record<XBackend, { procNames: readonly string[]; start: (s: XScreen) => Promise<void> }> = {
+  x11: { procNames: ['x11vnc', 'Xvfb'], start: (s) => s.startXvfb() },
+  tigervnc: { procNames: ['Xvnc'], start: (s) => s.startXvnc('tigervnc') },
+  kasmvnc: { procNames: ['Xvnc'], start: (s) => s.startXvnc('kasmvnc') },
 };
 
 export function makeScreen(o: ScreenOptions): Screen {
@@ -149,18 +169,25 @@ export function makeScreen(o: ScreenOptions): Screen {
   return (SCREENS[free.backend] as (o: ScreenOptions, free: FreeDisplay) => Screen)(o, free);
 }
 
-/** Xvfb, x11vnc, xdotool and import: the backend the sandboxes always had. */
+/**
+ * An X server on a numbered display, with xdotool and import: Xvfb and x11vnc (x11, the backend the sandboxes always
+ * had), or one Xvnc that is both (tigervnc, kasmvnc).
+ */
 class XScreen implements Screen {
   readonly backend: XBackend;
   readonly protocol = 'x11' as const;
   readonly display: number;
   readonly vncSocket: string;
-  readonly procNames = ['x11vnc', 'Xvfb'] as const;
+  readonly procNames: readonly string[];
   readonly needsOwnBus = false;
   readonly runtimeDir = null;
   private xdotool: string | null = null;
   private importBin: string | null = null;
   private vnc: KeptServer | null = null;
+  /** An Xvnc's process, and why it is gone once it is (health()). */
+  private xvnc: Subprocess | null = null;
+  private xvncGone: string | null = null;
+  private server: (typeof X_SERVERS)[XBackend];
 
   constructor(
     private o: ScreenOptions,
@@ -169,6 +196,8 @@ class XScreen implements Screen {
     this.backend = free.backend;
     this.display = free.display;
     this.vncSocket = o.vncSocket ?? vncSocketPath(o.dir);
+    this.server = X_SERVERS[free.backend];
+    this.procNames = this.server.procNames;
   }
 
   get socket() {
@@ -190,10 +219,16 @@ class XScreen implements Screen {
   }
 
   health(): ScreenHealth {
+    if (this.xvncGone) return { ok: false, note: this.xvncGone };
     return this.vnc?.health() ?? { ok: true };
   }
 
-  async start() {
+  start() {
+    return this.server.start(this);
+  }
+
+  /** Xvfb, then x11vnc beside it (X_SERVERS: x11). */
+  async startXvfb() {
     const d = `:${this.display}`;
     const xvfbBin = resolveBin(DISPLAY_BINS.xvfb, this.o.log);
     const x11vncBin = resolveBin(DISPLAY_BINS.x11vnc, this.o.log);
@@ -219,17 +254,43 @@ class XScreen implements Screen {
   }
 
   /**
-   * Our Xvfb's display is up: its socket there and its lock naming it. Two sandboxes starting together can pick the
+   * One Xvnc: the X server and, on the account's own Unix socket and no TCP port, the live view (vnc.ts xvncArgs). Its
+   * display's lock and its socket both come up before its live view's socket, which it makes once its VNC extension
+   * runs, and it answers there once it has finished starting: all three are waited for. Not started again when it
+   * dies, as Xvfb is not: the display and every window on it go with it, and the sandbox's own watch sees that.
+   * (X_SERVERS: tigervnc, kasmvnc.)
+   */
+  async startXvnc(xvnc: XvncBackend) {
+    const bin = resolveBin(DISPLAY_BINS[xvnc], this.o.log);
+    prepareVncSocket(this.vncSocket);
+    const d = `:${this.display}`;
+    // HOME: KasmVNC reads ~/.kasmpasswd and writes ~/.vnc. A directory of the account's own.
+    const home = join(this.o.dir, 'xvnc-home');
+    mkdirSync(home, { recursive: true, mode: 0o700 });
+    const p = this.o.spawn('Xvnc', xvncArgs(xvnc, bin, d, this.vncSocket, this.o), { match: d, env: { HOME: home, DISPLAY: undefined, WAYLAND_DISPLAY: undefined } });
+    await this.waitForDisplay(p, 8000, 'Xvnc');
+    await waitForVncSocket(this.vncSocket, p, 10_000, 'Xvnc');
+    await waitForRfbBanner(this.vncSocket, p, 10_000, 'Xvnc');
+    this.xvnc = p;
+    void p.exited.then(() => {
+      if (this.xvnc !== p) return;
+      this.xvncGone = `Xvnc exited (${p.signalCode ?? p.exitCode})`;
+      this.o.onHealth?.(this.health());
+    });
+  }
+
+  /**
+   * Our X server's display is up: its socket there and its lock naming it. Two sandboxes starting together can pick the
    * same free display: the socket is then the other one's, and ours is about to exit with "already active".
    */
-  private async waitForDisplay(xvfb: Subprocess, ms: number) {
+  private async waitForDisplay(server: Subprocess, ms: number, name = 'Xvfb') {
     const deadline = Date.now() + ms;
     while (Date.now() < deadline) {
-      if (xvfb.exitCode !== null) throw new Error(`Xvfb on :${this.display} exited (${xvfb.exitCode}); is the display taken?`);
-      if (displayIsOurs(this.display, xvfb.pid)) return;
+      if (server.exitCode !== null) throw new Error(`${name} on :${this.display} exited (${server.exitCode}); is the display taken?`);
+      if (displayIsOurs(this.display, server.pid)) return;
       await Bun.sleep(50);
     }
-    throw new Error(`Xvfb display :${this.display} did not come up within ${ms} ms`);
+    throw new Error(`${name} display :${this.display} did not come up within ${ms} ms`);
   }
 
   clientEnv() {
@@ -251,7 +312,56 @@ class XScreen implements Screen {
   }
 
   async type(text: string, delayMs = 35) {
-    if (text) await this.xdo(['type', '--delay', String(delayMs), '--', text]);
+    if (!text) return;
+    await this.bindCharacters(text).catch((e) => this.o.log('info', `characters not bound to keys, xdotool binds them itself: ${(e as Error).message}`));
+    await this.xdo(['type', '--delay', String(delayMs), '--', text]);
+  }
+
+  /** Characters this screen's keyboard map has been given by bindCharacters, and the keycodes still free for it. */
+  private boundChars = new Set<string>();
+  private spareKeycodes: number[] | null = null;
+  private xmodmap: string | null | undefined;
+
+  /**
+   * Puts every character of `text` that a US keyboard lacks (é, €, an emoji) on a key of its own, for as long as the
+   * screen runs. Left to xdotool, each such character is bound to a spare key, pressed and unbound at once, and an app
+   * reads the new keyboard map only when it gets to the notice of the change: if the unbinding came first, it reads the
+   * old map and the character is lost (Chromium on X, now and then). Bound here and kept, xdotool finds the character
+   * in the map and presses its key, as for any other. The keys taken are those with no symbol at all or only XF86
+   * media symbols, which nothing in a sandbox presses. A character counts as bound only once xmodmap has done it;
+   * without xmodmap, with no key left, or when xmodmap fails (the caller logs it), xdotool binds the rest its own way,
+   * as before.
+   */
+  private async bindCharacters(text: string) {
+    const need = [...new Set([...text].filter((c) => c.codePointAt(0)! > 0x7e && !this.boundChars.has(c)))];
+    if (!need.length) return;
+    if (this.xmodmap === undefined) this.xmodmap = tryBin(DISPLAY_BINS.xmodmap, this.o.log);
+    const xmodmap = this.xmodmap;
+    if (!xmodmap) return;
+    const env = { ...withoutDisplays(process.env), DISPLAY: `:${this.display}` };
+    if (!this.spareKeycodes) {
+      const map = (await run([xmodmap, '-pke'], env, 'reading the keyboard map')).toString('utf8');
+      this.spareKeycodes = map
+        .split('\n')
+        .map((l) => /^keycode\s+(\d+)\s*=\s*(.*)$/.exec(l))
+        .filter((m): m is RegExpExecArray => !!m && m[2]!.trim().split(/\s+/).filter(Boolean).every((k) => k.startsWith('XF86') || k === 'NoSymbol'))
+        .map((m) => Number(m[1]));
+    }
+    const take: { c: string; code: number }[] = [];
+    for (const c of need) {
+      const code = this.spareKeycodes.at(-(take.length + 1));
+      if (code === undefined) break;
+      take.push({ c, code });
+    }
+    if (!take.length) return;
+    const lines = take.flatMap(({ c, code }) => {
+      const sym = `U${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}`;
+      return ['-e', `keycode ${code} = ${sym} ${sym}`];
+    });
+    await run([xmodmap, ...lines], env, 'binding characters to keys');
+    // Bound: only now are the keys used and the characters known.
+    this.spareKeycodes.splice(this.spareKeycodes.length - take.length);
+    for (const { c } of take) this.boundChars.add(c);
   }
 
   async keys(keys: string[], delayMs = 60) {
@@ -290,6 +400,7 @@ class XScreen implements Screen {
 
   async stop() {
     this.vnc?.stop();
+    this.xvnc = null;
   }
 
   /** Nothing of its own: the live view's socket is its owner's (Sandbox.stop), Xvfb's are Xvfb's. */

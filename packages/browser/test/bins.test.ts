@@ -9,7 +9,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TEST_BINS } from '../../../test/needs.ts';
 import { BINS } from '../../sandbox/src/bins.ts';
-import { BinNotPrepared, type BinSpec, DISPLAY_BINS, preparedBin, resolveBin } from '../src/bins.ts';
+import { DISPLAY_BACKENDS, fromFork } from '@dither-accounts/spec/display';
+import { BACKEND_BINS, BinNotPrepared, type BinSpec, DISPLAY_BINS, preparedBin, resolveBin } from '../src/bins.ts';
 import { CHROMIUM } from '../src/sandbox.ts';
 import { SHARE_BINS } from '../src/screenshare.ts';
 
@@ -23,12 +24,16 @@ afterAll(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
 
-test('nix/bins.json lists exactly the pinned specs: the run list the sandboxes, the test list the tests', () => {
-  const list = JSON.parse(readFileSync(join(import.meta.dir, '../../../nix/bins.json'), 'utf8')) as { run: string[]; test: string[] };
+test('nix/bins.json lists exactly the pinned specs: the run and forks lists the sandboxes, the test list the tests', () => {
+  const list = JSON.parse(readFileSync(join(import.meta.dir, '../../../nix/bins.json'), 'utf8')) as { run: string[]; forks: string[]; test: string[] };
   const pinned = (specs: Record<string, BinSpec>) => Object.values(specs).filter((s) => s.pinned).map((s) => s.nix);
   const run = new Set([...pinned(DISPLAY_BINS), ...pinned(SHARE_BINS), ...pinned(BINS), ...pinned({ CHROMIUM })]);
-  expect([...new Set(list.run)].sort()).toEqual([...run].sort());
-  expect(list.run.length).toBe(new Set(list.run).size);
+  expect([...new Set([...list.run, ...list.forks])].sort()).toEqual([...run].sort());
+  expect(list.run.length + list.forks.length).toBe(new Set([...list.run, ...list.forks]).size);
+  // The forks' build is what only the backends built from forks start: each of those needs it, nothing else does.
+  const forkOnly = new Set(DISPLAY_BACKENDS.filter(fromFork).flatMap((b) => BACKEND_BINS[b].map((s) => s.nix)));
+  for (const b of DISPLAY_BACKENDS.filter((b) => !fromFork(b))) for (const s of BACKEND_BINS[b]) forkOnly.delete(s.nix);
+  expect([...list.forks].sort()).toEqual([...forkOnly].sort());
   expect([...list.test].sort()).toEqual(pinned(TEST_BINS).sort());
   // Every program the screens and the sandbox start is pinned.
   for (const s of [...Object.values(DISPLAY_BINS), ...Object.values(SHARE_BINS), ...Object.values(BINS), CHROMIUM]) expect(s.pinned).toBe(true);
@@ -48,6 +53,10 @@ test('a pinned program: its override, then the prepared package (a link per attr
   expect(preparedBin({ ...spec, name: 'fakeportal', sub: 'libexec' }, prepared)).toBe(join(pkg, 'libexec', 'fakeportal'));
   expect(preparedBin({ ...spec, nix: 'other-attr' }, prepared)).toBeNull();
   expect(preparedBin(spec, undefined)).toBeNull();
+  // DITHER_BINS is a list (the forks' servers are a build of their own): the first directory that has it.
+  const other = tmp();
+  expect(preparedBin(spec, `${other}:${prepared}`)).toBe(join(pkg, 'bin', 'fakeprog'));
+  expect(preparedBin(spec, `${other}::`)).toBeNull();
 
   const was = process.env.DITHER_BINS;
   try {

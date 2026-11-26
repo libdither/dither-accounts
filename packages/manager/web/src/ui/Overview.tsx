@@ -15,6 +15,7 @@ import { groupIdentities, SUITES } from '../suites.ts';
 import { openAdd, ServiceMark } from './Add.tsx';
 import { attentionOf, Avatar, condition, Dot } from './bits.tsx';
 import { Icon } from './icons.tsx';
+import { Screens } from './Display.tsx';
 import { SuiteSection } from './Suites.tsx';
 
 function AccountCard({ a }: { a: AccountInfo }) {
@@ -156,6 +157,8 @@ export function Overview() {
           </section>
         );
       })}
+
+      {s.accounts.some((a) => a.display) && <Screens />}
     </div>
   );
 }

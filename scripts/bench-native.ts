@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
 /**
  * The native apps' sandboxes (packages/sandbox) on each display: Signal Desktop, Telegram Desktop and Haveno (an X
- * app, through xwayland-satellite on wayland), each on x11, on wayland with sway on the GPU (gles2) and on wayland with
- * sway drawing in software (pixman, what they get: AppSandboxOptions.gpu). No network (`none`), a fresh temporary home,
- * never signed in: each app gets as far as its first screen.
+ * app, through xwayland-satellite on wayland), each on x11, on each Xvnc (tigervnc, kasmvnc), on wayland
+ * with sway on the GPU (gles2) and on wayland with sway drawing in software (pixman, what they get:
+ * AppSandboxOptions.gpu). No network (`none`), a fresh temporary home, never signed in: each app gets as far as its
+ * first screen.
  *
  *   bun scripts/bench-native.ts [--out native.json] [--reps 3] [--apps signal,telegram,haveno] [--shots <dir>]
- *                               [--max-load <load1>] [--wait-load-s 600]
+ *                               [--configs x11,tigervnc,kasmvnc,gles2,pixman] [--max-load <load1>] [--wait-load-s 600]
  *
  * For each: the sandbox up (screen, bus, audio), the app's first picture (a screenshot with more than a few colours),
  * then after 15 s CPU over 10 s and memory (PSS) by program, and whether input reaches it (a click on Telegram's Start
@@ -19,12 +20,8 @@ import { dirname, join } from 'node:path';
 import { type FreeDisplay, pickFreeDisplay, resolveBin } from '../packages/sandbox/src/index.ts';
 import { AppSandbox, type AppSandboxOptions } from '../packages/sandbox/src/sandbox.ts';
 import { AUDIO, resolveSignalDesktop } from '../extractors/signal/src/desktop/desktop.ts';
-import { cpuOver, log, memory, progName, quiet, tree, work } from './bench-lib.ts';
+import { argOf, cpuOver, log, machine, memory, progName, quiet, tree, work } from './bench-lib.ts';
 
-const argOf = (name: string, def: string) => {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1]! : def;
-};
 const OUT = argOf('out', join(homedir(), '.cache/da-bench', `native-${new Date().toISOString().replace(/[:.]/g, '-')}.json`));
 const REPS = Number(argOf('reps', '3'));
 const APPS = argOf('apps', 'signal,telegram,haveno').split(',');
@@ -33,12 +30,18 @@ const MAX_LOAD = Number(argOf('max-load', String(cpus().length / 2)));
 const WAIT_LOAD_S = Number(argOf('wait-load-s', '600'));
 const W = 1280;
 const H = 800;
-const CONFIGS = [
+const ALL_CONFIGS = [
   { name: 'x11', backend: 'x11' as const, gpu: false },
+  { name: 'tigervnc', backend: 'tigervnc' as const, gpu: false },
+  { name: 'kasmvnc', backend: 'kasmvnc' as const, gpu: false },
   { name: 'gles2', backend: 'wayland' as const, gpu: true },
   { name: 'pixman', backend: 'wayland' as const, gpu: false },
+  // sway as for native apps (pixman), with TigerVNC's w0vncserver as the live view.
+  { name: 'w0-pixman', backend: 'wayland-tigervnc' as const, gpu: false },
 ];
-const SCREEN_PROCS = ['Xvfb', 'x11vnc', 'sway', 'wayvnc', 'xwayland-satellite', 'Xwayland'];
+const WANT = argOf('configs', ALL_CONFIGS.map((c) => c.name).join(',')).split(',');
+const CONFIGS = ALL_CONFIGS.filter((c) => WANT.includes(c.name));
+const SCREEN_PROCS = ['Xvfb', 'x11vnc', 'Xvnc', 'Xkasmvnc', 'sway', 'wayvnc', 'w0vncserver', 'xwayland-satellite', 'Xwayland'];
 /** A program of the screen stack, by its name in /proc, which the kernel cuts to 15 characters (xwayland-satel). */
 const screenProc = (name: string) => SCREEN_PROCS.some((p) => p.startsWith(name) && name.length >= Math.min(p.length, 14));
 const GPU_LINE = /\b(EGL|GLX|GLES|OpenGL|gbm|DRI\d?|dri|GPU|gpu_|vaapi|libva|ContextLost|context lost|swrast|llvmpipe|zink|vulkan|Vulkan|SwiftShader|ANGLE|viz|Skia)\b/;
@@ -73,6 +76,8 @@ const APP_DEFS: Record<string, App> = {
 
 const magick = resolveBin({ name: 'magick', env: 'MAGICK_BIN', nix: 'imagemagick' }, noLog);
 const colours = (png: Buffer) => Number(Bun.spawnSync([magick, 'png:-', '-format', '%k', 'info:'], { stdin: png }).stdout.toString().trim() || 0);
+/** How much of the screen is drawn: its mean brightness, 0 (black) to 1. */
+const brightness = (png: Buffer) => Number(Bun.spawnSync([magick, 'png:-', '-format', '%[fx:mean]', 'info:'], { stdin: png }).stdout.toString().trim() || 0);
 const differ = (a: Buffer, b: Buffer, dir: string) => {
   const fa = join(dir, 'a.png');
   const fb = join(dir, 'b.png');
@@ -89,7 +94,7 @@ async function one(app: App, key: string, cfg: (typeof CONFIGS)[number], rep: nu
     if (msg.startsWith('[app]')) lines.push(msg.slice(6));
     else if (level === 'warn' || level === 'error') lines.push(`(${level}) ${msg}${extra ? ` ${JSON.stringify(extra)}` : ''}`);
   };
-  const display: FreeDisplay = cfg.backend === 'wayland' ? { backend: 'wayland', display: null } : await pickFreeDisplay(undefined, [], 'x11');
+  const display: FreeDisplay = await pickFreeDisplay(undefined, [], cfg.backend);
   const sb = new AppSandbox({ dir: join(dir, 'desktop'), display, width: W, height: H, network: 'none', gpu: cfg.gpu, log: log_ as any, onEvent: () => {}, ...app.opts(dir) });
   const out: any = { app: key, config: cfg.name, rep };
   const roots = () => ((sb as any).procs ?? []).map((p: { proc: { pid: number } }) => p.proc.pid);
@@ -98,13 +103,14 @@ async function one(app: App, key: string, cfg: (typeof CONFIGS)[number], rep: nu
     await sb.start();
     out.sandboxMs = performance.now() - t0;
     out.backend = sb.info().backend;
-    // The first picture: more than a handful of colours on the screen.
+    // The first picture: more than a handful of colours on the screen, and more of it than a pointer on black (on
+    // wayland-tigervnc sway draws the pointer into the output from the start: about 40 colours on an empty screen).
     const end = Date.now() + 90_000;
     let shot: Buffer | null = null;
     for (;;) {
       shot = Buffer.from(await sb.screen!.screenshot());
       const k = colours(shot);
-      if (k > 16) {
+      if (k > 16 && brightness(shot) > 0.02) {
         out.firstPictureMs = performance.now() - t0;
         out.colours = k;
         break;
@@ -149,7 +155,7 @@ async function one(app: App, key: string, cfg: (typeof CONFIGS)[number], rep: nu
 }
 
 process.env.DITHER_SANDBOX_APP_LOG = '1';
-const results: any = { when: new Date().toISOString(), machine: { cpus: cpus().length, model: cpus()[0]?.model }, size: `${W}x${H}`, reps: REPS, maxLoad: MAX_LOAD, runs: [] as any[] };
+const results: any = { when: new Date().toISOString(), machine: machine(), size: `${W}x${H}`, reps: REPS, maxLoad: MAX_LOAD, runs: [] as any[] };
 const save = () => {
   mkdirSync(dirname(OUT), { recursive: true });
   writeFileSync(OUT, JSON.stringify(results, null, 2));
@@ -157,7 +163,7 @@ const save = () => {
 try {
   for (let rep = 0; rep < REPS; rep++)
     for (const key of APPS) {
-      const order = rep % 2 ? [...CONFIGS].reverse() : CONFIGS;
+      const order = CONFIGS.map((_, i) => CONFIGS[(i + rep) % CONFIGS.length]!);
       for (const cfg of order) {
         const load = await quiet(MAX_LOAD, WAIT_LOAD_S);
         log(`rep ${rep + 1}/${REPS} ${key} ${cfg.name} (load ${load.load.toFixed(1)}${load.busy ? ', busy' : ''})`);

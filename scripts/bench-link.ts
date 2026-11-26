@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 /**
- * The live view over a constrained link and a constrained CPU, on both display backends (docs/browser.md, "Measured
+ * The live view over a constrained link and a constrained CPU, on every display backend (docs/browser.md, "Measured
  * side by side"): what a viewer gets when the link between it and the manager is slow, far or lossy, or when the
  * display's own processes get only part of a core.
  *
- *   bun scripts/bench-link.ts [--out link.json] [--reps 3] [--only base,bw20,...] [--max-load <load1>] [--wait-load-s 600]
+ *   bun scripts/bench-link.ts [--out link.json] [--reps 3] [--only base,bw20,...] [--backends x11,tigervnc,...]
+ *                             [--max-load <load1>] [--wait-load-s 600]
  *
  * The viewer asks for what the manager's live view (noVNC) asks for, in its order and with its quality and
  * compression levels, and asks for the next update the way noVNC does (after the whole update, or continuous updates
@@ -17,16 +18,17 @@
  *   anim, scroll, video   frames delivered per second, bytes per second, the encodings used, 5 s after the first
  *              whole screen; the display processes' CPU (the VNC server and the display server)
  *   click      a press sent through the link → the page's handler, and → the first changed rectangle back (10 times)
- * The CPU conditions put the display processes (Xvfb and x11vnc, or sway and wayvnc) into a transient systemd scope
- * with a CPU quota; nothing else is touched. Encoding comparisons (Tight, ZRLE, wayvnc's Open H.264 with -g) run on
- * the full-screen animation at two conditions.
+ * The CPU conditions put the display processes (Xvfb and x11vnc, an Xvnc, or sway and wayvnc) into a transient
+ * systemd scope with a CPU quota; nothing else is touched. Encoding comparisons (Tight as noVNC asks is every run's;
+ * ZRLE; KasmVNC's WebP as its own client asks; wayvnc's Open H.264 with -g) run on the full-screen animation and the
+ * scrolling page at the conditions marked `encodings`.
  */
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { cpus, homedir } from 'node:os';
 import { connect, createServer, type Server } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { DISPLAY_BINS, resolveBin } from '../packages/browser/src/bins.ts';
-import { type Backend, BACKENDS, Bench, cpuOver, ENC, ensureVideo, log, median, novncEncodings, progName, quiet, summary, tree, Viewer, W, H, work } from './bench-lib.ts';
+import { argOf, backendsArg, Bench, cpuOver, DISPLAY_PROCS, ENC, ensureVideo, log, machine, median, novncEncodings, progName, quiet, summary, tree, Viewer, W, H, work } from './bench-lib.ts';
 
 const SHAPER = resolve(import.meta.dir, 'bench-shaper.ts');
 
@@ -192,8 +194,7 @@ function cpuQuota(scope: string, pids: number[], pct: number | null, exists: boo
 
 // ------------------------------------------------------------------------------------------------ measurements
 
-const DISPLAY: Record<Backend, string[]> = { x11: ['Xvfb', 'x11vnc'], wayland: ['sway', 'wayvnc'] };
-const displayPids = (b: Bench) => tree(b.roots()).filter((p) => DISPLAY[b.backend].includes(progName(p))).map((p) => p.pid);
+const displayPids = (b: Bench) => tree(b.roots()).filter((p) => DISPLAY_PROCS[b.backend].includes(progName(p))).map((p) => p.pid);
 
 /** Until the sum of pixel rectangles since connecting covers the screen (the first whole picture). */
 function whole(v: Viewer): Promise<number> {
@@ -231,13 +232,14 @@ async function scene(b: Bench, socket: string, page: '/anim' | '/scroll' | '/vid
   try {
     await within(whole(v), 60_000, 'the first whole screen');
     await Bun.sleep(1000);
-    const [u0, by0] = [v.updates, v.bytes];
+    const [u0, f0, by0] = [v.updates, v.frames, v.bytes];
     v.encodings = {};
+    v.tightKinds = {};
     const t0 = performance.now();
     const cpu = await cpuOver(server ?? (() => displayPids(b)), 5000);
     const secs = (performance.now() - t0) / 1000;
     if (v.error) throw new Error(`the viewer: ${v.error}`);
-    return { fps: (v.updates - u0) / secs, bytesPerS: (v.bytes - by0) / secs, encodings: v.encodings, cpu: cpu.total, cpuByName: cpu.byName, pageFps: b.reports.filter((r) => r.ev === 'fps').pop()?.fps ?? null };
+    return { fps: (v.frames - f0) / secs, updatesPerS: (v.updates - u0) / secs, bytesPerS: (v.bytes - by0) / secs, encodings: v.encodings, tightKinds: v.tightKinds, cpu: cpu.total, cpuByName: cpu.byName, pageFps: b.reports.filter((r) => r.ev === 'fps').pop()?.fps ?? null };
   } finally {
     v.close();
   }
@@ -325,6 +327,11 @@ async function encodingsAt(b: Bench, c: Condition, dir: string) {
   };
   const zrle = [ENC.zrle, ENC.raw, ENC.copyRect, ENC.desktopSize, ENC.lastRect, ENC.cursor, ENC.fence, ENC.continuousUpdates];
   out.zrle = await via(b.vncSocket, (s) => scene(b, s, '/anim', zrle));
+  out.zrleScroll = await via(b.vncSocket, (s) => scene(b, s, '/scroll', zrle));
+  if (b.backend === 'kasmvnc') {
+    out.webp = await via(b.vncSocket, (s) => scene(b, s, '/anim', [ENC.kasmWebp, ...novncEncodings(false)]));
+    out.webpScroll = await via(b.vncSocket, (s) => scene(b, s, '/scroll', [ENC.kasmWebp, ...novncEncodings(false)]));
+  }
   if (b.backend === 'wayland')
     out.h264 = await withOtherWayvnc(b, ['-g', '-f', '60'], async (sock, pids) => via(sock, (s) => within(scene(b, s, '/anim', novncEncodings(true), pids), 30_000, 'Open H.264'))).catch((e) => ({ error: (e as Error).message }));
   return out;
@@ -333,18 +340,15 @@ async function encodingsAt(b: Bench, c: Condition, dir: string) {
 // ------------------------------------------------------------------------------------------------ run
 
 if (import.meta.main) {
-  const argOf = (name: string, def: string) => {
-    const i = process.argv.indexOf(`--${name}`);
-    return i >= 0 ? process.argv[i + 1]! : def;
-  };
   const OUT = argOf('out', join(homedir(), '.cache/da-bench', `link-${new Date().toISOString().replace(/[:.]/g, '-')}.json`));
   const REPS = Number(argOf('reps', '3'));
   const ONLY = new Set(argOf('only', CONDITIONS.map((c) => c.name).join(',')).split(','));
   const MAX_LOAD = Number(argOf('max-load', String(cpus().length / 2)));
   const WAIT_LOAD_S = Number(argOf('wait-load-s', '600'));
   const conditions = CONDITIONS.filter((c) => ONLY.has(c.name));
+  const BACKENDS = backendsArg();
   const hasVideo = ensureVideo();
-  const results: any = { when: new Date().toISOString(), machine: { cpus: cpus().length, model: cpus()[0]?.model }, size: `${W}x${H}`, reps: REPS, maxLoad: MAX_LOAD, conditions, checks: [] as any[], runs: [] as any[] };
+  const results: any = { when: new Date().toISOString(), machine: machine(), size: `${W}x${H}`, reps: REPS, backends: BACKENDS, maxLoad: MAX_LOAD, conditions, checks: [] as any[], runs: [] as any[] };
   const save = () => {
     mkdirSync(dirname(OUT), { recursive: true });
     writeFileSync(OUT, JSON.stringify(results, null, 2));
@@ -359,7 +363,7 @@ if (import.meta.main) {
       save();
     }
     for (let rep = 0; rep < REPS; rep++) {
-      const order = rep % 2 ? [...BACKENDS].reverse() : [...BACKENDS];
+      const order = BACKENDS.map((_, i) => BACKENDS[(i + rep) % BACKENDS.length]!);
       for (const backend of order) {
         const b = new Bench(backend);
         const scope = `da-bench-display-${process.pid}-${rep}-${backend}.scope`;

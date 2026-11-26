@@ -1,15 +1,16 @@
 /**
  * What some tests need from the machine beyond bun, so they skip where it is missing (as on GitHub's runners) instead
  * of failing: Nix (Radicale and Dovecot come from nixpkgs, unless RADICALE_BIN or DOVECOT_BIN name them), the
- * native-app sandbox (bubblewrap, Xvfb, x11vnc and dbus from /nix/store: packages/sandbox), and the wayland display
- * backend (sway, wayvnc and grim: packages/browser/src/wayland.ts). The sandboxes' programs come prepared from the
- * pinned nixpkgs (`bun scripts/prepare-bins.ts --out <dir> --tests`, then DITHER_BINS=<dir>: nix/README.md); without
+ * native-app sandbox (bubblewrap, Xvfb, x11vnc and dbus from /nix/store: packages/sandbox), and each display backend's
+ * programs (packages/browser/src/bins.ts BACKEND_BINS). The sandboxes' programs come prepared from the
+ * pinned nixpkgs (`bun scripts/prepare-bins.ts --out <dir> --tests`, then the DITHER_BINS it prints: nix/README.md); without
  * that, from PATH, where most are missing.
  *
  * Bun runs a file's beforeAll and afterAll even when its tests are skipped, so a file that skips whole returns from
  * its hooks early too.
  */
-import { type BinSpec, DISPLAY_BINS, resolveBin } from '../packages/browser/src/bins.ts';
+import type { DisplayBackend } from '@dither-accounts/spec/display';
+import { BACKEND_BINS, type BinSpec, DISPLAY_BINS, resolveBin } from '../packages/browser/src/bins.ts';
 import { type Bins, resolveBins } from '../packages/browser/src/sandbox.ts';
 import { BINS, sandboxBins } from '../packages/sandbox/src/bins.ts';
 
@@ -29,19 +30,25 @@ export const sandbox = (() => {
   }
 })();
 
-export const wayland = (() => {
+/** Whether a backend's screen can start here: its programs (BACKEND_BINS) are prepared or on PATH. */
+export function hasBackend(b: DisplayBackend): boolean {
   try {
-    for (const b of [DISPLAY_BINS.sway, DISPLAY_BINS.wayvnc, DISPLAY_BINS.grim]) resolveBin(b, () => {});
+    for (const spec of BACKEND_BINS[b]) resolveBin(spec, () => {});
     return true;
   } catch {
     return false;
   }
-})();
+}
+
+export const wayland = hasBackend('wayland');
+/** The wayland-tigervnc backend: w0vncserver from the owner's fork (nix/w0vncserver.nix), with sway and grim. */
+export const w0vnc = hasBackend('wayland-tigervnc');
 
 /** What only the tests run, from the pinned nixpkgs too (nix/bins.json "test"). */
 export const TEST_BINS = {
   electron: { name: 'electron', env: 'ELECTRON_BIN', nix: 'electron', pinned: true },
   xev: { name: 'xev', env: 'XEV_BIN', nix: 'xorg.xev', pinned: true },
+  xclip: { name: 'xclip', env: 'XCLIP_BIN', nix: 'xclip', pinned: true },
   wev: { name: 'wev', env: 'WEV_BIN', nix: 'wev', pinned: true },
 } satisfies Record<string, BinSpec>;
 

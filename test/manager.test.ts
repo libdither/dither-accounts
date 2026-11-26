@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { AccountsClient, CallFailed, register } from '@dither-accounts/client';
 import { testEcho } from '@dither-accounts/interfaces';
 import { createManager, type Manager } from '@dither-accounts/manager';
+import type { DisplayBackend } from '@dither-accounts/spec/display';
+import type { BackendCheck } from '../packages/manager/src/http.ts';
 import { BUFFER, LIMITS } from '../packages/manager/src/router.ts';
 import { setTraceSink } from '../packages/manager/src/trace.ts';
 
@@ -39,10 +41,13 @@ function client(app: string, token: string) {
 let admin: { app: string; token: string; requests: { id: string }[] };
 let reader: { app: string; token: string; requests: { id: string }[] };
 let account: string;
+const checks: Partial<Record<DisplayBackend, BackendCheck>> = {};
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'dacc-test-'));
-  m = await createManager({ openPage: true, dataDir: dir, port: 0 });
+  // Whether a backend can run here is the machine's (its programs prepared, or on PATH): a test says, so the moves
+  // below do not depend on what this machine has. `checks` is changed by the test that needs another answer.
+  m = await createManager({ openPage: true, dataDir: dir, port: 0, backendCheck: (b) => checks[b] ?? { availability: 'ready', why: null } });
   admin = await register(m.url, { name: 'admin-app', requests: [{ interface: 'accounts', level: 'manage', kinds: ['fake'] }, { interface: 'test.echo', level: 'manage' }] });
   reader = await register(m.url, { name: 'reader-app', requests: [{ interface: 'test.echo', level: 'write', reason: 'to test' }] });
 });
@@ -123,6 +128,79 @@ test("the display backend: the manager's default (x11), an account's own from it
   // A kind with no screen has no backend, whatever its config says.
   expect(m.sup.backendOf({ kind: 'chat-fake', config: JSON.stringify({ displayBackend: 'wayland' }) } as any)).toBeNull();
   await until(online, 10_000, 'the extractor back online');
+});
+
+test("the default backend: config.toml's until one is chosen on the page, which wins; moving it restarts the running accounts that follow it", async () => {
+  const st = async () => (await (await api('/api/state')).json()) as any;
+  const detail = async () => (await (await api(`/api/accounts/${account}`)).json()) as any;
+  const online = async () => !!(await st()).accounts.find((a: any) => a.id === account)?.online;
+  const s0 = await st();
+  expect(s0.display).toMatchObject({ default: 'x11', chosen: null, config: 'x11' });
+  expect(s0.display.backends.map((b: any) => b.name)).toEqual(['x11', 'tigervnc', 'kasmvnc', 'wayland', 'wayland-tigervnc']);
+  // The two built from forks this project keeps say so, with where they come from.
+  const forks = s0.display.backends.filter((b: any) => b.experimental === 'fork');
+  expect(forks.map((b: any) => b.name)).toEqual(['kasmvnc', 'wayland-tigervnc']);
+  for (const b of forks) expect(b.note).toMatch(/fork/);
+  expect(s0.accounts.find((a: any) => a.id === account).display).toEqual({ own: null, uses: 'x11' });
+  expect((await api('/api/display', 'PUT', { default: 'mir' })).status).toBe(400);
+  expect((await api('/api/display', 'PUT', {})).status).toBe(400);
+  // The PUT answers at once; the accounts it moved restart after, one at a time per kind, on the backend they were given.
+  const uses = async (b: string) => (await detail()).process.displayBackend === b;
+  expect((await api('/api/display', 'PUT', { default: ' KasmVNC ' })).status).toBe(200);
+  expect((await st()).display).toMatchObject({ default: 'kasmvnc', chosen: 'kasmvnc', config: 'x11' });
+  await until(() => uses('kasmvnc'), 10_000, 'the account restarted on kasmvnc');
+  expect((await st()).accounts.find((a: any) => a.id === account).display).toEqual({ own: null, uses: 'kasmvnc' });
+  // An account's own wins over the default, and a change of the default then leaves it running as it is.
+  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: 'tigervnc' } })).status).toBe(200);
+  expect((await detail()).process.displayBackend).toBe('tigervnc');
+  const pid = (await detail()).process.pid;
+  expect((await api('/api/display', 'PUT', { default: 'wayland-tigervnc' })).status).toBe(200);
+  expect((await detail()).process).toMatchObject({ pid, displayBackend: 'tigervnc' });
+  expect((await st()).accounts.find((a: any) => a.id === account).display).toEqual({ own: 'tigervnc', uses: 'tigervnc' });
+  expect((await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: null } })).status).toBe(200);
+  await until(() => uses('wayland-tigervnc'), 10_000, 'the account restarted on wayland-tigervnc');
+  // null: config.toml's again.
+  expect((await api('/api/display', 'PUT', { default: null })).status).toBe(200);
+  expect((await st()).display).toMatchObject({ default: 'x11', chosen: null });
+  await until(() => uses('x11'), 10_000, 'the account restarted on x11');
+  // A kind with no screen has none to show.
+  expect((await st()).accounts.filter((a: any) => a.kind === 'chat-fake').every((a: any) => a.display === null)).toBe(true);
+  await until(online, 10_000, 'the extractor back online');
+});
+
+test('a backend that cannot run here now is offered as such and refused (409), for the default and an account; the running account stays', async () => {
+  const st = async () => (await (await api('/api/state')).json()) as any;
+  const detail = async () => (await (await api(`/api/accounts/${account}`)).json()) as any;
+  checks.kasmvnc = { availability: 'missing', why: 'Xkasmvnc not among the prepared programs' };
+  checks['wayland-tigervnc'] = { availability: 'building', why: "its servers, built from a fork, are being built" };
+  checks.tigervnc = { availability: 'unbuilt', why: 'built the first time it is picked' };
+  try {
+    const view = (await st()).display.backends;
+    expect(view.map((b: any) => [b.name, b.availability, b.available])).toEqual([
+      ['x11', 'ready', true],
+      ['tigervnc', 'unbuilt', false],
+      ['kasmvnc', 'missing', false],
+      ['wayland', 'ready', true],
+      ['wayland-tigervnc', 'building', false],
+    ]);
+    expect(view.find((b: any) => b.name === 'kasmvnc').why).toMatch(/Xkasmvnc/);
+    const before = (await detail()).process;
+    for (const b of ['kasmvnc', 'wayland-tigervnc', 'tigervnc']) {
+      const put = await api('/api/display', 'PUT', { default: b });
+      expect({ b, status: put.status }).toEqual({ b, status: 409 });
+      expect(((await put.json()) as any).error).toMatch(b === 'kasmvnc' ? /cannot run here now: Xkasmvnc/ : b === 'tigervnc' ? /being built now/ : /being built/);
+      const patch = await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: b } });
+      expect({ b, status: patch.status }).toEqual({ b, status: 409 });
+    }
+    // Nothing was taken: the default, the account's own and its process are as they were.
+    expect((await st()).display).toMatchObject({ default: 'x11', chosen: null });
+    expect((await st()).accounts.find((a: any) => a.id === account).display).toEqual({ own: null, uses: 'x11' });
+    expect((await detail()).process).toMatchObject({ pid: before.pid, displayBackend: 'x11' });
+    // Going back to config.toml's is never refused.
+    expect((await api('/api/display', 'PUT', { default: null })).status).toBe(200);
+  } finally {
+    for (const k of Object.keys(checks)) delete checks[k as DisplayBackend];
+  }
 });
 
 test('levels: read-only cannot write; approving narrower than asked holds', async () => {

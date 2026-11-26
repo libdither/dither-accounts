@@ -180,6 +180,16 @@ export class Store {
     return this.one<{ value: string }>('SELECT value FROM kv WHERE key = ?', key)!.value;
   }
 
+  /** A manager setting kept here (a choice made on the page): its value, or null when none is set. */
+  setting(key: string): string | null {
+    return this.one<{ value: string }>('SELECT value FROM kv WHERE key = ?', `setting:${key}`)?.value ?? null;
+  }
+  /** Keep a manager setting, or (null) forget it. */
+  setSetting(key: string, value: string | null) {
+    if (value === null) this.run('DELETE FROM kv WHERE key = ?', `setting:${key}`);
+    else this.run('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', `setting:${key}`, value);
+  }
+
   account(id: string): Row | null {
     return this.one('SELECT * FROM account WHERE id = ?', id);
   }

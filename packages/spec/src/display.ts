@@ -14,9 +14,36 @@
 export const BACKENDS = {
   /** Xvfb with x11vnc beside it. The default. */
   x11: { protocol: 'x11', label: 'Xvfb' },
+  /** TigerVNC's Xvnc: the X server and the live view's server in one process. */
+  tigervnc: { protocol: 'x11', label: 'Xvnc (TigerVNC)' },
+  /** KasmVNC's Xvnc (a TigerVNC fork with WebP and its own RFB extensions), built from the owner's fork. */
+  kasmvnc: {
+    protocol: 'x11',
+    label: 'Xvnc (KasmVNC)',
+    experimental: 'fork',
+    note: "KasmVNC built from github.com/zyansheep/KasmVNC, a fork of upstream's stable release kept by this project, not a distribution's package",
+  },
   /** A headless sway of the sandbox's own, with wayvnc. */
   wayland: { protocol: 'wayland', label: 'sway (Wayland)' },
-} as const satisfies Record<string, { protocol: 'x11' | 'wayland'; label: string }>;
+  /** The same sway, with TigerVNC's Wayland server (w0vncserver) as the live view, built from the owner's fork. */
+  'wayland-tigervnc': {
+    protocol: 'wayland',
+    label: 'sway (Wayland, TigerVNC)',
+    experimental: 'fork',
+    note: "TigerVNC's Wayland server built from github.com/zyansheep/tigervnc, a fork of upstream's stable release kept by this project, with fixes for a headless compositor that upstream has not released yet",
+  },
+} as const satisfies Record<string, BackendInfo>;
+
+/** What the list says of a backend. */
+export interface BackendInfo {
+  protocol: 'x11' | 'wayland';
+  /** What runs it, for notes and the page: "Xvfb", "sway (Wayland)". */
+  label: string;
+  /** 'fork': its server is built from a fork this project keeps, not a release anyone else ships (docs/browser.md). */
+  experimental?: 'fork';
+  /** Where it comes from, in a sentence, for the page's badge. */
+  note?: string;
+}
 
 export type DisplayBackend = keyof typeof BACKENDS;
 /** The backends that are an X server on a numbered display. */
@@ -38,6 +65,8 @@ export function parseBackend(v: unknown): DisplayBackend | null {
 
 export const isWaylandBackend = (b: DisplayBackend): b is WaylandBackend => BACKENDS[b].protocol === 'wayland';
 export const isXBackend = (b: DisplayBackend): b is XBackend => BACKENDS[b].protocol === 'x11';
+/** Its server is built from a fork this project keeps: its programs are a build of their own (nix/bins.json `forks`). */
+export const fromFork = (b: DisplayBackend) => (BACKENDS[b] as BackendInfo).experimental === 'fork';
 
-/** "x11, wayland": for messages that say what may be given. */
+/** "x11, tigervnc, …": for messages that say what may be given. */
 export const backendList = () => DISPLAY_BACKENDS.join(', ');

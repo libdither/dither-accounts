@@ -25,14 +25,18 @@ import { resolveChromium, Sandbox } from '../src/sandbox.ts';
 import { SwayIpc, views } from '../src/swayipc.ts';
 import { WaylandScreen } from '../src/wayland.ts';
 import { DBusConnection } from '../../sandbox/src/dbus.ts';
-import { sandbox as sandboxOk, TEST_BINS, wayland, why } from '../../../test/needs.ts';
+import { hasBackend, sandbox as sandboxOk, TEST_BINS, wayland, why } from '../../../test/needs.ts';
 import { type ShareStats, sharePage, decode, encode } from './share-page.ts';
 
 process.env.DITHER_DISPLAY_CLAIMS = mkdtempSync(join(tmpdir(), 'display-claims-share-'));
 
-test('the pattern: every counter round-trips, and a flipped block is caught by its check', () => {
+test('the pattern: every counter round-trips, a flipped block is caught by its check, and no two counters share one', () => {
   for (const n of [0, 1, 255, 256, 4097, 65535]) expect(decode(encode(n))).toBe(n);
-  for (let bit = 0; bit < 24; bit++) {
+  // One-to-one: a frame torn between two counters, row by row, cannot pass as a third.
+  const checks = new Set<string>();
+  for (let n = 0; n < 65536; n++) checks.add(encode(n).slice(16).join(''));
+  expect(checks.size).toBe(65536);
+  for (let bit = 0; bit < 32; bit++) {
     const b = encode(1234);
     b[bit] ^= 1;
     expect(decode(b)).not.toBe(1234);
@@ -255,11 +259,14 @@ async function share(p: Probe, session: number): Promise<ShareStats> {
       await Bun.sleep(50);
     }
   }
-  await screen.click(200, pg.sh - pg.h + 300);
+  // Low on the screen, left of the receiving frame (bottom right): inside the page whatever its size was when it first
+  // reported. That report can come before the window took its final size (on a slow machine, from a smaller or larger
+  // first window), so its innerHeight is not where the page ends up.
+  await screen.click(200, pg.sh - 200);
   try {
     await until(`the click for session ${session}`, () => p.reports.filter((r) => r.ev === 'click').length > clicks, 10_000);
   } catch (e) {
-    throw new Error(`${(e as Error).message}${await whatIsOnScreen(p)}`);
+    throw new Error(`${(e as Error).message} (the page's reports: ${JSON.stringify(p.reports.filter((r) => r.ev === 'page' || r.ev === 'resize'))})${await whatIsOnScreen(p)}`);
   }
   await until(`getDisplayMedia answered for session ${session}`, () => p.reports.some((r) => (r.ev === 'shared' && r.session === session) || r.ev === 'error'), 30_000);
   await until(`session ${session}'s numbers`, () => p.reports.some((r) => (r.ev === 'stats' && r.session === session) || r.ev === 'error'), 60_000);
@@ -378,26 +385,31 @@ describe.skipIf(!ok)('Chromium on wayland', () => {
   }, 60_000);
 });
 
+// Every X backend shares the same way: Chromium's X capturer reads the X server's screen, whichever server it is
+// (Xvfb, or an Xvnc that is the live view too).
+const X_SHARE = (['x11', 'tigervnc', 'kasmvnc'] as const).filter((b) => b === 'x11' || (ok && why(`${b}'s Xvnc`, hasBackend(b))));
+
 describe.skipIf(!ok)('x11 parity', () => {
-  test(
-    "Chromium on x11 shares its Xvfb (Chromium's picker answered by its Entire screen), and calls no portal",
-    async () => {
-      const p = await probe('x', await pickFreeDisplay(undefined, [], 'x11'), ['--auto-select-desktop-capture-source=Entire screen']);
-      try {
-        expectGood(await share(p, 1), 1024, 700);
-        expect(monitored.join('')).not.toContain('org.freedesktop.portal.ScreenCast');
-      } finally {
-        await p.sb.stop();
-        p.server.stop(true);
-        // An x11 sandbox's Chromium still has the machine's session bus (unchanged here: docs/browser.md), so it was
-        // there; its capture is X's own and asked no portal. Its connections are counted as known from here on, pass
-        // or fail, so the Electron test below sees only its own.
-        await flushHostBus();
-        ownNames = new Set([...ownNames, ...strangersOnHostBus()]);
-      }
-    },
-    180_000,
-  );
+  for (const backend of X_SHARE)
+    test(
+      `Chromium on ${backend} shares its X server's screen (Chromium's picker answered by its Entire screen), and calls no portal`,
+      async () => {
+        const p = await probe(backend, await pickFreeDisplay(undefined, [], backend), ['--auto-select-desktop-capture-source=Entire screen']);
+        try {
+          expectGood(await share(p, 1), 1024, 700);
+          expect(monitored.join('')).not.toContain('org.freedesktop.portal.ScreenCast');
+        } finally {
+          await p.sb.stop();
+          p.server.stop(true);
+          // An X sandbox's Chromium still has the machine's session bus (unchanged here: docs/browser.md), so it was
+          // there; its capture is X's own and asked no portal. Its connections are counted as known from here on, pass
+          // or fail, so the Electron test below sees only its own.
+          await flushHostBus();
+          ownNames = new Set([...ownNames, ...strangersOnHostBus()]);
+        }
+      },
+      180_000,
+    );
 });
 
 // ------------------------------------------------------------- Electron

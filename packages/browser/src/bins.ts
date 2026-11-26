@@ -6,10 +6,12 @@
  * A pinned program (the screens', the screen share's, the native sandbox's, and Chromium: `pinned: true`) comes from the repo's
  * one nixpkgs (nix/pin.json), prepared ahead of time: the manager builds them at its start (packages/manager
  * prepare.ts, `nix-build nix -A dither-bins`) into an out-link in its data directory, which is their GC root, and hands
- * the directory to its extractors as DITHER_BINS; CI and the tests run `bun scripts/prepare-bins.ts`. In order:
+ * the directory to its extractors as DITHER_BINS; CI and the tests run `bun scripts/prepare-bins.ts`. The servers built
+ * from forks this project keeps are a second out-link (dither-bins-forks), so DITHER_BINS is a list, `:` between,
+ * like PATH. In order:
  *
  *   1. its environment override (SWAY_BIN …)
- *   2. DITHER_BINS/<attr>, the prepared package
+ *   2. <dir>/<attr> for each of DITHER_BINS's directories, the prepared package
  *   3. PATH (unless the spec says PATH's copy is the wrong one), then known places: a machine without Nix
  *   4. none: an error at once saying how to prepare it. An extractor never runs `nix build` for one, and never waits.
  *
@@ -19,6 +21,7 @@
  */
 import { existsSync, lstatSync, readlinkSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import type { DisplayBackend } from '@dither-accounts/spec/display';
 
 export type Log = (level: 'debug' | 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
 
@@ -38,7 +41,10 @@ export interface BinSpec {
   pinned?: boolean;
 }
 
-/** Where the prepared packages are: a directory of links named by attribute (nix/overlay.nix's dither-bins). */
+/**
+ * Where the prepared packages are: directories of links named by attribute (nix/overlay.nix's dither-bins, and
+ * dither-bins-forks when a backend needs it), `:` between them.
+ */
 export const BINS_ENV = 'DITHER_BINS';
 
 /** A pinned program that is not prepared: says how to prepare it. */
@@ -63,16 +69,20 @@ const real = (p: string) => {
   return cur;
 };
 
-/** The prepared package's program: DITHER_BINS/<attr> (a link to the package's store path), then its bin/ or sub. */
-export function preparedBin(spec: BinSpec, dir = process.env[BINS_ENV]): string | null {
-  if (!dir) return null;
-  try {
-    const pkg = realpathSync(join(dir, spec.nix));
-    const bin = join(pkg, spec.sub ?? 'bin', spec.name);
-    return existsSync(bin) ? bin : null;
-  } catch {
-    return null;
+/**
+ * The prepared package's program: <dir>/<attr> (a link to the package's store path), then its bin/ or sub, in the first
+ * of DITHER_BINS's directories that has it.
+ */
+export function preparedBin(spec: BinSpec, dirs = process.env[BINS_ENV]): string | null {
+  for (const dir of (dirs ?? '').split(':')) {
+    if (!dir) continue;
+    try {
+      const pkg = realpathSync(join(dir, spec.nix));
+      const bin = join(pkg, spec.sub ?? 'bin', spec.name);
+      if (existsSync(bin)) return bin;
+    } catch {}
   }
+  return null;
 }
 
 /** A binary's real path, or throws saying how to provide it. */
@@ -123,7 +133,25 @@ export const DISPLAY_BINS = {
   sway: { name: 'sway', env: 'SWAY_BIN', nix: 'sway-unwrapped', path: false, pinned: true },
   wayvnc: { name: 'wayvnc', env: 'WAYVNC_BIN', nix: 'wayvnc', pinned: true },
   grim: { name: 'grim', env: 'GRIM_BIN', nix: 'grim', pinned: true },
+  // Puts characters a US keyboard lacks on keys of their own for typing on X (screen.ts, XScreen.type).
+  xmodmap: { name: 'xmodmap', env: 'XMODMAP_BIN', nix: 'xmodmap', pinned: true },
+  // TigerVNC's Xvnc (the tigervnc backend), from nixpkgs as it ships it. Not from PATH: other Xvnc builds share the name.
+  tigervnc: { name: 'Xvnc', env: 'TIGERVNC_XVNC_BIN', nix: 'tigervnc', path: false, pinned: true },
+  // KasmVNC's Xvnc (the kasmvnc backend), built from the owner's fork (nix/kasmvnc.nix).
+  kasmvnc: { name: 'Xkasmvnc', env: 'KASMVNC_BIN', nix: 'kasmvnc', path: false, pinned: true },
+  // TigerVNC's Wayland server (the wayland-tigervnc backend), built from the owner's fork (nix/w0vncserver.nix):
+  // nixpkgs' own exits without a desktop portal and crashes on a seat with no keyboard.
+  w0vncserver: { name: 'w0vncserver', env: 'W0VNCSERVER_BIN', nix: 'w0vncserver', path: false, pinned: true },
 } satisfies Record<string, BinSpec>;
+
+/** The programs each backend's screen starts (input and pictures aside): without them it cannot start. */
+export const BACKEND_BINS: Record<DisplayBackend, BinSpec[]> = {
+  x11: [DISPLAY_BINS.xvfb, DISPLAY_BINS.x11vnc],
+  tigervnc: [DISPLAY_BINS.tigervnc],
+  kasmvnc: [DISPLAY_BINS.kasmvnc],
+  wayland: [DISPLAY_BINS.sway, DISPLAY_BINS.wayvnc, DISPLAY_BINS.grim],
+  'wayland-tigervnc': [DISPLAY_BINS.sway, DISPLAY_BINS.w0vncserver, DISPLAY_BINS.grim],
+};
 
 /** Run a program, collect its stdout; reject with its stderr when it fails. */
 export function run(cmd: string[], env: Record<string, string | undefined>, what: string, timeoutMs = 60_000): Promise<Buffer> {

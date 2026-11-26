@@ -7,7 +7,7 @@
  *   bun packages/manager/src/cli.ts grant <app> <interface> <level> [--accounts a,b] [--kinds k,l] [--dry-run]
  *   bun packages/manager/src/cli.ts import-dither-chat --hub-data <dir> (--accounts id,id | --all) [--dry-run]
  *   bun packages/manager/src/cli.ts forget <account>      stop it and drop it from the registry; its directory stays
- *   bun packages/manager/src/cli.ts display <account> x11|wayland|default   the screen its sandboxes draw on (restarts it)
+ *   bun packages/manager/src/cli.ts display <account> <backend>|default   the screen its sandboxes draw on: x11, tigervnc, kasmvnc, wayland or wayland-tigervnc (restarts it)
  *   bun packages/manager/src/cli.ts export-to-dither-chat <account> --hub-data <dir>
  *   bun packages/manager/src/cli.ts set-password [--file <file>]   the page's password, from the file or stdin (never argv)
  *   bun packages/manager/src/cli.ts sessions                       the page's signed-in browsers
@@ -36,6 +36,7 @@ import { Database } from 'bun:sqlite';
 import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
+import { DISPLAY_BACKENDS, parseBackend } from '@dither-accounts/spec/display';
 import { CLI_HEADER, CLI_TOKEN_FILE, ensureSessionTable, LOGIN_FILE, MIN_PASSWORD, setPassword } from './auth.ts';
 import { newToken, Store } from './db.ts';
 import { ownDir } from './files.ts';
@@ -137,7 +138,7 @@ async function main() {
     }
     case 'display': {
       const [id, value] = rest;
-      if (!id || !value || !['x11', 'wayland', 'default'].includes(value)) die('display <account> x11|wayland|default');
+      if (!id || !value || (value !== 'default' && !parseBackend(value))) die(`display <account> ${DISPLAY_BACKENDS.join('|')}|default`);
       if (!up) die(`the manager is not running at ${url}`);
       await call('PATCH', `/api/accounts/${encodeURIComponent(id)}`, { settings: { displayBackend: value === 'default' ? null : value } });
       console.log(`${id}: display ${value === 'default' ? "the manager's default" : value} (its extractor restarts to take it)`);

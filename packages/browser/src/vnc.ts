@@ -1,6 +1,6 @@
 /**
- * A sandbox's live view: x11vnc (or, on the wayland backend, wayvnc: wayland.ts) on a Unix socket in the account's own
- * directory, and on no TCP port at all.
+ * A sandbox's live view: x11vnc (or an Xvnc, its own X server: xvncArgs below; or, on a Wayland backend, wayvnc or
+ * w0vncserver: wayland.ts) on a Unix socket in the account's own directory, and on no TCP port at all.
  *
  * It used to listen on 127.0.0.1:5900+display with -nopw, which let anything on this machine in: any local process, and
  * any web page open in a browser here, since libvncserver also takes a WebSocket upgrade on that port from any Origin.
@@ -18,6 +18,7 @@
  */
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, rmSync } from 'node:fs';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { Subprocess } from 'bun';
@@ -95,6 +96,88 @@ export async function endProcess(p: Subprocess, ms = 3000) {
     } catch {}
     await p.exited.catch(() => {});
   }
+}
+
+/**
+ * Wait until the VNC server on the socket says its first words ("RFB 003.008\n"). A server can have its socket's file
+ * before it answers there: bind() makes it before listen() (wayvnc on a loaded machine refused a connection then), an
+ * Xvnc listens before it has finished starting (its keyboard map), w0vncserver before it has found sway's protocols.
+ * The live view works from here, not from when the socket appeared. Fails at once if the server exits.
+ */
+export async function waitForRfbBanner(socket: string, server: Subprocess, timeoutMs: number, name: string) {
+  const deadline = Date.now() + timeoutMs;
+  let last = 'no answer';
+  while (Date.now() < deadline) {
+    if (server.exitCode !== null || server.signalCode) throw new Error(`${name} exited (${server.signalCode ?? server.exitCode}) before its live view answered`);
+    const said = await new Promise<string | null>((resolve) => {
+      const sock = connect({ path: socket });
+      const done = (v: string | null) => (clearTimeout(t), sock.destroy(), resolve(v));
+      const t = setTimeout(() => done(null), Math.max(0, deadline - Date.now()));
+      sock.once('data', (b) => done(b.toString('latin1')));
+      sock.once('error', (e) => ((last = e.message), done(null)));
+      sock.once('close', () => done(null));
+    });
+    if (said?.startsWith('RFB ')) return;
+    if (said !== null) last = `it said ${JSON.stringify(said.slice(0, 20))}`;
+    await Bun.sleep(50);
+  }
+  throw new Error(`${name}'s live view did not answer within ${timeoutMs}ms (${last})`);
+}
+
+/** The Xvnc backends (screen.ts): an X server with its VNC server built in. */
+export type XvncBackend = 'tigervnc' | 'kasmvnc';
+
+/**
+ * What each Xvnc is given beyond TigerVNC's flags (xvncArgs). KasmVNC is TigerVNC's fork, its RFB on the Unix socket
+ * the same once our fork speaks standard RFB to a standard client (nix/kasmvnc.nix), and:
+ *   -publicIP 127.0.0.1   without it, it asks STUN servers on the internet (stun.l.google.com and others) for the
+ *                         machine's public address at every start, for a UDP transport only its own web client uses
+ *   -DisableBasicAuth     else it gives a connection the rights its user has in ~/.kasmpasswd, and one with no user
+ *                         (any on the Unix socket) gets none: no picture, no input, and nothing said about it
+ * With no -websocketPort it opens no websocket or HTTP listener, nor any UDP socket.
+ */
+export const XVNC_EXTRA: Record<XvncBackend, readonly string[]> = {
+  tigervnc: [],
+  kasmvnc: ['-publicIP', '127.0.0.1', '-DisableBasicAuth'],
+};
+
+/**
+ * An Xvnc for a display: the X server with its VNC server built in, so one process where x11 has two, and the picture
+ * read where it is drawn instead of copied out through MIT-SHM (x11vnc holds about 40 SysV shared memory segments, a
+ * machine-wide count with a limit; an Xvnc holds none). Its flags, checked with `ss -lntup`, `ss -lxp` and strace:
+ *   :<n> -geometry WxH -depth 24, -nolisten tcp (and -nolisten local for a sandbox shown the path socket only),
+ *   -dpi 96 as for Xvfb (Chromium sizes its window by it), -desktop sandbox (else the viewer is told user@host)
+ *   -rfbunixpath <path> -rfbport -1   the socket, and no TCP port (without -rfbport -1 it takes 5900+n)
+ *   -SecurityTypes None   the manager carries the socket, behind its login, as with x11vnc
+ *   -AlwaysShared         a viewer asking for the screen alone does not push the others off
+ *   -AcceptSetDesktopSize=0   viewers cannot resize it, as wayvnc's -R
+ * and what XVNC_EXTRA adds for each.
+ */
+export function xvncArgs(backend: XvncBackend, bin: string, display: string, socket: string, o: { width: number; height: number; pathSocketOnly?: boolean }): string[] {
+  return [
+    bin,
+    display,
+    '-geometry',
+    `${o.width}x${o.height}`,
+    '-depth',
+    '24',
+    '-nolisten',
+    'tcp',
+    ...(o.pathSocketOnly ? ['-nolisten', 'local'] : []),
+    '-dpi',
+    '96',
+    '-desktop',
+    'sandbox',
+    '-rfbunixpath',
+    socket,
+    '-rfbport',
+    '-1',
+    '-SecurityTypes',
+    'None',
+    '-AlwaysShared',
+    '-AcceptSetDesktopSize=0',
+    ...XVNC_EXTRA[backend],
+  ];
 }
 
 /**

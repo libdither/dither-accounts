@@ -13,6 +13,7 @@ import { openAdd } from './Add.tsx';
 import { approvers, loadApprovers } from './Approvers.tsx';
 import { AttentionBlock, HavenoControls } from './Attention.tsx';
 import { attentionOf, Avatar, condition, Dot, Empty, LevelPill, type Level } from './bits.tsx';
+import { AccountScreen } from './Display.tsx';
 import { Icon } from './icons.tsx';
 import { LiveView } from './LiveView.tsx';
 import { MoneroKeyImages } from './Monero.tsx';
@@ -375,6 +376,8 @@ function AccountOverview({ a, d, reload }: { a: AccountInfo; d: AccountDetail | 
       )}
 
       {a.settings?.length > 0 && <Settings a={a} reload={reload} />}
+
+      {a.display && <AccountScreen a={a} reload={reload} />}
 
       {d?.passkeys && <Passkeys a={a} d={d} reload={reload} />}
 

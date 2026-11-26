@@ -1,6 +1,6 @@
 # Typecheck (the services and the page), the page's build, and tests on each push to master and each pull request.
 # Everything runs against fakes and stand-ins. Tests that need what only a Nix machine has skip in `unit`: the
-# sandboxed browsers (Xvfb, Chromium, x11vnc), the native-app sandbox, both display backends, screen sharing, and
+# sandboxed browsers (Xvfb, Chromium, x11vnc), the native-app sandbox, every display backend, screen sharing, and
 # Radicale and Dovecot from nixpkgs (test/needs.ts). The `nix` job runs those, with Nix, beside it. `check`, the
 # status a pull request needs, passes only when both did.
 name: CI
@@ -40,10 +40,12 @@ jobs:
       - if: github.event_name == 'pull_request'
         run: bun scripts/flake-check.ts origin/${{ github.base_ref }}
 
-  # The tests that need Nix: the sandboxes on both display backends (Xvfb and x11vnc; sway, wayvnc and grim),
-  # Chromium on them, the native-app sandbox (bubblewrap, pasta), X apps through xwayland-satellite, and screen
-  # sharing (PipeWire, WirePlumber, the portals, Chromium and Electron). Everything comes from the repo's one pinned
+  # The tests that need Nix: the sandboxes on every display backend (Xvfb and x11vnc; TigerVNC's and KasmVNC's Xvnc;
+  # sway and grim with wayvnc or w0vncserver), Chromium on them, the native-app sandbox (bubblewrap, pasta), X apps
+  # through xwayland-satellite, and screen sharing (PipeWire, WirePlumber, the portals, Chromium and Electron). Everything comes from the repo's one pinned
   # nixpkgs (nix/pin.json, nix/README.md), the same the manager prepares its sandboxes' programs from at run time.
+  # w0vncserver and KasmVNC's Xvnc are built here from their forks' sources (nix/README.md, "Forks"): no binary cache
+  # has them, and with everything else the programs take about six minutes.
   nix:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -73,8 +75,8 @@ jobs:
       - name: Programs from the pinned nixpkgs
         run: |
           nix-env -f ./nix -iA bash coreutils dbus bubblewrap passt xvfb imagemagick chromium
-          bun scripts/prepare-bins.ts --out /tmp/dither-bins --tests
-          echo "DITHER_BINS=/tmp/dither-bins" >> "$GITHUB_ENV"
+          # Both builds: the sandboxes' programs and the tests', then the forks' servers (into /tmp/dither-bins-forks).
+          bun scripts/prepare-bins.ts --out /tmp/dither-bins --tests >> "$GITHUB_ENV"
           command -v chromium Xvfb bwrap pasta import
       # DITHER_TESTS_NEED_ALL: a test that would skip for a missing program fails instead (test/needs.ts).
       - name: Tests that need Nix
@@ -87,14 +89,14 @@ jobs:
           # The sandbox tests check that nothing of the user's home shows inside; their temporary directories must not
           # be under it (install-nix-action points TMPDIR into the workspace, under /home/runner).
           TMPDIR: /tmp
-        run: bun test packages/sandbox packages/browser test/haveno.test.ts test/telegram-desktop.test.ts
+        run: bun test packages/sandbox packages/browser test/haveno.test.ts test/telegram-desktop.test.ts test/display-page.test.ts
       # The flake check for the tests above, which skip in `unit`: the ones a pull request adds or changes, five times.
       - if: github.event_name == 'pull_request'
         name: Flake check (tests that need Nix)
         env:
           DITHER_TESTS_NEED_ALL: '1'
           TMPDIR: /tmp
-        run: bun scripts/flake-check.ts origin/${{ github.base_ref }} packages/sandbox packages/browser test/haveno.test.ts test/telegram-desktop.test.ts
+        run: bun scripts/flake-check.ts origin/${{ github.base_ref }} packages/sandbox packages/browser test/haveno.test.ts test/telegram-desktop.test.ts test/display-page.test.ts
       - if: failure()
         uses: actions/upload-artifact@v4
         with:

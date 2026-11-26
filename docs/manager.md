@@ -113,7 +113,11 @@ the page's own origin; apps and extractors never log in (their own tokens, below
   facts its extractor reports, the apps that reach it, its call counts, its directory's files (names and sizes), its
   log, and its last `hello` and `status`. Its overview starts with what it rests on (`layers`, below), so a broken
   account says where it breaks. **Live view** opens its sandboxed browser (VNC carried through the manager) to sign
-  in or watch it work. What it needs from you shows on top: a QR code to scan, and for chat accounts a new code, a
+  in or watch it work. **Screen**, for a kind with a screen, picks the display backend its sandbox draws on, or the
+  manager's default; **Screens**, at the foot of the home page, picks that default, which then wins over
+  config.toml's `display_backend`. A backend built from a fork says "Experimental fork", and changing either restarts
+  the sandboxes it moves (docs/browser.md, "Display backends").
+  What it needs from you shows on top: a QR code to scan, and for chat accounts a new code, a
   pairing code by phone number, or a password to sign in again. **Try it** runs any of its operations. Removing an
   account keeps its directory unless you tick "also delete it" (only for directories the manager made, never one
   imported in place).
@@ -150,7 +154,7 @@ docs/notifications.md, without the account needing you); the page shows each whe
 - Apps get each status's `liveView` as its width and height only, never the socket (so an app knows there is one): an
   app that runs the account opens the live view through the manager (`liveViewPath`). The page and `/api/liveview`
   keep the socket.
-- No live view listens on a TCP port. A sandbox's x11vnc or wayvnc (`packages/browser/src/vnc.ts`, `wayland.ts`) listens only on `vnc.sock` in
+- No live view listens on a TCP port. A sandbox's x11vnc, Xvnc, wayvnc or w0vncserver (`packages/browser/src/vnc.ts`, `wayland.ts`) listens only on `vnc.sock` in
   the account's directory (0700, the socket 0600), so nothing but this user reaches it, and the manager connects only
   to a Unix socket this user owns: it carries the stream to the page behind its login, and to an app on its token. (A
   VNC without a password on 127.0.0.1, as it was, let in every local process, and any web page open in a browser

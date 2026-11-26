@@ -1,6 +1,6 @@
 /**
- * The wayland display backend (screen.ts): a headless sway of the sandbox's own, wayvnc as its live view, input through
- * that live view's socket, pictures by grim. No display number and nothing in /tmp: the compositor's sockets are in the
+ * The Wayland display backends (screen.ts): a headless sway of the sandbox's own, wayvnc (wayland) or TigerVNC's
+ * w0vncserver (wayland-tigervnc) as its live view, input through that live view's socket, pictures by grim. No display number and nothing in /tmp: the compositor's sockets are in the
  * account's own directory (<dir>/wl, 0700), so two sandboxes never meet and a crashed one leaves nothing behind that
  * a later one must step around.
  *
@@ -28,7 +28,19 @@
  *              -S <path>     its control socket in the same private directory, not $XDG_RUNTIME_DIR/wayvncctl
  *              -k us-altgr-intl  the keymap input is typed in (WAYVNC_KEYMAP)
  *            It listens on nothing else: no TCP or UDP port, v4 or v6, and no abstract socket. Many viewers at once.
- *   input    wayvnc makes a virtual pointer and keyboard (wlr-virtual-pointer, virtual-keyboard) for its viewers, which
+ *   w0vncserver  (wayland-tigervnc) TigerVNC's Wayland server, built from the owner's fork (nix/w0vncserver.nix): as
+ *            nixpkgs ships it, it exits with no desktop portal and crashes on a seat with no keyboard, which is what a
+ *            headless sway has. It asks a desktop portal first, so it is given no session bus at all
+ *            (DBUS_SESSION_BUS_ADDRESS names a socket that is not there): on the machine's bus it would find the
+ *            owner's portal and show the owner's screen. With none it uses sway's own protocols: wlr-screencopy for
+ *            the picture, wlr-virtual-pointer and virtual-keyboard for input, ext-data-control for the clipboard. Its
+ *            flags (w0vncserverArgs), checked with `ss -lxp` and `ss -ltnup`: -rfbunixpath <path> -rfbport -1 (the
+ *            socket, no TCP port), -SecurityTypes None and -AlwaysShared as for an Xvnc (vnc.ts), -desktop sandbox
+ *            (else the viewer is told user@host), -FrameRate 60, -SendPrimary=0 (viewers get what a page or app copies, not
+ *            every stretch of text selected: the live view wants the clipboard, a selection would reach every viewer
+ *            each time it changed, and the sandbox's Chromium sets both at once on a copy). Viewers cannot resize sway's output through it: it
+ *            has no SetDesktopSize on wlroots. Its keymap is XKB_DEFAULT_LAYOUT=us.
+ *   input    wayvnc (or w0vncserver) makes a virtual pointer and keyboard (wlr-virtual-pointer, virtual-keyboard) for its viewers, which
  *            the app gets as its seat's own input: trusted events, like xdotool's. The sandbox keeps one RFB client of
  *            its own connected (rfb.ts) and sends its clicks and keys through it; while it is connected the seat has a
  *            pointer and a keyboard, so pages see a fine pointer, hover and focus as on any desktop. Text no US key
@@ -40,7 +52,7 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Subprocess } from 'bun';
-import { DISPLAY_BINS, resolveBin, run, withoutDisplays } from './bins.ts';
+import { type BinSpec, DISPLAY_BINS, resolveBin, run, withoutDisplays } from './bins.ts';
 import { gpuFlags } from './flags.ts';
 import type { WaylandDisplay } from './display.ts';
 import { InputMethod } from './ime.ts';
@@ -48,7 +60,7 @@ import { parseChord, textRuns } from './keysyms.ts';
 import { RfbClient } from './rfb.ts';
 import { displayNote, type Screen, type ScreenHealth, type ScreenOptions } from './screen.ts';
 import { EVENT_WINDOW, IPC, IPC_REQUEST_MS, SwayIpc, type SwayNode, views } from './swayipc.ts';
-import { KeptServer, prepareVncSocket, SOCKET_PATH_MAX, vncSocketPath, waitForVncSocket } from './vnc.ts';
+import { KeptServer, prepareVncSocket, SOCKET_PATH_MAX, vncSocketPath, waitForRfbBanner, waitForVncSocket } from './vnc.ts';
 
 /** The compositor's directory in the sandbox's: its sockets, its config. */
 export const WAYLAND_DIR = 'wl';
@@ -182,6 +194,45 @@ export function wayvncArgs(wayvnc: string, socket: string, dir: string): string[
   return [wayvnc, '-C', join(dir, 'wayvnc.conf'), '-u', '-R', '-f', String(WAYVNC_MAX_FPS), '-k', WAYVNC_KEYMAP, '-S', join(dir, 'wayvnc.sock'), socket];
 }
 
+/** w0vncserver on its Unix socket only (see above). */
+export function w0vncserverArgs(w0vncserver: string, socket: string): string[] {
+  return [w0vncserver, '-rfbunixpath', socket, '-rfbport', '-1', '-SecurityTypes', 'None', '-AlwaysShared', '-desktop', 'sandbox', '-FrameRate', String(WAYVNC_MAX_FPS), '-SendPrimary=0'];
+}
+
+/**
+ * w0vncserver's environment: the compositor's socket, and no session bus (a path in its directory that is never made),
+ * so it never reaches the machine's portal; the US keymap, whatever the manager's own XKB_DEFAULT_* say.
+ */
+export function w0vncserverEnv(waylandSocket: string, dir: string): Record<string, string | undefined> {
+  return {
+    DISPLAY: undefined,
+    WAYLAND_SOCKET: undefined,
+    WAYLAND_DISPLAY: waylandSocket,
+    XDG_RUNTIME_DIR: dir,
+    HOME: dir,
+    DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(dir, 'no-bus')}`,
+    DBUS_SYSTEM_BUS_ADDRESS: `unix:path=${join(dir, 'no-bus')}`,
+    XKB_DEFAULT_RULES: undefined,
+    XKB_DEFAULT_MODEL: undefined,
+    XKB_DEFAULT_LAYOUT: 'us',
+    XKB_DEFAULT_VARIANT: undefined,
+    XKB_DEFAULT_OPTIONS: undefined,
+  };
+}
+
+/** What differs between the Wayland backends: the live view's server, how it is started, and what it needs written. */
+export const WAYLAND_SERVERS: Record<WaylandDisplay['backend'], { name: string; bin: BinSpec; args: (bin: string, socket: string, dir: string) => string[]; env: (waylandSocket: string, dir: string) => Record<string, string | undefined>; files: string[] }> = {
+  wayland: {
+    name: 'wayvnc',
+    bin: DISPLAY_BINS.wayvnc,
+    args: wayvncArgs,
+    env: (waylandSocket, dir) => ({ DISPLAY: undefined, WAYLAND_SOCKET: undefined, WAYLAND_DISPLAY: waylandSocket, XDG_RUNTIME_DIR: dir }),
+    // Its config, empty, so no user's ~/.config/wayvnc is read.
+    files: ['wayvnc.conf'],
+  },
+  'wayland-tigervnc': { name: 'w0vncserver', bin: DISPLAY_BINS.w0vncserver, args: (bin, socket) => w0vncserverArgs(bin, socket), env: w0vncserverEnv, files: [] },
+};
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export class WaylandScreen implements Screen {
@@ -189,7 +240,7 @@ export class WaylandScreen implements Screen {
   readonly protocol = 'wayland' as const;
   readonly display = null;
   readonly vncSocket: string;
-  readonly procNames = ['wayvnc', 'sway'] as const;
+  readonly procNames: readonly string[];
   readonly needsOwnBus = true;
   /** The compositor's directory: its Wayland socket, its IPC socket, its config. */
   readonly dir: string;
@@ -206,6 +257,7 @@ export class WaylandScreen implements Screen {
   private rfb: RfbClient | null = null;
   private connecting: Promise<RfbClient> | null = null;
   private vnc: KeptServer | null = null;
+  private server: (typeof WAYLAND_SERVERS)[WaylandDisplay['backend']];
   private stopped = false;
   /** Windows placed so far (placeNew), by con_id; placing one waits for the one before. */
   private placed = new Set<number>();
@@ -218,6 +270,8 @@ export class WaylandScreen implements Screen {
     readonly free: WaylandDisplay,
   ) {
     this.backend = free.backend;
+    this.server = WAYLAND_SERVERS[free.backend];
+    this.procNames = [this.server.name, 'sway'];
     this.vncSocket = o.vncSocket ?? vncSocketPath(o.dir);
     const place = waylandPlace(o.dir);
     this.dir = place.dir;
@@ -341,12 +395,12 @@ export class WaylandScreen implements Screen {
   private prepareDir() {
     privateDir(this.dir, this.root, { fresh: true });
     writeFileSync(join(this.dir, 'sway.conf'), swayConfig(this.o.width, this.o.height), { mode: 0o600 });
-    writeFileSync(join(this.dir, 'wayvnc.conf'), '', { mode: 0o600 });
+    for (const f of this.server.files) writeFileSync(join(this.dir, f), '', { mode: 0o600 });
   }
 
   async start() {
     const sway = resolveBin(DISPLAY_BINS.sway, this.o.log);
-    const wayvnc = resolveBin(DISPLAY_BINS.wayvnc, this.o.log);
+    const vncBin = resolveBin(this.server.bin, this.o.log);
     this.prepareDir();
     const wanted = swayRenderer(this.o.gpu ?? true);
     try {
@@ -362,18 +416,20 @@ export class WaylandScreen implements Screen {
     this.waylandSocket = this.findSocket();
     this.watchWindows();
 
+    const { name } = this.server;
     this.vnc = new KeptServer({
-      name: 'wayvnc',
+      name,
       start: async () => {
         prepareVncSocket(this.vncSocket);
-        const vnc = this.o.spawn('wayvnc', wayvncArgs(wayvnc, this.vncSocket, this.dir), {
-          match: this.vncSocket,
-          env: { DISPLAY: undefined, WAYLAND_SOCKET: undefined, WAYLAND_DISPLAY: this.waylandSocket, XDG_RUNTIME_DIR: this.dir },
-        });
-        await waitForVncSocket(this.vncSocket, vnc, 10_000, 'wayvnc');
+        const vnc = this.o.spawn(name, this.server.args(vncBin, this.vncSocket, this.dir), { match: this.vncSocket, env: this.server.env(this.waylandSocket, this.dir) });
+        await waitForVncSocket(this.vncSocket, vnc, 10_000, name);
+        // The socket's file is there from bind(), before the server listens (a connection then is refused: wayvnc on
+        // a loaded machine), and w0vncserver listens before it has found sway's protocols: its banner says it is past
+        // all of that.
+        await waitForRfbBanner(this.vncSocket, vnc, 10_000, name);
         return vnc;
       },
-      // A new wayvnc has no client: the seat has no pointer or keyboard until ours connects again.
+      // A new server has no client: the seat has no pointer or keyboard until ours connects again.
       after: async () => {
         this.rfb?.close();
         this.rfb = null;
@@ -453,8 +509,9 @@ export class WaylandScreen implements Screen {
   }
 
   /**
-   * The seat has the pointer and keyboard wayvnc made for our client (wl_seat capabilities 1 and 2). Each request has
-   * its own time (requestMs), not what is left of `ms`: a few ms left would end the connection on a slow reply.
+   * The seat has the pointer and keyboard the live view's server made for our client (wl_seat capabilities 1 and 2).
+   * Each request has its own time (requestMs), not what is left of `ms`: a few ms left would end the connection on a
+   * slow reply.
    */
   private async waitForSeat(ms: number) {
     const deadline = Date.now() + ms;
@@ -464,7 +521,7 @@ export class WaylandScreen implements Screen {
       if (seats.some((s) => (s.capabilities & 3) === 3)) return;
       await sleep(50);
     }
-    throw new Error(`the seat got no pointer and keyboard from wayvnc within ${ms} ms`);
+    throw new Error(`the seat got no pointer and keyboard from ${this.server.name} within ${ms} ms`);
   }
 
   /**
@@ -553,7 +610,7 @@ export class WaylandScreen implements Screen {
     return this.connecting;
   }
 
-  /** The client input goes through: once wayvnc serves (it may be starting again: KeptServer) and ours is connected. */
+  /** The client input goes through: once the live view's server serves (it may be starting again: KeptServer) and ours is connected. */
   private async input(): Promise<RfbClient> {
     await this.vnc?.ready();
     if (this.stopped) throw new Error('input failed: the screen is stopped');

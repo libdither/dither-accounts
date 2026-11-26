@@ -60,8 +60,10 @@ const sleepSay = (busy: string | null, wakeInMs?: unknown) => link.sleep({ busy:
 const link = linkManager({
   onConnect: () => {
     link.emit({ t: 'hello', version: '1', label: link.label });
-    // config.vncSocket: pretend to offer a live view on that Unix socket (the page's live view proxy test).
-    const lv = typeof link.config.vncSocket === 'string' ? { liveView: { vncSocket: link.config.vncSocket, width: 800, height: 600 } } : {};
+    // config.vncSocket: pretend to offer a live view on that Unix socket (the page's live view proxy test), but not on
+    // the display backend config.noLiveViewOn names (a screen that cannot start there: the supervisor's move test).
+    const noLv = typeof link.config.noLiveViewOn === 'string' && process.env.DITHER_DISPLAY_BACKEND === link.config.noLiveViewOn;
+    const lv = typeof link.config.vncSocket === 'string' && !noLv ? { liveView: { vncSocket: link.config.vncSocket, width: 800, height: 600 } } : {};
     // config.self: who it says it is signed in as (screenshots of the page with invented people).
     // config.crash: end at once (the manager's notices count crashes); config.attention: say it needs you, with that
     // message (and config.attentionKind, and config.attentionStatus: a passing state such as connecting); config.changed:

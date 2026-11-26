@@ -19,6 +19,7 @@ same wire as before: dither-chat's adapter protocol, copied as `packages/chat-pr
 | `bluesky` | `extractors/bluesky` | the AT Protocol's HTTP API (XRPC) on the account's own server with plain fetch: posts only, notifications as a feed ([bluesky.md](bluesky.md)): no adapter in dither-chat |
 | `zulip` | `extractors/zulip` | a Zulip server's REST API and event queue with plain fetch: channels as forums, topics as threads ([zulip.md](zulip.md)) |
 | `partiful` | `extractors/partiful` | partiful.com in a sandbox (Xvfb, Chromium with a hook extension, x11vnc for the live view), every call made from its own page with its sign-in: events as posts (Explore by city, your events), comments and host messages as each event's conversation, chats through Stream, an RSVP action ([partiful.md](partiful.md)) |
+| `luma` | `extractors/luma` | luma.com signed in in a sandboxed browser, its web app's own calls: events as posts (Explore by city, your events, who is going), notifications as a feed, blasts and chats ([luma.md](luma.md)): no adapter in dither-chat |
 | `chat-fake` | `extractors/chat-fake` | a fake for tests: you and Alice in one DM |
 
 ## The `chat` interface

@@ -199,6 +199,17 @@
         "@dither-chat/protocol": "workspace:*",
       },
     },
+    "extractors/luma": {
+      "name": "@dither-accounts/extractor-luma",
+      "dependencies": {
+        "@dither-accounts/browser": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+      "devDependencies": {
+        "@dither-accounts/client": "workspace:*",
+      },
+    },
     "extractors/mastodon": {
       "name": "@dither-accounts/extractor-mastodon",
       "dependencies": {
@@ -542,6 +553,8 @@
     "@dither-accounts/extractor-lemmy": ["@dither-accounts/extractor-lemmy@workspace:extractors/lemmy"],
 
     "@dither-accounts/extractor-lesswrong": ["@dither-accounts/extractor-lesswrong@workspace:extractors/lesswrong"],
+
+    "@dither-accounts/extractor-luma": ["@dither-accounts/extractor-luma@workspace:extractors/luma"],
 
     "@dither-accounts/extractor-mastodon": ["@dither-accounts/extractor-mastodon@workspace:extractors/mastodon"],
 

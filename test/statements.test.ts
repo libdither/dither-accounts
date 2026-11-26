@@ -1,7 +1,8 @@
 /**
  * statements-common on its own: Python's JSON (parse and dumps against what CPython writes for the same values), the
  * spool (seq, list, fetch, ack, 30 days kept, a crash's stray file, names refused), the daily slot (fixed per account
- * and day, catch-up like Persistent=true), and the interface's shape: read only, nothing that moves money.
+ * and day, catch-up like Persistent=true), what it tells the manager for sleeping, and the interface's shape: read only,
+ * nothing that moves money.
  */
 import { afterAll, expect, test } from 'bun:test';
 import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -60,9 +61,10 @@ test('parse keeps integers exact, floats as floats, and key order (integer-like 
   expect(() => parse('"a\u0001"')).toThrow();
 });
 
-const link = (dir: string, config: Record<string, unknown> = {}, id = 'acc_test'): Link & { events: any[] } => {
+const link = (dir: string, config: Record<string, unknown> = {}, id = 'acc_test'): Link & { events: any[]; slept: { busy: string | null; wakeAt: number | null }[] } => {
   const events: any[] = [];
-  return { accountId: id, accountDir: dir, config, label: 'Test', emit: (e: unknown) => events.push(e), log: () => {}, secret: () => ({}) as any, saveSecret: () => {}, connected: true, close: () => {}, events } as any;
+  const slept: { busy: string | null; wakeAt: number | null }[] = [];
+  return { accountId: id, accountDir: dir, config, label: 'Test', emit: (e: unknown) => events.push(e), log: () => {}, secret: () => ({}) as any, saveSecret: () => {}, sleep: (x: { busy: string | null; wakeAt: number | null }) => slept.push(x), connected: true, close: () => {}, events, slept } as any;
 };
 
 test('the spool: seq, list after a cursor, fetch by id, ack keeps 30 days, then drops', () => {
@@ -138,6 +140,62 @@ test('the daily slot is fixed per account and day, and a missed slot pulls at st
   expect(r3.refresh({}).started).toBe(false);
   await Bun.sleep(10);
   expect(r3.st.lastOk).toBe(true);
+});
+
+test('for sleeping (docs/supervisor.md "Sleeping"): it says when its next pull is due and while one runs, keeps a retry through a restart, and runs a refresh asked for before its browser was up', async () => {
+  const dir = tmp();
+  const at = new Date(2026, 10, 9, 12, 0, 0).getTime();
+  const tomorrow = new Date(2026, 10, 10, 6, 0, 0).getTime();
+  let up = false;
+  let kindBusy: string | null = null;
+  const pulls: string[] = [];
+  const gates: (() => void)[] = [];
+  const l = link(dir, { pullAt: '06:00', jitterMinutes: 0 });
+  const mk = () =>
+    new StatementsRunner({
+      link: l,
+      pull: async (_o, why) => {
+        pulls.push(why);
+        await new Promise<void>((done) => gates.push(done));
+        return { saved: 1 };
+      },
+      accounts: () => [],
+      blocked: () => (up ? null : 'the sandbox browser is not up yet'),
+      busy: () => kindBusy,
+      now: () => at,
+    });
+  // Woken by a statements.refresh: its browser is not up yet, so the pull waits for it, and it says nothing yet.
+  const r = mk();
+  expect(r.refresh({})).toEqual({ started: true, reason: 'the pull starts once its browser is up' });
+  expect(pulls).toEqual([]);
+  expect(l.slept).toEqual([]);
+  up = true;
+  r.start();
+  expect(pulls).toEqual(['refresh']);
+  expect(l.slept.at(-1)).toEqual({ busy: 'a pull (refresh)', wakeAt: tomorrow });
+  gates.shift()!();
+  for (let i = 0; i < 100 && !l.events.some((e) => e.t === 'statements.pulled'); i++) await Bun.sleep(5);
+  expect(l.events.filter((e) => e.t === 'statements.pulled')).toEqual([{ t: 'statements.pulled', ok: true, saved: 1 }]);
+  expect(l.slept.at(-1)).toEqual({ busy: null, wakeAt: tomorrow });
+  // What the kind says it is doing (a sign-in, tabs an app opened) counts as busy too.
+  kindBusy = 'a sign-in with its passkey';
+  r.report();
+  expect(l.slept.at(-1)).toEqual({ busy: 'a sign-in with its passkey', wakeAt: tomorrow });
+  kindBusy = null;
+  r.stop();
+  // A failed daily pull's hourly retry, due while it was asleep: the next start keeps it, and says it as its next run.
+  writeFileSync(join(dir, 'pulls.json'), JSON.stringify({ ...r.st, lastOk: false, retries: 1, retryAt: at + 1800_000 }));
+  const r2 = mk();
+  r2.start();
+  expect(r2.nextAt).toBe(at + 1800_000);
+  expect(l.slept.at(-1)).toEqual({ busy: null, wakeAt: at + 1800_000 });
+  r2.stop();
+  // schedule: false: no time of its own; only a call wakes it.
+  l.config.schedule = false;
+  const r3 = mk();
+  r3.start();
+  expect(l.slept.at(-1)).toEqual({ busy: null, wakeAt: null });
+  r3.stop();
 });
 
 test('the interfaces: statements is read only, monero.view has only key images, neither moves money', () => {

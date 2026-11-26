@@ -15,4 +15,7 @@ export default {
       "Runs Venmo's web app in a sandboxed browser on this machine. You sign in by hand in the live view; right after that it downloads your statements the way Venmo's Statements page does, for an app such as dither-finance. Read only: it cannot pay, request or transfer.",
     next: 'Open its live view and sign in to Venmo as on your desktop. The pull starts by itself once you are in; Venmo ends a session after about 30 idle minutes, so the daily pull skips when you are signed out.',
   },
+  // Asleep between pulls (docs/supervisor.md "Sleeping"). No keep-alive: Venmo ends an idle session after about 30
+  // minutes whether the browser runs or not.
+  sleep: { idleMinutes: 20 },
 } satisfies Manifest;

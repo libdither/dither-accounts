@@ -21,6 +21,9 @@ in
   w0vncserver = import ./w0vncserver.nix { pkgs = final; };
   kasmvnc = import ./kasmvnc.nix { pkgs = final; };
 
+  # Built apart (packages/manager prepare.ts): the forks' servers take minutes to build from source where no cache has
+  # them, and one that fails to build must not hold up, or take down, the backends nixpkgs ships.
   dither-bins = farm "dither-bins" bins.run;
+  dither-bins-forks = farm "dither-bins-forks" bins.forks;
   dither-test-bins = farm "dither-test-bins" (bins.run ++ bins.test);
 }

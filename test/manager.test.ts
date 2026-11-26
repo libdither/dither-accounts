@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { AccountsClient, CallFailed, register } from '@dither-accounts/client';
 import { testEcho } from '@dither-accounts/interfaces';
 import { createManager, type Manager } from '@dither-accounts/manager';
+import type { DisplayBackend } from '@dither-accounts/spec/display';
+import type { BackendCheck } from '../packages/manager/src/http.ts';
 import { BUFFER, LIMITS } from '../packages/manager/src/router.ts';
 import { setTraceSink } from '../packages/manager/src/trace.ts';
 
@@ -39,10 +41,13 @@ function client(app: string, token: string) {
 let admin: { app: string; token: string; requests: { id: string }[] };
 let reader: { app: string; token: string; requests: { id: string }[] };
 let account: string;
+const checks: Partial<Record<DisplayBackend, BackendCheck>> = {};
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'dacc-test-'));
-  m = await createManager({ openPage: true, dataDir: dir, port: 0 });
+  // Whether a backend can run here is the machine's (its programs prepared, or on PATH): a test says, so the moves
+  // below do not depend on what this machine has. `checks` is changed by the test that needs another answer.
+  m = await createManager({ openPage: true, dataDir: dir, port: 0, backendCheck: (b) => checks[b] ?? { availability: 'ready', why: null } });
   admin = await register(m.url, { name: 'admin-app', requests: [{ interface: 'accounts', level: 'manage', kinds: ['fake'] }, { interface: 'test.echo', level: 'manage' }] });
   reader = await register(m.url, { name: 'reader-app', requests: [{ interface: 'test.echo', level: 'write', reason: 'to test' }] });
 });
@@ -161,6 +166,41 @@ test("the default backend: config.toml's until one is chosen on the page, which 
   // A kind with no screen has none to show.
   expect((await st()).accounts.filter((a: any) => a.kind === 'chat-fake').every((a: any) => a.display === null)).toBe(true);
   await until(online, 10_000, 'the extractor back online');
+});
+
+test('a backend that cannot run here now is offered as such and refused (409), for the default and an account; the running account stays', async () => {
+  const st = async () => (await (await api('/api/state')).json()) as any;
+  const detail = async () => (await (await api(`/api/accounts/${account}`)).json()) as any;
+  checks.kasmvnc = { availability: 'missing', why: 'Xkasmvnc not among the prepared programs' };
+  checks['wayland-tigervnc'] = { availability: 'building', why: "its servers, built from a fork, are being built" };
+  checks.tigervnc = { availability: 'unbuilt', why: 'built the first time it is picked' };
+  try {
+    const view = (await st()).display.backends;
+    expect(view.map((b: any) => [b.name, b.availability, b.available])).toEqual([
+      ['x11', 'ready', true],
+      ['tigervnc', 'unbuilt', false],
+      ['kasmvnc', 'missing', false],
+      ['wayland', 'ready', true],
+      ['wayland-tigervnc', 'building', false],
+    ]);
+    expect(view.find((b: any) => b.name === 'kasmvnc').why).toMatch(/Xkasmvnc/);
+    const before = (await detail()).process;
+    for (const b of ['kasmvnc', 'wayland-tigervnc', 'tigervnc']) {
+      const put = await api('/api/display', 'PUT', { default: b });
+      expect({ b, status: put.status }).toEqual({ b, status: 409 });
+      expect(((await put.json()) as any).error).toMatch(b === 'kasmvnc' ? /cannot run here now: Xkasmvnc/ : b === 'tigervnc' ? /being built now/ : /being built/);
+      const patch = await api(`/api/accounts/${account}`, 'PATCH', { settings: { displayBackend: b } });
+      expect({ b, status: patch.status }).toEqual({ b, status: 409 });
+    }
+    // Nothing was taken: the default, the account's own and its process are as they were.
+    expect((await st()).display).toMatchObject({ default: 'x11', chosen: null });
+    expect((await st()).accounts.find((a: any) => a.id === account).display).toEqual({ own: null, uses: 'x11' });
+    expect((await detail()).process).toMatchObject({ pid: before.pid, displayBackend: 'x11' });
+    // Going back to config.toml's is never refused.
+    expect((await api('/api/display', 'PUT', { default: null })).status).toBe(200);
+  } finally {
+    for (const k of Object.keys(checks)) delete checks[k as DisplayBackend];
+  }
 });
 
 test('levels: read-only cannot write; approving narrower than asked holds', async () => {

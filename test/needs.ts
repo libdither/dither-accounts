@@ -3,7 +3,7 @@
  * of failing: Nix (Radicale and Dovecot come from nixpkgs, unless RADICALE_BIN or DOVECOT_BIN name them), the
  * native-app sandbox (bubblewrap, Xvfb, x11vnc and dbus from /nix/store: packages/sandbox), and each display backend's
  * programs (packages/browser/src/bins.ts BACKEND_BINS). The sandboxes' programs come prepared from the
- * pinned nixpkgs (`bun scripts/prepare-bins.ts --out <dir> --tests`, then DITHER_BINS=<dir>: nix/README.md); without
+ * pinned nixpkgs (`bun scripts/prepare-bins.ts --out <dir> --tests`, then the DITHER_BINS it prints: nix/README.md); without
  * that, from PATH, where most are missing.
  *
  * Bun runs a file's beforeAll and afterAll even when its tests are skipped, so a file that skips whole returns from

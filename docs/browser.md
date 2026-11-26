@@ -79,6 +79,15 @@ answers 400 to a `displayBackend`, gets no `DITHER_DISPLAY_BACKEND`, shows `proc
 **Screen**, and is never restarted when the default changes. Haveno follows it too: JavaFX draws only through X, so
 on wayland it gets an Xwayland of its own inside its sandbox (xwayland-satellite: docs/native-sandbox.md).
 
+**Only one that can run here.** The page's pickers offer each backend with whether it can run on this machine now
+(`/api/state` `display.backends[].availability`, with `why`): `ready`; `building` (its programs are being built);
+`missing` (they could not be built, or, where the manager prepares nothing, are not on PATH: `why` names them); or,
+for one built from a fork, `unbuilt` (its servers are built the first time it is picked, nix/README.md). The page
+offers `building` and `missing` ones disabled, with the reason, and `unbuilt` ones as "built when picked". A pick of
+any but a `ready` one, as the default or an account's own, is refused with 409 and changes nothing; picking an
+`unbuilt` one starts its build, and it can be picked once that is done. Going back (config.toml's, the manager's
+default) is never refused.
+
 **The backends are a list.** `packages/spec/src/display.ts` names them (each with its protocol, X or Wayland, the
 label its log lines and the page use, and `experimental: 'fork'` with a note for one built from a fork);
 `packages/browser/src/screen.ts` maps each to its `Screen` class, and everything else asks the `Screen` (`protocol`,
@@ -284,7 +293,10 @@ w0vncserver) then sees a full socket and sends fewer, instead of piling them up 
 dbus, PipeWire, WirePlumber, the portals; bubblewrap, pasta, xwayland-satellite) and Chromium come from the repo's
 one pinned nixpkgs, built ahead of time: the manager builds them at its start into `<data>/bins` (`prepare_bins`, on
 by default, tried again while it fails) and gives extractors of a kind with a screen that directory as
-`DITHER_BINS`; they start once it is ready. CI's tests run the same Chromium. An extractor never runs `nix build`.
+`DITHER_BINS`; they start once it is ready. The servers built from forks (KasmVNC, w0vncserver) are a second build,
+`<data>/bins-forks`, made after the first and only once one of their backends is in use; an account on one gets
+both (`DITHER_BINS` is a list, `:` between) and waits for both, and that build failing leaves the others as they
+were (nix/README.md). CI's tests run the same Chromium. An extractor never runs `nix build`.
 Without it a program is looked for in its `*_BIN` override and on PATH, and one found nowhere fails the start at
 once, saying how to prepare it (nix/README.md). The native apps (Signal Desktop, Telegram Desktop, Haveno) are the
 machine's own install, not pinned (nix/README.md "What is not pinned").

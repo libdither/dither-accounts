@@ -5,7 +5,7 @@ import { Approvals, APPROVER_KIND, approverKind } from './approvals.ts';
 import { Approvers } from './approvers.ts';
 import { errorBlocks, ErrorLog } from './errors.ts';
 import { Store } from './db.ts';
-import { Http } from './http.ts';
+import { type BackendCheck, Http } from './http.ts';
 import { type Kind, loadKinds } from './kinds.ts';
 import { KeptBins } from './prepare.ts';
 import { type NoticeTimes, Notices, NOTICES_KIND, noticesKind } from './notices.ts';
@@ -71,6 +71,11 @@ export interface ManagerOpts {
    * turns it on (prepare_bins); tests leave it off, or give a stand-in nix-build (and a short first retry).
    */
   prepareBins?: boolean | { nixBuild: string; firstRetryMs?: number };
+  /**
+   * Tests only: whether a display backend can run here, in place of what the manager finds (http.ts backendCheck: the
+   * programs prepared, or on PATH where nothing is prepared).
+   */
+  backendCheck?: (b: DisplayBackend) => BackendCheck;
   /** Tests only: what a `scope` launch goes through instead of systemd-run. */
   systemdRun?: string;
   /** Tests only: how long a surviving extractor waits for a manager before it ends itself (1800 s). */
@@ -119,6 +124,8 @@ export interface Manager {
   launchWhy: string;
   /** The sandboxes' programs being prepared (prepare.ts), when prepareBins is on: `ready`, and how it stands. */
   bins: KeptBins | null;
+  /** The servers built from forks (prepare.ts), a build of their own after it, started once one is in use. */
+  forkBins: KeptBins | null;
   /**
    * Stops the manager. With `leaveExtractors`, extractors that can outlive it are left running for the next manager
    * to adopt (main.ts on SIGTERM: a restart keeps every session); without it every extractor stops.
@@ -159,6 +166,18 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
         onChange: () => router?.accountsChanged(),
       })
     : null;
+  const forkBins = bins
+    ? new KeptBins({
+        repoRoot,
+        dataDir: o.dataDir,
+        ...(typeof o.prepareBins === 'object' ? o.prepareBins : {}),
+        attr: 'dither-bins-forks',
+        lazy: true,
+        after: bins.ready,
+        log: (l, m) => console.log(`${l}: ${m}`),
+        onChange: () => router?.accountsChanged(),
+      })
+    : null;
   let handoverNow: Handover | null = null;
   const resumedOnce = new Set<string>();
   const sup = new Supervisor(store, kinds, {
@@ -168,6 +187,7 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     launch: launch.launch,
     displayBackend: o.displayBackend,
     bins: bins ?? undefined,
+    forkBins: forkBins ?? undefined,
     fingerprint: o.fingerprint,
     restartPauseMs: o.restartPauseMs,
     adoptConnectMs: o.adoptConnectMs,
@@ -227,7 +247,9 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     publicUrl,
     startedAt: Date.now(),
     openPage: o.openPage === true,
-    bins: () => bins?.state ?? null,
+    bins,
+    forkBins,
+    backendCheck: o.backendCheck,
   }, approvers);
   // What the manager before handed over (a restart): its held events first, before anything new comes.
   const handover = takeHandover(o.dataDir);
@@ -258,8 +280,10 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     service: launch.unit,
     launchWhy: launch.why,
     bins,
+    forkBins,
     async stop(so = {}) {
       bins?.stop();
+      forkBins?.stop();
       for (const p of providers) p.stop?.();
       notices!.stop();
       approvals.stop();

@@ -156,6 +156,8 @@ export interface ManagerState {
    * (prepare.ts KeptBins); null when this manager does not prepare them. The page says so while they fail.
    */
   bins: BinsInfo | null;
+  /** The servers built from forks this project keeps, a build of their own (prepare.ts); null as bins is. */
+  forkBins: BinsInfo | null;
 }
 
 /** A display backend as the page offers it (packages/spec display.ts). */
@@ -166,6 +168,14 @@ export interface BackendView {
   /** 'fork': its server is built from a fork this project keeps; the page shows "Experimental fork" with the note. */
   experimental: 'fork' | null;
   note: string | null;
+  /**
+   * Whether it can run here now (http.ts backendCheck): ready; unbuilt (a fork's servers, built the first time it is
+   * picked: picking it starts that and is refused meanwhile); building; missing (`why` says what). Only a ready one is
+   * taken by PUT /api/display or an account's PATCH; the others are refused with 409.
+   */
+  availability: 'ready' | 'unbuilt' | 'building' | 'missing';
+  available: boolean;
+  why: string | null;
 }
 
 /** GET in /api/state, PUT /api/display { default }: the default and where it comes from. */
@@ -181,8 +191,11 @@ export interface DisplayState {
 
 /** How preparing the sandboxes' programs stands (prepare.ts BinsState). */
 export interface BinsInfo {
-  /** preparing, ready, failing (the last build failed), none (no nix-build here: programs from PATH). */
-  state: 'preparing' | 'ready' | 'failing' | 'none';
+  /**
+   * preparing, ready, failing (the last build failed), none (no nix-build here: programs from PATH), idle (not asked
+   * for yet: the forks' servers are built once a backend that needs them is in use).
+   */
+  state: 'idle' | 'preparing' | 'ready' | 'failing' | 'none';
   /** The prepared directory kinds with a screen are given; null while there is none (they wait while failing). */
   dir: string | null;
   why: string | null;

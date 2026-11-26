@@ -2,6 +2,7 @@
 # CI and at run time (nix/README.md).
 #
 #   nix-build nix -A dither-bins -o <dir>        the programs the sandboxes run, one link per package (bins.json "run")
+#   nix-build nix -A dither-bins-forks -o <dir>  the servers built from forks this project keeps (bins.json "forks")
 #   nix-build nix -A dither-test-bins -o <dir>   those and what only the tests run (bins.json "test")
 #   nix-env -f nix -iA chromium                  any package of the same nixpkgs
 { }:

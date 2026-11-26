@@ -63,7 +63,8 @@ const tempDir = (name: string) => {
 
 type Opts = Partial<Parameters<typeof createManager>[0]>;
 async function manager(dir: string, o: Opts = {}) {
-  const m = await createManager({ openPage: true, dataDir: dir, port: 0, kinds: kinds(), launch: 'detached', fingerprint: () => 'v1', restartPauseMs: 50, ...o });
+  // Every backend can run here, whatever this machine has (http.ts backendCheck): these tests are the queue's.
+  const m = await createManager({ openPage: true, dataDir: dir, port: 0, kinds: kinds(), launch: 'detached', fingerprint: () => 'v1', restartPauseMs: 50, backendCheck: () => ({ availability: 'ready', why: null }), ...o });
   managers.push(m);
   return m;
 }
@@ -606,3 +607,28 @@ test('a new default during a deploy roll joins its queue: never two of a kind re
   expect([...seen.started].sort()).toEqual([...ids].sort());
   await m2.stop();
 }, 60_000);
+
+test("a moved account that comes back without its live view stops its kind's moves; the others stay on their screen", async () => {
+  const dir = tempDir('noscreen');
+  const m = await manager(dir, { restartPauseMs: 50, restartOnlineMs: 1500 });
+  const ids = [1, 2].map((n) => `acc-ns-${n}-${RUN}`);
+  // A pretend live view (the fake offers one at this path), none on wayland: as a screen that cannot start there.
+  const config = { vncSocket: join(dir, 'pretend-vnc.sock'), noLiveViewOn: 'wayland' };
+  for (const id of ids) insertAccount(m.store, dir, id, config);
+  for (const id of ids) m.sup.start(id);
+  await until(() => ids.every((id) => online(m, id) && !!m.router.liveView(id)), 15_000, 'both online with a live view');
+  const pids = Object.fromEntries(ids.map((id) => [id, m.sup.details(id).pid]));
+  const seen = countRestarts(m);
+  expect((await putDefault(m, 'wayland')).status).toBe(200);
+  await until(() => seen.started.length === 1 && (m.sup as any).rollingKinds.size === 0, 15_000, 'the moves stopped');
+  const [moved] = seen.started;
+  const other = ids.find((id) => id !== moved)!;
+  // The moved one is back online on wayland, with no live view; the other was not moved: same process, on x11.
+  expect(m.sup.details(moved!)).toMatchObject({ displayBackend: 'wayland' });
+  expect(online(m, moved!) && !m.router.liveView(moved!)).toBe(true);
+  expect(m.sup.details(other)).toMatchObject({ pid: pids[other], displayBackend: 'x11' });
+  expect(!!m.router.liveView(other)).toBe(true);
+  const log = readFileSync(join(dir, 'accounts', moved!, 'adapter.log'), 'utf8');
+  expect(log).toMatch(/not back with its screen on wayland in 2 s: the 1 other fake account\(s\) waiting keep running on their screen/);
+  await m.stop();
+}, 30_000);

@@ -65,6 +65,8 @@ export function parseBackend(v: unknown): DisplayBackend | null {
 
 export const isWaylandBackend = (b: DisplayBackend): b is WaylandBackend => BACKENDS[b].protocol === 'wayland';
 export const isXBackend = (b: DisplayBackend): b is XBackend => BACKENDS[b].protocol === 'x11';
+/** Its server is built from a fork this project keeps: its programs are a build of their own (nix/bins.json `forks`). */
+export const fromFork = (b: DisplayBackend) => (BACKENDS[b] as BackendInfo).experimental === 'fork';
 
 /** "x11, tigervnc, …": for messages that say what may be given. */
 export const backendList = () => DISPLAY_BACKENDS.join(', ');

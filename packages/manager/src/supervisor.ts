@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { writeSecretFile } from '@dither-chat/protocol/secret-file';
 import { type FailureKind, isExtractorCode, isFailureKind, retryAfterOf } from '@dither-accounts/spec';
 import { Handover, HandoverError } from '@dither-accounts/spec/handover';
-import { DEFAULT_DISPLAY_BACKEND, DISPLAY_BACKEND_ENV, type DisplayBackend, parseBackend } from '@dither-accounts/spec/display';
+import { DEFAULT_DISPLAY_BACKEND, DISPLAY_BACKEND_ENV, type DisplayBackend, fromFork, parseBackend } from '@dither-accounts/spec/display';
 
 /** The page's choice of the default display backend, in the store's settings (Supervisor.defaultBackend). */
 export const DISPLAY_BACKEND_SETTING = 'display_backend';
@@ -100,6 +100,8 @@ interface Running {
   backend?: DisplayBackend | null;
   /** Waiting for the sandboxes' programs to be prepared (prepare.ts) before it starts. */
   waitingBins?: boolean;
+  /** Waiting for the forks' servers (opts.forkBins). */
+  waitingForks?: boolean;
   /** An adopted process that has not connected by then is started afresh. */
   connectBy?: number;
   /** adapter.log's size when it started: a failed exit's last lines are read from there. */
@@ -435,6 +437,7 @@ export class Supervisor {
   private holding = new Map<string, () => void>();
   /** The sandboxes' programs are prepared (or failed to be): a kind with a screen starts without waiting. */
   private binsSettled = false;
+  private forksSettled = false;
   /** The manager is going: nothing starts again, and exits of processes it leaves running are not crashes. */
   private closing = false;
   /** Accounts asleep, as the registry keeps them (table `asleep`). */
@@ -463,6 +466,12 @@ export class Supervisor {
        * starts once this settles, and is given the directory (DITHER_BINS) when there is one.
        */
       bins?: { ready: Promise<unknown>; dir: () => string | null };
+      /**
+       * The servers built from forks this project keeps (prepare.ts, built apart and only when asked for): an account
+       * on a backend that needs them (spec fromFork) asks for them, starts once they settle, and is given both
+       * directories. A move onto one waits for their first try and does not happen when they failed.
+       */
+      forkBins?: { ready: Promise<unknown>; tried: Promise<unknown>; dir: () => string | null; start: () => void; usable: () => boolean };
       /** The command a `scope` launch goes through (default systemd-run; tests give a stand-in). */
       systemdRun?: string;
       /** The fingerprint of a kind's code (default fingerprint.ts over repoRoot); tests give their own. */
@@ -796,7 +805,7 @@ export class Supervisor {
     const acc = this.store.account(id);
     if (!acc || !acc.enabled) return void this.line(id).down(acc ? 'the account is disabled' : 'the account is gone');
     const cur = this.running.get(id);
-    if (cur && !cur.stopping && (cur.pid || cur.cleaning || cur.waitingBins)) return;
+    if (cur && !cur.stopping && (cur.pid || cur.cleaning || cur.waitingBins || cur.waitingForks)) return;
     const r: Running = cur ?? { restarts: 0, stopping: false, lastStart: 0, ...this.history.get(id) };
     clearTimeout(r.retry);
     r.stopping = false;
@@ -868,6 +877,23 @@ export class Supervisor {
       }
       return;
     }
+    // One on a backend built from a fork asks for the forks' servers (built after the rest, once something needs them)
+    // and waits for them too.
+    const forks = this.opts.forkBins;
+    const onFork = !!kind.screen && fromFork(this.backendOf(acc)!);
+    if (forks && onFork && !this.forksSettled) {
+      if (!r.waitingForks) {
+        r.waitingForks = true;
+        this.starting(id);
+        forks.start();
+        void forks.ready.finally(() => {
+          this.forksSettled = true;
+          r.waitingForks = false;
+          if (this.running.get(id) === r && !r.stopping) this.start(id);
+        });
+      }
+      return;
+    }
 
     const held = acquireLock(acc.dir, 'dither-accounts', acc.id);
     if (held) {
@@ -899,7 +925,8 @@ export class Supervisor {
     // programs they run, from the manager's pinned nixpkgs (prepare.ts). A kind with no screen is given neither, nor
     // what the manager's own environment might hand down.
     const { [DISPLAY_BACKEND_ENV]: _b, DITHER_BINS: _d, ...inherited } = process.env;
-    const binsDir = backend ? (bins?.dir() ?? process.env.DITHER_BINS) : undefined;
+    const prepared = [bins?.dir(), onFork ? forks?.dir() : null].filter(Boolean).join(':');
+    const binsDir = backend ? prepared || process.env.DITHER_BINS : undefined;
     const screenEnv: Record<string, string> = backend ? { [DISPLAY_BACKEND_ENV]: backend, ...(binsDir ? { DITHER_BINS: binsDir } : {}) } : {};
     let proc: Subprocess;
     try {
@@ -1232,6 +1259,22 @@ export class Supervisor {
         const hadScreen = !sameScreen && !!this.opts.screenUp?.(id);
         this.rollingNow.add(id);
         try {
+          // Onto a backend built from a fork: its servers first (built once something needs them). When they could
+          // not be built it stays where it is, and so do the others waiting: they would only wait for them too.
+          const forks = this.opts.forkBins;
+          const target = this.backendOf(acc)!;
+          if (!sameScreen && forks && fromFork(target)) {
+            forks.start();
+            await Promise.race([forks.tried, new Promise((r) => this.closingCtrl.signal.addEventListener('abort', r, { once: true }))]);
+            if (this.closing) continue;
+            if (!forks.usable()) {
+              const left = this.outdated.get(kind) ?? [];
+              appendFileSync(join(acc.dir, LOG), `--- ${new Date().toISOString()} not moved to ${target}: its servers, built from a fork, could not be built; it and the ${left.length} other ${kind} account(s) waiting stay on their screen\n`);
+              for (const other of left) this.askedNow.delete(other);
+              this.outdated.delete(kind);
+              break;
+            }
+          }
           // Connected first, so it hears a shutdown and ends as it would at a stop (the watch restarts one that never does).
           const by = Date.now() + (this.opts.adoptConnectMs ?? ADOPT_CONNECT_MS);
           while (!this.closing && !r.ws && r.pid && Date.now() < by) await Bun.sleep(250);

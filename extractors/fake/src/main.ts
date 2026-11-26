@@ -49,11 +49,20 @@ if (startConfig.children) {
 }
 
 let ticks = 0;
+/**
+ * config.sleepy: say what a kind that may sleep says (link.sleep, docs/supervisor.md "Sleeping"): nothing under way,
+ * and, with config.wakeInMs, that it next needs to run that long after it first connected (a daily pull's time).
+ */
+let firstConnect: number | null = null;
+/** What it last said it is doing: said again on each connect, as a real extractor's runner does. */
+let busyNow: string | null = null;
+const sleepSay = (busy: string | null, wakeInMs?: unknown) => link.sleep({ busy: (busyNow = busy), wakeAt: typeof wakeInMs === 'number' ? (firstConnect ??= Date.now()) + wakeInMs : null });
 const link = linkManager({
   onConnect: () => {
     link.emit({ t: 'hello', version: '1', label: link.label });
     // config.vncSocket: pretend to offer a live view on that Unix socket (the page's live view proxy test).
     const lv = typeof link.config.vncSocket === 'string' ? { liveView: { vncSocket: link.config.vncSocket, width: 800, height: 600 } } : {};
+    // config.self: who it says it is signed in as (screenshots of the page with invented people).
     // config.crash: end at once (the manager's notices count crashes); config.attention: say it needs you, with that
     // message (and config.attentionKind, and config.attentionStatus: a passing state such as connecting); config.changed:
     // say a service it reads changed (status `changed: true`).
@@ -61,8 +70,10 @@ const link = linkManager({
     // config.throw: crash with an uncaught TypeError of that message (the manager's error file records it).
     if (typeof link.config.throw === 'string') setTimeout(() => crashWith(String(link.config.throw)));
     const at = typeof link.config.attention === 'string' ? { status: String(link.config.attentionStatus ?? 'attention'), attention: { kind: String(link.config.attentionKind ?? 'login'), message: link.config.attention } } : { status: 'online' };
-    link.emit({ t: 'status', ...at, ...(link.config.changed ? { changed: true } : {}), self: { displayName: 'Fake', handle: 'fake-one' }, ...lv, ...layers(link.config) });
-    link.log('info', 'fake extractor up');
+    link.emit({ t: 'status', ...at, ...(link.config.changed ? { changed: true } : {}), self: link.config.self ?? { displayName: 'Fake', handle: 'fake-one' }, ...lv, ...layers(link.config) });
+    if (link.config.sleepy) sleepSay(busyNow, link.config.wakeInMs);
+    // Woken from sleep: the manager says why (DITHER_WOKE).
+    link.log('info', 'fake extractor up', process.env.DITHER_WOKE ? { woke: process.env.DITHER_WOKE } : undefined);
   },
     // config.slowExit: a shutdown takes that long (an extractor closing its browser).
   onShutdown: async () => {
@@ -89,6 +100,10 @@ const link = linkManager({
         return { i: Number(cmd.i), pid: process.pid };
       case 'pid':
         return { pid: process.pid, children };
+      case 'busy':
+        // What it says it is doing (a pull, a sign-in: null for nothing), as a kind that may sleep says it.
+        sleepSay(typeof cmd.busy === 'string' ? cmd.busy : null, link.config.wakeInMs);
+        return { busy: cmd.busy ?? null };
       case 'exit':
         // End with that code soon after answering (an adopted extractor's exit code: docs/supervisor.md).
         setTimeout(() => process.exit(Number(cmd.code ?? 0)), 50);

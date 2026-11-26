@@ -188,6 +188,7 @@ export class Router {
         interfaces: kind?.ifaces.map((i) => i.name) ?? [],
         running: st.running,
         online: st.online,
+        asleep: st.asleep,
         enabled: !!a.enabled,
         error: st.error,
         grants: per,
@@ -634,9 +635,16 @@ export class Router {
   /**
    * An account's extractor process ended: its last status (online, a QR to scan, a live view's port) was the old
    * process's, so the page stops showing it until the next one reports. A socket that only reconnects keeps it.
+   * One stopped to sleep keeps it (it slept only while online and needing nothing): the page and apps still see how
+   * it was, such as its last pull, but not its live view, which went with it.
    */
-  processGone(accountId: string) {
-    this.lastAccountEvents.get(accountId)?.delete('status');
+  processGone(accountId: string, asleep = false) {
+    const last = this.lastAccountEvents.get(accountId);
+    const st = last?.get('status');
+    if (!st) return;
+    if (!asleep) return void last!.delete('status');
+    const { liveView: _gone, ...kept } = st;
+    last!.set('status', kept as typeof st);
   }
 
   /** The last status an account's extractor reported, for the manager's page (status and attention, not data). */

@@ -39,6 +39,29 @@ export function findOnPath(name: string): string | null {
 
 const CACHE_TTL_MS = 7 * 86_400_000;
 
+/**
+ * JVM options for signal-cli (docs/signal.md "Memory"). Left to its defaults the JVM may take a quarter of RAM for
+ * heap, and its G1 collector grows the heap to hundreds of MB and keeps it, while a linked device holds a few tens of
+ * MB. A 256 MB cap with the serial collector, and the quick compiler alone, keeps it small; a daemon that runs out
+ * exits, and is restarted, rather than run on with a thread gone. $SIGNAL_CLI_JAVA_OPTIONS replaces them ("" for
+ * none: the JVM's defaults).
+ */
+export const SIGNAL_CLI_JAVA_OPTIONS = '-Xmx256m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError';
+
+/**
+ * signal-cli's environment with the JVM options in JDK_JAVA_OPTIONS, which the `java` launcher reads whatever script
+ * starts it (signal-cli's own, nixpkgs' wrapper). Options already in JDK_JAVA_OPTIONS come after ours, so they win.
+ */
+export function signalCliEnv(base: Record<string, string | undefined>): Record<string, string | undefined> {
+  const ours = (base.SIGNAL_CLI_JAVA_OPTIONS ?? SIGNAL_CLI_JAVA_OPTIONS).trim();
+  const theirs = base.JDK_JAVA_OPTIONS?.trim();
+  const opts = [ours, theirs].filter(Boolean).join(' ');
+  return opts ? { ...base, JDK_JAVA_OPTIONS: opts } : { ...base };
+}
+
+/** The line `java` prints on stderr when it reads JDK_JAVA_OPTIONS: not an error. */
+export const isJavaOptionsNote = (line: string) => /^NOTE: Picked up JDK_JAVA_OPTIONS:/.test(line.trim());
+
 /** Resolve the signal-cli command (argv prefix). */
 export async function resolveSignalCli(cacheFile: string | null, log: Logger): Promise<string[]> {
   const env = process.env.SIGNAL_CLI_BIN?.trim();

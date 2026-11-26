@@ -1,41 +1,57 @@
 #!/usr/bin/env bun
 /**
- * How much memory each account's browser takes: PSS (proportional set size, so shared pages are split between the
- * processes that map them and the totals add up) of the root Chromium and every process under it, grouped by the root's
- * --user-data-dir. Only the root is sure to carry that flag, so every other Chromium process is put with the root it
- * descends from (walking the parent chain). Reads /proc only; touches no browser.
+ * How much memory each account takes: every process its extractor runs (the extractor itself, its Chromium and every
+ * process under it, signal-cli, a native app's sandbox with its Xvfb and x11vnc), counted twice over:
  *
- *   bun scripts/mem.ts            one line per account, biggest first, with a total
- *   bun scripts/mem.ts --procs    and each process under it (type, PSS)
- *   bun scripts/mem.ts --json     the same as JSON
+ * - PSS (proportional set size): what it holds in RAM, shared pages split between the processes that map them, so the
+ *   totals add up.
+ * - Swap: what it holds in swap. On a machine short of memory most of an idle browser lives there, and a count of PSS
+ *   alone misses it. Under zram, swap costs RAM too, at its compressed size.
  *
- * Linux only. PSS comes from /proc/<pid>/smaps_rollup, which needs the processes to be yours (or root).
+ * A process belongs to an account when its environment names one (DITHER_ACCOUNT_ID, with the manager's
+ * DITHER_MANAGER_DATA), when an ancestor's does, or when it shares the control group of a process that does: a
+ * native-app sandbox clears its environment, and in a `scope` launch every process of the account is in its scope.
+ * Chromium's crashpad handler reparents to init; it names its browser's profile in --database. Processes of no account
+ * (another program's browser, say) are left out. Reads /proc only; touches no process.
+ *
+ *   bun scripts/mem.ts                 one line per account, biggest first, with totals by process type
+ *   bun scripts/mem.ts --procs         and each process under it
+ *   bun scripts/mem.ts --json          the same as JSON
+ *   bun scripts/mem.ts --data <dir>    only the accounts of the manager on this data directory
+ *
+ * Linux only. PSS and swap come from /proc/<pid>/smaps_rollup, which needs the processes to be yours (or root).
  */
 import { readdirSync, readFileSync } from 'node:fs';
-import { basename, dirname } from 'node:path';
+import { basename } from 'node:path';
 
 export interface Proc {
   pid: number;
   ppid: number;
   args: string[];
+  /** DITHER_ACCOUNT_ID and DITHER_MANAGER_DATA from its environment, when it has them. */
+  account?: string;
+  data?: string;
+  /** Its control group (the last line of /proc/<pid>/cgroup). */
+  cgroup?: string;
 }
 
-export interface ProcMem {
+export interface Mem {
+  pssKiB: number;
+  swapKiB: number;
+}
+
+export interface ProcMem extends Mem {
   pid: number;
-  /** browser, renderer, extension, gpu, utility:<sub-type>, zygote, crashpad, other */
+  /** extractor, browser, renderer, extension, gpu, utility:<sub-type>, zygote, crashpad, signal-cli, electron:<type>, Xvfb, x11vnc, or the program's name */
   type: string;
-  pssKiB: number;
 }
 
-export interface BrowserMem {
-  /** The account's directory name (the profile's parent), or the profile path when it is not in an account directory. */
+export interface AccountMem extends Mem {
   account: string;
-  /** The extractor's kind, from the parent process's extractors/<kind>/ path, when there is one. */
+  /** The extractor's kind, from its extractors/<kind>/ path, when there is one. */
   kind: string | null;
-  profile: string;
-  rootPid: number;
-  pssKiB: number;
-  byType: Record<string, { count: number; pssKiB: number }>;
+  data: string | null;
+  byType: Record<string, Mem & { count: number }>;
   procs: ProcMem[];
 }
 
@@ -59,13 +75,34 @@ function readPpid(pid: number): number | null {
   }
 }
 
-/** PSS in KiB, or 0 when the process is gone or not readable. */
-export function pssKiB(pid: number): number {
+function readEnv(pid: number): { account?: string; data?: string } {
   try {
-    const m = /^Pss:\s+(\d+) kB/m.exec(readFileSync(`/proc/${pid}/smaps_rollup`, 'utf8'));
-    return m ? Number(m[1]) : 0;
+    const out: { account?: string; data?: string } = {};
+    for (const kv of readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0')) {
+      if (kv.startsWith('DITHER_ACCOUNT_ID=')) out.account = kv.slice(18);
+      else if (kv.startsWith('DITHER_MANAGER_DATA=')) out.data = kv.slice(20);
+    }
+    return out;
   } catch {
-    return 0;
+    return {};
+  }
+}
+
+function readCgroup(pid: number): string | undefined {
+  try {
+    return readFileSync(`/proc/${pid}/cgroup`, 'utf8').trim().split('\n').pop()?.replace(/^\d*::?/, '') || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** PSS and swap in KiB, or 0 when the process is gone or not readable. */
+export function memOf(pid: number): Mem {
+  try {
+    const s = readFileSync(`/proc/${pid}/smaps_rollup`, 'utf8');
+    return { pssKiB: Number(/^Pss:\s+(\d+) kB/m.exec(s)?.[1] ?? 0), swapKiB: Number(/^Swap:\s+(\d+) kB/m.exec(s)?.[1] ?? 0) };
+  } catch {
+    return { pssKiB: 0, swapKiB: 0 };
   }
 }
 
@@ -76,15 +113,19 @@ export function listProcs(): Proc[] {
     const pid = Number(name);
     const args = readArgs(pid);
     const ppid = readPpid(pid);
-    if (args && ppid !== null) out.push({ pid, ppid, args });
+    if (args && ppid !== null) out.push({ pid, ppid, args, ...readEnv(pid), cgroup: readCgroup(pid) });
   }
   return out;
 }
 
 const flag = (args: string[], name: string) => args.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
-const isChromium = (p: Proc) => /chrom(e|ium)/i.test(basename(p.args[0] ?? ''));
+const program = (p: Proc) => basename(p.args[0] ?? '');
+const isChromium = (p: Proc) => /chrom(e|ium)/i.test(program(p));
+const kindOf = (args: string[]) => args.map((a) => /extractors\/([^/]+)\//.exec(a)?.[1]).find(Boolean) ?? null;
 
-export function procType(args: string[]): string {
+/** Chromium's process type from its switches. */
+export function chromiumType(args: string[]): string {
+  if (/crashpad/.test(basename(args[0] ?? ''))) return 'crashpad';
   const type = flag(args, 'type');
   if (!type) return 'browser';
   if (type === 'renderer') return args.includes('--extension-process') ? 'extension' : 'renderer';
@@ -94,62 +135,112 @@ export function procType(args: string[]): string {
   return type;
 }
 
-/** Group Chromium processes under their root browser (a Chromium with --user-data-dir and no --type). */
-export function groupBrowsers(procs: Proc[], pss: (pid: number) => number = pssKiB): BrowserMem[] {
+/** What a process of an account is. */
+export function procType(p: Proc): string {
+  const prog = program(p);
+  if (isChromium(p)) return chromiumType(p.args);
+  if (/^electron$/i.test(prog)) return `electron:${chromiumType(p.args)}`;
+  if (/^(bun|node)$/.test(prog) && kindOf(p.args)) return 'extractor';
+  if (prog === 'java' && p.args.some((a) => /signal-cli/.test(a))) return 'signal-cli';
+  return prog || '?';
+}
+
+/** Put each process with the account it runs for (see the head of this file); processes of no account are left out. */
+export function groupAccounts(procs: Proc[], mem: (pid: number) => Mem = memOf): AccountMem[] {
   const byPid = new Map(procs.map((p) => [p.pid, p]));
-  const roots = new Map<number, BrowserMem>();
-  for (const p of procs) {
-    if (!isChromium(p) || flag(p.args, 'type')) continue;
-    const profile = flag(p.args, 'user-data-dir');
-    if (!profile) continue;
-    const parent = byPid.get(p.ppid);
-    const kind = parent?.args.map((a) => /extractors\/([^/]+)\//.exec(a)?.[1]).find(Boolean) ?? null;
-    roots.set(p.pid, { account: basename(profile) === 'profile' ? basename(dirname(profile)) : profile, kind, profile, rootPid: p.pid, pssKiB: 0, byType: {}, procs: [] });
-  }
-  for (const p of procs) {
-    // Crashpad is started by the browser but reparents to init; it names its browser in --database.
-    let root: BrowserMem | undefined;
+  const accounts = new Map<string, AccountMem>();
+  const key = (account: string, data: string | undefined) => `${data ?? ''}\0${account}`;
+  const ensure = (account: string, data: string | undefined) => {
+    const k = key(account, data);
+    let a = accounts.get(k);
+    if (!a) accounts.set(k, (a = { account, kind: null, data: data ?? null, pssKiB: 0, swapKiB: 0, byType: {}, procs: [] }));
+    return a;
+  };
+  // Who each process belongs to: its own environment, else the nearest ancestor's.
+  const owner = new Map<number, AccountMem>();
+  const ownerOf = (p: Proc): AccountMem | undefined => {
     for (let cur: Proc | undefined = p, hops = 0; cur && hops < 64; cur = byPid.get(cur.ppid), hops++) {
-      root = roots.get(cur.pid);
-      if (root) break;
+      if (owner.has(cur.pid)) return owner.get(cur.pid);
+      if (cur.account) return ensure(cur.account, cur.data);
     }
-    if (!root && isChromium(p) && flag(p.args, 'type') === 'crashpad-handler') {
-      const db = flag(p.args, 'database');
-      root = [...roots.values()].find((r) => db && db.startsWith(r.profile));
-    }
-    if (!root || !isChromium(p)) continue;
-    const mem: ProcMem = { pid: p.pid, type: procType(p.args), pssKiB: pss(p.pid) };
-    root.procs.push(mem);
-    root.pssKiB += mem.pssKiB;
-    const t = (root.byType[mem.type] ??= { count: 0, pssKiB: 0 });
-    t.count++;
-    t.pssKiB += mem.pssKiB;
+    return undefined;
+  };
+  for (const p of procs) {
+    const a = ownerOf(p);
+    if (a) owner.set(p.pid, a);
   }
-  return [...roots.values()].sort((a, b) => b.pssKiB - a.pssKiB);
+  // The rest: a systemd scope an account's process is in (a `scope` launch gives each account its own; one that two
+  // accounts share names neither), or a crashpad handler naming a profile one of its browsers runs on.
+  const cgroups = new Map<string, AccountMem | null>();
+  for (const [pid, a] of owner) {
+    const cg = byPid.get(pid)?.cgroup;
+    if (cg?.endsWith('.scope')) cgroups.set(cg, cgroups.has(cg) && cgroups.get(cg) !== a ? null : a);
+  }
+  const profiles: [string, AccountMem][] = [];
+  for (const [pid, a] of owner) {
+    const p = byPid.get(pid)!;
+    const dir = isChromium(p) && !flag(p.args, 'type') ? flag(p.args, 'user-data-dir') : undefined;
+    if (dir) profiles.push([dir, a]);
+  }
+  for (const p of procs) {
+    if (owner.has(p.pid)) continue;
+    let a = p.cgroup ? cgroups.get(p.cgroup) ?? undefined : undefined;
+    if (!a && isChromium(p) && flag(p.args, 'type') === 'crashpad-handler') {
+      const db = flag(p.args, 'database');
+      a = db ? profiles.find(([dir]) => db.startsWith(dir))?.[1] : undefined;
+    }
+    if (a) owner.set(p.pid, a);
+  }
+  for (const p of procs) {
+    const a = owner.get(p.pid);
+    if (!a) continue;
+    const m = mem(p.pid);
+    const type = procType(p);
+    if (type === 'extractor') a.kind ??= kindOf(p.args);
+    a.procs.push({ pid: p.pid, type, ...m });
+    a.pssKiB += m.pssKiB;
+    a.swapKiB += m.swapKiB;
+    const t = (a.byType[type] ??= { count: 0, pssKiB: 0, swapKiB: 0 });
+    t.count++;
+    t.pssKiB += m.pssKiB;
+    t.swapKiB += m.swapKiB;
+  }
+  const total = (m: Mem) => m.pssKiB + m.swapKiB;
+  return [...accounts.values()].filter((a) => a.procs.length).sort((x, y) => total(y) - total(x));
 }
 
 const mib = (kib: number) => `${(kib / 1024).toFixed(0)} MiB`;
+const both = (m: Mem) => `${mib(m.pssKiB)} + ${mib(m.swapKiB)} swap`;
 
 if (import.meta.main) {
   const argv = process.argv.slice(2);
-  const browsers = groupBrowsers(listProcs());
+  const dataAt = argv.indexOf('--data');
+  const data = dataAt >= 0 ? argv[dataAt + 1] : undefined;
+  const accounts = groupAccounts(listProcs()).filter((a) => !data || a.data === data);
   if (argv.includes('--json')) {
-    console.log(JSON.stringify(browsers, null, 2));
+    console.log(JSON.stringify(accounts, null, 2));
   } else {
-    const total = browsers.reduce((s, b) => s + b.pssKiB, 0);
-    const types = new Map<string, { count: number; pssKiB: number }>();
-    for (const b of browsers) {
-      const parts = Object.entries(b.byType)
-        .sort((x, y) => y[1].pssKiB - x[1].pssKiB)
-        .map(([t, v]) => `${t}${v.count > 1 ? `×${v.count}` : ''} ${mib(v.pssKiB)}`);
-      console.log(`${mib(b.pssKiB).padStart(9)}  ${(b.kind ?? '?').padEnd(10)} ${b.account}  [${parts.join(', ')}]`);
-      if (argv.includes('--procs')) for (const p of b.procs) console.log(`             ${String(p.pid).padStart(8)} ${p.type.padEnd(24)} ${mib(p.pssKiB)}`);
-      for (const [t, v] of Object.entries(b.byType)) {
-        const s = types.get(t) ?? { count: 0, pssKiB: 0 };
-        types.set(t, { count: s.count + v.count, pssKiB: s.pssKiB + v.pssKiB });
+    const dirs = new Set(accounts.map((a) => a.data));
+    if (dirs.size > 1) console.log(`accounts of ${dirs.size} managers (data directories); --data <dir> shows one:\n${[...dirs].map((d) => `  ${d ?? '?'}: ${accounts.filter((a) => a.data === d).length} accounts`).join('\n')}\n`);
+    const sum: Mem = { pssKiB: 0, swapKiB: 0 };
+    const types = new Map<string, Mem & { count: number }>();
+    console.log(`${'RAM+swap'.padStart(9)} ${'RAM'.padStart(9)} ${'swap'.padStart(9)}  kind       account  [by type: RAM + swap]`);
+    for (const a of accounts) {
+      sum.pssKiB += a.pssKiB;
+      sum.swapKiB += a.swapKiB;
+      const parts = Object.entries(a.byType)
+        .sort((x, y) => y[1].pssKiB + y[1].swapKiB - x[1].pssKiB - x[1].swapKiB)
+        .map(([t, v]) => `${t}${v.count > 1 ? `×${v.count}` : ''} ${mib(v.pssKiB + v.swapKiB)}`);
+      const where = dirs.size > 1 ? `  (${a.data ?? '?'})` : '';
+      console.log(`${mib(a.pssKiB + a.swapKiB).padStart(9)} ${mib(a.pssKiB).padStart(9)} ${mib(a.swapKiB).padStart(9)}  ${(a.kind ?? '?').padEnd(10)} ${a.account}  [${parts.join(', ')}]${where}`);
+      if (argv.includes('--procs')) for (const p of a.procs) console.log(`             ${String(p.pid).padStart(8)} ${p.type.padEnd(24)} ${both(p)}`);
+      for (const [t, v] of Object.entries(a.byType)) {
+        const s = types.get(t) ?? { count: 0, pssKiB: 0, swapKiB: 0 };
+        types.set(t, { count: s.count + v.count, pssKiB: s.pssKiB + v.pssKiB, swapKiB: s.swapKiB + v.swapKiB });
       }
     }
-    console.log(`${mib(total).padStart(9)}  total, ${browsers.length} browsers`);
-    for (const [t, v] of [...types].sort((x, y) => y[1].pssKiB - x[1].pssKiB)) console.log(`${mib(v.pssKiB).padStart(9)}    ${t} ×${v.count}`);
+    console.log(`${mib(sum.pssKiB + sum.swapKiB).padStart(9)} ${mib(sum.pssKiB).padStart(9)} ${mib(sum.swapKiB).padStart(9)}  total, ${accounts.length} accounts`);
+    for (const [t, v] of [...types].sort((x, y) => y[1].pssKiB + y[1].swapKiB - x[1].pssKiB - x[1].swapKiB))
+      console.log(`${mib(v.pssKiB + v.swapKiB).padStart(9)} ${mib(v.pssKiB).padStart(9)} ${mib(v.swapKiB).padStart(9)}    ${t} ×${v.count}`);
   }
 }

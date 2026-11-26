@@ -1198,6 +1198,8 @@ setTimeout(() => {
       calendars.delete(id);
     },
     calendar: (id: string) => calendars.get(id),
+    /** Every calendar's id, sorted. */
+    calendarIds: () => [...calendars.keys()].sort(),
     /** As if made or changed in Google's own app. */
     put(cal: string, e: Record<string, any> & { id: string }) {
       const list = evs(cal);

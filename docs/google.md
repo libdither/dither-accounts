@@ -90,7 +90,8 @@ Config (all optional): `authuser` (default 0: which signed-in Google account in 
 `/calendar/u/<n>/r` and `/mail/u/<n>/`), `mail` (default true; `false`: no Gmail tab, and `mail` answers 501),
 `gmailPollSeconds` (default 60: how often the mail watch asks Gmail what changed, once a mail call was made; 0:
 never), `gmailCanaryHours` (default 24: how often the Gmail canary runs; 0: never; with `testMailOrigin`, 0 unless
-set), `apiBase` (default
+set), `calendarIdleSeconds` (default 600: how long the Calendar tab stays open with no Calendar call, with a Gmail
+tab only; 0: always open; "Which tabs stay open" below), `apiBase` (default
 `https://clients6.google.com`), `gmailApiBase` (default `https://gmail.googleapis.com`), `noSandbox`. `testOrigin` and
 `testMailOrigin` are for tests: the start pages, the extension's matches and the hook's allowed origins then include
 them. With `testOrigin` and no `testMailOrigin` there is no Gmail tab, so a test never opens the real Gmail.
@@ -106,6 +107,30 @@ The browser has two pages, each a **role**: the Calendar tab (`calendar`, the br
 background once the extension attaches, unless the config says `mail: false`. One sign-in covers both. Both tabs are
 marked not discardable, so Chromium does not drop the background one. The Gmail tab answers `mail` from
 inside its own signed-in page ("Gmail mail" below), and the diagnostic, the learn runs and the self-check below.
+There are no other tabs of ours: a Gmail download, an upload, a learn run's steering and the suggestions all happen
+inside the Gmail page.
+
+#### Which tabs stay open
+
+Each Google page holds a Chromium renderer of its own (and, for the frames it embeds from other Google hosts, often
+one or two more): measured live, 70–140 MB of RAM and about as much again in swap for each big one. So only what is
+needed all the time stays open:
+
+- **Gmail's tab: always.** The mail watch asks Gmail what changed every `gmailPollSeconds` (60), and `mail` calls,
+  sends, suggestions and the canary all go through it. It also says, while Calendar's tab is closed, whether Google is
+  still signed in.
+- **Calendar's tab: while Calendar is used.** It is only for `google.calendar` calls (and their key probe). Once no
+  Calendar call has started or ended for `calendarIdleSeconds` (600) and its page has been up that long, it is closed
+  (the worker's `tab.close`), if: Google is signed in and a key known (no sign-in or probe under way), no call or
+  reload is under way, and Gmail's page is up, signed in, in a tab of its own. The status stays `online`: `signed in`
+  is then Gmail's page's word (`details.calendarTabClosed` true, the `extension` layer "attached, in the Gmail page",
+  the `Calendar API` layer ok, its note saying the tab is closed). The next Calendar call opens it again, in front (the
+  start page, as before), and waits up to 20 s within its own time for its hook and sign-in; calls that come
+  meanwhile wait for the same reopening. An app that syncs every few minutes (dither-calendar: every 2) keeps it open.
+- Never closed: the browser's last tab (closing it would end the browser), so with `mail: false` Calendar's tab is
+  always open. Signed out while it is closed (Gmail's page says so), or Gmail's tab gone, it opens again, so the
+  sign-in in the live view goes on on Calendar's page as before. A Calendar page opened in the live view counts as
+  open again.
 
 - **Roles.** The same `hook.js` runs in both pages and says which one it is in when it comes up (from `location.host`:
   `calendar.google.com` or `mail.google.com`). The service worker keeps the role's current page, its newest port: a
@@ -345,7 +370,8 @@ The account's status (`{ status, attention, liveView: { vncSocket, width, height
 is Gmail, on a Workspace domain too), `email`, `authuser`, `display`, `page` (the Calendar tab's origin and path),
 `extensionAttached`, `calendarPage`, `signedIn`, `keySource` (which kind of key won: `calendar-request`,
 `page-request`, `page-html`, `embed`), `authStyle` (`plain` or `u`), `lastProbeAt`, `lastProbeStatus`,
-`endpointsSeen` and `pageAuth` (the schemes the Calendar page's own calls use). For the tabs: `tabs` (which tabs
+`endpointsSeen` and `pageAuth` (the schemes the Calendar page's own calls use). For the tabs: `calendarTabClosed`
+(closed while no Calendar call needs it; `email` and `signedIn` are then the Gmail page's), `tabs` (which tabs
 exist, by role, e.g. `calendar (hook up), gmail (hook up)`, a host where our hook is not, and how many others; no
 address or content), `mail` (whether this account has a Gmail tab), `gmailTab` (its origin and path), `gmailPage`
 (our hook is in it), `gmailSignedIn`, `calendarReloads` and `gmailReloads`, and the probe's `gmailProbeAt` and
@@ -725,12 +751,19 @@ one call already under way. The rules (`BACKGROUND` in `mail.ts`):
   One that failed before any answer is asked once more without following redirects (its body never read), and the
   line ends with what that said: `(asked again, Gmail sent it elsewhere: a redirect the page may not follow)`, `(asked
   again, the connection failed again)`, `(asked again, no answer in 5 s)` or `(asked again, Gmail answered N)`.
+- **Downloads sent elsewhere**: when that second try saw a redirect, three downloads in a row (either lane, with no
+  good download between them) stop the background lane for **1 hour** (`backgroundStopped: 'refused'`), doubling
+  each time it stops again, up to **24 hours**; kept in `gmail-reads.json`, so a restart does not end it. Background
+  calls answer 503 `paused` meanwhile (kind transient, `retryAfterMs` the pause's end). Past the pause the next
+  download tries again: one more redirect stops it for twice as long. The foreground is never stopped by it, and a
+  good download from either lane ends it at once. (2026-11-23: after a bulk read, Gmail redirected nearly every
+  download for over a day; the 5-minute back-off alone asked it again every 5 minutes all that time.)
 - **Stops**: a **challenge** (an answer that reads as a sign-in or verification page; any other 200 that is not what
   was asked for: no JSON from `bv`, `fd` or `s`, an HTML page from the download route; or a 403), the page **signed
   out** (the Gmail page's own signed-in state, or a 401), or the day's **quota** spent. From then on every background
   call answers **503 with code `paused`** (`StatusError(…, 503, 'paused')`: "Gmail background reading is paused: …"),
   queued ones included, and **none reaches Gmail**: nothing is retried into a stop. `details.backgroundStopped` is
-  `'challenge'`, `'signedOut'` or `'quota'` until the cause clears: the quota when the 24 h window has room again;
+  `'challenge'`, `'signedOut'`, `'quota'` or `'refused'` (above) until the cause clears: the quota when the 24 h window has room again;
   a challenge or a sign-out when the page is signed in and a (foreground) call is answered well again (the watch's
   look counts). Foreground calls go on as usual while Gmail answers them (a challenge page is a 502 to them).
 - **Too long a wait**: a background call that cannot start within 50 s (backed off past that, or behind a long queue)
@@ -1175,5 +1208,7 @@ that used it lose it at once (dither-calendar drops its copies of those calendar
 - `test/google-browser.test.ts`: the `google` extractor in its real sandbox against the same fake in its `web` mode
   (config `testOrigin` and `apiBase` point at it, `testMailOrigin`, `gmailApiBase` and `peopleApiBase` at its Gmail
   side; `stall()`
-  makes a page's API calls hang). The stall tests wait out the real 25 s, so the suite takes about three minutes. Skipped without Xvfb, chromium and x11vnc (found on PATH, through
+  makes a page's API calls hang). One account there has `calendarIdleSeconds: 2`: its Calendar tab closes with the
+  status still online and Gmail's page up, two calls at once open it again with one page load and are answered, the
+  Gmail page is not loaded again, and it closes again. The stall tests wait out the real 25 s, so the suite takes about three minutes. Skipped without Xvfb, chromium and x11vnc (found on PATH, through
   `XVFB_BIN` / `X11VNC_BIN` / `CHROMIUM_BIN`, or with `nix build`).

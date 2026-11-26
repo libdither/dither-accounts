@@ -89,6 +89,10 @@ export const EVENT_RULES: PostRules = {
 /** The rules of each network that has posts. */
 export const POST_RULES: Readonly<Record<string, PostRules>> = { x: X_RULES, reddit: REDDIT_RULES, luma: EVENT_RULES, partiful: EVENT_RULES };
 export const postRulesFor = (network: string): PostRules | null => POST_RULES[network] ?? null;
+export const timelineName = (network: string, feed: HomeFeed): string => postRulesFor(network)?.timelines?.[feed] ?? (feed === 'following' ? 'Following' : feed === 'explore' ? 'Explore' : 'For you');
+
+/** The home timelines a network has: Following and For you, or what its rules say (an event site's Explore and Your events). */
+export const homeFeedsOf = (network: string): readonly HomeFeed[] => postRulesFor(network)?.feeds ?? ['following', 'foryou'];
 
 /** A timeline's name on its network: X's "For you", Reddit's "Best", Substack's "Notes". */
 export const timelineName = (network: string, feed: HomeFeed): string => postRulesFor(network)?.timelines?.[feed] ?? (feed === 'following' ? 'Following' : feed === 'explore' ? 'Explore' : 'For you');

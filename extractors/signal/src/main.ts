@@ -8,6 +8,7 @@
  *                        apps, which keep receiving from contacts whose safety number changed)
  * Environment:
  *   SIGNAL_CLI_BIN       signal-cli to run (else PATH, else `nix build nixpkgs#signal-cli`)
+ *   SIGNAL_CLI_JAVA_OPTIONS  its JVM options, in place of the frugal default (docs/signal.md "Memory")
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';

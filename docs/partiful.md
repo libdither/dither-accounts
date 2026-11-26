@@ -76,7 +76,9 @@ event, with the names blanked but each guest's RSVP history, times and notes in 
 - when the list is not explicitly shown, `getGuests` and `getMutualGuests` are **never called** for that event, and
   the post carries only the count the site shows (`guestsShown: 'count'`, or `'hidden'` when the count is hidden too);
 - for a shown list, the hook strips every row's `rsvpHistory`, `rsvpDate`, RSVP message and image, `invitedBy`,
-  questionnaire answers and plus-ones before the answer leaves the page; only who, and their status, go on.
+  questionnaire answers and plus-ones before the answer leaves the page; only who, and their status, go on;
+- every event post passes through the protocol's `withoutHiddenGuests` on its way out, as the hub does again on its
+  side.
 
 extractors/partiful/test/map.test.ts proves the mapping never reads a hidden event's rows (a trap on them), and
 test/partiful-browser.test.ts that no such call is made and no note reaches an app.

@@ -94,7 +94,7 @@ async function one(app: App, key: string, cfg: (typeof CONFIGS)[number], rep: nu
     if (msg.startsWith('[app]')) lines.push(msg.slice(6));
     else if (level === 'warn' || level === 'error') lines.push(`(${level}) ${msg}${extra ? ` ${JSON.stringify(extra)}` : ''}`);
   };
-  const display: FreeDisplay = cfg.backend === 'wayland' || cfg.backend === 'wayland-tigervnc' ? { backend: cfg.backend, display: null } : await pickFreeDisplay(undefined, [], cfg.backend);
+  const display: FreeDisplay = await pickFreeDisplay(undefined, [], cfg.backend);
   const sb = new AppSandbox({ dir: join(dir, 'desktop'), display, width: W, height: H, network: 'none', gpu: cfg.gpu, log: log_ as any, onEvent: () => {}, ...app.opts(dir) });
   const out: any = { app: key, config: cfg.name, rep };
   const roots = () => ((sb as any).procs ?? []).map((p: { proc: { pid: number } }) => p.proc.pid);

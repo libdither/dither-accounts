@@ -61,4 +61,5 @@ test('on an Xvnc backend the same slots, the display carrying its backend (confi
   expect(await pickDisplay('acc_test0', {}, { backend: 'tigervnc', free: async () => true })).toEqual({ backend: 'tigervnc', display: hashedDisplay('acc_test0') });
   expect(await pickDisplay('acc_test0', { display: 140 }, { backend: 'kasmvnc', free: async () => true })).toEqual({ backend: 'kasmvnc', display: 140 });
   expect(await pickDisplay('acc_test0', {}, { backend: 'wayland' })).toEqual({ backend: 'wayland', display: null });
+  expect(await pickDisplay('acc_test0', { display: 140 }, { backend: 'wayland-tigervnc' })).toEqual({ backend: 'wayland-tigervnc', display: null });
 });

@@ -7,7 +7,9 @@
  * one table; the page says which files it came from.
  *
  *   bun scripts/bench-tables.ts [--results a.json,b.json] [--scale scale.json] [--link link.json] [--native native.json]
- *                               [--backends x11,tigervnc,...]
+ *                               [--lab lab.json] [--backends x11,tigervnc,...]
+ *
+ * Only numbers and backend names come out: a lab run's account and label stay in its JSON.
  */
 import { readFileSync } from 'node:fs';
 import { argOf } from './bench-lib.ts';
@@ -20,6 +22,7 @@ const scale = [...merged('scale', 'scale'), ...merged('results', 'scale')];
 const link = load('link');
 const linkRuns = link.flatMap((d) => d.runs);
 const native = merged('native');
+const lab = merged('lab');
 const order = argOf('backends', '').split(',').filter(Boolean);
 const backendsOf = (runs: { backend: string }[]) => {
   const seen = [...new Set(runs.map((r) => r.backend))];
@@ -144,6 +147,19 @@ if (native.length) {
   );
   const broken = native.filter((r) => r.error || !(r.input?.changedPixels > 0));
   out.push(`\nInput reached the app in ${native.length - broken.length} of ${native.length} runs${broken.length ? ` (not: ${broken.map((r) => `${r.app} on ${r.config}`).join(', ')})` : ''}.`);
+}
+
+if (lab.length) {
+  out.push(`\nSigned-in test accounts in the lab (scripts/bench-lab.ts, read-only): ${new Set(lab.map((r) => r.account)).size} accounts (${[...new Set(lab.map((r) => r.kind))].join(', ')}), ${new Set(lab.map((r) => r.rep)).size} run(s) each, 1-minute load ${range(lab.flatMap((r) => num(() => r.load) ?? []))}; ranges over the accounts.\n`);
+  out.push(
+    byBackend(lab, [
+      ['pointer sweep and clicks: frames/s, MB/s', (r) => r.interact.fps, (r) => r.interact.bytesPerS / MB],
+      ['5 Mbit/s, 50 ms: frames/s', (r) => r.slow.bw5rtt50.fps],
+      ['1 Mbit/s, 150 ms: frames/s, first whole screen (s)', (r) => r.slow.bw1rtt150.fps, (r) => r.slow.bw1rtt150.firstWholeMs / 1000],
+      ['display programs, PSS (MB)', (r) => r.idle.screenPssMB],
+      ['start → account online (s)', (r) => r.onlineMs / 1000],
+    ]),
+  );
 }
 
 console.log(out.join('\n'));

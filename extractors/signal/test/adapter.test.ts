@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { About, AddMembersResult, AdapterEvent, CreateGroupResult, PersonAbout, StickerPackFact, StickerPage } from '@dither-chat/protocol';
 import { type AdapterHost, CAPABILITIES, createGroupError, createGroupParams, LINK_MESSAGE, readSignalSettings, SignalAdapter, socketPathFor, untold, untoldNotes, updateGroupParams } from '../src/adapter.ts';
+import { SIGNAL_CLI_JAVA_OPTIONS } from '../src/cli.ts';
 
 const FAKE = join(import.meta.dir, 'fake-signal-cli.ts');
 const SELF = '5f2c7a8e-1111-4aaa-8bbb-000000000001';
@@ -165,6 +166,8 @@ describe('signal adapter against a fake signal-cli', () => {
     expect(secret).toMatchObject({ number: '+15550100', aci: SELF });
     const d = argvs('daemon')[0].argv as string[];
     expect(d).toEqual(expect.arrayContaining(['-a', SELF, 'daemon', '--socket', '--receive-mode', 'on-connection', '--no-receive-stdout', '--ignore-stories']));
+    // A frugal JVM unless the environment says otherwise (docs/signal.md "Memory").
+    if (process.env.SIGNAL_CLI_JAVA_OPTIONS === undefined) expect(argvs('daemon')[0].javaOptions).toStartWith(SIGNAL_CLI_JAVA_OPTIONS);
     // no link process survives
     for (const r of argvs('link')) expect(alive(r.pid)).toBe(false);
   });

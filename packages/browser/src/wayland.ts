@@ -221,18 +221,19 @@ export class WaylandScreen implements Screen {
     this.watchWindows();
 
     prepareVncSocket(this.vncSocket);
-    if (this.backend === 'wayland-tigervnc') {
-      const vnc = this.o.spawn('w0vncserver', w0vncserverArgs(vncBin, this.vncSocket), { match: this.vncSocket, env: w0vncserverEnv(this.waylandSocket, this.dir) });
-      await waitForVncSocket(this.vncSocket, vnc, 10_000, 'w0vncserver');
-      // It listens before it has asked for a portal and found sway's protocols; its banner says it is past both.
-      await waitForRfbBanner(this.vncSocket, vnc, 10_000, 'w0vncserver');
-    } else {
-      const vnc = this.o.spawn('wayvnc', wayvncArgs(vncBin, this.vncSocket, this.dir), {
-        match: this.vncSocket,
-        env: { DISPLAY: undefined, WAYLAND_SOCKET: undefined, WAYLAND_DISPLAY: this.waylandSocket, XDG_RUNTIME_DIR: this.dir },
-      });
-      await waitForVncSocket(this.vncSocket, vnc, 10_000, 'wayvnc');
-    }
+    const server = this.procNames[0];
+    const vnc =
+      this.backend === 'wayland-tigervnc'
+        ? this.o.spawn(server, w0vncserverArgs(vncBin, this.vncSocket), { match: this.vncSocket, env: w0vncserverEnv(this.waylandSocket, this.dir) })
+        : this.o.spawn(server, wayvncArgs(vncBin, this.vncSocket, this.dir), {
+            match: this.vncSocket,
+            env: { DISPLAY: undefined, WAYLAND_SOCKET: undefined, WAYLAND_DISPLAY: this.waylandSocket, XDG_RUNTIME_DIR: this.dir },
+          });
+    await waitForVncSocket(this.vncSocket, vnc, 10_000, server);
+    // The socket's file is there from bind(), before the server listens (a connection then is refused: wayvnc on a
+    // loaded machine), and w0vncserver listens before it has asked for a portal and found sway's protocols. Its banner
+    // says it is past all of that.
+    await waitForRfbBanner(this.vncSocket, vnc, 10_000, server);
     await this.input();
     await this.waitForSeat(5000);
     this.o.log('debug', `compositor up: sway (${renderer}) on ${this.waylandSocket}`);

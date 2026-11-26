@@ -307,7 +307,7 @@ describe.each(BACKENDS)('Chromium on a wayland backend: $server', ({ backend, ok
             return new Response('ok');
           }
           return new Response(
-            `<html><body style="margin:0"><input id="f" style="position:absolute;left:100px;top:100px;width:300px;height:40px"><script>
+            `<html><body style="margin:0"><p style="position:absolute;left:10px;top:0;margin:0">probe</p><input id="f" style="position:absolute;left:100px;top:100px;width:300px;height:40px"><script>
               const f = document.getElementById('f');
               const say = (o) => fetch('/report', { method: 'POST', body: JSON.stringify(o) });
               let keys = [];
@@ -315,7 +315,13 @@ describe.each(BACKENDS)('Chromium on a wayland backend: $server', ({ backend, ok
               f.addEventListener('keydown', (e) => keys.push((e.isTrusted ? '' : '!') + e.code));
               f.addEventListener('keyup', (e) => { if (e.code === 'Enter') say({ ev: 'done', value: f.value, keys }); });
               const page = () => say({ ev: 'page', fine: matchMedia('(pointer: fine)').matches, hover: matchMedia('(hover: hover)').matches, w: innerWidth, h: innerHeight, ow: outerWidth, oh: outerHeight });
-              page();
+              // First once the page has been painted and two frames have passed (as share-page.ts): this script runs
+              // before Chromium has shown its window (outerWidth 0 then), and a click before the first frame can be lost.
+              new PerformanceObserver((list, obs) => {
+                if (!list.getEntries().some((e) => e.name === 'first-contentful-paint')) return;
+                obs.disconnect();
+                requestAnimationFrame(() => requestAnimationFrame(page));
+              }).observe({ type: 'paint', buffered: true });
               addEventListener('resize', page);
               // A title that keeps changing, as a chat's unread count does: sway runs window rules again on each change.
               let n = 0;
@@ -340,7 +346,7 @@ describe.each(BACKENDS)('Chromium on a wayland backend: $server', ({ backend, ok
       };
       try {
         await sb.start();
-        // The window is the screen's size from the page's first script on: no client-side shadows counted in it
+        // The window is the screen's size from the page's first frame on: no client-side shadows counted in it
         // (screenPrefs: the system's title bar), so never an outerWidth wider than the screen.
         await until('page', () => reports.some((r) => r.ev === 'page'));
         const full = () => reports.find((r) => r.ev === 'page');

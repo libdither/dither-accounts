@@ -413,14 +413,21 @@ for (const backend of chromium ? (['x11', ...BACKENDS] as const) : []) {
               return new Response('ok');
             }
             return new Response(
-              `<html><body style="margin:0;background:#00ff00"><input id="f" style="position:absolute;left:100px;top:100px;width:300px;height:40px"><script>
+              `<html><body style="margin:0;background:#00ff00"><p style="position:absolute;left:10px;top:0;margin:0">probe</p><input id="f" style="position:absolute;left:100px;top:100px;width:300px;height:40px"><script>
                 const f = document.getElementById('f');
                 const say = (o) => fetch('/report', { method: 'POST', body: JSON.stringify(o) });
                 f.addEventListener('mousedown', (e) => say({ ev: 'mousedown', trusted: e.isTrusted, x: e.clientX, y: e.clientY }));
                 addEventListener('mousedown', (e) => e.target === document.body && say({ ev: 'bodydown', trusted: e.isTrusted, x: e.clientX, y: e.clientY }));
                 f.addEventListener('keydown', (e) => e.key === 'q' && say({ ev: 'q', trusted: e.isTrusted }));
                 f.addEventListener('keyup', (e) => { if (e.code === 'Enter') say({ ev: 'done', value: f.value }); });
-                say({ ev: 'page', w: innerWidth, h: innerHeight, ow: outerWidth, oh: outerHeight, sw: screen.width, sh: screen.height });
+                // Ready once the page has been painted and two frames have passed (as share-page.ts): this script runs
+                // before Chromium has shown its window (outerWidth 0 then) and a click that comes before the first frame
+                // can be lost.
+                new PerformanceObserver((list, obs) => {
+                  if (!list.getEntries().some((e) => e.name === 'first-contentful-paint')) return;
+                  obs.disconnect();
+                  requestAnimationFrame(() => requestAnimationFrame(() => say({ ev: 'page', w: innerWidth, h: innerHeight, ow: outerWidth, oh: outerHeight, sw: screen.width, sh: screen.height })));
+                }).observe({ type: 'paint', buffered: true });
               </script></body></html>`,
               { headers: { 'content-type': 'text/html' } },
             );

@@ -19,12 +19,12 @@
  * is a class here and a line in SCREENS.
  */
 import type { Subprocess } from 'bun';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { DISPLAY_BINS, type Log, resolveBin, run, tryBin, withoutDisplays } from './bins.ts';
 import { BACKENDS, type DisplayBackend, displayIsOurs, type FreeDisplay, type WaylandBackend, type WaylandDisplay, type XBackend, type XDisplay } from './display.ts';
 import { KeptServer, prepareVncSocket, vncSocketPath, waitForRfbBanner, waitForVncSocket, x11vncArgs, xvncArgs, type XvncBackend } from './vnc.ts';
-import { renderNode, WaylandScreen } from './wayland.ts';
+import { privateDir, renderNode, SESSION_LONGEST, socketPlace, WaylandScreen } from './wayland.ts';
 import { gpuFlags } from './flags.ts';
 import { closeWindow } from './x11.ts';
 
@@ -133,11 +133,15 @@ export interface Screen extends ScreenInput {
   /** Set what a Chromium profile's preferences need on this screen, and undo what another screen's needed. */
   adjustPrefs(prefs: Record<string, any>): void;
   /**
-   * A client must get a session bus of its own here (screenshare.ts), never the machine's: on Wayland the machine's has
-   * the owner's portal, which could share the owner's real screen. On X Chromium captures its X server itself.
+   * A client must get a session of its own here (screenshare.ts: a session bus, an audio server and a runtime directory),
+   * never the machine's: the machine's session bus has the owner's portal (which could share the owner's real screen),
+   * notifications and desktop, and its audio server the owner's speakers and microphone. True on every backend.
    */
   readonly needsOwnBus: boolean;
-  /** The screen's own private directory, short enough for sockets (the compositor's), where that bus goes; null: none. */
+  /**
+   * The screen's own private directory (0700, made fresh at start, gone with removeFiles), short enough for sockets:
+   * where that session goes. On Wayland the compositor's; on X one of its own (X_RUNTIME_DIR). null: none.
+   */
   readonly runtimeDir: string | null;
   /** What runs it, for logs and notes: "Xvfb :80", "sway (Wayland)" (displayNote). */
   describe(): string;
@@ -169,9 +173,13 @@ export function makeScreen(o: ScreenOptions): Screen {
   return (SCREENS[free.backend] as (o: ScreenOptions, free: FreeDisplay) => Screen)(o, free);
 }
 
+/** An X screen's own runtime directory in the sandbox's (socketPlace: elsewhere when a socket there is too long). */
+export const X_RUNTIME_DIR = 'xrt';
+
 /**
  * An X server on a numbered display, with xdotool and import: Xvfb and x11vnc (x11, the backend the sandboxes always
- * had), or one Xvnc that is both (tigervnc, kasmvnc).
+ * had), or one Xvnc that is both (tigervnc, kasmvnc). The X server and its socket are the machine's shared /tmp/.X11-unix;
+ * the sandbox's own session (runtimeDir) is in a directory of its own, as on Wayland.
  */
 class XScreen implements Screen {
   readonly backend: XBackend;
@@ -179,8 +187,10 @@ class XScreen implements Screen {
   readonly display: number;
   readonly vncSocket: string;
   readonly procNames: readonly string[];
-  readonly needsOwnBus = false;
-  readonly runtimeDir = null;
+  readonly needsOwnBus = true;
+  readonly runtimeDir: string;
+  /** Where privateDir starts checking runtimeDir (the account's directory, the runtime directory or /tmp). */
+  private root: string;
   private xdotool: string | null = null;
   private importBin: string | null = null;
   private vnc: KeptServer | null = null;
@@ -198,6 +208,9 @@ class XScreen implements Screen {
     this.vncSocket = o.vncSocket ?? vncSocketPath(o.dir);
     this.server = X_SERVERS[free.backend];
     this.procNames = this.server.procNames;
+    const place = socketPlace(o.dir, X_RUNTIME_DIR, 'dither-x', [SESSION_LONGEST]);
+    this.runtimeDir = place.dir;
+    this.root = place.root;
   }
 
   get socket() {
@@ -224,6 +237,8 @@ class XScreen implements Screen {
   }
 
   start() {
+    // Fresh and this user's own at every level, before anything (the X server's environment names it) is started.
+    privateDir(this.runtimeDir, this.root, { fresh: true });
     return this.server.start(this);
   }
 
@@ -403,6 +418,8 @@ class XScreen implements Screen {
     this.xvnc = null;
   }
 
-  /** Nothing of its own: the live view's socket is its owner's (Sandbox.stop), Xvfb's are Xvfb's. */
-  async removeFiles() {}
+  /** Its runtime directory; the live view's socket is its owner's (Sandbox.stop), Xvfb's are Xvfb's. */
+  async removeFiles() {
+    rmSync(this.runtimeDir, { recursive: true, force: true });
+  }
 }

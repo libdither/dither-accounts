@@ -1,17 +1,26 @@
 /**
- * Screen sharing on the wayland backend: a sandbox's own session bus, PipeWire, WirePlumber, xdg-desktop-portal and
- * xdg-desktop-portal-wlr, so that getDisplayMedia (Chromium's and Electron's PipeWire capturer, through the portal's
- * ScreenCast) captures the sandbox's own sway output, with no chooser, and nothing else.
+ * A browser sandbox's own session, on every backend: a session bus of its own and an audio server of its own, in a
+ * runtime directory of its own, so that nothing in the sandbox reaches the machine's desktop session. On the wayland
+ * backend, with screen sharing, also PipeWire, WirePlumber, xdg-desktop-portal and xdg-desktop-portal-wlr, so that
+ * getDisplayMedia (Chromium's and Electron's PipeWire capturer, through the portal's ScreenCast) captures the sandbox's
+ * own sway output, with no chooser, and nothing else.
  *
  * Safety first: the machine's own session bus has the owner's portal on it (and its PipeWire the owner's screen), so a
- * getDisplayMedia that reached it could capture the owner's real screen. Everything here runs on a bus of its own (a
- * dbus-daemon listening only on <dir>/bus), with XDG_RUNTIME_DIR, the config, data and state directories all inside
- * <dir>; the client (Chromium) is given only DBUS_SESSION_BUS_ADDRESS=unix:path=<dir>/bus. xdg-desktop-portal-wlr is
+ * getDisplayMedia that reached it could capture the owner's real screen; its notification server shows on the owner's
+ * desktop; the machine's audio server has the owner's speakers and microphone. Everything here runs on a bus of its own
+ * (a dbus-daemon listening only on <dir>/bus), with XDG_RUNTIME_DIR, the config, data and state directories all inside
+ * <dir>. The client (Chromium) is given XDG_RUNTIME_DIR=<dir>, that bus, an address for the system bus with nothing
+ * there, and the audio server here (clientEnv); none of the machine's. xdg-desktop-portal-wlr is
  * told the compositor's socket alone and picks its one output (chooser_type=none, output_name), so another sandbox's
  * output is not even a choice. WirePlumber runs with every device monitor off: no sound card, camera or Bluetooth of
  * the machine is opened or offered.
  *
  *   dbus-daemon            <dir>/bus, session policy, one service it may start: the portal's permission store
+ *   pulseaudio             <dir>/pulse/native, a silent speaker and microphone (null sink and source) and nothing of
+ *                          the machine's sound: so Chromium's audio (a page's sound, a call's Web Audio graph) runs on
+ *                          a clock as on any desktop, and never falls back to ALSA, which would open the machine's
+ *                          sound cards (/dev/snd is open to the user at the seat)
+ *   (with screen sharing, on wayland only:)
  *   pipewire               <dir>/pipewire-0 (XDG_RUNTIME_DIR=<dir>)
  *   wireplumber            links the capture stream to its client; monitors off
  *   xdg-desktop-portal-wlr org.freedesktop.impl.portal.desktop.wlr: ScreenCast and Screenshot of the sway output
@@ -25,6 +34,7 @@ import type { Screen, ScreenSpawn } from './screen.ts';
 
 export const SHARE_BINS = {
   dbusDaemon: { name: 'dbus-daemon', env: 'DBUS_DAEMON_BIN', nix: 'dbus', candidates: ['/run/current-system/sw/bin/dbus-daemon'], pinned: true },
+  pulseaudio: { name: 'pulseaudio', env: 'PULSEAUDIO_BIN', nix: 'pulseaudio', pinned: true },
   pipewire: { name: 'pipewire', env: 'PIPEWIRE_BIN', nix: 'pipewire', pinned: true },
   wireplumber: { name: 'wireplumber', env: 'WIREPLUMBER_BIN', nix: 'wireplumber', pinned: true },
   // Both live in libexec/, so neither is on PATH: found through their packages.
@@ -38,11 +48,14 @@ export const SHARE_OUTPUT = 'HEADLESS-1';
 /** The directory, under the compositor's (whose path is short enough for sway's IPC socket name, so for ours too). */
 export const SHARE_DIR = 'share';
 
+/** What only the session's bus and audio server need; the rest is for a capture. */
+const SESSION_BINS = ['dbusDaemon', 'pulseaudio'] as const;
+
 export interface ScreenShareOptions {
-  /** The compositor's directory (WaylandScreen.dir); ours is <dir>/share. */
+  /** The screen's runtime directory (Screen.runtimeDir); ours is <dir>/share. */
   dir: string;
-  /** The compositor's Wayland socket (WaylandScreen.socket). */
-  waylandSocket: string;
+  /** The compositor's Wayland socket (WaylandScreen.socket); null on X, where there is nothing to capture through it. */
+  waylandSocket: string | null;
   spawn: ScreenSpawn;
   log: Log;
   /** Programs to run instead of the resolved ones (tests: one that fails). */
@@ -65,6 +78,45 @@ export function wireplumberConf(): string {
   return `wireplumber.profiles = {\n  main = {\n${off.map((k) => `    ${k} = disabled`).join('\n')}\n  }\n}\n`;
 }
 
+/**
+ * The audio server's script: its socket, a silent speaker and microphone as the defaults, and nothing else (no
+ * default.pa: no sound card, Bluetooth or network sound of the machine's). Idle, the speaker sleeps.
+ */
+export function audioScript(socket: string): string {
+  return `load-module module-native-protocol-unix socket=${socket} auth-anonymous=1
+load-module module-null-sink sink_name=speakers rate=48000 sink_properties=device.description=Speakers
+load-module module-null-source source_name=microphone rate=48000 description=Microphone
+load-module module-suspend-on-idle
+set-default-sink speakers
+set-default-source microphone
+`;
+}
+
+/** What a client of the audio server reads: no server of its own started for it, no shared memory. */
+export const AUDIO_CLIENT_CONF = 'autospawn = no\nenable-shm = no\n';
+
+/**
+ * The environment that keeps a process off the machine's session: no session or system bus (an address in `dir` that
+ * is never made: left unset, libdbus and GDBus would go to $XDG_RUNTIME_DIR/bus and the system bus's well-known path),
+ * no audio server (PulseAudio's and PipeWire's addresses unset), and `dir` as its runtime directory, where they would
+ * look next. What the session here gives a client (clientEnv) goes over it.
+ */
+export function noHostSession(dir: string): Record<string, string | undefined> {
+  const none = `unix:path=${join(dir, 'no-bus')}`;
+  return {
+    XDG_RUNTIME_DIR: dir,
+    DBUS_SESSION_BUS_ADDRESS: none,
+    DBUS_SYSTEM_BUS_ADDRESS: none,
+    PULSE_SERVER: undefined,
+    PULSE_COOKIE: undefined,
+    PULSE_CLIENTCONFIG: undefined,
+    PIPEWIRE_REMOTE: undefined,
+    PIPEWIRE_RUNTIME_DIR: undefined,
+    // GTK's accessibility bridge looks for the accessibility bus on the session bus: there is none.
+    NO_AT_BRIDGE: '1',
+  };
+}
+
 /** The bus: session policy, listening only on <dir>/bus, starting only the services in <dir>/services. */
 export function busConf(dir: string): string {
   return `<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
@@ -76,7 +128,7 @@ export function busConf(dir: string): string {
 
 export class ScreenShare {
   readonly dir: string;
-  readonly procNames = ['xdg-desktop-portal', 'xdg-desktop-portal-wlr', 'wireplumber', 'pipewire', 'dbus-daemon'] as const;
+  readonly procNames = ['xdg-desktop-portal', 'xdg-desktop-portal-wlr', 'wireplumber', 'pipewire', 'pulseaudio', 'dbus-daemon'] as const;
   /** What this share started, so a capture that failed halfway can end its own (startOrBusOnly). */
   private procs: Subprocess[] = [];
   /** The portal and PipeWire run (start with capture), not only the bus. */
@@ -90,15 +142,31 @@ export class ScreenShare {
     return `unix:path=${join(this.dir, 'bus')}`;
   }
 
-  /** What a client (Chromium, Electron) is given: this bus, and no other way to the machine's. */
-  clientEnv(): Record<string, string> {
-    return { DBUS_SESSION_BUS_ADDRESS: this.busAddress };
+  /** The audio server's socket, where a client with this runtime directory looks by itself too. */
+  get audioSocket() {
+    return join(this.dir, 'pulse', 'native');
+  }
+
+  /**
+   * What a client (Chromium, Electron) is given: this directory as its runtime directory, this bus, this audio server,
+   * and no other way to the machine's (noHostSession).
+   */
+  clientEnv(): Record<string, string | undefined> {
+    return {
+      ...noHostSession(this.dir),
+      DBUS_SESSION_BUS_ADDRESS: this.busAddress,
+      DBUS_SYSTEM_BUS_ADDRESS: `unix:path=${join(this.dir, 'no-system-bus')}`,
+      PULSE_SERVER: `unix:${this.audioSocket}`,
+      PULSE_CLIENTCONFIG: join(this.dir, 'pulse-client.conf'),
+      PULSE_COOKIE: join(this.dir, 'pulse-cookie'),
+    };
   }
 
   /** The environment of the processes here: everything they look up is under <dir>. */
   private env(extra: Record<string, string | undefined> = {}): Record<string, string | undefined> {
     const d = this.dir;
     return {
+      ...noHostSession(d),
       HOME: join(d, 'home'),
       XDG_RUNTIME_DIR: d,
       PIPEWIRE_RUNTIME_DIR: d,
@@ -114,8 +182,6 @@ export class ScreenShare {
       DISPLAY: undefined,
       WAYLAND_DISPLAY: undefined,
       WAYLAND_SOCKET: undefined,
-      PULSE_SERVER: undefined,
-      PIPEWIRE_REMOTE: undefined,
       XDG_CURRENT_DESKTOP: 'sway',
       XDG_SESSION_TYPE: 'wayland',
       ...extra,
@@ -125,11 +191,13 @@ export class ScreenShare {
   private prepare(portalBin: string) {
     const d = this.dir;
     rmSync(d, { recursive: true, force: true });
-    for (const sub of ['', 'home', 'config/xdg-desktop-portal', 'config/xdg-desktop-portal-wlr', 'config/wireplumber/wireplumber.conf.d', 'data', 'state', 'cache', 'services', 'portals'])
+    for (const sub of ['', 'home', 'pulse', 'config/xdg-desktop-portal', 'config/xdg-desktop-portal-wlr', 'config/wireplumber/wireplumber.conf.d', 'data', 'state', 'cache', 'services', 'portals'])
       mkdirSync(join(d, sub), { recursive: true, mode: 0o700 });
     const st = lstatSync(d);
     if (!st.isDirectory() || st.uid !== process.getuid?.() || st.mode & 0o077) throw new Error(`the screen share's directory ${d} is not this user's own`);
     writeFileSync(join(d, 'bus.conf'), busConf(d));
+    writeFileSync(join(d, 'audio.pa'), audioScript(this.audioSocket));
+    writeFileSync(join(d, 'pulse-client.conf'), AUDIO_CLIENT_CONF);
     writeFileSync(join(d, 'config/xdg-desktop-portal/sway-portals.conf'), portalsConf());
     writeFileSync(join(d, 'config/xdg-desktop-portal/portals.conf'), portalsConf());
     writeFileSync(join(d, 'config/xdg-desktop-portal-wlr/config'), wlrConfig());
@@ -140,35 +208,39 @@ export class ScreenShare {
   }
 
   /**
-   * Up, and ready for a ScreenCast. With `capture: false` only the bus: a client that must not reach the machine's
-   * session bus but has nothing to share gets one with nothing on it.
+   * Up: the bus and the audio server, and with `capture` (on wayland) ready for a ScreenCast. With `capture: false` a
+   * client that must not reach the machine's session but has nothing to share gets a bus with nothing on it.
    */
   async start(o: { capture?: boolean } = {}) {
     const capture = o.capture ?? true;
+    const waylandSocket = this.o.waylandSocket;
+    if (capture && !waylandSocket) throw new Error('screen sharing through the portal needs a Wayland compositor');
     const bins = Object.fromEntries(
       Object.entries(SHARE_BINS)
-        .filter(([k]) => capture || k === 'dbusDaemon')
+        .filter(([k]) => capture || (SESSION_BINS as readonly string[]).includes(k))
         .map(([k, spec]) => [k, this.o.bins?.[k as keyof typeof SHARE_BINS] ?? resolveBin(spec, this.o.log)]),
     ) as Record<keyof typeof SHARE_BINS, string>;
     this.prepare(bins.portal ?? '');
     const d = this.dir;
-    if (!capture) {
-      const bus = this.spawn('dbus-daemon', [bins.dbusDaemon, `--config-file=${join(d, 'bus.conf')}`, '--nofork', '--nopidfile', '--nosyslog'], join(d, 'bus.conf'));
-      await this.waitForFile(join(d, 'bus'), bus, 5000, 'dbus-daemon');
-      return;
-    }
+    const bus = this.spawn('dbus-daemon', [bins.dbusDaemon, `--config-file=${join(d, 'bus.conf')}`, '--nofork', '--nopidfile', '--nosyslog'], join(d, 'bus.conf'));
+    await this.waitForFile(join(d, 'bus'), bus, 5000, 'dbus-daemon');
+    const pa = this.spawn(
+      'pulseaudio',
+      [bins.pulseaudio, '-n', '--daemonize=no', '--system=no', '--use-pid-file=no', '--realtime=no', '--high-priority=no', '--exit-idle-time=-1', '--disallow-module-loading', '--disable-shm=yes', '--log-target=stderr', '--log-level=1', '-F', join(d, 'audio.pa')],
+      join(d, 'audio.pa'),
+    );
+    await this.waitForFile(this.audioSocket, pa, 8000, 'pulseaudio');
+    if (!capture || !waylandSocket) return;
     const wlrPortal = join(dirname(dirname(bins.portalWlr)), 'share/xdg-desktop-portal/portals/wlr.portal');
     if (!existsSync(wlrPortal)) throw new Error(`no wlr.portal beside ${bins.portalWlr}`);
     symlinkSync(wlrPortal, join(d, 'portals/wlr.portal'));
 
-    const bus = this.spawn('dbus-daemon', [bins.dbusDaemon, `--config-file=${join(d, 'bus.conf')}`, '--nofork', '--nopidfile', '--nosyslog'], join(d, 'bus.conf'));
-    await this.waitForFile(join(d, 'bus'), bus, 5000, 'dbus-daemon');
     const pw = this.spawn('pipewire', [bins.pipewire], d);
     await this.waitForFile(join(d, 'pipewire-0'), pw, 10_000, 'pipewire');
     this.spawn('wireplumber', [bins.wireplumber], d);
-    const wlr = this.spawn('xdg-desktop-portal-wlr', [bins.portalWlr, '-r', ...(process.env.DITHER_SHARE_DEBUG === '1' ? ['-l', 'DEBUG'] : [])], d, { WAYLAND_DISPLAY: this.o.waylandSocket });
+    const wlr = this.spawn('xdg-desktop-portal-wlr', [bins.portalWlr, '-r', ...(process.env.DITHER_SHARE_DEBUG === '1' ? ['-l', 'DEBUG'] : [])], d, { WAYLAND_DISPLAY: waylandSocket });
     await this.waitForName('org.freedesktop.impl.portal.desktop.wlr', wlr, bins.dbusDaemon, 10_000);
-    const xdp = this.spawn('xdg-desktop-portal', [bins.portal, '-r'], d, { XDG_DESKTOP_PORTAL_DIR: join(d, 'portals'), WAYLAND_DISPLAY: this.o.waylandSocket });
+    const xdp = this.spawn('xdg-desktop-portal', [bins.portal, '-r'], d, { XDG_DESKTOP_PORTAL_DIR: join(d, 'portals'), WAYLAND_DISPLAY: waylandSocket });
     await this.waitForName('org.freedesktop.portal.Desktop', xdp, bins.dbusDaemon, 15_000);
     this.capturing = true;
     this.o.log('debug', `screen share up: portal and PipeWire on ${this.busAddress}`);
@@ -176,8 +248,8 @@ export class ScreenShare {
 
   /**
    * With capture, and if any part of it fails (a program missing, one that misses its deadline): said in the log, what
-   * it started ended, and the bus alone started instead. Screen sharing is something the sandbox can do without; its
-   * own bus it cannot.
+   * it started ended, and the bus and audio server alone started instead. Screen sharing is something the sandbox can
+   * do without; its own session it cannot.
    */
   async startOrBusOnly(capture: boolean) {
     if (!capture) return this.start({ capture: false });
@@ -245,14 +317,15 @@ export class ScreenShare {
 }
 
 /**
- * A browser sandbox's: on a screen that needs a bus of its own (Screen.needsOwnBus: Wayland) that bus, with the screen
- * share's portal and PipeWire when `capture` and they start (and the flag that has Chromium use them); elsewhere
- * nothing (on X Chromium captures its Xvfb itself). Started; its clientEnv goes into Chromium's environment and its
- * procNames before the screen's when stopping.
+ * A browser sandbox's: on a screen that needs a session of its own (Screen.needsOwnBus: every backend) its bus and
+ * audio server, with the screen share's portal and PipeWire when `capture` on Wayland and they start (and the flag
+ * that has Chromium use them); on X Chromium captures its X server itself. Started; its clientEnv goes into Chromium's
+ * environment and its procNames before the screen's when stopping.
  */
 export async function browserShare(screen: Screen, o: { capture: boolean; spawn: ScreenSpawn; log: Log }): Promise<{ share: ScreenShare | null; flags: string[] }> {
   if (!screen.needsOwnBus || !screen.runtimeDir) return { share: null, flags: [] };
-  const share = new ScreenShare({ dir: screen.runtimeDir, waylandSocket: screen.socket, spawn: o.spawn, log: o.log });
-  await share.startOrBusOnly(o.capture);
+  const wayland = screen.protocol === 'wayland';
+  const share = new ScreenShare({ dir: screen.runtimeDir, waylandSocket: wayland ? screen.socket : null, spawn: o.spawn, log: o.log });
+  await share.startOrBusOnly(o.capture && wayland);
   return { share, flags: share.capturing ? ['--enable-features=WebRTCPipeWireCapturer'] : [] };
 }

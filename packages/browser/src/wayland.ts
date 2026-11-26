@@ -72,17 +72,33 @@ export const WAYLAND_DIR = 'wl';
 const longestName = () => `sway-ipc.${process.getuid?.() ?? 4294967295}.4194304.sock`;
 
 /**
- * Where a sandbox's compositor keeps its sockets: `wl` in its directory, or, when a socket there would be too long a
- * path, a directory named for it in this user's runtime directory, or without one in /tmp (all 0700). `root` is the
- * directory the levels below are this user's own (privateDir checks each of them).
+ * The longest path a sandbox's own session puts under its runtime directory (screenshare.ts): the audio server's
+ * socket, which a client also finds there by itself.
  */
-export function waylandPlace(dir: string, env: Record<string, string | undefined> = process.env, tmp = tmpdir()): { dir: string; root: string } {
-  const own = join(resolve(dir), WAYLAND_DIR);
-  if (Buffer.byteLength(join(own, longestName())) <= SOCKET_PATH_MAX) return { dir: own, root: resolve(dir) };
+export const SESSION_LONGEST = 'share/pulse/native';
+
+/**
+ * A directory of the sandbox's own for sockets: `sub` in its directory, or, when the longest of `longest` there would
+ * be too long a path for a socket, a directory named for it in this user's runtime directory (`<fallback>/<hash>`), or
+ * without one in /tmp (`<fallback>-<uid>/<hash>`). `root` is the directory the levels below are this user's own
+ * (privateDir checks each of them, and makes them 0700).
+ */
+export function socketPlace(dir: string, sub: string, fallback: string, longest: string[], env: Record<string, string | undefined> = process.env, tmp = tmpdir()): { dir: string; root: string } {
+  const own = join(resolve(dir), sub);
+  if (longest.every((l) => Buffer.byteLength(join(own, l)) <= SOCKET_PATH_MAX)) return { dir: own, root: resolve(dir) };
   const runtime = env.XDG_RUNTIME_DIR;
   const hash = createHash('sha1').update(resolve(dir)).digest('hex').slice(0, 16);
-  if (runtime && existsSync(runtime)) return { dir: join(runtime, 'dither-wl', hash), root: runtime };
-  return { dir: join(tmp, `dither-wl-${process.getuid?.() ?? 'user'}`, hash), root: tmp };
+  if (runtime && existsSync(runtime)) return { dir: join(runtime, fallback, hash), root: runtime };
+  return { dir: join(tmp, `${fallback}-${process.getuid?.() ?? 'user'}`, hash), root: tmp };
+}
+
+/**
+ * Where a sandbox's compositor keeps its sockets: `wl` in its directory, or, when a socket there would be too long a
+ * path, a directory named for it in this user's runtime directory, or without one in /tmp (all 0700). Its own session
+ * (screenshare.ts) goes in it too.
+ */
+export function waylandPlace(dir: string, env: Record<string, string | undefined> = process.env, tmp = tmpdir()): { dir: string; root: string } {
+  return socketPlace(dir, WAYLAND_DIR, 'dither-wl', [longestName(), SESSION_LONGEST], env, tmp);
 }
 
 export const waylandDir = (dir: string) => waylandPlace(dir).dir;

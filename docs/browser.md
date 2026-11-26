@@ -60,6 +60,7 @@ shows unchanged, real clicks at an element's middle, typed text, xdotool's key n
 | input | xdotool | xdotool | an RFB client of the sandbox's own on that socket: the live view's server turns it into the seat's virtual pointer and keyboard |
 | text no US key makes (é, €, emoji) | xdotool's keysyms, each character first put on a key of its own for the screen's life (xmodmap): bound and unbound around each press, as xdotool does alone, an app can miss it | the same | an input method (input-method-v2 → the field's text-input-v3), as a person with an IME types it |
 | picture | ImageMagick's `import` | ImageMagick's `import` | grim |
+| the sandbox's own session (below) | in `<account>/xrt` (0700), or `$XDG_RUNTIME_DIR/dither-x/<hash>` when the account's path leaves no room for its sockets | the same | in the compositor's directory |
 | apps | `DISPLAY` | `DISPLAY` | Chromium `--ozone-platform=wayland`; native apps get only the compositor's socket, as `<run>/wayland-0`, with Qt, GTK, SDL and Electron told to use it, and no X socket at all |
 | built from | nixpkgs | `tigervnc`: nixpkgs; `kasmvnc`: a fork (below) | sway, wayvnc, grim: nixpkgs; w0vncserver: a fork (below) |
 
@@ -224,23 +225,42 @@ which is emoji, CJK and most non-Latin scripts. Typing them from the live view n
 to send text, which RFB has no message for; the extractor's own typing (the API's `type`) does not have this gap,
 since it goes through the input method.
 
-**Screen sharing, and the machine's session bus.** On wayland a browser sandbox's Chromium gets a session bus of its
-own (`packages/browser/src/screenshare.ts`), never the machine's. The machine's session bus has the owner's portal
-on it, and a Chromium given it (as it was, through the manager's environment) asks that portal for a screen when a
-page calls getDisplayMedia: it could share the owner's real screen. A sandbox that shares its screen (Discord's, and
-any `Sandbox` with `screenShare`) gets on that bus its own PipeWire, WirePlumber (every device monitor off: no sound
-card, camera or Bluetooth of the machine), xdg-desktop-portal and xdg-desktop-portal-wlr, the last told the sway
-socket alone with `chooser_type=none` and `output_name=HEADLESS-1`: the sandbox's one output is the only thing it can
-share, and the portal asks nothing. Chromium runs with its PipeWire capturer; its own picker still asks (Entire
-Screen, then Share, in the live view) unless a flag answers it: `--use-fake-ui-for-media-stream` does in tests, and
-it is not used in the product, since it also says yes to every camera and microphone request. The other sandboxes
-get only the empty bus. Everything is under `<compositor's directory>/share`, in nothing of the machine's.
+**A session of its own, never the machine's.** Every browser sandbox's Chromium, on every backend, gets a session
+of its own (`packages/browser/src/screenshare.ts`): a runtime directory of its own (`XDG_RUNTIME_DIR`, 0700, made
+fresh at start and removed at stop: the screen's `runtimeDir`), a session bus of its own there with nothing on it (a
+dbus-daemon on `<runtime>/share/bus`), an address for the system bus where nothing is, and an audio server of its own
+(a PulseAudio on `<runtime>/share/pulse/native`, given as `PULSE_SERVER`, with a silent speaker and microphone: null
+sink and source, no sound card, no shared memory, no server started on demand). `PIPEWIRE_REMOTE` is unset. The
+screen's own servers (Xvfb, x11vnc, an Xvnc, sway, the live view's) are given the same runtime directory and no bus
+or audio server at all.
 
-On x11 Chromium captures its Xvfb itself, with no portal (`--auto-select-desktop-capture-source=Entire screen`
-answers its picker there). An x11 sandbox's Chromium still has the manager's session bus, as before: it uses it at
-start (the portal's appearance settings), and its notifications and media keys would reach the machine's desktop.
-Moving x11 sandboxes onto a bus of their own too is the next step, left out here so x11 does not change under the
-accounts that run on it.
+That is what keeps the owner's desktop out of reach. The machine's session bus has the owner's portal on it, and a
+Chromium given it asks that portal for a screen when a page calls getDisplayMedia: it could share the owner's real
+screen; its notifications would show on the owner's desktop, and its media keys reach the owner's players. The
+machine's audio server has the owner's speakers and microphone: a page's sound would play in the owner's room, and a
+page with the microphone allowed could hear it. And without an audio server of its own, Chromium falls back to ALSA,
+which opens the machine's sound cards directly (`/dev/snd` is open to the user signed in at the seat): hence a silent
+one rather than none. Web Audio runs on its clock as on any desktop, so Discord's call bridge, which mixes the call in
+the page and sends it to the device (docs/chat.md, "In a call"), works as before; the call's sound never played in the
+sandbox anyway. Cookies do not depend on the session bus (the profile runs on `--password-store=basic` and
+`--use-mock-keychain`), so moving a running account onto its own session signs nothing out. A page's notifications no
+longer reach the owner's desktop: there is no notification server on the sandbox's bus, as on wayland before.
+
+Until this, an x11, tigervnc or kasmvnc sandbox's Chromium ran with the manager's environment: the machine's session
+bus, system bus, runtime directory and audio server. On wayland it had its own session bus already, but still the
+machine's runtime directory, system bus and audio server.
+
+**Screen sharing.** On wayland a sandbox that shares its screen (Discord's, and any `Sandbox` with `screenShare`) gets
+on its bus its own PipeWire, WirePlumber (every device monitor off: no sound card, camera or Bluetooth of the
+machine), xdg-desktop-portal and xdg-desktop-portal-wlr, the last told the sway socket alone with `chooser_type=none`
+and `output_name=HEADLESS-1`: the sandbox's one output is the only thing it can share, and the portal asks nothing.
+Chromium runs with its PipeWire capturer; its own picker still asks (Entire Screen, then Share, in the live view)
+unless a flag answers it: `--use-fake-ui-for-media-stream` does in tests, and it is not used in the product, since it
+also says yes to every camera and microphone request. The other sandboxes get only the empty bus and the audio
+server. Everything is under `<compositor's directory>/share`, in nothing of the machine's.
+
+On x11 Chromium captures its X server itself, with no portal (`--auto-select-desktop-capture-source=Entire screen`
+answers its picker there).
 
 What Discord's Go Live sends is still the device's screen through the bridge when the device shares one
 (docs/chat.md, "Video"); only when it does not does the client's own getDisplayMedia reach Chromium, and with it this
@@ -256,7 +276,15 @@ stops (the portal's stream leaves PipeWire) and starts again; the same for an El
 screen) and on x11. It runs under a stand-in for the machine's session bus, with a portal on it, a dbus-monitor
 watching it and `XDG_RUNTIME_DIR/bus` pointing at it too: nothing from a wayland sandbox may connect there, and no
 ScreenCast may be asked there (a Chromium given that bus, as before, is seen there within a second, so the watch
-works). Two wayland sandboxes run at once, and each one's capture decodes as its own page.
+works). Two wayland sandboxes run at once, and each one's capture decodes as its own page. On every X backend, too,
+nothing reaches the stand-in bus.
+
+`packages/browser/test/host-session.test.ts` checks the rest on every backend: under a stand-in for the machine's
+runtime directory, session and system bus, PulseAudio and PipeWire (sockets that note who connects), a sandbox's page
+plays a tone and opens the microphone. The tone is a stream on the sandbox's own audio server, the microphone and
+speaker the page sees are its silent ones, the screen's servers were given none of the stand-in's addresses, the
+runtime directory is 0700 and gone after the stop, and nothing connects to any stand-in; a Chromium given the
+stand-in's environment, as an X sandbox's was, is seen there within seconds.
 
 **What the benchmarks found.** The numbers, how they were taken and what they leave out are in
 [benchmarks/2026-11-25-display-backends.md](benchmarks/2026-11-25-display-backends.md); the scripts are

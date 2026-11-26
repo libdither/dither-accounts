@@ -212,7 +212,8 @@ test("Chromium on wayland: its ozone and input-method flags, and the system's ti
   const w = makeScreen({ ...o, display: { backend: 'wayland', display: null } });
   const x = makeScreen({ ...o, display: 80 });
   expect([w.protocol, w.needsOwnBus, w.describe()]).toEqual(['wayland', true, 'sway (Wayland)']);
-  expect([x.protocol, x.needsOwnBus, x.runtimeDir, x.describe()]).toEqual(['x11', false, null, 'Xvfb :80']);
+  // Both have a session of their own (screenshare.ts), in a runtime directory of their own.
+  expect([x.protocol, x.needsOwnBus, x.runtimeDir, x.describe()]).toEqual(['x11', true, join(o.dir, 'xrt'), 'Xvfb :80']);
   const SOFT = ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
   const VULKAN = ['--ignore-gpu-blocklist', '--use-angle=vulkan', '--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan'];
   const WL = ['--ozone-platform=wayland', '--enable-wayland-ime', '--wayland-text-input-version=3'];
@@ -538,8 +539,8 @@ describe.skipIf(!why('sway, wayvnc, grim and wev', wayland && wev))('windows and
   }, 60_000);
 });
 
-describe.skipIf(!why('sway, wayvnc, grim and dbus-daemon', wayland && !!tryBin(SHARE_BINS.dbusDaemon, () => {})))('screen sharing that fails to start', () => {
-  test('a capture that fails (PipeWire exits): what it started is ended, and the bus alone runs; Chromium gets no capture flag', async () => {
+describe.skipIf(!why('sway, wayvnc, grim, dbus-daemon and pulseaudio', wayland && !!tryBin(SHARE_BINS.dbusDaemon, () => {}) && !!tryBin(SHARE_BINS.pulseaudio, () => {})))('screen sharing that fails to start', () => {
+  test('a capture that fails (PipeWire exits): what it started is ended, and the bus and audio server alone run; Chromium gets no capture flag', async () => {
     const r = await realScreen('share-fails');
     try {
       const fails = join(r.dir, 'pipewire-fails');
@@ -554,7 +555,14 @@ describe.skipIf(!why('sway, wayvnc, grim and dbus-daemon', wayland && !!tryBin(S
       expect(buses.map((p) => p.exitCode !== null || !!p.signalCode)).toEqual([true, false]);
       expect(r.mine().filter((p) => named.get(p) === 'pipewire').every((p) => p.exitCode !== null)).toBe(true);
       expect(lstatSync(join(share.dir, 'bus')).isSocket()).toBe(true);
-      expect(share.clientEnv()).toEqual({ DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(share.dir, 'bus')}` });
+      expect(lstatSync(share.audioSocket).isSocket()).toBe(true);
+      expect(share.clientEnv()).toMatchObject({
+        XDG_RUNTIME_DIR: share.dir,
+        DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(share.dir, 'bus')}`,
+        DBUS_SYSTEM_BUS_ADDRESS: `unix:path=${join(share.dir, 'no-system-bus')}`,
+        PULSE_SERVER: `unix:${join(share.dir, 'pulse', 'native')}`,
+        PIPEWIRE_REMOTE: undefined,
+      });
       await share.stop();
     } finally {
       await r.done();

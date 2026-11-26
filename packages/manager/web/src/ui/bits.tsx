@@ -179,7 +179,7 @@ export function ConfirmDialog() {
           </label>
         )}
         <div class="row end">
-          <button class="btn ghost" onClick={() => done(false)}>
+          <button class="btn ghost" data-cancel onClick={() => done(false)}>
             Cancel
           </button>
           <button ref={yes} class={`btn ${c.danger ? 'danger' : 'primary'}`} data-confirm onClick={() => done(true)}>

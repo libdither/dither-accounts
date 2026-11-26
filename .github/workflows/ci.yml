@@ -75,8 +75,8 @@ jobs:
       - name: Programs from the pinned nixpkgs
         run: |
           nix-env -f ./nix -iA bash coreutils dbus bubblewrap passt xvfb imagemagick chromium
-          bun scripts/prepare-bins.ts --out /tmp/dither-bins --tests
-          echo "DITHER_BINS=/tmp/dither-bins" >> "$GITHUB_ENV"
+          # Both builds: the sandboxes' programs and the tests', then the forks' servers (into /tmp/dither-bins-forks).
+          bun scripts/prepare-bins.ts --out /tmp/dither-bins --tests >> "$GITHUB_ENV"
           command -v chromium Xvfb bwrap pasta import
       # DITHER_TESTS_NEED_ALL: a test that would skip for a missing program fails instead (test/needs.ts).
       - name: Tests that need Nix
@@ -89,14 +89,14 @@ jobs:
           # The sandbox tests check that nothing of the user's home shows inside; their temporary directories must not
           # be under it (install-nix-action points TMPDIR into the workspace, under /home/runner).
           TMPDIR: /tmp
-        run: bun test packages/sandbox packages/browser test/haveno.test.ts test/telegram-desktop.test.ts
+        run: bun test packages/sandbox packages/browser test/haveno.test.ts test/telegram-desktop.test.ts test/display-page.test.ts
       # The flake check for the tests above, which skip in `unit`: the ones a pull request adds or changes, five times.
       - if: github.event_name == 'pull_request'
         name: Flake check (tests that need Nix)
         env:
           DITHER_TESTS_NEED_ALL: '1'
           TMPDIR: /tmp
-        run: bun scripts/flake-check.ts origin/${{ github.base_ref }} packages/sandbox packages/browser test/haveno.test.ts test/telegram-desktop.test.ts
+        run: bun scripts/flake-check.ts origin/${{ github.base_ref }} packages/sandbox packages/browser test/haveno.test.ts test/telegram-desktop.test.ts test/display-page.test.ts
       - if: failure()
         uses: actions/upload-artifact@v4
         with:

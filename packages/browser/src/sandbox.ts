@@ -15,14 +15,14 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Subprocess } from 'bun';
-import { type BinSpec, cleanEnv, DISPLAY_BINS, type Log, resolveBin } from './bins.ts';
+import { type BinSpec, cleanEnv, DISPLAY_BINS, type Log, noHostSession, resolveBin } from './bins.ts';
 import type { FreeDisplay } from './display.ts';
 import { gpuFlags, MEMORY_DISABLED_FEATURES, mergeFeatureFlags } from './flags.ts';
 import { markerKey, stampExtension } from './markers.ts';
 import { addSignInPage } from './signin.ts';
 import { ChromiumNoise } from './noise.ts';
 import { makeScreen, type Screen, type ScreenHealth } from './screen.ts';
-import { browserShare, noHostSession, type ScreenShare } from './screenshare.ts';
+import { browserShare, type ScreenShare } from './screenshare.ts';
 import { vncSocketPath } from './vnc.ts';
 import { refreshWorker } from './worker.ts';
 

@@ -52,7 +52,7 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Subprocess } from 'bun';
-import { type BinSpec, DISPLAY_BINS, resolveBin, run, withoutDisplays } from './bins.ts';
+import { type BinSpec, DISPLAY_BINS, noHostSession, resolveBin, run, withoutDisplays } from './bins.ts';
 import { gpuFlags } from './flags.ts';
 import type { WaylandDisplay } from './display.ts';
 import { InputMethod } from './ime.ts';
@@ -706,7 +706,7 @@ export class WaylandScreen implements Screen {
 
   async screenshot() {
     const grim = resolveBin(DISPLAY_BINS.grim, this.o.log);
-    return run([grim, '-t', 'png', '-'], { ...withoutDisplays(process.env), WAYLAND_DISPLAY: this.waylandSocket, XDG_RUNTIME_DIR: this.dir }, 'screenshot');
+    return run([grim, '-t', 'png', '-'], { ...withoutDisplays(process.env), ...noHostSession(this.dir), WAYLAND_DISPLAY: this.waylandSocket }, 'screenshot');
   }
 
   private async windows(ipc: SwayIpc, name: string): Promise<SwayNode[]> {

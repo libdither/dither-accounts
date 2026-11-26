@@ -3,7 +3,7 @@
  * itself and its backends (x11: Xvfb + x11vnc; tigervnc, kasmvnc: an Xvnc; wayland, wayland-tigervnc: sway + wayvnc or w0vncserver; the list is packages/spec display.ts), its bridge, a free display, the live view's
  * socket, and the names its extensions leave in pages, made per install.
  */
-export { BinNotPrepared, BINS_ENV, type BinSpec, cleanEnv, DISPLAY_BINS, preparedBin, resolveBin, tryBin } from './bins.ts';
+export { BinNotPrepared, BINS_ENV, type BinSpec, cleanEnv, DISPLAY_BINS, noHostSession, preparedBin, resolveBin, tryBin } from './bins.ts';
 export { BridgeServer, type BridgeReply, type BridgeResend, type BridgeServerOpts, type BridgeSilence, RESEND_MAX, RESEND_MS, type Reached } from './bridge.ts';
 export { DIAGNOSE_MS, diagnoseSilence, pathTemplate, type SilenceOpts } from './silence.ts';
 export { MEMORY_DISABLED_FEATURES, mergeFeatureFlags } from './flags.ts';

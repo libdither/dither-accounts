@@ -29,7 +29,7 @@
 import { existsSync, lstatSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Subprocess } from 'bun';
-import { type BinSpec, type Log, resolveBin } from './bins.ts';
+import { type BinSpec, cleanEnv, type Log, noHostSession, resolveBin } from './bins.ts';
 import type { Screen, ScreenSpawn } from './screen.ts';
 
 export const SHARE_BINS = {
@@ -94,28 +94,6 @@ set-default-source microphone
 
 /** What a client of the audio server reads: no server of its own started for it, no shared memory. */
 export const AUDIO_CLIENT_CONF = 'autospawn = no\nenable-shm = no\n';
-
-/**
- * The environment that keeps a process off the machine's session: no session or system bus (an address in `dir` that
- * is never made: left unset, libdbus and GDBus would go to $XDG_RUNTIME_DIR/bus and the system bus's well-known path),
- * no audio server (PulseAudio's and PipeWire's addresses unset), and `dir` as its runtime directory, where they would
- * look next. What the session here gives a client (clientEnv) goes over it.
- */
-export function noHostSession(dir: string): Record<string, string | undefined> {
-  const none = `unix:path=${join(dir, 'no-bus')}`;
-  return {
-    XDG_RUNTIME_DIR: dir,
-    DBUS_SESSION_BUS_ADDRESS: none,
-    DBUS_SYSTEM_BUS_ADDRESS: none,
-    PULSE_SERVER: undefined,
-    PULSE_COOKIE: undefined,
-    PULSE_CLIENTCONFIG: undefined,
-    PIPEWIRE_REMOTE: undefined,
-    PIPEWIRE_RUNTIME_DIR: undefined,
-    // GTK's accessibility bridge looks for the accessibility bus on the session bus: there is none.
-    NO_AT_BRIDGE: '1',
-  };
-}
 
 /** The bus: session policy, listening only on <dir>/bus, starting only the services in <dir>/services. */
 export function busConf(dir: string): string {
@@ -302,7 +280,7 @@ export class ScreenShare {
     const end = Date.now() + ms;
     for (;;) {
       if (proc.exitCode !== null || proc.signalCode) throw new Error(`${name.split('.').pop()} exited (${proc.signalCode ?? proc.exitCode}) before it took ${name}`);
-      const q = Bun.spawn([send, `--bus=${this.busAddress}`, '--print-reply=literal', '--dest=org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus.NameHasOwner', `string:${name}`], { stdout: 'pipe', stderr: 'ignore' });
+      const q = Bun.spawn([send, `--bus=${this.busAddress}`, '--print-reply=literal', '--dest=org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus.NameHasOwner', `string:${name}`], { env: cleanEnv({ ...process.env, ...noHostSession(this.dir) }), stdout: 'pipe', stderr: 'ignore' });
       const out = await new Response(q.stdout).text();
       if (/true/.test(out)) return;
       if (Date.now() > end) throw new Error(`nothing took ${name} on the screen share's bus within ${ms} ms`);

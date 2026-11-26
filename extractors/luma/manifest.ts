@@ -25,7 +25,7 @@ export default {
         hint: "One of Luma's cities, as its page's address names it (luma.com/nyc → nyc) or by name; empty for Luma's own pick",
       },
     ],
-    next: 'Explore works now. Sign in to Luma in the live view (the emailed code, or whatever Luma asks) for your events, notifications and chats.',
+    next: 'Explore works now. For your events, notifications and chats it signs in: with the Google account you chose under Sign in with, by itself, or else in the live view (the emailed code, or whatever Luma asks).',
   },
   settings: [
     {

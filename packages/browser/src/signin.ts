@@ -6,6 +6,8 @@
  *   extractor. `SignInAsker` asks the manager which accounts could answer (`signin.choices`), shows them, and on a pick
  *   asks the manager to have that account answer (`signin.relay`). The answer, the site's own redirect address with the
  *   provider's one-time code, is loaded in the tab, and the site finishes its own sign-in with its own cookies.
+ *   `start()` (the manager's `signin.start`) sets one off without you: it clicks the site's own "Continue with Google"
+ *   (after its "Sign in", where that is the way to it) with real input, and a linked account answers the rest.
  * - **Answering** (a kind whose manifest has `signsIn`, Google): the manager sends `signin.authorize`;
  *   `SignInAnswerer` checks the link and has the extension open it in a tab of its own, which the provider's session
  *   there answers, stopped before it loads the redirect address. That address comes back. The provider may ask to
@@ -76,19 +78,108 @@ type Up = { t: string; rid?: unknown; provider?: unknown; url?: unknown; account
 /** How long a relay may take (the manager's RELAY_MS, and a little). */
 const RELAY_MS = 5 * 60_000 + 15_000;
 
+/** How a sign-in went, for start(): `ok` once the provider's answer went to the site's tab. */
+export type SignInOutcome = { ok: boolean; note: string };
+/** What signin-worker.js seekPage found on the site's page. */
+type Seek = { step: 'provider' | 'login' | 'none' | 'loading' | 'hidden'; x?: number; y?: number; why?: string };
+
+/** How long start() looks for the site's button, and how many of each it presses. */
+const SEEK_MS = 60_000;
+const SEEK_EVERY_MS = 1_500;
+const MAX_PROVIDER_PRESSES = 2;
+const MAX_LOGIN_PRESSES = 3;
+
 /** The asking side: the bridge's `signin*` frames go to onMessage. */
 export class SignInAsker {
   private relays = new Map<string, { provider: string; url: string; view: Choices | null; since: number }>();
+  /** start()'s ear for how each sign-in ended. */
+  private listeners = new Set<(rid: string, o: SignInOutcome) => void>();
+  private starting = false;
 
   constructor(
     private o: {
       bridge: Bridge;
       /** The link's ask to the manager. */
       ask: (what: string, input: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
+      /** The account's screen, for start()'s real clicks (screen.ts); null when there is none. */
+      screen?: () => ScreenInput | null;
       log: Log;
       onChange?: () => void;
     },
   ) {}
+
+  private settle(rid: string, ok: boolean, note: string) {
+    for (const f of this.listeners) f(rid, { ok, note });
+  }
+
+  /**
+   * Start a sign-in with `provider` on the site, as you would: find the site's "Continue with Google" in its tab in
+   * front (or its "Sign in" first, the way to one) and click it, with real input on the account's screen. What that
+   * sets off is an ordinary sign-in (the chooser, or the account linked for it, which then goes ahead by itself). It
+   * answers how it ended: signed in (the provider's answer went to the tab), or why not. The manager sends it
+   * (`signin.start`) when you add an account with a Google account to sign in with, or ask for it (docs/signin-relay.md).
+   */
+  async start(provider: string, ms = SEEK_MS): Promise<SignInOutcome> {
+    const p = SIGN_IN_PROVIDERS[provider];
+    if (!p) throw new Error(`no sign-in provider "${provider}"`);
+    const screen = this.o.screen?.();
+    if (!screen) throw new Error('no display to click on yet');
+    if (this.starting) throw new Error('a sign-in is already being started here');
+    if (this.relays.size) return { ok: false, note: 'a sign-in is already under way here (its chooser is in the live view)' };
+    this.starting = true;
+    const ended = new Map<string, SignInOutcome>();
+    const ear = (rid: string, o: SignInOutcome) => ended.set(rid, o);
+    this.listeners.add(ear);
+    try {
+      const end = Date.now() + ms;
+      let pressed = 0;
+      let logins = 0;
+      let seen = '';
+      const begun = () => this.relays.size > 0 || ended.size > 0;
+      while (Date.now() < end && !begun()) {
+        let s: Seek;
+        try {
+          s = await this.o.bridge.request<Seek>({ kind: 'signin.seek', names: [p.name] }, 10_000, { diagnose: false });
+        } catch (e) {
+          s = { step: 'none', why: String((e as Error)?.message ?? e).slice(0, 120) };
+        }
+        if (begun()) break;
+        const what = `${s.step}${s.why ? ` (${s.why})` : ''}`;
+        if (what !== seen) this.o.log('debug', `starting a ${p.name} sign-in: the site's page shows ${(seen = what)}`);
+        const at = Number.isFinite(s.x) && Number.isFinite(s.y);
+        if (s.step === 'provider' && at && pressed < MAX_PROVIDER_PRESSES) {
+          await screen.click(Math.round(s.x!), Math.round(s.y!));
+          pressed++;
+          this.o.log('info', `starting a ${p.name} sign-in: pressed the site's ${p.name} button`);
+          const until = Date.now() + 10_000;
+          while (Date.now() < until && !begun()) await Bun.sleep(200);
+          continue;
+        }
+        if (s.step === 'login' && at && logins < MAX_LOGIN_PRESSES && pressed === 0) {
+          await screen.click(Math.round(s.x!), Math.round(s.y!));
+          logins++;
+          this.o.log('info', `starting a ${p.name} sign-in: pressed the site's own Sign in`);
+          await Bun.sleep(2_500);
+          continue;
+        }
+        await Bun.sleep(SEEK_EVERY_MS);
+      }
+      if (!begun()) {
+        const note = `no ${p.name} sign-in started on the site's page (${seen || 'nothing read'}); it may already be signed in, or its button is one this does not know: use the live view`;
+        this.o.log('info', note);
+        return { ok: false, note };
+      }
+      // The sign-in it set off: wait for how it ends (a chooser waiting on you counts as an end).
+      const until = Date.now() + RELAY_MS;
+      while (Date.now() < until && !ended.size) await Bun.sleep(200);
+      const o = [...ended.values()][0] ?? { ok: false, note: `the ${p.name} sign-in did not end in ${Math.round(RELAY_MS / 60_000)} minutes` };
+      this.o.log('info', `starting a ${p.name} sign-in: ${o.ok ? 'signed in' : o.note}`);
+      return o;
+    } finally {
+      this.listeners.delete(ear);
+      this.starting = false;
+    }
+  }
 
   /** A sign-in in progress, for the account's status: since when. */
   get pending(): number | null {
@@ -106,7 +197,11 @@ export class SignInAsker {
     else if (msg.t === 'signin.pick') void this.pick(rid, String(msg.account ?? ''), msg.remember === true);
     else if (msg.t === 'signin.shown') this.o.log('info', `sign-in ${rid}: the chooser shows ${msg.state === 'choose' ? 'the accounts' : String(msg.state ?? '').slice(0, 20)}`);
     else {
-      if (this.relays.delete(rid)) this.o.log('info', `sign-in ${rid}: ${msg.why === 'here' ? 'let through, to sign in in this browser' : msg.why === 'cancelled' ? 'cancelled' : 'its tab closed'}`);
+      const why = msg.why === 'here' ? 'let through, to sign in in this browser' : msg.why === 'cancelled' ? 'cancelled' : 'its tab closed';
+      if (this.relays.delete(rid)) {
+        this.o.log('info', `sign-in ${rid}: ${why}`);
+        this.settle(rid, false, `the sign-in was ${why}`);
+      }
       this.o.onChange?.();
     }
     return true;
@@ -127,6 +222,7 @@ export class SignInAsker {
     } catch (e) {
       const why = String((e as Error)?.message ?? e).slice(0, 300);
       this.o.log('info', `sign-in ${rid} (${provider}): not relayed: ${why}`);
+      this.settle(rid, false, why);
       return this.show(rid, 'signin.failed', { site: null }, why);
     }
     const r = this.relays.get(rid);
@@ -140,6 +236,7 @@ export class SignInAsker {
       return this.pick(rid, remembered.id, true);
     }
     await this.show(rid, 'signin.show', view);
+    this.settle(rid, false, `no ${c.name} account is linked for ${c.site} (or it is not online): the chooser waits for a pick in the live view`);
   }
 
   private async pick(rid: string, account: string, remember: boolean) {
@@ -153,17 +250,24 @@ export class SignInAsker {
     } catch (e) {
       const why = String((e as Error)?.message ?? e).slice(0, 300);
       this.o.log('warn', `sign-in ${rid}: the relay failed: ${why}`);
+      this.settle(rid, false, why);
       if (this.relays.has(rid)) await this.show(rid, 'signin.failed', view, why);
       return;
     }
-    if (!this.relays.has(rid)) return void this.o.log('info', `sign-in ${rid}: answered after its tab went; dropped`);
+    if (!this.relays.has(rid)) {
+      this.settle(rid, false, 'answered after its tab went');
+      return void this.o.log('info', `sign-in ${rid}: answered after its tab went; dropped`);
+    }
     this.relays.delete(rid);
     this.o.onChange?.();
     try {
       await this.o.bridge.request({ kind: 'signin.done', rid, url: answer.url }, 15_000, { diagnose: false });
       this.o.log('info', `sign-in ${rid}: the answer went to the tab`);
+      this.settle(rid, true, 'the answer went to the site, which finishes its own sign-in');
     } catch (e) {
-      this.o.log('warn', `sign-in ${rid}: the answer could not go to the tab: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+      const why = String((e as Error)?.message ?? e).slice(0, 200);
+      this.o.log('warn', `sign-in ${rid}: the answer could not go to the tab: ${why}`);
+      this.settle(rid, false, `the answer could not go to the tab: ${why}`);
     }
   }
 }

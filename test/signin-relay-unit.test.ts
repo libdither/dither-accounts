@@ -168,3 +168,30 @@ test("the general site kind: each account's own https address is its site, and n
     r.done();
   }
 });
+
+test('starting a sign-in links the account first, sends signin.start, and refuses at once what could not answer', async () => {
+  const r = registry();
+  try {
+    r.answerWith({ ok: true, note: 'the answer went to the site' });
+    // Refused before anything is linked or sent: an account that cannot answer, an asker that does not ask, no provider.
+    expect(() => r.relays.begin('acc-luma', 'google', 'acc-mail')).toThrow('cannot sign in with Google');
+    expect(() => r.relays.begin('acc-luma', 'google', 'acc-off')).toThrow('cannot sign in with Google');
+    expect(() => r.relays.begin('acc-mail', 'google', 'acc-g1')).toThrow('do not sign in with other accounts');
+    expect(() => r.relays.begin('acc-luma', 'nope', 'acc-g1')).toThrow('no sign-in provider');
+    expect(r.sent).toEqual([]);
+    expect(JSON.parse(r.store.account('acc-luma')!.config).signInWith).toBeUndefined();
+
+    expect(await r.relays.start('acc-luma', 'google', 'acc-g1')).toEqual({ ok: true, note: 'the answer went to the site' });
+    expect(JSON.parse(r.store.account('acc-luma')!.config).signInWith).toEqual({ google: 'acc-g1' });
+    expect(r.sent).toEqual([{ id: 'acc-luma', cmd: { t: 'signin.start', provider: 'google' } }]);
+
+    // In the background: under way at once, its ending kept for whoever asks.
+    r.answerWith({ ok: false, note: 'no Google sign-in started on the page' });
+    const s = r.relays.begin('acc-site', 'google', 'acc-g2');
+    expect(s).toMatchObject({ provider: 'google', account: 'acc-g2', running: true, ok: null });
+    for (let i = 0; i < 200 && r.relays.starts.get('acc-site')?.running; i++) await Bun.sleep(1);
+    expect(r.relays.starts.get('acc-site')).toMatchObject({ running: false, ok: false, note: 'no Google sign-in started on the page' });
+  } finally {
+    r.done();
+  }
+});

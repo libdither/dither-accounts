@@ -40,6 +40,37 @@ part with a line in its manifest and a few lines in its extension's worker (belo
 The chooser also offers **Sign in to Google in this browser instead**, which lets the link load in that one tab as
 if none of this were here, and **Cancel**.
 
+## Starting one without the live view
+
+You can also skip step 1. Pick a Google account under **Sign in with** in the add form (Luma, or **Any website**), and
+the new account signs itself in once its browser is up:
+
+1. The manager sets up the link, as a pick with **Link it** on does.
+2. It sends the account `signin.start`. The account's browser reads the page in front for a button that signs in with
+   Google: its words or its label name Google ("Continue with Google", "Sign in with Google", a "Google" button). If
+   there is none, it looks for the site's own **Sign in** or **Log in** and clicks that first, up to three times.
+3. It clicks the Google button with real input on its display.
+4. From there it is an ordinary sign-in on a linked account: no chooser, and Google's screens are gone through for
+   you.
+
+From the command line:
+
+```sh
+bun packages/manager/src/cli.ts add luma --sign-in-with <google account id>
+bun packages/manager/src/cli.ts add site url=https://example.com --sign-in-with <google account id>
+bun packages/manager/src/cli.ts sign-in <account> --with <google account id>   # an account you already have
+```
+
+Each waits for the sign-in to end and says how it went. On the page's API: `POST /api/accounts` takes
+`signInWith: { google: <id> }`, `POST /api/accounts/<id>/sign-in` takes `{ provider, account }`, and
+`GET /api/accounts/<id>/sign-in` says how the last one went. The page's add form uses the first.
+
+It finds what a person would click, and nothing more. These stay yours, in the live view:
+
+- a site whose Google button is Google's own drawn one (an iframe that signs in in a popup the relay does not carry);
+- a site that hides its button behind something else (a menu, a cookie banner over it);
+- an account that is already signed in: it says it found nothing to press.
+
 ## How it works
 
 ```
@@ -135,4 +166,7 @@ that go on only for trusted input, and the fake Luma:
   through Google's screens and is remembered;
 - with **Link it** off, Google's account asks for you and nothing is pressed until the test clicks the account and
   Continue on its display, as you would in the live view;
-- a `site` account is signed in the same way and lends its browser on its site only.
+- a `site` account is signed in the same way and lends its browser on its site only;
+- an account added with **Sign in with** signs itself in. Its browser presses the fake site's own Sign in and then its
+  Continue with Google, both with real input, and the Google account does the rest. An account asked to with
+  `POST …/sign-in` does the same, and a Google account it cannot use is refused before anything is linked.

@@ -27,7 +27,10 @@ answers them). It goes online once `GET /user` answers with you.
 **Continue with Google** is answered by a Google account here when you have one (docs/signin-relay.md): Luma's
 browser never loads Google's sign-in page, a chooser asks which of your Google accounts to use, and that account's own
 browser answers Google. Picked with **Link it** on, it also clicks through Google's account chooser and Continue for
-you, then and every time after. The manifest's `signIn.sites` is `https://luma.com`.
+you, then and every time after. The manifest's `signIn.sites` is `https://luma.com`. Or skip the live view: pick
+a Google account under **Sign in with** when you add the account (or `cli.ts sign-in <id> --with <google id>`), and
+its browser presses Luma's Sign in and Continue with Google itself (docs/signin-relay.md "Starting one without the
+live view").
 
 ## What luma.com is (read from its bundle as of November 2026, signed out)
 

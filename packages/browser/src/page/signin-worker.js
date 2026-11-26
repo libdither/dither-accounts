@@ -22,6 +22,10 @@
  * account chooser, its Continue, or something else) and where on the screen the one thing to press is: the extractor
  * presses it with real input when you set up the link (signin.ts SignInAnswerer). Nothing here logs or keeps a link or
  * a code.
+ *
+ * Starting one: `signin.seek` reads the site's tab for its "Continue with Google" (or, failing that, its "Sign in")
+ * and says where it is on the screen; the extractor clicks it with real input (signin.ts SignInAsker.start), and the
+ * sign-in it sets off comes here as any other.
  */
 const signinRelay = (() => {
   let up = null;
@@ -225,6 +229,75 @@ const signinRelay = (() => {
     return { step: 'other', why: go.length ? 'more than one Continue' : 'no Continue' };
   }
 
+  /**
+   * Starting a sign-in on the site (signin.ts SignInAsker.start), run in the site's tab (chrome.scripting; it must
+   * stand alone): `provider` is a button or link that signs in with the provider (its words or its label name it, as
+   * "Continue with Google" does), and where it is on the screen; `login` is the site's own "Sign in" or "Log in", the
+   * way to a page that has one; `none` is neither. Google's own drawn button (an iframe of accounts.google.com) is not
+   * one: it signs in in a popup the relay does not carry. Points are on the screen, as providerPage's.
+   */
+  function seekPage(names) {
+    if (document.readyState !== 'complete') return { step: 'loading' };
+    if (document.hidden) return { step: 'hidden' };
+    const shown = (el) => {
+      const r = el.getBoundingClientRect();
+      const st = getComputedStyle(el);
+      return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none' && !el.disabled;
+    };
+    const at = (el, step) => {
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      const r = el.getBoundingClientRect();
+      const cx = Math.max(1, Math.min(innerWidth - 2, r.left + r.width / 2));
+      const cy = Math.max(1, Math.min(innerHeight - 2, r.top + Math.min(r.height / 2, 20)));
+      const top = document.elementFromPoint(cx, cy);
+      if (top && top !== el && !el.contains(top) && !top.contains(el)) return { step: 'none', why: 'covered' };
+      const side = (outerWidth - innerWidth) / 2;
+      const above = outerHeight - innerHeight - side;
+      return { step, x: Math.round(screenX + side + cx), y: Math.round(screenY + above + cy) };
+    };
+    const label = (el) =>
+      [el.innerText || el.value || '', el.getAttribute('aria-label') || '', el.getAttribute('title') || '', ...[...el.querySelectorAll('img[alt]')].map((i) => i.alt)]
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const all = [...document.querySelectorAll('button, a[href], [role=button], [role=link], input[type=submit], input[type=button]')].filter(shown);
+    const name = new RegExp('\\b(' + names.map((n) => n.replace(/[^\w ]/g, '')).join('|') + ')\\b', 'i');
+    // Words a provider's sign-in button says, besides its name; a link to its other services says none of them.
+    const signs = /\b(sign|log|continue|connect|join|register|use|with|via)\b/i;
+    const ours = all.filter((el) => {
+      const w = label(el);
+      return w.length <= 60 && name.test(w);
+    });
+    const best = ours.find((el) => signs.test(label(el))) || ours.find((el) => label(el).replace(name, '').trim() === '');
+    if (best) return at(best, 'provider');
+    const login = (re) => all.find((el) => re.test(label(el)));
+    const way = login(/^(sign ?in|log ?in)$/i) || login(/^(sign ?in|log ?in)\b.{0,12}$/i) || login(/^(sign ?up|get started|join)$/i);
+    if (way) return at(way, 'login');
+    if (document.querySelector('iframe[src*="accounts.google.com/gsi"]')) return { step: 'none', why: "only Google's own drawn button" };
+    return { step: 'none', why: 'no sign-in button' };
+  }
+
+  /** The site's tab: the active one in front that is not a chooser or a provider's tab of ours. */
+  async function siteTab() {
+    const front = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const all = front.length ? front : await chrome.tabs.query({ active: true });
+    return all.find((t) => !byTab.has(t.id) && !answering.has(t.id) && /^https?:/.test(t.url || t.pendingUrl || '')) || null;
+  }
+
+  async function seek(id, cmd) {
+    try {
+      const t = await siteTab();
+      if (!t) return reply(id, true, { step: 'none', why: 'no site tab in front' });
+      if (t.status === 'loading') return reply(id, true, { step: 'loading' });
+      const names = (Array.isArray(cmd.names) ? cmd.names : []).map((n) => String(n).slice(0, 30)).filter(Boolean);
+      if (!names.length) return reply(id, false, 'no provider named');
+      const res = await chrome.scripting.executeScript({ target: { tabId: t.id }, func: seekPage, args: [names] });
+      reply(id, true, (res && res[0] && res[0].result) || { step: 'none', why: 'unreadable' });
+    } catch (e) {
+      reply(id, true, { step: 'none', why: 'unreadable' });
+    }
+  }
+
   async function look(id, cmd) {
     const tabId = answerTabs.get(cmd.aid);
     if (tabId === undefined) return reply(id, true, { step: 'gone' });
@@ -250,6 +323,10 @@ const signinRelay = (() => {
     }
     if (cmd.kind === 'signin.look') {
       look(msg.id, cmd);
+      return true;
+    }
+    if (cmd.kind === 'signin.seek') {
+      seek(msg.id, cmd);
       return true;
     }
     if (!r) {

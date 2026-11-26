@@ -70,7 +70,8 @@ async function harness(o: { loggedIn?: boolean; opts?: Partial<AdapterOptions> }
   const events: P.AdapterEvent[] = [];
   const adapter = new WhatsAppAdapter(
     { emit: (e) => events.push(e), log: () => {}, accountDir: dir, config: {} },
-    { bridge: async () => ['bun', FAKE], restartBackoffMs: [50, 100], historyTimeoutMs: 400, expirySweepMs: 60_000, fetch: (async () => new Response('png', { headers: { 'content-type': 'image/png' } })) as any, ...o.opts },
+    // The database in memory: a file's commits and its close wait on the disk, seconds while other processes sync theirs.
+    { bridge: async () => ['bun', FAKE], statePath: ':memory:', restartBackoffMs: [50, 100], historyTimeoutMs: 400, expirySweepMs: 60_000, fetch: (async () => new Response('png', { headers: { 'content-type': 'image/png' } })) as any, ...o.opts },
   );
   const waitFor = async <T>(fn: () => T | undefined | null | false, ms = 5000): Promise<T> => {
     const until = Date.now() + ms;

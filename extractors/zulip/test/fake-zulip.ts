@@ -22,6 +22,10 @@ export interface FakeOptions {
   readers?: Record<number, number[]>;
   /** GET /realm/presence's answer, by API email (Zulip's legacy form). */
   realmPresence?: Record<string, unknown>;
+  /** More people, or more about the three (by id: profile_data, bot_owner_id, date_joined...). */
+  users?: Record<number, Record<string, unknown>>;
+  /** GET /realm/profile_fields's answer. */
+  profileFields?: any[];
 }
 
 export function fakeZulip(opts: FakeOptions = {}) {
@@ -30,6 +34,11 @@ export function fakeZulip(opts: FakeOptions = {}) {
     { user_id: 9, email: 'user9@chat.example.org', full_name: 'Ann Lee', role: 200, is_active: true, avatar_url: 'https://example.com/ann.png' },
     { user_id: 10, email: 'user10@chat.example.org', full_name: 'Bob Kim', role: 400, is_active: true },
   ];
+  for (const [id, extra] of Object.entries(opts.users ?? {})) {
+    const u = users.find((x) => x.user_id === Number(id));
+    if (u) Object.assign(u, extra);
+    else users.push({ user_id: Number(id), email: `user${id}@chat.example.org`, full_name: `User ${id}`, role: 400, is_active: true, ...extra } as (typeof users)[number]);
+  }
   const sub = (stream_id: number, name: string, extra: object = {}) => ({ stream_id, name, description: '', invite_only: false, history_public_to_subscribers: true, is_muted: false, ...extra });
   let messages: any[] = [
     { id: 100, sender_id: 9, sender_full_name: 'Ann Lee', content: 'hello @**Quinn Park|8**', timestamp: 1_700_000_000, type: 'stream', stream_id: 3, subject: 'plans', display_recipient: 'general', reactions: [], submessages: [], flags: ['mentioned'] },
@@ -127,6 +136,11 @@ export function fakeZulip(opts: FakeOptions = {}) {
       }
       if (/^\/messages\/\d+\/reactions$/.test(path)) return ok();
       if (/^\/messages\/\d+\/read_receipts$/.test(path)) return ok({ user_ids: readers.get(Number(path.split('/')[2])) ?? [] });
+      if (/^\/users\/\d+$/.test(path) && req.method === 'GET') {
+        const u = users.find((x) => x.user_id === Number(path.split('/')[2]));
+        return u ? ok({ user: u }) : json({ result: 'error', msg: 'No such user', code: 'BAD_REQUEST' }, 400);
+      }
+      if (path === '/realm/profile_fields') return ok({ custom_fields: opts.profileFields ?? [] });
       if (path === '/realm/presence') return ok({ presences: opts.realmPresence ?? {}, server_timestamp: Date.now() / 1000 });
       if (/^\/streams\/\d+\/members$/.test(path)) return ok({ subscribers: opts.subscribers?.[Number(path.split('/')[2])] ?? users.map((u) => u.user_id) });
       if (/^\/messages\/\d+$/.test(path) && req.method === 'PATCH') return ok();

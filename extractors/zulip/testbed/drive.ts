@@ -250,7 +250,13 @@ function session(): Promise<Session> {
 }
 const opened: ZulipAdapter[] = [];
 
-/** Things the checks need that the seed does not make: typed profile fields with Ann's answers. Idempotent. */
+/** The user groups someone is directly in, by name, as a profile lists them: not the system ones, nor deactivated ones. */
+async function groupsOf(user: number): Promise<string[]> {
+  const groups = (await rest(quinn, 'GET', '/user_groups', { include_deactivated_groups: true })).user_groups as any[];
+  return groups.filter((g) => !g.is_system_group && !g.deactivated && g.members.includes(user)).map((g) => g.name).sort((a: string, b: string) => a.localeCompare(b));
+}
+
+/** Things the checks need that the seed does not make: typed profile fields with Ann's and Bob's answers. Idempotent. */
 let fieldIds: Record<string, number> = {};
 async function setup() {
   let fields = (await rest(quinn, 'GET', '/realm/profile_fields')).custom_fields as any[];
@@ -258,6 +264,9 @@ async function setup() {
     ['Pronouns (typed)', { field_type: 8, hint: 'As Zulip types them' }],
     ['Website', { field_type: 5, hint: 'A link' }],
     ['GitHub username', { field_type: 7, field_data: { subtype: 'github' } }],
+    ['Mentor', { field_type: 6, hint: 'A person' }],
+    ['Start date', { field_type: 4, hint: 'A date' }],
+    ['Forge', { field_type: 7, field_data: { subtype: 'custom', url_pattern: 'https://forge.example.org/%(username)s' } }],
   ];
   for (const [name, p] of want) if (!fields.some((f) => f.name === name)) await rest(quinn, 'POST', '/realm/profile_fields', { name, ...p });
   fields = (await rest(quinn, 'GET', '/realm/profile_fields')).custom_fields;
@@ -267,6 +276,13 @@ async function setup() {
       { id: fieldIds['Pronouns (typed)'], value: 'she/her' },
       { id: fieldIds.Website, value: 'https://example.com/ann' },
       { id: fieldIds['GitHub username'], value: 'ann-example' },
+    ],
+  });
+  await rest(bob, 'PATCH', '/users/me/profile_data', {
+    data: [
+      { id: fieldIds.Mentor, value: [ann.userId] },
+      { id: fieldIds['Start date'], value: '2023-04-01' },
+      { id: fieldIds.Forge, value: 'bob-k' },
     ],
   });
 }
@@ -2081,7 +2097,7 @@ check('cmd.walkMembers', async (t) => {
   let ev = t.heard((x) => x.t === 'members' && x.source === 'walk', from)[0];
   const want = users.filter((u) => u.full_name.toLowerCase().startsWith('a') || (u.delivery_email ?? '').toLowerCase().startsWith('a')).map((u) => uid(u.user_id)).sort();
   t.eq(ev && [ev.space, ev.members.map((m: any) => m.who).sort()], [HOST, want], 'those whose name (or real address) starts with "a", said before the answer');
-  t.eq(ev?.members.find((m: any) => m.who === uid(ann))?.roles, ['Administrator'], 'with their role');
+  t.eq(ev?.members.find((m: any) => m.who === uid(ann))?.roles, ['Administrator', ...(await groupsOf(ann.userId))], 'with their role, then their user groups');
   t.eq(r && [r.count, r.total], [want.length, ev?.total], 'the answer counts them, and its total is the event\'s');
   from = t.mark();
   r = await t.cmd({ t: 'walkMembers', space: HOST, query: 'user', limit: 50 });
@@ -2217,8 +2233,27 @@ check('cmd.profile', async (t) => {
   t.ok(t.heard((x) => x.t === 'identity' && x.identity.nativeId === uid(ann)).length > 0, 'her identity is said');
   const me = await t.cmd({ t: 'profile', who: uid(quinn) });
   t.eq([...(me?.editable ?? [])].sort(), ['avatar', 'bio', 'emoji', 'name', 'pronouns'], 'the account\'s own profile says what it can change');
+  t.eq(p.mutualSpaces, [{ id: HOST, roles: [{ name: 'Administrator' }, ...(await groupsOf(ann.userId)).map((name) => ({ name }))], joinedAt: Date.parse(u.date_joined) }], 'the organization, with her role first and then her user groups');
   const b = await t.cmd({ t: 'profile', who: uid(bot) });
-  t.ok(b?.facts?.some((f: any) => f.label === 'Role' && f.value === 'Bot') && b.facts.some((f: any) => f.label === 'Owner'), 'a bot, with its owner', b?.facts);
+  t.ok(b?.facts?.some((f: any) => f.label === 'Role' && f.value === 'Bot'), 'a bot', b?.facts);
+  t.eq(b?.facts?.find((f: any) => f.label === 'Owner'), { label: 'Owner', value: (await rest(quinn, 'GET', `/users/${quinn.userId}`)).user.full_name, people: [uid(quinn)] }, 'its owner, with their id so the app links them');
+});
+
+check('cmd.profile fields that name people, dates, custom links, a custom status emoji', async (t) => {
+  const parrot = Object.entries<any>((await rest(quinn, 'GET', '/realm/emoji')).emoji).find(([, e]) => e.name === 'partyparrot' && !e.deactivated)!;
+  await rest(bob, 'POST', '/users/me/status', { status_text: `Parrot ${RUN}`, emoji_name: 'partyparrot', emoji_code: parrot[0], reaction_type: 'realm_emoji' });
+  try {
+    await t.settled();
+    const p = await t.cmd({ t: 'profile', who: uid(bob) });
+    const annName = (await rest(quinn, 'GET', `/users/${ann.userId}`)).user.full_name;
+    t.eq(p?.facts?.find((f: any) => f.label === 'Mentor'), { label: 'Mentor', value: annName, people: [uid(ann)] }, 'a person field: by name, with the id');
+    t.eq(p?.facts?.find((f: any) => f.label === 'Start date'), { label: 'Start date', value: 'April 1, 2023' }, 'a date field in words');
+    t.eq((p?.links ?? []).find((l: any) => l.label === 'Forge'), { label: 'Forge', value: 'bob-k', url: 'https://forge.example.org/bob-k' }, 'an external account through its url_pattern');
+    t.eq(p?.status && [p.status.text, p.status.emoji], [`Parrot ${RUN}`, ':partyparrot:'], 'the custom emoji by name');
+    t.ok(typeof p?.status?.emojiUrl === 'string' && /^(zulip:\/|https:)/.test(p.status.emojiUrl), 'with its picture', p?.status);
+  } finally {
+    await rest(bob, 'POST', '/users/me/status', { status_text: '', emoji_name: '' });
+  }
 });
 
 check('cmd.setProfile', async (t) => {

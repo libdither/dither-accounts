@@ -100,14 +100,20 @@ is Zulip's stand-in (`user8@chat.example.org`, where the organization keeps addr
 - **Channels**: about (description, who may post, privacy, history, subscribers), join one by name, link or
   `#name` (`resolve`, `add`), leave, mute, invite people, and an admin's settings (`configure`).
 - **People**: profiles with custom profile fields, pronouns, time zone, status; your own name, avatar, status and
-  fields (`setProfile`); invisible mode (`setPresence`); muting a person (`ignore`).
+  fields (`setProfile`); invisible mode (`setPresence`); muting a person (`ignore`). A profile names the organization
+  (`mutualSpaces`) with their role first, then the user groups they are directly in, by name (not the system
+  `role:…` groups, nor deactivated ones); a walk of the members (`walkMembers`) gives the same roles. A person field
+  and a bot's owner are facts with the people's ids (`facts[].people`), so the app links them; a date field reads as
+  "March 5, 1990"; an external account field links through its `url_pattern` (or GitHub's and X's own); a custom
+  status emoji is `:name:` with its picture (`status.emojiUrl`).
 - **Presence**: everyone's at start (offline too, so nobody stays online in the hub from before), then as it changes.
   Zulip's event says only when someone comes online; its apps read everyone's times again each ping interval and
   work out idle and offline from them, after the server's `server_presence_offline_threshold_seconds`. The extractor
   does the same: `GET /realm/presence` each `server_presence_ping_interval_seconds` (one request a minute; reading
   it does not change your own presence), and a look every 15 s for whoever aged past the threshold.
 - **Roles**: a new role in the organization (member → administrator) is a role lost and one given (`role`); joining or
-  leaving a user group is that group's role given or lost, as Discord's roles are.
+  leaving a user group is that group's role given or lost, as Discord's roles are; a new group is given to the people
+  it was made with, and a group deactivated (or back again) is lost (or given) by everyone in it.
 - **Read receipts** for your own messages in DMs and group DMs, where the organization has them on (Zulip 6.0+). Zulip
   sends no event for them, so the extractor asks (`GET /messages/{id}/read_receipts`) about your newest message in each
   DM 30 s, 2 min, 10 min and 1 h after you sent it, and again a few seconds after someone there writes or starts

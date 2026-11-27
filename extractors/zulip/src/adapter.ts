@@ -608,9 +608,19 @@ export class ZulipAdapter {
         for (const [id, e] of Object.entries<any>(ev.realm_emoji ?? {})) this.emoji.realm.set(id, { ...e, id });
         return;
       case 'user_group':
-        if (ev.op === 'add' && ev.group) st.groups.set(ev.group.id, ev.group);
-        else if (ev.op === 'remove') st.groups.delete(ev.group_id);
-        else if (ev.op === 'update' && st.groups.has(ev.group_id)) Object.assign(st.groups.get(ev.group_id)!, ev.data ?? {});
+        if (ev.op === 'add' && ev.group) {
+          // A new group: the people it was made with were given it.
+          const fresh = !st.groups.has(ev.group.id);
+          st.groups.set(ev.group.id, ev.group);
+          if (fresh) this.groupChanged(ev.group, ev.group.members ?? [], true);
+        } else if (ev.op === 'remove') st.groups.delete(ev.group_id);
+        else if (ev.op === 'update' && st.groups.has(ev.group_id)) {
+          const g = st.groups.get(ev.group_id)!;
+          const was = !!g.deactivated;
+          Object.assign(g, ev.data ?? {});
+          // Deactivated, or back again: everyone in it lost it, or has it again.
+          if (ev.data?.deactivated !== undefined && !!g.deactivated !== was) this.groupChanged({ ...g, deactivated: false }, g.members ?? [], !g.deactivated);
+        }
         else if (ev.op === 'add_members' && st.groups.has(ev.group_id)) {
           const g = st.groups.get(ev.group_id)!;
           const added = (ev.user_ids ?? []).filter((u: number) => !g.members.includes(u));
@@ -1656,7 +1666,7 @@ export class ZulipAdapter {
         const q = cmd.query.toLowerCase();
         const users = [...st.users.values()].filter((u) => u.is_active !== false && (!q || u.full_name.toLowerCase().startsWith(q) || !!this.handleOf(u)?.toLowerCase().startsWith(q))).slice(0, cmd.limit);
         for (const u of users) this.ensureIdentity(u.user_id);
-        this.link.emit({ t: 'members', space: this.ids.space, members: users.map((u) => ({ who: this.ids.user(u.user_id), ...(u.date_joined ? { joinedAt: Date.parse(u.date_joined) } : {}), roles: [about.roleName(u.role)] })), source: 'walk', total: [...st.users.values()].filter((u) => u.is_active !== false).length });
+        this.link.emit({ t: 'members', space: this.ids.space, members: users.map((u) => ({ who: this.ids.user(u.user_id), ...(u.date_joined ? { joinedAt: Date.parse(u.date_joined) } : {}), roles: [about.roleName(u.role), ...about.groupsOf(this, u.user_id)] })), source: 'walk', total: [...st.users.values()].filter((u) => u.is_active !== false).length });
         return { count: users.length, total: [...st.users.values()].filter((u) => u.is_active !== false).length } satisfies P.WalkResult;
       }
       case 'mentionables':

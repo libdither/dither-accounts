@@ -714,6 +714,12 @@ it(
     await until(() => lastMessage(acc, 'm1'), 10_000, 'the oldest message');
     expect(lastMessage(acc, 'm1')).toMatchObject({ live: false, message: { body: 'legacy line 1', author: ALICE.id } });
     expect(fake.calls.filter((c) => c.op === 'read').length).toBe(1);
+    // The page's oldest message, so the hub can mark the stretch whole; asked before a time, only what is older.
+    const first = lastMessage(acc, 'm1').message.ts;
+    expect(r.oldest).toBe(first);
+    const second = fake.msgs.filter((x) => x.conv === LEGACY)[1]!;
+    const before = await call('history', { conversation: LEGACY, limit: 40, beforeTs: lastMessage(acc, second.id).message.ts });
+    expect(before).toMatchObject({ count: 1, done: true, oldest: first });
   },
   120_000,
 );

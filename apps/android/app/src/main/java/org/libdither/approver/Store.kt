@@ -21,6 +21,14 @@ data class Pairing(
     /** The approval key for this manager (made after the first `ready`), and its fingerprint. */
     var approvalAlias: String? = null,
     var approvalFingerprint: String? = null,
+    /** The approval key in use is a quick-approval key ([Keys.quickApproval]), not one that asks on every use. */
+    var approvalQuick: Boolean = false,
+    /**
+     * A quick-approval key made but not in use yet: the hosts that check answers pin the key in use, so the old one
+     * keeps signing (and stays the one the manager knows) until the user says the new one is pinned.
+     */
+    var nextAlias: String? = null,
+    var nextFingerprint: String? = null,
 )
 
 /** A passkey's metadata (the private key stays in the Keystore as `keyAlias`). */
@@ -54,6 +62,9 @@ object Store {
     private val signed = mutableListOf<Pair<Long, String>>()
     var pushEndpoint: String? = null
     var pushStatus: String? = null
+    /** How long one prompt lets quick-approval keys sign ([QuickWindow]), and when that prompt was. */
+    var quickWindowS: Long = QuickWindow.DEFAULT_S
+    var lastAuth: QuickWindow.LastAuth? = null
 
     @Synchronized
     fun init(c: Context) {
@@ -62,7 +73,8 @@ object Store {
         val o = runCatching { JSONObject(String(file.readFully(), Charsets.UTF_8)) }.getOrNull() ?: return
         o.optJSONArray("pairings")?.forEachObject {
             pairings += Pairing(it.getString("deviceId"), it.getString("url"), it.optString("name"), it.getString("keyAlias"), it.optString("fingerprint"), it.optLong("pairedAt"), it.optBoolean("forgotten"),
-                it.optStringOrNull("approvalAlias"), it.optStringOrNull("approvalFingerprint"))
+                it.optStringOrNull("approvalAlias"), it.optStringOrNull("approvalFingerprint"), it.optBoolean("approvalQuick"),
+                it.optStringOrNull("nextAlias"), it.optStringOrNull("nextFingerprint"))
         }
         o.optJSONArray("credentials")?.forEachObject {
             credentials += Credential(
@@ -74,6 +86,8 @@ object Store {
         o.optJSONArray("log")?.forEachObject { log += LogLine(it.getLong("at"), it.getString("text")) }
         o.optJSONArray("signed")?.forEachObject { signed += it.getLong("at") to it.getString("rpId") }
         pushEndpoint = o.optStringOrNull("pushEndpoint")
+        quickWindowS = QuickWindow.normalize(o.optLong("quickWindowS", QuickWindow.DEFAULT_S))
+        o.optJSONObject("lastAuth")?.let { lastAuth = QuickWindow.LastAuth(it.getLong("elapsedMs"), it.getInt("bootCount")) }
     }
 
     /** Throws when the file could not be written: callers that must not go on without it (the counter) let it. */
@@ -84,6 +98,8 @@ object Store {
                 JSONObject().put("deviceId", it.deviceId).put("url", it.url).put("name", it.name).put("keyAlias", it.keyAlias)
                     .put("fingerprint", it.fingerprint).put("pairedAt", it.pairedAt).put("forgotten", it.forgotten)
                     .put("approvalAlias", it.approvalAlias ?: JSONObject.NULL).put("approvalFingerprint", it.approvalFingerprint ?: JSONObject.NULL)
+                    .put("approvalQuick", it.approvalQuick)
+                    .put("nextAlias", it.nextAlias ?: JSONObject.NULL).put("nextFingerprint", it.nextFingerprint ?: JSONObject.NULL)
             }))
             .put("credentials", JSONArray(credentials.map {
                 JSONObject().put("id", it.id).put("rpId", it.rpId).put("url", it.url).put("deviceId", it.deviceId).put("account", it.account)
@@ -93,6 +109,8 @@ object Store {
             .put("log", JSONArray(log.map { JSONObject().put("at", it.at).put("text", it.text) }))
             .put("signed", JSONArray(signed.map { JSONObject().put("at", it.first).put("rpId", it.second) }))
             .put("pushEndpoint", pushEndpoint ?: JSONObject.NULL)
+            .put("quickWindowS", quickWindowS)
+            .put("lastAuth", lastAuth?.let { JSONObject().put("elapsedMs", it.elapsedMs).put("bootCount", it.bootCount) } ?: JSONObject.NULL)
         val s = file.startWrite()
         try {
             s.write(o.toString().toByteArray(Charsets.UTF_8))

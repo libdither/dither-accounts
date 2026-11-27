@@ -57,3 +57,23 @@ export function rfbBanner(path: string): Promise<string> {
     setTimeout(() => (sock.destroy(), reject(new Error('no VNC banner'))), 5000);
   });
 }
+
+/** The Unix sockets the process holds that have a name: a path, or "@…" for an abstract one (from /proc/net/unix). */
+export function unixSockets(pid: number): string[] {
+  const inodes = new Set<string>();
+  for (const fd of readdirSync(`/proc/${pid}/fd`)) {
+    try {
+      const m = readlinkSync(`/proc/${pid}/fd/${fd}`).match(/^socket:\[(\d+)\]$/);
+      if (m) inodes.add(m[1]!);
+    } catch {
+      // closed in between
+    }
+  }
+  // Num RefCount Protocol Flags Type St Inode Path
+  const out = new Set<string>();
+  for (const l of readFileSync(`/proc/${pid}/net/unix`, 'utf8').trim().split('\n').slice(1)) {
+    const f = l.trim().split(/\s+/);
+    if (f[7] && inodes.has(f[6]!)) out.add(f[7]);
+  }
+  return [...out];
+}

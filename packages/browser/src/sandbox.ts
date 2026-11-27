@@ -1,7 +1,8 @@
 /**
- * A per-account browser sandbox (extractors/discord's, generalized): a private Xvfb display, a NON-headless Chromium
- * with a persistent profile and an unpacked MV3 extension, and an x11vnc server on a Unix socket in the account's
- * directory (and on no TCP port: vnc.ts) so the manager's page can show a live view, where you sign in once.
+ * A per-account browser sandbox (extractors/discord's, generalized): a private screen (screen.ts: an Xvfb display, or a
+ * headless Wayland compositor of its own), a NON-headless Chromium with a persistent profile and an unpacked MV3
+ * extension, and a VNC server on a Unix socket in the account's directory (and on no TCP port: vnc.ts) so the
+ * manager's page can show a live view, where you sign in once.
  *
  * Deliberately NOT automation: no Playwright/Puppeteer, no --enable-automation, no --remote-debugging-port, no
  * --headless. It is an ordinary browser window that happens to run on a virtual display, so navigator.webdriver stays
@@ -11,23 +12,26 @@
  * the profile, which holds the sign-in, persists). The copy is where the names the extension leaves in the page are
  * made for this install and account (markers.ts).
  */
-import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Subprocess } from 'bun';
-import { displayIsOurs } from './display.ts';
-import { MEMORY_DISABLED_FEATURES, mergeFeatureFlags } from './flags.ts';
+import { type BinSpec, cleanEnv, DISPLAY_BINS, type Log, noHostSession, resolveBin } from './bins.ts';
+import type { FreeDisplay } from './display.ts';
+import { gpuFlags, MEMORY_DISABLED_FEATURES, mergeFeatureFlags } from './flags.ts';
 import { markerKey, stampExtension } from './markers.ts';
+import { addSignInPage } from './signin.ts';
 import { ChromiumNoise } from './noise.ts';
-import { prepareVncSocket, vncSocketPath, waitForVncSocket, x11vncArgs } from './vnc.ts';
+import { makeScreen, type Screen, type ScreenHealth } from './screen.ts';
+import { browserShare, type ScreenShare } from './screenshare.ts';
+import { vncSocketPath } from './vnc.ts';
 import { refreshWorker } from './worker.ts';
 
-export type Log = (level: 'debug' | 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
+export type { Log };
 
 export interface SandboxOptions {
   accountDir: string;
-  /** X display number: 80 → :80. */
-  display: number;
+  /** The display pickFreeDisplay gave (x11 or wayland), or an X display number: 80 → :80. */
+  display: number | FreeDisplay;
   /** Where the live view listens; default vnc.sock in accountDir (vncSocketPath). */
   vncSocket?: string;
   width: number;
@@ -45,6 +49,19 @@ export interface SandboxOptions {
   flags?: string[];
   /** Set if the chromium suid sandbox is unavailable. */
   noSandbox?: boolean;
+  /**
+   * On Wayland: the sandbox's own portal and PipeWire (screenshare.ts), so getDisplayMedia can share this sandbox's
+   * screen and nothing else. Chromium's own picker still asks (its Entire Screen tab, then Share) unless the flags say
+   * otherwise. Without it, or when those fail to start (said in the log, and the sandbox starts without them), Chromium
+   * still gets a session of its own, a bus with nothing on it and a silent audio server: never the machine's, where the
+   * owner's portal could share the owner's real screen. On X Chromium captures its X server itself, and has the same
+   * session of its own.
+   */
+  screenShare?: boolean;
+  /** The screen's live view's server went down or came back (Screen.health). */
+  onScreenHealth?: (h: ScreenHealth) => void;
+  /** The Chromium to run; default the pinned one (resolveChromium). Tests give a stand-in. */
+  chromium?: string;
   log: Log;
 }
 
@@ -54,66 +71,39 @@ export interface Bins {
   chromium: string;
 }
 
-const CHROMIUM_CANDIDATES = [`/etc/profiles/per-user/${process.env.USER}/bin/chromium`, '/run/current-system/sw/bin/chromium'];
+/**
+ * Chromium, from the pinned nixpkgs like the screens' programs (nix/bins.json), so CI's tests and every account run
+ * the same one. Never move the pin back past a Chromium the accounts have run: Chromium will not open a profile a
+ * newer one wrote (nix/README.md).
+ */
+export const CHROMIUM: BinSpec = { name: 'chromium', env: 'CHROMIUM_BIN', nix: 'chromium', pinned: true };
 
-/** Resolve a binary: env override -> PATH -> known candidates -> nix build. */
-function resolveBin(name: 'Xvfb' | 'x11vnc' | 'chromium' | 'xdotool' | 'import', envVar: string, nixAttr: string, candidates: string[], log: Log): string {
-  const fromEnv = process.env[envVar];
-  if (fromEnv && existsSync(fromEnv)) return fromEnv;
-  const onPath = Bun.which(name);
-  if (onPath) return onPath;
-  for (const c of candidates) if (existsSync(c)) return c;
-  log('info', `resolving ${name} via nix build nixpkgs#${nixAttr}`);
-  const out = spawnSync('nix', ['build', `nixpkgs#${nixAttr}`, '--no-link', '--print-out-paths'], { encoding: 'utf8' });
-  if (out.status !== 0) throw new Error(`cannot find ${name}: set ${envVar}, put it on PATH, or make nix available (${out.stderr?.slice(0, 200) ?? out.error?.message})`);
-  const store = out.stdout.trim().split('\n').pop()!.trim();
-  const bin = join(store, 'bin', name);
-  if (!existsSync(bin)) throw new Error(`nix built ${nixAttr} but ${bin} is missing`);
-  return bin;
+export function resolveChromium(log: Log): string {
+  return resolveBin(CHROMIUM, log);
 }
 
-/** xdotool, for real mouse and key input on an account's display (the `browser` interface: docs/browser.md). */
-export function resolveXdotool(log: Log): string {
-  return resolveBin('xdotool', 'XDOTOOL_BIN', 'xdotool', [], log);
-}
-
-/** ImageMagick's import, for a PNG of an account's display (the `browser` interface's screenshot). */
-export function resolveImport(log: Log): string {
-  return resolveBin('import', 'IMPORT_BIN', 'imagemagick', [], log);
-}
-
+/** The x11 backend's programs and Chromium (what the tests that run a real browser on X look for). */
 export function resolveBins(log: Log): Bins {
   return {
-    xvfb: resolveBin('Xvfb', 'XVFB_BIN', 'xvfb', [], log),
-    x11vnc: resolveBin('x11vnc', 'X11VNC_BIN', 'x11vnc', [], log),
-    chromium: resolveBin('chromium', 'CHROMIUM_BIN', 'chromium', CHROMIUM_CANDIDATES, log),
+    xvfb: resolveBin(DISPLAY_BINS.xvfb, log),
+    x11vnc: resolveBin(DISPLAY_BINS.x11vnc, log),
+    chromium: resolveChromium(log),
   };
 }
 
-/**
- * Xvfb has no GL of its own, so left alone Chromium runs with WebGL off, which no ordinary desktop browser does.
- * Point it at the machine's GPU directly, or at its software renderer if there is none.
- */
-function gpuFlags(): string[] {
-  let render = false;
-  try {
-    render = readdirSync('/dev/dri').some((n) => n.startsWith('renderD'));
-  } catch {
-    /* no /dev/dri at all */
-  }
-  if (render) return ['--ignore-gpu-blocklist', '--use-angle=vulkan', '--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan'];
-  return ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
-}
+/** Chromium's GPU flags: what the screen's renderer is fits it (Screen.chromiumFlags, flags.ts gpuFlags). */
+export { gpuFlags };
 
-/** The pid an X server wrote into its lock file, or null if it cannot be read. */
 export class Sandbox {
   private procs: { name: string; proc: Subprocess }[] = [];
   private stopped = false;
   private noise = new ChromiumNoise();
   readonly profileDir: string;
   readonly extensionDir: string;
-  /** The live view: x11vnc's Unix socket, for the status's liveView.vncSocket. */
+  /** The live view: the VNC server's Unix socket, for the status's liveView.vncSocket. */
   readonly vncSocket: string;
+  private screen_: Screen | null = null;
+  private share: ScreenShare | null = null;
 
   constructor(private opts: SandboxOptions) {
     this.profileDir = join(opts.accountDir, 'profile');
@@ -128,12 +118,16 @@ export class Sandbox {
     cpSync(this.opts.extensionSrc, this.extensionDir, { recursive: true });
     writeFileSync(join(this.extensionDir, 'config.json'), JSON.stringify(this.opts.config, null, 2), { mode: 0o600 });
     this.opts.prepareExtension?.(this.extensionDir);
+    addSignInPage(this.extensionDir);
     const left = stampExtension(this.extensionDir, this.opts.markerKey ?? markerKey());
     if (left.length) this.opts.log('warn', 'the extension copy still holds a name that is the same for every install', left);
   }
 
-  /** Chromium must not offer to keep a password typed into the live view: this profile runs on --password-store=basic. */
-  private disablePasswordManager() {
+  /**
+   * Chromium must not offer to keep a password typed into the live view: this profile runs on --password-store=basic.
+   * And what the screen needs of the profile (Screen.adjustPrefs).
+   */
+  private writePrefs(screen: Screen) {
     const path = join(this.profileDir, 'Default', 'Preferences');
     let prefs: Record<string, any> = {};
     try {
@@ -141,14 +135,34 @@ export class Sandbox {
     } catch {}
     prefs.credentials_enable_service = false;
     prefs.profile = { ...prefs.profile, password_manager_enabled: false };
+    screen.adjustPrefs(prefs);
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify(prefs));
   }
 
-  private spawn(name: string, cmd: string[], env?: Record<string, string>): Subprocess {
+  /** The screen it runs on (input, pictures); null before start. */
+  get screen(): Screen | null {
+    return this.screen_;
+  }
+
+  /** Whether its screen's live view's server runs (on Wayland all input goes through it): for its status. */
+  get screenHealth(): ScreenHealth {
+    return this.screen_?.health() ?? { ok: true };
+  }
+
+  /** Whether its screen share's portal and PipeWire run (they may have failed to start, and been left out). */
+  get capturing(): boolean {
+    return !!this.share?.capturing;
+  }
+
+  private spawn(name: string, cmd: string[], env?: Record<string, string | undefined>): Subprocess {
+    // Nothing new once it is stopping (a live view's server started again, say): it would outlive the stop.
+    if (this.stopped) throw new Error(`the sandbox is stopping: ${name} is not started`);
     this.opts.log('debug', `spawn ${name}`, cmd.join(' '));
+    // Nothing it starts has the machine's session (its buses, its audio server), unless given one (the share's).
+    const rt = this.screen_?.runtimeDir;
     const proc = Bun.spawn(cmd, {
-      env: { ...process.env, ...env },
+      env: cleanEnv({ ...process.env, ...(rt ? noHostSession(rt) : {}), ...env }),
       stdout: 'pipe',
       stderr: 'pipe',
       onExit: (_p, code, signal) => {
@@ -181,21 +195,34 @@ export class Sandbox {
     return proc;
   }
 
-  async start(): Promise<Bins> {
-    const bins = resolveBins(this.opts.log);
+  async start(): Promise<{ chromium: string }> {
+    const chromium = this.opts.chromium ?? resolveChromium(this.opts.log);
     this.prepareExtension();
-    this.disablePasswordManager();
     // Chromium runs the worker it first registered in this profile, not the copy's: clear it when the copy's changed.
     const worker = refreshWorker(this.opts.accountDir, this.profileDir, this.extensionDir);
     if (worker === 'cleared') this.opts.log('info', "the extension's worker is new to this profile: cleared its service workers so Chromium runs it");
     else if (worker === 'busy') this.opts.log('warn', "a browser still holds the profile: its service workers were left as they are");
-    const d = `:${this.opts.display}`;
     const { width, height } = this.opts;
 
-    // 1. Virtual display. -dpi 96: Xvfb defaults to 100, and Chromium scales itself to match, which makes its window
-    // wider and taller than the display and the page cut off at the edges.
-    const xvfb = this.spawn('Xvfb', [bins.xvfb, d, '-screen', '0', `${width}x${height}x24`, '-nolisten', 'tcp', '-nocursor', '-dpi', '96']);
-    await this.waitForDisplay(d, xvfb, 8000);
+    // 1. The screen and its live view: on the account's own Unix socket and no TCP port, no password (the manager
+    // carries it, behind its login), kept up for any number of viewers (screen.ts).
+    const screen = makeScreen({
+      display: this.opts.display,
+      dir: this.opts.accountDir,
+      vncSocket: this.vncSocket,
+      width,
+      height,
+      spawn: (name, cmd, o) => this.spawn(name, cmd, o.env),
+      log: this.opts.log,
+      onHealth: this.opts.onScreenHealth,
+    });
+    this.screen_ = screen;
+    this.writePrefs(screen);
+    await screen.start();
+    // A session of its own (a bus, an audio server, a runtime directory), with the screen share's portal on its bus
+    // when asked for on Wayland and it starts (screenshare.ts).
+    const shared = await browserShare(screen, { capture: !!this.opts.screenShare, spawn: (name, cmd, o) => this.spawn(name, cmd, o.env), log: this.opts.log });
+    this.share = shared.share;
 
     // 2. The browser: an ordinary window, persistent profile, our extension.
     const flags = [
@@ -215,43 +242,36 @@ export class Sandbox {
       '--disable-infobars',
       `--window-size=${width},${height}`,
       '--window-position=0,0',
-      ...gpuFlags(),
+      // The screen's: its GPU flags (what its renderer really is, after any fallback) and the rest it needs.
+      ...screen.chromiumFlags(),
+      ...shared.flags,
       ...(this.opts.flags ?? []),
     ];
     if (this.opts.noSandbox) flags.push('--no-sandbox');
-    this.spawn('chromium', [bins.chromium, ...mergeFeatureFlags(flags), this.opts.startUrl], { DISPLAY: d });
+    this.spawn('chromium', [chromium, ...mergeFeatureFlags(flags), this.opts.startUrl], { ...screen.clientEnv(), ...this.share?.clientEnv() });
 
-    // 3. Live view: VNC on the account's own Unix socket and no TCP port, no password (the manager carries it, behind
-    // its login). -forever so it survives viewers leaving; -shared for several viewers.
-    prepareVncSocket(this.vncSocket);
-    const vnc = this.spawn('x11vnc', x11vncArgs(bins.x11vnc, d, this.vncSocket));
-    await waitForVncSocket(this.vncSocket, vnc, 10_000);
-
-    this.opts.log('info', `sandbox up: display ${d}, vnc on ${this.vncSocket}`);
-    return bins;
+    this.opts.log('info', `sandbox up: ${screen.describe()}, vnc on ${this.vncSocket}`);
+    return { chromium };
   }
 
-  /**
-   * Wait for the X socket so Chromium and x11vnc never race the display; fail at once if our Xvfb gave up. Two
-   * sandboxes starting together can pick the same free display: the socket is then the other one's, and ours is about
-   * to exit with "already active". So the display is ours only once its lock file names our Xvfb (or a process it
-   * started); a lock that cannot be read is taken as ours, as before.
-   */
-  private async waitForDisplay(display: string, xvfb: Subprocess, timeoutMs: number) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (xvfb.exitCode !== null) throw new Error(`Xvfb on ${display} exited (${xvfb.exitCode}); is the display taken?`);
-      if (displayIsOurs(Number(display.slice(1)), xvfb.pid)) return;
-      await Bun.sleep(100);
-    }
-    throw new Error(`Xvfb display ${display} did not come up within ${timeoutMs}ms`);
+  private stopping: Promise<void> | null = null;
+  /** Everything down and its files gone. A second call waits for the first. */
+  stop(): Promise<void> {
+    this.stopping ??= this.stopNow();
+    return this.stopping;
   }
 
-  async stop() {
-    if (this.stopped) return;
+  private async stopNow() {
     this.stopped = true;
+    // The screen first hears it is stopping, so it starts nothing again as its processes end (screen.ts KeptServer).
+    // Whatever goes wrong there, the processes below are still ended.
+    try {
+      await this.screen_?.stop();
+    } catch (e) {
+      this.opts.log('warn', `stopping the screen: ${(e as Error).message}`);
+    }
     // Browser and vnc first, display last.
-    for (const name of ['chromium', 'x11vnc', 'Xvfb']) {
+    for (const name of ['chromium', ...(this.share?.procNames ?? []), ...(this.screen_?.procNames ?? [])]) {
       for (const p of this.procs.filter((x) => x.name === name)) {
         try {
           p.proc.kill('SIGTERM');
@@ -271,7 +291,18 @@ export class Sandbox {
     this.procs = [];
     const said = this.noise.summary(Date.now(), true);
     if (said) this.opts.log('debug', `[chromium] ${said}`);
-    rmSync(this.vncSocket, { force: true });
+    // Its files once nothing writes there any more.
+    for (const [what, f] of [
+      ['the screen share', () => this.share?.stop()],
+      ["the screen's files", () => this.screen_?.removeFiles()],
+      ["the live view's socket", () => rmSync(this.vncSocket, { force: true })],
+    ] as const) {
+      try {
+        await f();
+      } catch (e) {
+        this.opts.log('warn', `removing ${what}: ${(e as Error).message}`);
+      }
+    }
     this.opts.log('info', 'sandbox stopped');
   }
 

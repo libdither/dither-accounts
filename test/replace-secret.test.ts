@@ -1,9 +1,9 @@
 /** Replacing an account's sign-in on the page: secret add-form fields merged over secret.json, then a restart. */
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createManager, kindOf, type Manager, type Manifest } from '@dither-accounts/manager';
+import { ramdir } from './ram.ts';
 
 const FAKE = resolve(import.meta.dir, '../extractors/fake');
 const tokened: Manifest = {
@@ -21,7 +21,7 @@ const post = (path: string, body: unknown) => fetch(m.url + path, { method: 'POS
 const secretOf = (id: string) => JSON.parse(readFileSync(join(m.store.account(id)!.dir, 'secret.json'), 'utf8'));
 
 beforeAll(async () => {
-  dir = mkdtempSync(join(tmpdir(), 'dacc-secret-'));
+  dir = mkdtempSync(join(ramdir, 'dacc-secret-'));
   m = await createManager({ openPage: true, dataDir: dir, port: 0, kinds: new Map([['tokened', kindOf(tokened, FAKE)], ['plain', kindOf(plain, FAKE)]]) });
 });
 afterAll(async () => {

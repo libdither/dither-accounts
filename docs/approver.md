@@ -290,6 +290,15 @@ approve requests (a device that sends no keys frame, an app from before approval
 Approvers section shows each device's kind and its approval key's fingerprint (SHA-256 of the SPKI, first 8 bytes as
 hex pairs) beside the identity key's.
 
+**Quick approvals (phone).** The phone's approval key may be a quick-approval key: one fingerprint or PIN opens the
+Keystore's window on it until the phone restarts, and the app keeps a shorter window the user picks (30 s by default,
+up to a day, or until restart), so several approvals can be signed after one prompt, or all ticked ones with
+**Approve selected**. Nothing changes here or in the statement: each answer is still a statement signed by the
+device's current approval key. A phone paired before keeps its key until the user prepares a quick-approval key and
+switches; the hosts that pin approval keys (dither-chat's keys file) need the new line before the switch, or they
+refuse the phone's answers. The switch is a keys frame with the new key, as above. apps/android/README.md has the
+details.
+
 ### The frames
 
 ```

@@ -73,7 +73,7 @@ export function lockEntries(lock: any, direct: string[]): string[] {
 
 const pick = (o: any, fields: string[]) => Object.fromEntries(fields.filter((f) => o?.[f] !== undefined).map((f) => [f, o[f]]));
 /** Set by the supervisor per account or per start: not part of the code. */
-const PER_START = /^DITHER_(ACCOUNT_|HUB_URL$|ACCOUNTS_URL$|ADAPTER_TOKEN$|MARKER_KEY$|MANAGER_|EXTRACTOR_)/;
+const PER_START = /^DITHER_(ACCOUNT_|HUB_URL$|ACCOUNTS_URL$|ADAPTER_TOKEN$|MARKER_KEY$|MANAGER_|EXTRACTOR_|DISPLAY_BACKEND$)/;
 
 /** The package directory a file belongs to: the nearest one with a package.json, not past `root`. */
 function packageDirOf(file: string, root: string): string | null {

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { FeedTracker, feedConvId, HOME_ABOVE, likedAtOf, LIVE_MS, parseHome, parseLikes, parseNotifications, parsePost, parseProfileUser, parsePublished, parseReactors, parseTweetDetail, parseUser, parseUserTweets, personAbout, postMediaProblem, REPLY_CONTROL, X_ACTOR, xDate } from '../src/feed.ts';
+import { FeedTracker, feedConvId, HOME_ABOVE, LIVE_MS, parseHome, parseLikes, parseNotifications, parsePost, parseProfileUser, parsePublished, parseReactors, parseTweetDetail, parseUser, parseUserTweets, personAbout, postMediaProblem, REPLY_CONTROL, X_ACTOR, xDate } from '../src/feed.ts';
 import { Drops } from '../src/validate.ts';
-import { ANN, CARA, followedByContext, homeConversation, homeResponse, homeTimeline, homeTweetEntry, homeWorld, likesResponse, likesWorld, snowflakeAt, likedContext, topicContext, favoritersResponse, normalizedTweet, reactorsTimeline, retweetersResponse, tweetResultResponse, conversationModule, cursorEntry, DEV, detailCursorEntry, detailTweetEntry, EMI, FINN, gardenThread, ME, notificationEntry, notificationsResponse, notificationsTimeline, tweet, tweetDetailResponse, tweetDetailTimeline, tweetEntry, userByRestIdResponse, userFlat, userNew, userOld, userTweetsResponse, userTweetsTimeline, withVisibility, xDateStr } from './feed-fixtures.ts';
+import { ANN, CARA, followedByContext, homeConversation, homeResponse, homeTimeline, homeTweetEntry, homeWorld, likesResponse, likesWorld, likedContext, topicContext, favoritersResponse, normalizedTweet, reactorsTimeline, retweetersResponse, tweetResultResponse, conversationModule, cursorEntry, DEV, detailCursorEntry, detailTweetEntry, EMI, FINN, gardenThread, ME, notificationEntry, notificationsResponse, notificationsTimeline, tweet, tweetDetailResponse, tweetDetailTimeline, tweetEntry, userByRestIdResponse, userFlat, userNew, userOld, userTweetsResponse, userTweetsTimeline, withVisibility, xDateStr } from './feed-fixtures.ts';
 
 const NOW = Date.now();
 const MIN = 60_000;
@@ -342,37 +342,23 @@ describe('answering on X', () => {
 
 describe('your likes', () => {
   const l = likesWorld(NOW);
-  test('a page newest like first, each with when it was liked and its videos\' lengths; ads and gone posts left out', () => {
+  test("a page newest like first, with its videos' lengths and no like time (X gives none); ads and gone posts left out", () => {
     const drops = new Drops();
-    const { page: p, users } = parseLikes(likesResponse(l.pages[0]), drops, null, NOW);
-    expect(p.items.map((i) => [i.post.id, i.likedAt])).toEqual([
-      [l.song.rest_id, l.liked.song],
-      [l.talk.rest_id, l.liked.talk],
-      [l.pic.rest_id, l.liked.pic],
-    ]);
+    const { page: p, users } = parseLikes(likesResponse(l.pages[0]), drops);
+    expect(p.items.map((i) => i.post.id)).toEqual([l.song.rest_id, l.talk.rest_id, l.pic.rest_id]);
+    expect(p.items.some((i) => 'likedAt' in i)).toBe(false);
     expect(p.items[0]!.post.media).toEqual([expect.objectContaining({ kind: 'video', durationMs: 214_000 })]);
     expect(p.items[2]!.post.media![0]!.durationMs).toBeUndefined();
     expect([p.more, p.top]).toEqual([l.cursors.page2, l.cursors.top]);
     expect([...users.keys()].sort()).toEqual([CARA.id, DEV.id, EMI.id].sort());
     expect(Object.fromEntries(drops.counts)).toEqual({ 'likes.promoted': 1, 'likes.tombstone': 1 });
   });
-  test('a sort index that is no snowflake, or names a time before the post or in the future, gives no time', () => {
-    const drops = new Drops();
-    const { page: p } = parseLikes(likesResponse(l.pages[1]), drops, null, NOW);
-    expect(p.items.map((i) => [i.post.id, i.likedAt ?? null])).toEqual([
-      [l.old.rest_id, l.liked.old],
-      [l.odd.rest_id, null],
-    ]);
-    expect(drops.summary()).toBe('likes.no-like-time 1');
-    const posted = NOW - 10 * H;
-    expect(likedAtOf(snowflakeAt(posted + MIN, 4095), posted, NOW)).toBe(posted + MIN);
-    expect(likedAtOf(snowflakeAt(posted - 5 * MIN), posted, NOW)).toBeNull();
-    expect(likedAtOf(snowflakeAt(NOW + 3 * 24 * H), posted, NOW)).toBeNull();
-    expect(likedAtOf('1856000000000003001x', posted, NOW)).toBeNull();
-    expect(likedAtOf(undefined, posted, NOW)).toBeNull();
+  test('the order is kept as X gives it, an old post liked after a newer one included', () => {
+    const { page: p } = parseLikes(likesResponse(l.pages[1]), new Drops());
+    expect(p.items.map((i) => i.post.id)).toEqual([l.old.rest_id, l.odd.rest_id]);
   });
   test('the end: a page of nothing but cursors', () => {
-    expect(parseLikes(likesResponse(l.pages[2]), new Drops(), null, NOW).page).toEqual({ items: [], more: null, top: l.cursors.top });
+    expect(parseLikes(likesResponse(l.pages[2]), new Drops()).page).toEqual({ items: [], more: null, top: l.cursors.top });
   });
 });
 

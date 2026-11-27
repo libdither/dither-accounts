@@ -63,6 +63,9 @@ const KIND_MARK: Record<string, Mark> = {
   bluesky: { brand: 'bluesky' },
   zulip: { brand: 'zulip' },
   lesswrong: { glyph: 'book' },
+  partiful: { glyph: 'ticket' },
+  luma: { glyph: 'ticket' },
+  site: { glyph: 'browser' },
   bugwatch: { glyph: 'bell' },
   t3: { glyph: 'terminal' },
   njalla: { glyph: 'server' },
@@ -225,6 +228,7 @@ const SERVICES: Service[] = [
       { id: 'token', label: 'Login token', glyph: 'cookie', kind: 'lesswrong', hide: ['username', 'password'], need: ['token'], tip: 'For accounts that sign in with Google or GitHub: paste the loginToken cookie from your browser.' },
     ],
   },
+  { id: 'partiful', name: 'Partiful', mark: { glyph: 'ticket' }, category: 'chat', line: 'Parties near you, your invites, who is going, comments and chats, signed in in a sandboxed browser', ways: [BROWSER('partiful', "Partiful's web app")] },
   {
     id: 'gmessages',
     name: 'Google Messages',
@@ -239,6 +243,7 @@ const SERVICES: Service[] = [
   { id: 'x', name: 'X', mark: { brand: 'x' }, category: 'chat', line: 'Direct messages, signed in in a sandboxed browser', ways: [BROWSER('x', "X's web app")] },
   { id: 'reddit', name: 'Reddit', mark: { brand: 'reddit' }, category: 'chat', line: 'Front page, inbox and comments, signed in in a sandboxed browser', ways: [BROWSER('reddit', 'old.reddit.com')] },
   { id: 'substack', name: 'Substack', mark: { brand: 'substack' }, category: 'chat', line: 'Your inbox, Notes and activity, signed in in a sandboxed browser', ways: [BROWSER('substack', "Substack's reader")] },
+  { id: 'luma', name: 'Luma', mark: { glyph: 'ticket' }, category: 'chat', line: "Your city's events, yours, who is going, and Luma's chats, in a sandboxed browser", ways: [BROWSER('luma', 'luma.com')] },
   { id: 't3', name: 'T3 Code', mark: { glyph: 'terminal' }, category: 'chat', line: 'Coding threads on this machine, each a chat with its agent', ways: [{ id: 'local', label: 'This machine', glyph: 'terminal', kind: 't3', tip: "Reads the threads of T3 Code running here through its own command line; a message is the thread's next turn (docs/t3.md)." }] },
   {
     id: 'messenger',
@@ -336,6 +341,14 @@ const SERVICES: Service[] = [
   // other
   { id: 'github', name: 'GitHub', mark: { brand: 'github' }, category: 'other', line: 'Notifications, with a classic token', ways: [{ id: 'token', label: 'Token', glyph: 'key', kind: 'github', tip: 'A classic personal access token with the notifications scope (fine-grained tokens cannot read notifications).' }] },
   { id: 'bugwatch', name: 'Bug watch', mark: { glyph: 'bell' }, category: 'other', line: "Your own services' errors, as notices and T3 threads", ways: [{ id: 'config', label: 'Config file', glyph: 'bell', kind: 'bugwatch', tip: 'Reads the error files and logs a JSON config names; each new bug is a notice, and a T3 coding thread looks into it (docs/bugwatch.md).' }] },
+  {
+    id: 'site',
+    name: 'Any website',
+    mark: { glyph: 'browser' },
+    category: 'other',
+    line: 'Any site by its address, kept signed in in a sandboxed browser; "Continue with Google" there can use your Google account here',
+    ways: [{ ...BROWSER('site', 'the site'), tip: 'Runs the site you give in a sandboxed browser on this machine: sign in once in its live view, or with a Google account you already have here (docs/signin-relay.md).' }],
+  },
   { id: 'njalla', name: 'Njalla', mark: { glyph: 'server' }, category: 'other', line: 'DNS records of your domains, with an API token', ways: [{ id: 'token', label: 'API token', glyph: 'key', kind: 'njalla', tip: 'njal.la → Settings → API → Add token. You can restrict it to some domains there.' }] },
 ];
 

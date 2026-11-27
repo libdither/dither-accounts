@@ -28,6 +28,9 @@ export function testLink(config: Record<string, unknown>, secret: Record<string,
     events: [],
     logs: [],
     secretValue: { ...secret },
+    ask: async (what) => {
+      throw new Error(`no manager here to answer ${what}`);
+    },
     emit(ev) {
       link.events.push(ev);
       for (const w of [...waiters]) {

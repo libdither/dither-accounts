@@ -15,6 +15,8 @@ function acct(kind: string, o: { email?: string; name?: string; layers?: StatusL
     enabled: true,
     running: true,
     online: true,
+    asleep: false,
+    sleep: null,
     error: null,
     status: { status: 'online' },
     self: o.seen ? null : who,
@@ -27,6 +29,7 @@ function acct(kind: string, o: { email?: string; name?: string; layers?: StatusL
     ownDir: true,
     createdBy: null,
     createdAt: n,
+    display: null,
     settings: [],
   };
 }

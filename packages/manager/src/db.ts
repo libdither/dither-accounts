@@ -120,6 +120,10 @@ CREATE TABLE IF NOT EXISTS notice (
 CREATE INDEX IF NOT EXISTS notice_at ON notice(at);
 -- Accounts whose notices are muted (notify.mute) until a time.
 CREATE TABLE IF NOT EXISTS notice_mute (subject TEXT PRIMARY KEY, until INTEGER NOT NULL);
+
+-- Accounts asleep (supervisor.ts, docs/supervisor.md "Sleeping"): since when, when they wake by themselves (null: only
+-- for a call) and what for. Kept here so a manager after a restart leaves them asleep.
+CREATE TABLE IF NOT EXISTS asleep (account TEXT PRIMARY KEY, since INTEGER NOT NULL, wake_at INTEGER, wake_for TEXT);
 `;
 
 export function newId(prefix: string): string {
@@ -148,6 +152,11 @@ export class Store {
 
   constructor(path: string) {
     this.db = new Database(path, { create: true });
+    // A write-ahead log, synced at checkpoints rather than on every commit: the registry is written on the manager's
+    // event loop, and a commit in the default journal waits for several fsyncs, which take seconds on a busy disk and
+    // hold every call, socket and timer meanwhile. A power cut can lose the last commits, never the file's integrity.
+    // (synchronous first: switching a new file to the log is itself a commit.)
+    this.db.exec('PRAGMA synchronous = NORMAL; PRAGMA journal_mode = WAL;');
     this.db.exec(SCHEMA);
     // Columns added after a registry was made.
     const cols = new Set(this.all<{ name: string }>('PRAGMA table_info(account)').map((c) => c.name));
@@ -169,6 +178,16 @@ export class Store {
     if (had) return had.value;
     this.run('INSERT OR IGNORE INTO kv (key, value) VALUES (?, ?)', key, newToken());
     return this.one<{ value: string }>('SELECT value FROM kv WHERE key = ?', key)!.value;
+  }
+
+  /** A manager setting kept here (a choice made on the page): its value, or null when none is set. */
+  setting(key: string): string | null {
+    return this.one<{ value: string }>('SELECT value FROM kv WHERE key = ?', `setting:${key}`)?.value ?? null;
+  }
+  /** Keep a manager setting, or (null) forget it. */
+  setSetting(key: string, value: string | null) {
+    if (value === null) this.run('DELETE FROM kv WHERE key = ?', `setting:${key}`);
+    else this.run('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', `setting:${key}`, value);
   }
 
   account(id: string): Row | null {

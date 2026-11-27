@@ -434,6 +434,9 @@ export const ABOUT_RULES: Record<Network, AboutRules> = {
     conversation: [],
     space: [],
   },
+  // Event sites: an event's name and picture are the host's, changed on the site (docs/events.md).
+  luma: { conversation: [], space: [] },
+  partiful: { conversation: [], space: [] },
 };
 
 export const ABOUT_LABEL: Record<AboutKey, string> = {

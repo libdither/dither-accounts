@@ -1,0 +1,4545 @@
+{
+ "when": "2026-11-26T08:08:13.490Z",
+ "machine": {
+  "cpus": 16
+ },
+ "size": "1280x800",
+ "reps": 2,
+ "backends": [
+  "tigervnc",
+  "kasmvnc",
+  "wayland",
+  "wayland-tigervnc"
+ ],
+ "maxLoad": 8,
+ "conditions": [
+  {
+   "name": "rtt150",
+   "label": "150 ms",
+   "rttMs": 150
+  },
+  {
+   "name": "bw5rtt50",
+   "label": "5 Mbit/s, 50 ms",
+   "rateMbit": 5,
+   "rttMs": 50,
+   "encodings": true,
+   "eager": true
+  },
+  {
+   "name": "bw1rtt150",
+   "label": "1 Mbit/s, 150 ms",
+   "rateMbit": 1,
+   "rttMs": 150,
+   "eager": true
+  },
+  {
+   "name": "loss1",
+   "label": "20 Mbit/s, 50 ms, 1% loss",
+   "rateMbit": 20,
+   "rttMs": 50,
+   "lossPct": 1
+  },
+  {
+   "name": "cpu20",
+   "label": "display at 20% of a core",
+   "cpuPct": 20
+  }
+ ],
+ "checks": [
+  {
+   "name": "rtt150",
+   "goodputMbit": 129.9436060563408,
+   "rttMs": 150.86456700000005,
+   "rttP90": 153.062141
+  },
+  {
+   "name": "bw5rtt50",
+   "goodputMbit": 3.7299279870803974,
+   "rttMs": 50.77963,
+   "rttP90": 51.16233699999975
+  },
+  {
+   "name": "bw1rtt150",
+   "goodputMbit": 0.9073823773786075,
+   "rttMs": 150.78802050000013,
+   "rttP90": 151.15192799999932
+  },
+  {
+   "name": "loss1",
+   "goodputMbit": 2.3978142224534618,
+   "rttMs": 50.751217999999426,
+   "rttP90": 51.05228200000056
+  }
+ ],
+ "runs": [
+  {
+   "rep": 0,
+   "backend": "tigervnc",
+   "condition": "rtt150",
+   "load": {
+    "load": 4.07,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 1408.3210839999992,
+    "connectMs": 765.010591000002,
+    "bytes": 95076,
+    "encodings": {
+     "21": 16,
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 56,
+     "last-rect": 2
+    }
+   },
+   "anim": {
+    "fps": 46.018940124137735,
+    "updatesPerS": 69.0284101862066,
+    "bytesPerS": 3088570.2128898194,
+    "encodings": {
+     "21": 1884,
+     "tight": 2358,
+     "last-rect": 351
+    },
+    "tightKinds": {
+     "fill": 4,
+     "basic": 2354
+    },
+    "cpu": 57.33295027278159,
+    "cpuByName": {
+     "Xvnc": 57.33295027278159
+    },
+    "pageFps": 60.00318953831433
+   },
+   "scroll": {
+    "fps": 49.80730099581432,
+    "updatesPerS": 61.81617593946916,
+    "bytesPerS": 4667129.945569226,
+    "encodings": {
+     "21": 3188,
+     "tight": 23545,
+     "last-rect": 314
+    },
+    "tightKinds": {
+     "basic": 4961,
+     "fill": 18584
+    },
+    "cpu": 45.414450876603055,
+    "cpuByName": {
+     "Xvnc": 45.414450876603055
+    },
+    "pageFps": 60.00199342170836
+   },
+   "video": {
+    "fps": 39.87110739210004,
+    "updatesPerS": 54.27997293478966,
+    "bytesPerS": 2360829.65440109,
+    "encodings": {
+     "21": 10694,
+     "tight": 25242,
+     "last-rect": 275
+    },
+    "tightKinds": {
+     "fill": 4275,
+     "basic": 20967
+    },
+    "cpu": 25.627275173969544,
+    "cpuByName": {
+     "Xvnc": 25.627275173969544
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 76.09130859375,
+     "p10": 75.93017578125,
+     "p90": 77.02685546875,
+     "min": 75.906982421875,
+     "max": 77.02685546875,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 176.4287230000009,
+     "p10": 174.71991400000115,
+     "p90": 300.90193299999373,
+     "min": 174.71245099999942,
+     "max": 300.90193299999373,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 70929
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "tigervnc",
+   "condition": "bw5rtt50",
+   "load": {
+    "load": 4.23,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 634.3482509999958,
+    "connectMs": 264.4775329999975,
+    "bytes": 97839,
+    "encodings": {
+     "21": 15,
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 54,
+     "last-rect": 2
+    }
+   },
+   "anim": {
+    "fps": 6.887703520972954,
+    "updatesPerS": 7.281286579314265,
+    "bytesPerS": 535377.4556461734,
+    "encodings": {
+     "21": 299,
+     "tight": 282,
+     "last-rect": 37
+    },
+    "tightKinds": {
+     "basic": 277,
+     "fill": 5
+    },
+    "cpu": 23.62306606052537,
+    "cpuByName": {
+     "Xvnc": 23.62306606052537
+    },
+    "pageFps": 60.00199342170836
+   },
+   "scroll": {
+    "fps": 4.528609752308374,
+    "updatesPerS": 6.300674437994259,
+    "bytesPerS": 406322.81555927853,
+    "encodings": {
+     "21": 281,
+     "tight": 1347,
+     "last-rect": 32
+    },
+    "tightKinds": {
+     "basic": 237,
+     "fill": 1110
+    },
+    "cpu": 42.46560421739973,
+    "cpuByName": {
+     "Xvnc": 42.46560421739973
+    },
+    "pageFps": 60.00199342170836
+   },
+   "video": {
+    "fps": 4.941043084560819,
+    "updatesPerS": 5.5339682547081175,
+    "bytesPerS": 426087.68812952813,
+    "encodings": {
+     "21": 1566,
+     "tight": 4734,
+     "last-rect": 28
+    },
+    "tightKinds": {
+     "basic": 4072,
+     "fill": 662
+    },
+    "cpu": 33.00148558950756,
+    "cpuByName": {
+     "Xvnc": 33.00148558950756
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 26.0472412109375,
+     "p10": 25.83935546875,
+     "p90": 26.648681640625,
+     "min": 25.8349609375,
+     "max": 26.648681640625,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 74.93731349999871,
+     "p10": 74.42225000000326,
+     "p90": 78.61626199999591,
+     "min": 74.18267500000366,
+     "max": 78.61626199999591,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 71991
+   },
+   "enc": {
+    "zrle": {
+     "fps": 58.57007521250576,
+     "updatesPerS": 59.75330905518265,
+     "bytesPerS": 279866.3566955545,
+     "encodings": {
+      "zrle": 5151,
+      "last-rect": 303
+     },
+     "tightKinds": {},
+     "cpu": 45.686446961029176,
+     "cpuByName": {
+      "Xvnc": 45.686446961029176
+     },
+     "pageFps": 60.00199342170836
+    },
+    "zrleScroll": {
+     "fps": 6.708677195149702,
+     "updatesPerS": 6.708677195149702,
+     "bytesPerS": 424770.9461968719,
+     "encodings": {
+      "zrle": 2255,
+      "last-rect": 34
+     },
+     "tightKinds": {},
+     "cpu": 35.98350186419149,
+     "cpuByName": {
+      "Xvnc": 35.98350186419149
+     },
+     "pageFps": 60.00199342170836
+    }
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "tigervnc",
+   "condition": "bw1rtt150",
+   "load": {
+    "load": 3.83,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 2245.508117000005,
+    "connectMs": 760.4199290000106,
+    "bytes": 95670,
+    "encodings": {
+     "21": 14,
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 55,
+     "last-rect": 2
+    }
+   },
+   "anim": {
+    "fps": 1.1851063913530553,
+    "updatesPerS": 1.3826241232452312,
+    "bytesPerS": 95831.2581239821,
+    "encodings": {
+     "21": 52,
+     "tight": 51,
+     "last-rect": 7
+    },
+    "tightKinds": {
+     "basic": 50,
+     "fill": 1
+    },
+    "cpu": 35.780543386199625,
+    "cpuByName": {
+     "Xvnc": 35.780543386199625
+    },
+    "pageFps": 60.00199342170836
+   },
+   "scroll": {
+    "fps": 0.790284221440853,
+    "updatesPerS": 0.9878552768010662,
+    "bytesPerS": 85570.98764233876,
+    "encodings": {
+     "21": 61,
+     "tight": 284,
+     "last-rect": 5
+    },
+    "tightKinds": {
+     "fill": 238,
+     "basic": 46
+    },
+    "cpu": 29.815881991194292,
+    "cpuByName": {
+     "Xvnc": 29.815881991194292
+    },
+    "pageFps": 60.00318953831432
+   },
+   "video": {
+    "fps": 0.987637377519757,
+    "updatesPerS": 0.987637377519757,
+    "bytesPerS": 84124.97654237786,
+    "encodings": {
+     "21": 226,
+     "tight": 994,
+     "last-rect": 5
+    },
+    "tightKinds": {
+     "fill": 286,
+     "basic": 708
+    },
+    "cpu": 22.052325911501033,
+    "cpuByName": {
+     "Xvnc": 22.052325911501033
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 76.0687255859375,
+     "p10": 75.96435546875,
+     "p90": 76.380859375,
+     "min": 75.791015625,
+     "max": 76.380859375,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 175.03441600000951,
+     "p10": 174.53907400000026,
+     "p90": 177.15129300000262,
+     "min": 174.4546970000083,
+     "max": 177.15129300000262,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 67942
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "tigervnc",
+   "condition": "loss1",
+   "load": {
+    "load": 4.25,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 517.7094429999997,
+    "connectMs": 260.6213379999972,
+    "bytes": 97652,
+    "encodings": {
+     "21": 15,
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 54,
+     "last-rect": 2
+    }
+   },
+   "anim": {
+    "fps": 3.9498172222376713,
+    "updatesPerS": 4.344798944461438,
+    "bytesPerS": 289832.6504962725,
+    "encodings": {
+     "21": 163,
+     "tight": 152,
+     "last-rect": 22
+    },
+    "tightKinds": {
+     "basic": 151,
+     "fill": 1
+    },
+    "cpu": 35.368657255861145,
+    "cpuByName": {
+     "Xvnc": 35.368657255861145
+    },
+    "pageFps": 60.00318953831433
+   },
+   "scroll": {
+    "fps": 4.940683018372116,
+    "updatesPerS": 5.138310339107001,
+    "bytesPerS": 358514.53678122984,
+    "encodings": {
+     "21": 256,
+     "tight": 1203,
+     "last-rect": 26
+    },
+    "tightKinds": {
+     "fill": 999,
+     "basic": 204
+    },
+    "cpu": 35.38165979861165,
+    "cpuByName": {
+     "Xvnc": 35.38165979861165
+    },
+    "pageFps": 60.00199342170836
+   },
+   "video": {
+    "fps": 3.1631136719198842,
+    "updatesPerS": 3.7561974854048623,
+    "bytesPerS": 288069.1113830427,
+    "encodings": {
+     "21": 1023,
+     "tight": 3241,
+     "last-rect": 19
+    },
+    "tightKinds": {
+     "basic": 2710,
+     "fill": 531
+    },
+    "cpu": 24.45742181537135,
+    "cpuByName": {
+     "Xvnc": 24.45742181537135
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 26.078369140625,
+     "p10": 25.92724609375,
+     "p90": 26.357666015625,
+     "min": 25.900390625,
+     "max": 26.357666015625,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 75.56000949999725,
+     "p10": 74.74730700001237,
+     "p90": 78.13652299999376,
+     "min": 74.36744100000942,
+     "max": 78.13652299999376,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 68124
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "tigervnc",
+   "condition": "cpu20",
+   "load": {
+    "load": 3.9,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 12.147610000014538,
+    "connectMs": 8.794090999988839,
+    "bytes": 95600,
+    "encodings": {
+     "21": 14,
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 54,
+     "last-rect": 1
+    }
+   },
+   "anim": {
+    "fps": 24.306664268530426,
+    "updatesPerS": 28.2589674016248,
+    "bytesPerS": 1986580.5088244851,
+    "encodings": {
+     "21": 1106,
+     "tight": 1011,
+     "last-rect": 143
+    },
+    "tightKinds": {
+     "basic": 1011
+    },
+    "cpu": 19.681783520471413,
+    "cpuByName": {
+     "Xvnc": 19.681783520471413
+    },
+    "pageFps": 32.06641485678313
+   },
+   "scroll": {
+    "fps": 36.33991465125888,
+    "updatesPerS": 52.13987754311057,
+    "bytesPerS": 3365281.496224167,
+    "encodings": {
+     "21": 2339,
+     "tight": 19634,
+     "last-rect": 264
+    },
+    "tightKinds": {
+     "fill": 15663,
+     "basic": 3971
+    },
+    "cpu": 20.05997841389017,
+    "cpuByName": {
+     "Xvnc": 20.05997841389017
+    },
+    "pageFps": 48.160429496289275
+   },
+   "video": {
+    "fps": 24.85226223108512,
+    "updatesPerS": 51.87416640297926,
+    "bytesPerS": 1992144.3225921383,
+    "encodings": {
+     "21": 8886,
+     "tight": 19642,
+     "last-rect": 263
+    },
+    "tightKinds": {
+     "fill": 3365,
+     "basic": 16277
+    },
+    "cpu": 20.06317419586615,
+    "cpuByName": {
+     "Xvnc": 20.06317419586615
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 1.171630859375,
+     "p10": 1.041259765625,
+     "p90": 1.737548828125,
+     "min": 0.9462890625,
+     "max": 1.737548828125,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 24.991863999995985,
+     "p10": 24.17402299999958,
+     "p90": 28.48277900001267,
+     "min": 23.97420100000454,
+     "max": 28.48277900001267,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 80131
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "kasmvnc",
+   "condition": "rtt150",
+   "load": {
+    "load": 3.49,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 1365.013164999982,
+    "connectMs": 763.3320620000013,
+    "bytes": 53603,
+    "encodings": {
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "ext-desktop-size": 1,
+     "tight": 72,
+     "last-rect": 2
+    }
+   },
+   "anim": {
+    "fps": 55.583796405702515,
+    "updatesPerS": 58.93459264292572,
+    "bytesPerS": 1670615.9410641002,
+    "encodings": {
+     "tight": 2050,
+     "last-rect": 299
+    },
+    "tightKinds": {
+     "basic": 1854,
+     "jpeg": 196
+    },
+    "cpu": 64.97640799718715,
+    "cpuByName": {
+     "Xkasmvnc": 64.97640799718715
+    },
+    "pageFps": 60.00199342170836
+   },
+   "scroll": {
+    "fps": 55.46602305341032,
+    "updatesPerS": 58.82161875415044,
+    "bytesPerS": 2633259.3138597747,
+    "encodings": {
+     "tight": 17951,
+     "last-rect": 298
+    },
+    "tightKinds": {
+     "fill": 12100,
+     "basic": 5851
+    },
+    "cpu": 92.96969580773238,
+    "cpuByName": {
+     "Xkasmvnc": 92.96969580773238
+    },
+    "pageFps": 56.41383434665604
+   },
+   "video": {
+    "fps": 30.041446034735472,
+    "updatesPerS": 30.041446034735472,
+    "bytesPerS": 3758088.647733441,
+    "encodings": {
+     "tight": 31942,
+     "last-rect": 152
+    },
+    "tightKinds": {
+     "fill": 10909,
+     "jpeg": 4607,
+     "basic": 16426
+    },
+    "cpu": 52.4794314084516,
+    "cpuByName": {
+     "Xkasmvnc": 52.4794314084516
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 76.158203125,
+     "p10": 76.027587890625,
+     "p90": 77.520263671875,
+     "min": 76.021240234375,
+     "max": 77.520263671875,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 173.86533650000638,
+     "p10": 172.76348600001074,
+     "p90": 176.93169100000523,
+     "min": 172.59493300001486,
+     "max": 176.93169100000523,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 80223
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "kasmvnc",
+   "condition": "bw5rtt50",
+   "load": {
+    "load": 3.09,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 514.7195460000075,
+    "connectMs": 262.6436579999863,
+    "bytes": 51598,
+    "encodings": {
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "ext-desktop-size": 1,
+     "tight": 68,
+     "last-rect": 1
+    }
+   },
+   "anim": {
+    "fps": 27.0547843497777,
+    "updatesPerS": 29.02958612713374,
+    "bytesPerS": 569329.0330460578,
+    "encodings": {
+     "tight": 2231,
+     "last-rect": 147
+    },
+    "tightKinds": {
+     "basic": 2219,
+     "fill": 1,
+     "jpeg": 11
+    },
+    "cpu": 47.50025024085808,
+    "cpuByName": {
+     "Xkasmvnc": 47.50025024085808
+    },
+    "pageFps": 57.41054520083724
+   },
+   "scroll": {
+    "fps": 10.672719716783105,
+    "updatesPerS": 10.672719716783105,
+    "bytesPerS": 474498.05060254456,
+    "encodings": {
+     "tight": 3208,
+     "last-rect": 54
+    },
+    "tightKinds": {
+     "basic": 1049,
+     "fill": 2159
+    },
+    "cpu": 17.88955489714037,
+    "cpuByName": {
+     "Xkasmvnc": 17.88955489714037
+    },
+    "pageFps": 28.54535215643629
+   },
+   "video": {
+    "fps": 4.544658461404105,
+    "updatesPerS": 4.74225230755211,
+    "bytesPerS": 572517.8943338435,
+    "encodings": {
+     "tight": 4999,
+     "last-rect": 24
+    },
+    "tightKinds": {
+     "basic": 2565,
+     "jpeg": 655,
+     "fill": 1779
+    },
+    "cpu": 9.542242927662064,
+    "cpuByName": {
+     "Xkasmvnc": 9.542242927662064
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 25.988037109375,
+     "p10": 25.91162109375,
+     "p90": 26.602783203125,
+     "min": 25.90478515625,
+     "max": 26.602783203125,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 73.70644750000793,
+     "p10": 73.06998900003964,
+     "p90": 74.50631100003375,
+     "min": 72.87089799996465,
+     "max": 74.50631100003375,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 107048
+   },
+   "enc": {
+    "zrle": {
+     "fps": 30.990152499858038,
+     "updatesPerS": 33.753605589017354,
+     "bytesPerS": 480752.2096253614,
+     "encodings": {
+      "zrle": 1660,
+      "last-rect": 171
+     },
+     "tightKinds": {},
+     "cpu": 75.47980044628845,
+     "cpuByName": {
+      "Xkasmvnc": 75.47980044628845
+     },
+     "pageFps": 56.61317651749228
+    },
+    "zrleScroll": {
+     "fps": 8.895034852821988,
+     "updatesPerS": 8.895034852821988,
+     "bytesPerS": 570441.3524556506,
+     "encodings": {
+      "zrle": 2694,
+      "last-rect": 45
+     },
+     "tightKinds": {},
+     "cpu": 22.870501716637595,
+     "cpuByName": {
+      "Xkasmvnc": 22.870501716637595
+     },
+     "pageFps": 31.33837804784835
+    },
+    "webp": {
+     "fps": 28.399456356543297,
+     "updatesPerS": 29.779985484986373,
+     "bytesPerS": 568574.4714813258,
+     "encodings": {
+      "tight": 2476,
+      "last-rect": 151
+     },
+     "tightKinds": {
+      "basic": 2442,
+      "webp": 34
+     },
+     "cpu": 60.966481639603664,
+     "cpuByName": {
+      "Xkasmvnc": 60.966481639603664
+     },
+     "pageFps": 54.021728296621156
+    },
+    "webpScroll": {
+     "fps": 12.646129446632662,
+     "updatesPerS": 13.041320991839932,
+     "bytesPerS": 570520.6453877476,
+     "encodings": {
+      "tight": 3828,
+      "last-rect": 66
+     },
+     "tightKinds": {
+      "basic": 1254,
+      "fill": 2574
+     },
+     "cpu": 22.465647908501563,
+     "cpuByName": {
+      "Xkasmvnc": 22.465647908501563
+     },
+     "pageFps": 30.988473077530397
+    }
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "kasmvnc",
+   "condition": "bw1rtt150",
+   "load": {
+    "load": 2.86,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 1722.8561950000003,
+    "connectMs": 762.5114980000071,
+    "bytes": 52179,
+    "encodings": {
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "ext-desktop-size": 1,
+     "tight": 69,
+     "last-rect": 2
+    }
+   },
+   "anim": {
+    "fps": 5.7310251613422505,
+    "updatesPerS": 6.126268275917578,
+    "bytesPerS": 112173.15786139459,
+    "encodings": {
+     "tight": 498,
+     "last-rect": 31
+    },
+    "tightKinds": {
+     "basic": 498
+    },
+    "cpu": 20.866497890932997,
+    "cpuByName": {
+     "Xkasmvnc": 20.866497890932997
+    },
+    "pageFps": 50.234227050732585
+   },
+   "scroll": {
+    "fps": 2.370415068087465,
+    "updatesPerS": 2.370415068087465,
+    "bytesPerS": 100682.58987865904,
+    "encodings": {
+     "tight": 690,
+     "last-rect": 12
+    },
+    "tightKinds": {
+     "fill": 467,
+     "basic": 223
+    },
+    "cpu": 4.1735439922773585,
+    "cpuByName": {
+     "Xkasmvnc": 4.1735439922773585
+    },
+    "pageFps": 25.34287418008348
+   },
+   "video": {
+    "fps": 0.7905667271245839,
+    "updatesPerS": 0.9882084089057298,
+    "bytesPerS": 105602.32227584766,
+    "encodings": {
+     "tight": 858,
+     "last-rect": 5
+    },
+    "tightKinds": {
+     "fill": 303,
+     "jpeg": 121,
+     "basic": 434
+    },
+    "cpu": 2.3864981238720815,
+    "cpuByName": {
+     "Xkasmvnc": 2.3864981238720815
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 76.0771484375,
+     "p10": 76.006103515625,
+     "p90": 76.94091796875,
+     "min": 75.99365234375,
+     "max": 76.94091796875,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 174.26090199997998,
+     "p10": 173.28652500000317,
+     "p90": 175.16769299999578,
+     "min": 173.15967700001784,
+     "max": 175.16769299999578,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 103612
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "kasmvnc",
+   "condition": "loss1",
+   "load": {
+    "load": 2.77,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 565.4392900000094,
+    "connectMs": 261.8100240000058,
+    "bytes": 52130,
+    "encodings": {
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "ext-desktop-size": 1,
+     "tight": 69,
+     "last-rect": 2
+    }
+   },
+   "anim": {
+    "fps": 17.97247474570744,
+    "updatesPerS": 19.749972248030154,
+    "bytesPerS": 389504.2126823112,
+    "encodings": {
+     "tight": 1592,
+     "last-rect": 100
+    },
+    "tightKinds": {
+     "basic": 1587,
+     "jpeg": 5
+    },
+    "cpu": 38.94621075644164,
+    "cpuByName": {
+     "Xkasmvnc": 38.94621075644164
+    },
+    "pageFps": 56.01515000498356
+   },
+   "scroll": {
+    "fps": 7.911186268277277,
+    "updatesPerS": 7.911186268277277,
+    "bytesPerS": 354258.17438169545,
+    "encodings": {
+     "tight": 2371,
+     "last-rect": 40
+    },
+    "tightKinds": {
+     "basic": 780,
+     "fill": 1591
+    },
+    "cpu": 12.926605839598803,
+    "cpuByName": {
+     "Xkasmvnc": 12.926605839598803
+    },
+    "pageFps": 30.667834965141527
+   },
+   "video": {
+    "fps": 2.965370509352057,
+    "updatesPerS": 3.360753243932331,
+    "bytesPerS": 395607.31197351584,
+    "encodings": {
+     "tight": 3758,
+     "last-rect": 17
+    },
+    "tightKinds": {
+     "fill": 1339,
+     "basic": 1909,
+     "jpeg": 510
+    },
+    "cpu": 7.5593647166070195,
+    "cpuByName": {
+     "Xkasmvnc": 7.5593647166070195
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 26.056640625,
+     "p10": 25.930419921875,
+     "p90": 26.893310546875,
+     "min": 25.88916015625,
+     "max": 26.893310546875,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 73.67377399999532,
+     "p10": 72.95166000002064,
+     "p90": 327.38271899998654,
+     "min": 72.84711600001901,
+     "max": 327.38271899998654,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 92313
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "kasmvnc",
+   "condition": "cpu20",
+   "load": {
+    "load": 2.5,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 16.374523999984376,
+    "connectMs": 12.067399999999907,
+    "bytes": 51743,
+    "encodings": {
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "ext-desktop-size": 1,
+     "tight": 68,
+     "last-rect": 1
+    }
+   },
+   "anim": {
+    "fps": 13.823840543898298,
+    "updatesPerS": 14.021323980239702,
+    "bytesPerS": 272071.3503800619,
+    "encodings": {
+     "tight": 1207,
+     "last-rect": 71
+    },
+    "tightKinds": {
+     "basic": 1207
+    },
+    "cpu": 19.472138349358527,
+    "cpuByName": {
+     "Xkasmvnc": 19.472138349358527
+    },
+    "pageFps": 27.219264086465866
+   },
+   "scroll": {
+    "fps": 14.03016574994559,
+    "updatesPerS": 14.03016574994559,
+    "bytesPerS": 628280.1098570741,
+    "encodings": {
+     "tight": 4260,
+     "last-rect": 71
+    },
+    "tightKinds": {
+     "fill": 2866,
+     "basic": 1394
+    },
+    "cpu": 20.079406645772128,
+    "cpuByName": {
+     "Xkasmvnc": 20.079406645772128
+    },
+    "pageFps": 26.711850892056216
+   },
+   "video": {
+    "fps": 12.645430407415049,
+    "updatesPerS": 12.645430407415049,
+    "bytesPerS": 1591277.0547022456,
+    "encodings": {
+     "tight": 14121,
+     "last-rect": 64
+    },
+    "tightKinds": {
+     "fill": 4946,
+     "jpeg": 1943,
+     "basic": 7232
+    },
+    "cpu": 20.065924114244353,
+    "cpuByName": {
+     "Xkasmvnc": 20.065924114244353
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 1.049072265625,
+     "p10": 0.946044921875,
+     "p90": 1.5361328125,
+     "min": 0.944580078125,
+     "max": 1.5361328125,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 24.038856999977725,
+     "p10": 23.24633900000481,
+     "p90": 27.646403999999166,
+     "min": 23.016189999994822,
+     "max": 27.646403999999166,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 46607
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "wayland",
+   "condition": "rtt150",
+   "load": {
+    "load": 3.49,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 1663.8380060000345,
+    "connectMs": 759.0305999999982,
+    "bytes": 279075,
+    "encodings": {
+     "-258": 1,
+     "-316": 1,
+     "cursor": 1,
+     "led": 1,
+     "ext-desktop-size": 1,
+     "tight": 270
+    }
+   },
+   "anim": {
+    "fps": 51.36381379140063,
+    "updatesPerS": 51.75892005133448,
+    "bytesPerS": 11159175.355210261,
+    "encodings": {
+     "tight": 62880
+    },
+    "tightKinds": {
+     "jpeg": 62880
+    },
+    "cpu": 39.75700173066019,
+    "cpuByName": {
+     "sway": 8.547755372091942,
+     "wayvnc": 31.209246358568254
+    },
+    "pageFps": 61.29457333386575
+   },
+   "scroll": {
+    "fps": 45.93026453156798,
+    "updatesPerS": 46.915892525807635,
+    "bytesPerS": 11732681.063966239,
+    "encodings": {
+     "tight": 56442
+    },
+    "tightKinds": {
+     "jpeg": 56442
+    },
+    "cpu": 41.70781159658909,
+    "cpuByName": {
+     "sway": 9.930431332521211,
+     "wayvnc": 31.77738026406788
+    },
+    "pageFps": 61.152301205060056
+   },
+   "video": {
+    "fps": 26.282885391739693,
+    "updatesPerS": 26.282885391739693,
+    "bytesPerS": 2819561.150726117,
+    "encodings": {
+     "tight": 15384
+    },
+    "tightKinds": {
+     "jpeg": 15384
+    },
+    "cpu": 12.517534821075664,
+    "cpuByName": {
+     "sway": 3.7751295492132955,
+     "wayvnc": 8.742405271862369
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 75.9981689453125,
+     "p10": 75.904052734375,
+     "p90": 76.930908203125,
+     "min": 75.837890625,
+     "max": 76.930908203125,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 157.93860899997526,
+     "p10": 157.67265900003258,
+     "p90": 171.44475099997362,
+     "min": 157.3073190000141,
+     "max": 171.44475099997362,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 270479
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "wayland",
+   "condition": "bw5rtt50",
+   "load": {
+    "load": 3.04,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 942.355448999966,
+    "connectMs": 258.93136399996,
+    "bytes": 270387,
+    "encodings": {
+     "-258": 1,
+     "-316": 1,
+     "cursor": 1,
+     "led": 1,
+     "ext-desktop-size": 1,
+     "tight": 261
+    }
+   },
+   "anim": {
+    "fps": 1.9741267922197785,
+    "updatesPerS": 1.9741267922197785,
+    "bytesPerS": 423067.41374613106,
+    "encodings": {
+     "tight": 2387
+    },
+    "tightKinds": {
+     "jpeg": 2387
+    },
+    "cpu": 18.670403360665528,
+    "cpuByName": {
+     "sway": 10.328308242070293,
+     "wayvnc": 8.342095118595235
+    },
+    "pageFps": 61.196826535900804
+   },
+   "scroll": {
+    "fps": 1.7781460536900946,
+    "updatesPerS": 1.7781460536900946,
+    "bytesPerS": 440823.1517470675,
+    "encodings": {
+     "tight": 2125
+    },
+    "tightKinds": {
+     "jpeg": 2125
+    },
+    "cpu": 18.09380837230351,
+    "cpuByName": {
+     "sway": 9.941652951815115,
+     "wayvnc": 8.152155420488395
+    },
+    "pageFps": 61.01938262742283
+   },
+   "video": {
+    "fps": 2.764484211326891,
+    "updatesPerS": 2.764484211326891,
+    "bytesPerS": 405014.11625413137,
+    "encodings": {
+     "tight": 2305
+    },
+    "tightKinds": {
+     "jpeg": 2305
+    },
+    "cpu": 8.747689617376409,
+    "cpuByName": {
+     "sway": 4.771467064023495,
+     "wayvnc": 3.9762225533529127
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 26.2071533203125,
+     "p10": 26.146484375,
+     "p90": 55.484375,
+     "min": 26.113525390625,
+     "max": 55.484375,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 301.44808049997664,
+     "p10": 299.64121400000295,
+     "p90": 383.1263629999594,
+     "min": 278.960018999991,
+     "max": 383.1263629999594,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 267633
+   },
+   "enc": {
+    "zrle": {
+     "fps": 57.60983241057044,
+     "updatesPerS": 59.18818398346278,
+     "bytesPerS": 435450.62626948144,
+     "encodings": {
+      "zrle": 300
+     },
+     "tightKinds": {},
+     "cpu": 86.96921228589719,
+     "cpuByName": {
+      "sway": 10.325111960882772,
+      "wayvnc": 76.64410032501442
+     },
+     "pageFps": 61.01816586572014
+    },
+    "zrleScroll": {
+     "fps": 4.348419455431744,
+     "updatesPerS": 4.348419455431744,
+     "bytesPerS": 387550.9074110562,
+     "encodings": {
+      "zrle": 157
+     },
+     "tightKinds": {},
+     "cpu": 20.47312522994273,
+     "cpuByName": {
+      "sway": 9.342105687449594,
+      "wayvnc": 11.131019542493135
+     },
+     "pageFps": 61.18531552427417
+    },
+    "h264": {
+     "error": "Open H.264: nothing within 30000 ms"
+    }
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "wayland",
+   "condition": "bw1rtt150",
+   "load": {
+    "load": 3.32,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 3769.1024309999775,
+    "connectMs": 759.3769519999623,
+    "bytes": 270351,
+    "encodings": {
+     "-258": 1,
+     "-316": 1,
+     "cursor": 1,
+     "led": 1,
+     "ext-desktop-size": 1,
+     "tight": 261
+    }
+   },
+   "anim": {
+    "fps": 0.39475057262093427,
+    "updatesPerS": 0.39475057262093427,
+    "bytesPerS": 104030.98690623054,
+    "encodings": {
+     "tight": 587
+    },
+    "tightKinds": {
+     "jpeg": 587
+    },
+    "cpu": 16.884340504816997,
+    "cpuByName": {
+     "sway": 9.733325702776858,
+     "wayvnc": 7.15101480204014
+    },
+    "pageFps": 60.81876009491714
+   },
+   "scroll": {
+    "fps": 0.39491561835316935,
+    "updatesPerS": 0.39491561835316935,
+    "bytesPerS": 115511.23870582861,
+    "encodings": {
+     "tight": 555
+    },
+    "tightKinds": {
+     "jpeg": 555
+    },
+    "cpu": 16.896921822112247,
+    "cpuByName": {
+     "sway": 9.939365777713087,
+     "wayvnc": 6.95755604439916
+    },
+    "pageFps": 60.87095357841377
+   },
+   "video": {
+    "fps": 0.592811947299134,
+    "updatesPerS": 0.592811947299134,
+    "bytesPerS": 115882.87945803472,
+    "encodings": {
+     "tight": 667
+    },
+    "tightKinds": {
+     "jpeg": 667
+    },
+    "cpu": 7.159517342554409,
+    "cpuByName": {
+     "sway": 4.176385116490072,
+     "wayvnc": 2.983132226064337
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 117.523193359375,
+     "p10": 76.382568359375,
+     "p90": 118.095703125,
+     "min": 76.15625,
+     "max": 118.095703125,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 1636.9111419999972,
+     "p10": 1577.1031199999852,
+     "p90": 1793.3594779999694,
+     "min": 661.3910389998928,
+     "max": 1793.3594779999694,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 271564
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "wayland",
+   "condition": "loss1",
+   "load": {
+    "load": 2.22,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 729.3697819999652,
+    "connectMs": 260.5184129999252,
+    "bytes": 270351,
+    "encodings": {
+     "-258": 1,
+     "-316": 1,
+     "cursor": 1,
+     "led": 1,
+     "ext-desktop-size": 1,
+     "tight": 261
+    }
+   },
+   "anim": {
+    "fps": 1.3785627482119591,
+    "updatesPerS": 1.3785627482119591,
+    "bytesPerS": 281947.59201501904,
+    "encodings": {
+     "tight": 1594
+    },
+    "tightKinds": {
+     "jpeg": 1594
+    },
+    "cpu": 17.488162490851575,
+    "cpuByName": {
+     "sway": 9.737726841496901,
+     "wayvnc": 7.750435649354675
+    },
+    "pageFps": 61.13031144495275
+   },
+   "scroll": {
+    "fps": 1.3825969395780882,
+    "updatesPerS": 1.3825969395780882,
+    "bytesPerS": 373994.05226666096,
+    "encodings": {
+     "tight": 1802
+    },
+    "tightKinds": {
+     "jpeg": 1802
+    },
+    "cpu": 16.097523717767736,
+    "cpuByName": {
+     "sway": 8.744333871380004,
+     "wayvnc": 7.353189846387731
+    },
+    "pageFps": 61.220013161305765
+   },
+   "video": {
+    "fps": 2.1740121517942854,
+    "updatesPerS": 2.1740121517942854,
+    "bytesPerS": 349056.4265300653,
+    "encodings": {
+     "tight": 1992
+    },
+    "tightKinds": {
+     "jpeg": 1992
+    },
+    "cpu": 8.751241920066269,
+    "cpuByName": {
+     "sway": 4.77340468367251,
+     "wayvnc": 3.977837236393759
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 26.04052734375,
+     "p10": 25.9716796875,
+     "p90": 26.9638671875,
+     "min": 25.7724609375,
+     "max": 26.9638671875,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 358.0608995000366,
+     "p10": 310.095912000048,
+     "p90": 839.6269640000537,
+     "min": 260.7141990000382,
+     "max": 839.6269640000537,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 321906
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "wayland",
+   "condition": "cpu20",
+   "load": {
+    "load": 2.03,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 73.25742199993692,
+    "connectMs": 15.179479999933392,
+    "bytes": 489503,
+    "encodings": {
+     "-258": 1,
+     "-316": 1,
+     "cursor": 1,
+     "led": 1,
+     "ext-desktop-size": 1,
+     "tight": 468
+    }
+   },
+   "anim": {
+    "fps": 16.211705306543152,
+    "updatesPerS": 24.71296540631578,
+    "bytesPerS": 5328956.175536667,
+    "encodings": {
+     "tight": 30000
+    },
+    "tightKinds": {
+     "jpeg": 30000
+    },
+    "cpu": 19.69019551001111,
+    "cpuByName": {
+     "sway": 3.778926411012234,
+     "wayvnc": 15.91126909899888
+    },
+    "pageFps": 39.955250119865745
+   },
+   "scroll": {
+    "fps": 14.412035355370586,
+    "updatesPerS": 22.30904102954625,
+    "bytesPerS": 5545722.775526174,
+    "encodings": {
+     "tight": 26642
+    },
+    "tightKinds": {
+     "jpeg": 26642
+    },
+    "cpu": 19.657611283916008,
+    "cpuByName": {
+     "sway": 4.16979633295188,
+     "wayvnc": 15.487814950964127
+    },
+    "pageFps": 36.184802382999145
+   },
+   "video": {
+    "fps": 28.057270608252445,
+    "updatesPerS": 28.057270608252445,
+    "bytesPerS": 2907507.5761664584,
+    "encodings": {
+     "tight": 15761
+    },
+    "tightKinds": {
+     "jpeg": 15761
+    },
+    "cpu": 14.318098036563137,
+    "cpuByName": {
+     "sway": 4.3749744000609585,
+     "wayvnc": 9.943123636502179
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 0.9595947265625,
+     "p10": 0.84033203125,
+     "p90": 1.44140625,
+     "min": 0.786865234375,
+     "max": 1.44140625,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 8.104232500016224,
+     "p10": 7.5958920000121,
+     "p90": 9.454479000065476,
+     "min": 7.281396999955177,
+     "max": 9.454479000065476,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 267764
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "wayland-tigervnc",
+   "condition": "rtt150",
+   "load": {
+    "load": 4.87,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 1512.2612439999357,
+    "connectMs": 760.6695419999305,
+    "bytes": 94202,
+    "encodings": {
+     "21": 15,
+     "vmware-cursor": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 48,
+     "last-rect": 2
+    }
+   },
+   "anim": {
+    "fps": 43.99700931927257,
+    "updatesPerS": 64.12120192270666,
+    "bytesPerS": 3058125.9725314537,
+    "encodings": {
+     "21": 1617,
+     "tight": 2545,
+     "last-rect": 325
+    },
+    "tightKinds": {
+     "basic": 2545
+    },
+    "cpu": 52.22619730173709,
+    "cpuByName": {
+     "sway": 8.340305272520752,
+     "w0vncserver": 43.885892029216336
+    },
+    "pageFps": 61.18531552427417
+   },
+   "scroll": {
+    "fps": 50.7984404889038,
+    "updatesPerS": 67.40182181601632,
+    "bytesPerS": 4965063.687820242,
+    "encodings": {
+     "21": 3362,
+     "tight": 24960,
+     "last-rect": 341
+    },
+    "tightKinds": {
+     "basic": 5136,
+     "fill": 19824
+    },
+    "cpu": 38.56579660452963,
+    "cpuByName": {
+     "sway": 8.349296172114663,
+     "w0vncserver": 30.216500432414968
+    },
+    "pageFps": 61.273776021395925
+   },
+   "video": {
+    "fps": 31.63875840756779,
+    "updatesPerS": 50.81975569215576,
+    "bytesPerS": 2105081.429029442,
+    "encodings": {
+     "21": 9538,
+     "tight": 22667,
+     "last-rect": 257
+    },
+    "tightKinds": {
+     "fill": 3648,
+     "basic": 19019
+    },
+    "cpu": 22.8650755670467,
+    "cpuByName": {
+     "sway": 3.7777081371642374,
+     "w0vncserver": 19.087367429882462
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 76.31689453125,
+     "p10": 76.09326171875,
+     "p90": 77.362548828125,
+     "min": 76.044921875,
+     "max": 77.362548828125,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 167.23251150001306,
+     "p10": 166.49711300001945,
+     "p90": 180.49010700010695,
+     "min": 166.1263129999861,
+     "max": 180.49010700010695,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 65874
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "wayland-tigervnc",
+   "condition": "bw5rtt50",
+   "load": {
+    "load": 4.16,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 603.3160040000221,
+    "connectMs": 259.7857049999293,
+    "bytes": 94411,
+    "encodings": {
+     "21": 14,
+     "vmware-cursor": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 49,
+     "last-rect": 1
+    }
+   },
+   "anim": {
+    "fps": 6.9116342829369035,
+    "updatesPerS": 7.50406007861721,
+    "bytesPerS": 519308.011551647,
+    "encodings": {
+     "21": 259,
+     "tight": 296,
+     "last-rect": 38
+    },
+    "tightKinds": {
+     "basic": 296
+    },
+    "cpu": 33.77217047262346,
+    "cpuByName": {
+     "sway": 11.323610099644336,
+     "w0vncserver": 22.448560372979124
+    },
+    "pageFps": 61.118101743663495
+   },
+   "scroll": {
+    "fps": 5.529559748990984,
+    "updatesPerS": 5.92452830249034,
+    "bytesPerS": 436109.2679689559,
+    "encodings": {
+     "21": 311,
+     "tight": 1285,
+     "last-rect": 30
+    },
+    "tightKinds": {
+     "fill": 1087,
+     "basic": 198
+    },
+    "cpu": 42.93881794995183,
+    "cpuByName": {
+     "sway": 8.746796249064262,
+     "w0vncserver": 34.19202170088757
+    },
+    "pageFps": 61.25665941696431
+   },
+   "video": {
+    "fps": 4.546342762463418,
+    "updatesPerS": 5.139343992349951,
+    "bytesPerS": 395434.7657996926,
+    "encodings": {
+     "21": 1521,
+     "tight": 4144,
+     "last-rect": 26
+    },
+    "tightKinds": {
+     "basic": 3490,
+     "fill": 654
+    },
+    "cpu": 39.56014579954148,
+    "cpuByName": {
+     "sway": 3.578304645184656,
+     "w0vncserver": 35.98184115435682
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 26.1068115234375,
+     "p10": 26.022705078125,
+     "p90": 26.60302734375,
+     "min": 26.001708984375,
+     "max": 26.60302734375,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 66.49679600005038,
+     "p10": 66.34902099997271,
+     "p90": 66.87240399990696,
+     "min": 66.01534000004176,
+     "max": 66.87240399990696,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 71738
+   },
+   "enc": {
+    "zrle": {
+     "fps": 57.445874843174884,
+     "updatesPerS": 60.60441091702643,
+     "bytesPerS": 280019.62081029906,
+     "encodings": {
+      "zrle": 5227,
+      "last-rect": 307
+     },
+     "tightKinds": {},
+     "cpu": 55.60840300134774,
+     "cpuByName": {
+      "sway": 8.738463328783217,
+      "w0vncserver": 46.86993967256452
+     },
+     "pageFps": 61.12420598457913
+    },
+    "zrleScroll": {
+     "fps": 7.908905420345797,
+     "updatesPerS": 7.908905420345797,
+     "bytesPerS": 509769.8829268369,
+     "encodings": {
+      "zrle": 2769,
+      "last-rect": 40
+     },
+     "tightKinds": {},
+     "cpu": 27.836891903170695,
+     "cpuByName": {
+      "sway": 8.549902513116713,
+      "w0vncserver": 19.286989390053982
+     },
+     "pageFps": 61.12909025530385
+    }
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "wayland-tigervnc",
+   "condition": "bw1rtt150",
+   "load": {
+    "load": 5.76,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 2171.093393999967,
+    "connectMs": 759.7722699999576,
+    "bytes": 94101,
+    "encodings": {
+     "21": 13,
+     "vmware-cursor": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 50,
+     "last-rect": 2
+    }
+   },
+   "anim": {
+    "fps": 1.1860091348396227,
+    "updatesPerS": 1.779013702259434,
+    "bytesPerS": 96240.2925920743,
+    "encodings": {
+     "21": 48,
+     "tight": 57,
+     "last-rect": 9
+    },
+    "tightKinds": {
+     "basic": 55,
+     "fill": 2
+    },
+    "cpu": 37.37574020655396,
+    "cpuByName": {
+     "sway": 7.9522851503306295,
+     "w0vncserver": 29.423455056223325
+    },
+    "pageFps": 61.15963464113685
+   },
+   "scroll": {
+    "fps": 1.1848483105177785,
+    "updatesPerS": 1.1848483105177785,
+    "bytesPerS": 79275.83076012351,
+    "encodings": {
+     "21": 50,
+     "tight": 230,
+     "last-rect": 6
+    },
+    "tightKinds": {
+     "basic": 37,
+     "fill": 193
+    },
+    "cpu": 34.77326862161779,
+    "cpuByName": {
+     "sway": 9.736515214052982,
+     "w0vncserver": 25.03675340756481
+    },
+    "pageFps": 61.16941529235382
+   },
+   "video": {
+    "fps": 0.7903747911338904,
+    "updatesPerS": 0.9879684889173631,
+    "bytesPerS": 82657.19806308448,
+    "encodings": {
+     "21": 235,
+     "tight": 907,
+     "last-rect": 5
+    },
+    "tightKinds": {
+     "fill": 284,
+     "basic": 623
+    },
+    "cpu": 25.452533938618625,
+    "cpuByName": {
+     "sway": 3.7781105065137024,
+     "w0vncserver": 21.674423432104923
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 76.1717529296875,
+     "p10": 76.055419921875,
+     "p90": 76.453857421875,
+     "min": 76.010009765625,
+     "max": 76.453857421875,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 166.78760600002715,
+     "p10": 166.51163199997973,
+     "p90": 168.4383369999705,
+     "min": 166.04488400008995,
+     "max": 168.4383369999705,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 69564
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "wayland-tigervnc",
+   "condition": "loss1",
+   "load": {
+    "load": 4.07,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 517.8840450000716,
+    "connectMs": 258.95951000007335,
+    "bytes": 96024,
+    "encodings": {
+     "21": 14,
+     "vmware-cursor": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 49,
+     "last-rect": 2
+    }
+   },
+   "anim": {
+    "fps": 4.74331275089905,
+    "updatesPerS": 4.74331275089905,
+    "bytesPerS": 321698.1904590373,
+    "encodings": {
+     "21": 161,
+     "tight": 183,
+     "last-rect": 24
+    },
+    "tightKinds": {
+     "basic": 183
+    },
+    "cpu": 33.1973347859694,
+    "cpuByName": {
+     "sway": 8.547816741297511,
+     "w0vncserver": 24.649518044671893
+    },
+    "pageFps": 61.37913109542756
+   },
+   "scroll": {
+    "fps": 3.7559541844398674,
+    "updatesPerS": 4.54668138116405,
+    "bytesPerS": 276658.05013546353,
+    "encodings": {
+     "21": 189,
+     "tight": 914,
+     "last-rect": 23
+    },
+    "tightKinds": {
+     "fill": 746,
+     "basic": 168
+    },
+    "cpu": 33.999671447058276,
+    "cpuByName": {
+     "sway": 8.3507964957687,
+     "w0vncserver": 25.648874951289578
+    },
+    "pageFps": 61.260326455681046
+   },
+   "video": {
+    "fps": 5.139929736769027,
+    "updatesPerS": 6.32606736833111,
+    "bytesPerS": 389028.0365724952,
+    "encodings": {
+     "21": 1468,
+     "tight": 4086,
+     "last-rect": 32
+    },
+    "tightKinds": {
+     "basic": 3607,
+     "fill": 479
+    },
+    "cpu": 35.979987399856164,
+    "cpuByName": {
+     "sway": 3.578120293908348,
+     "w0vncserver": 32.401867105947815
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 26.2435302734375,
+     "p10": 26.071533203125,
+     "p90": 26.5263671875,
+     "min": 25.9775390625,
+     "max": 26.5263671875,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 67.75543800002197,
+     "p10": 66.64420099998824,
+     "p90": 116.57520600000862,
+     "min": 66.63261900004,
+     "max": 116.57520600000862,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 146440
+   }
+  },
+  {
+   "rep": 0,
+   "backend": "wayland-tigervnc",
+   "condition": "cpu20",
+   "load": {
+    "load": 2.85,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 11.542313999962062,
+    "connectMs": 7.887415000004694,
+    "bytes": 94007,
+    "encodings": {
+     "21": 13,
+     "vmware-cursor": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 49,
+     "last-rect": 1
+    }
+   },
+   "anim": {
+    "fps": 17.405506229601286,
+    "updatesPerS": 23.33920153514718,
+    "bytesPerS": 1437091.3577524922,
+    "encodings": {
+     "21": 716,
+     "tight": 808,
+     "last-rect": 118
+    },
+    "tightKinds": {
+     "basic": 808
+    },
+    "cpu": 19.889703942060866,
+    "cpuByName": {
+     "sway": 3.3812496701503476,
+     "w0vncserver": 16.50845427191052
+    },
+    "pageFps": 37.16060975366112
+   },
+   "scroll": {
+    "fps": 27.65409829637065,
+    "updatesPerS": 46.22185000964808,
+    "bytesPerS": 2628913.743619471,
+    "encodings": {
+     "21": 1668,
+     "tight": 15293,
+     "last-rect": 234
+    },
+    "tightKinds": {
+     "fill": 12186,
+     "basic": 3107
+    },
+    "cpu": 19.683159779391637,
+    "cpuByName": {
+     "sway": 4.572855302282906,
+     "w0vncserver": 15.11030447710873
+    },
+    "pageFps": 38.998440062397506
+   },
+   "video": {
+    "fps": 26.073738857211318,
+    "updatesPerS": 53.727704311829385,
+    "bytesPerS": 2097718.6109405337,
+    "encodings": {
+     "21": 9389,
+     "tight": 20649,
+     "last-rect": 272
+    },
+    "tightKinds": {
+     "basic": 17259,
+     "fill": 3390
+    },
+    "cpu": 20.28092326856015,
+    "cpuByName": {
+     "sway": 3.7778190402219898,
+     "w0vncserver": 16.503104228338163
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 1.1141357421875,
+     "p10": 1.000732421875,
+     "p90": 1.44775390625,
+     "min": 0.83544921875,
+     "max": 1.44775390625,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 16.90594849997433,
+     "p10": 16.53671600006055,
+     "p90": 18.11098499991931,
+     "min": 16.216139999916777,
+     "max": 18.11098499991931,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 33561
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "kasmvnc",
+   "condition": "rtt150",
+   "load": {
+    "load": 2.66,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 1364.6562390000327,
+    "connectMs": 762.5609669999685,
+    "bytes": 51575,
+    "encodings": {
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "ext-desktop-size": 1,
+     "tight": 71,
+     "last-rect": 1
+    }
+   },
+   "anim": {
+    "fps": 55.41066194395352,
+    "updatesPerS": 58.56571742830675,
+    "bytesPerS": 1674301.1815204371,
+    "encodings": {
+     "tight": 1946,
+     "last-rect": 297
+    },
+    "tightKinds": {
+     "basic": 1746,
+     "jpeg": 200
+    },
+    "cpu": 60.154836715280254,
+    "cpuByName": {
+     "Xkasmvnc": 60.154836715280254
+    },
+    "pageFps": 60.00318953831433
+   },
+   "scroll": {
+    "fps": 57.51719745589564,
+    "updatesPerS": 58.69905767759212,
+    "bytesPerS": 2628099.817312625,
+    "encodings": {
+     "tight": 17951,
+     "last-rect": 298
+    },
+    "tightKinds": {
+     "fill": 12097,
+     "basic": 5854
+    },
+    "cpu": 95.1741873952642,
+    "cpuByName": {
+     "Xkasmvnc": 95.1741873952642
+    },
+    "pageFps": 55.616465663311075
+   },
+   "video": {
+    "fps": 29.98712051398367,
+    "updatesPerS": 29.98712051398367,
+    "bytesPerS": 3753512.1406289097,
+    "encodings": {
+     "tight": 31950,
+     "last-rect": 152
+    },
+    "tightKinds": {
+     "fill": 10912,
+     "jpeg": 4614,
+     "basic": 16424
+    },
+    "cpu": 54.64849719367098,
+    "cpuByName": {
+     "Xkasmvnc": 54.64849719367098
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 76.3013916015625,
+     "p10": 76.0390625,
+     "p90": 77.548828125,
+     "min": 75.981689453125,
+     "max": 77.548828125,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 175.9586095000268,
+     "p10": 173.24674400000367,
+     "p90": 179.2668039998971,
+     "min": 172.95363899995573,
+     "max": 179.2668039998971,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 91270
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "kasmvnc",
+   "condition": "bw5rtt50",
+   "load": {
+    "load": 3.62,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 516.3509370000102,
+    "connectMs": 263.2367899999954,
+    "bytes": 52144,
+    "encodings": {
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "ext-desktop-size": 1,
+     "tight": 69,
+     "last-rect": 2
+    }
+   },
+   "anim": {
+    "fps": 27.016808394937122,
+    "updatesPerS": 28.200026280846778,
+    "bytesPerS": 569100.9835171301,
+    "encodings": {
+     "tight": 2227,
+     "last-rect": 143
+    },
+    "tightKinds": {
+     "basic": 2216,
+     "jpeg": 11
+    },
+    "cpu": 53.650931768856246,
+    "cpuByName": {
+     "Xkasmvnc": 53.650931768856246
+    },
+    "pageFps": 58.00972809185869
+   },
+   "scroll": {
+    "fps": 12.449122420130337,
+    "updatesPerS": 12.449122420130337,
+    "bytesPerS": 561391.3970897176,
+    "encodings": {
+     "tight": 3827,
+     "last-rect": 63
+    },
+    "tightKinds": {
+     "basic": 1247,
+     "fill": 2580
+    },
+    "cpu": 23.074329223943398,
+    "cpuByName": {
+     "Xkasmvnc": 23.074329223943398
+    },
+    "pageFps": 35.56456259561702
+   },
+   "video": {
+    "fps": 4.1509207623332705,
+    "updatesPerS": 4.1509207623332705,
+    "bytesPerS": 541806.6413563945,
+    "encodings": {
+     "tight": 4543,
+     "last-rect": 21
+    },
+    "tightKinds": {
+     "jpeg": 659,
+     "fill": 1584,
+     "basic": 2300
+    },
+    "cpu": 9.747534878020131,
+    "cpuByName": {
+     "Xkasmvnc": 9.747534878020131
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 26.1966552734375,
+     "p10": 26.06982421875,
+     "p90": 26.6142578125,
+     "min": 25.990478515625,
+     "max": 26.6142578125,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 74.73011499998393,
+     "p10": 73.25250599998981,
+     "p90": 75.95996300003026,
+     "min": 73.00235100009013,
+     "max": 75.95996300003026,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 104547
+   },
+   "enc": {
+    "zrle": {
+     "fps": 28.994822665726993,
+     "updatesPerS": 32.15072173138435,
+     "bytesPerS": 442213.8475334146,
+     "encodings": {
+      "zrle": 1652,
+      "last-rect": 163
+     },
+     "tightKinds": {},
+     "cpu": 74.71604794408367,
+     "cpuByName": {
+      "Xkasmvnc": 74.71604794408367
+     },
+     "pageFps": 57.01299736863089
+    },
+    "zrleScroll": {
+     "fps": 8.305926503314605,
+     "updatesPerS": 8.305926503314605,
+     "bytesPerS": 532909.8265339038,
+     "encodings": {
+      "zrle": 2574,
+      "last-rect": 42
+     },
+     "tightKinds": {},
+     "cpu": 21.474613041540756,
+     "cpuByName": {
+      "Xkasmvnc": 21.474613041540756
+     },
+     "pageFps": 36.001161327784764
+    },
+    "webp": {
+     "fps": 28.22184938369885,
+     "updatesPerS": 29.20862733417783,
+     "bytesPerS": 568684.0799728385,
+     "encodings": {
+      "tight": 2473,
+      "last-rect": 148
+     },
+     "tightKinds": {
+      "basic": 2439,
+      "webp": 34
+     },
+     "cpu": 61.15455880423283,
+     "cpuByName": {
+      "Xkasmvnc": 61.15455880423283
+     },
+     "pageFps": 58.209074236504264
+    },
+    "webpScroll": {
+     "fps": 12.229815730151048,
+     "updatesPerS": 12.229815730151048,
+     "bytesPerS": 551542.5968594609,
+     "encodings": {
+      "tight": 3723,
+      "last-rect": 62
+     },
+     "tightKinds": {
+      "basic": 1221,
+      "fill": 2502
+     },
+     "cpu": 20.67061465230201,
+     "cpuByName": {
+      "Xkasmvnc": 20.67061465230201
+     },
+     "pageFps": 30.588835075197554
+    }
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "kasmvnc",
+   "condition": "bw1rtt150",
+   "load": {
+    "load": 2.9,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 1767.7722670000512,
+    "connectMs": 762.5723439999856,
+    "bytes": 50023,
+    "encodings": {
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "ext-desktop-size": 1,
+     "tight": 68,
+     "last-rect": 1
+    }
+   },
+   "anim": {
+    "fps": 5.52141168142605,
+    "updatesPerS": 6.310184778772629,
+    "bytesPerS": 114785.4162182635,
+    "encodings": {
+     "tight": 512,
+     "last-rect": 32
+    },
+    "tightKinds": {
+     "basic": 512
+    },
+    "cpu": 24.423968584126886,
+    "cpuByName": {
+     "Xkasmvnc": 24.423968584126886
+    },
+    "pageFps": 51.07093617103909
+   },
+   "scroll": {
+    "fps": 2.176165579567522,
+    "updatesPerS": 2.176165579567522,
+    "bytesPerS": 100548.34577127582,
+    "encodings": {
+     "tight": 647,
+     "last-rect": 11
+    },
+    "tightKinds": {
+     "basic": 218,
+     "fill": 429
+    },
+    "cpu": 3.779170134822718,
+    "cpuByName": {
+     "Xkasmvnc": 3.779170134822718
+    },
+    "pageFps": 23.860486332853785
+   },
+   "video": {
+    "fps": 0.7914599650990672,
+    "updatesPerS": 0.7914599650990672,
+    "bytesPerS": 100850.99459278355,
+    "encodings": {
+     "tight": 833,
+     "last-rect": 4
+    },
+    "tightKinds": {
+     "fill": 299,
+     "basic": 428,
+     "jpeg": 106
+    },
+    "cpu": 2.387124443712354,
+    "cpuByName": {
+     "Xkasmvnc": 2.387124443712354
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 76.154296875,
+     "p10": 75.956298828125,
+     "p90": 76.738037109375,
+     "min": 75.910400390625,
+     "max": 76.738037109375,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 174.42391100001987,
+     "p10": 173.0118889999576,
+     "p90": 176.94517700001597,
+     "min": 172.90338599996176,
+     "max": 176.94517700001597,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 101159
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "kasmvnc",
+   "condition": "loss1",
+   "load": {
+    "load": 2.67,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 471.3726490000263,
+    "connectMs": 264.4668809999712,
+    "bytes": 51729,
+    "encodings": {
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "ext-desktop-size": 1,
+     "tight": 68,
+     "last-rect": 1
+    }
+   },
+   "anim": {
+    "fps": 18.137335624217908,
+    "updatesPerS": 21.488799815649475,
+    "bytesPerS": 444868.03385691077,
+    "encodings": {
+     "tight": 1630,
+     "last-rect": 109
+    },
+    "tightKinds": {
+     "basic": 1617,
+     "jpeg": 13
+    },
+    "cpu": 46.06517963643069,
+    "cpuByName": {
+     "Xkasmvnc": 46.06517963643069
+    },
+    "pageFps": 59.6044972490232
+   },
+   "scroll": {
+    "fps": 7.895519160271319,
+    "updatesPerS": 7.895519160271319,
+    "bytesPerS": 352984.97509824985,
+    "encodings": {
+     "tight": 2399,
+     "last-rect": 40
+    },
+    "tightKinds": {
+     "basic": 788,
+     "fill": 1611
+    },
+    "cpu": 20.07916353760918,
+    "cpuByName": {
+     "Xkasmvnc": 20.07916353760918
+    },
+    "pageFps": 38.20033955857385
+   },
+   "video": {
+    "fps": 3.1641887827511455,
+    "updatesPerS": 3.1641887827511455,
+    "bytesPerS": 406629.9004713497,
+    "encodings": {
+     "tight": 3770,
+     "last-rect": 16
+    },
+    "tightKinds": {
+     "basic": 1970,
+     "jpeg": 474,
+     "fill": 1326
+    },
+    "cpu": 7.757402973895407,
+    "cpuByName": {
+     "Xkasmvnc": 7.757402973895407
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 26.4752197265625,
+     "p10": 26.224365234375,
+     "p90": 27.319091796875,
+     "min": 25.948974609375,
+     "max": 27.319091796875,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 76.67650699999649,
+     "p10": 75.94605799997225,
+     "p90": 78.65725200006273,
+     "min": 73.13723200000823,
+     "max": 78.65725200006273,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 121597
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "kasmvnc",
+   "condition": "cpu20",
+   "load": {
+    "load": 2.59,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 46.73787599999923,
+    "connectMs": 13.535131999989972,
+    "bytes": 51736,
+    "encodings": {
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "ext-desktop-size": 1,
+     "tight": 68,
+     "last-rect": 1
+    }
+   },
+   "anim": {
+    "fps": 13.026152677189607,
+    "updatesPerS": 14.012982425461548,
+    "bytesPerS": 268888.4093198934,
+    "encodings": {
+     "tight": 1194,
+     "last-rect": 71
+    },
+    "tightKinds": {
+     "basic": 1194
+    },
+    "cpu": 19.871960795406512,
+    "cpuByName": {
+     "Xkasmvnc": 19.871960795406512
+    },
+    "pageFps": 26.027696648188993
+   },
+   "scroll": {
+    "fps": 12.844767453019113,
+    "updatesPerS": 15.21610913665341,
+    "bytesPerS": 683061.217346527,
+    "encodings": {
+     "tight": 4702,
+     "last-rect": 77
+    },
+    "tightKinds": {
+     "fill": 3170,
+     "basic": 1532
+    },
+    "cpu": 19.8886910985742,
+    "cpuByName": {
+     "Xkasmvnc": 19.8886910985742
+    },
+    "pageFps": 28.10780639502432
+   },
+   "video": {
+    "fps": 12.255772338158355,
+    "updatesPerS": 13.04646732771696,
+    "bytesPerS": 1656253.3760761104,
+    "encodings": {
+     "tight": 14570,
+     "last-rect": 66
+    },
+    "tightKinds": {
+     "fill": 5133,
+     "jpeg": 1996,
+     "basic": 7441
+    },
+    "cpu": 19.879359060050678,
+    "cpuByName": {
+     "Xkasmvnc": 19.879359060050678
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 1.11181640625,
+     "p10": 0.93701171875,
+     "p90": 2.001708984375,
+     "min": 0.925048828125,
+     "max": 2.001708984375,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 24.030879499972798,
+     "p10": 23.456421000068076,
+     "p90": 26.481068000080995,
+     "min": 22.91961199999787,
+     "max": 26.481068000080995,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 48005
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "wayland",
+   "condition": "rtt150",
+   "load": {
+    "load": 3.12,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 1664.8885640000226,
+    "connectMs": 759.7405410000356,
+    "bytes": 364507,
+    "encodings": {
+     "-258": 1,
+     "-316": 1,
+     "cursor": 1,
+     "led": 1,
+     "ext-desktop-size": 1,
+     "tight": 350
+    }
+   },
+   "anim": {
+    "fps": 45.64759360102478,
+    "updatesPerS": 47.22846264348451,
+    "bytesPerS": 10182797.816039803,
+    "encodings": {
+     "tight": 57360
+    },
+    "tightKinds": {
+     "jpeg": 57360
+    },
+    "cpu": 40.94345700299807,
+    "cpuByName": {
+     "sway": 9.142713699698596,
+     "wayvnc": 31.800743303299473
+    },
+    "pageFps": 61.38649497110636
+   },
+   "scroll": {
+    "fps": 46.256443346625396,
+    "updatesPerS": 47.04715177990104,
+    "bytesPerS": 11767742.177154934,
+    "encodings": {
+     "tight": 56448
+    },
+    "tightKinds": {
+     "jpeg": 56448
+    },
+    "cpu": 36.77560237932781,
+    "cpuByName": {
+     "sway": 7.752694555642078,
+     "wayvnc": 29.022907823685728
+    },
+    "pageFps": 61.2493266564252
+   },
+   "video": {
+    "fps": 25.104942474704313,
+    "updatesPerS": 25.30261918710356,
+    "bytesPerS": 2721815.9902964607,
+    "encodings": {
+     "tight": 14849
+    },
+    "tightKinds": {
+     "jpeg": 14849
+    },
+    "cpu": 12.525607847245425,
+    "cpuByName": {
+     "sway": 3.777564271391477,
+     "wayvnc": 8.748043575853949
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 76.3121337890625,
+     "p10": 76.11767578125,
+     "p90": 76.8134765625,
+     "min": 76.0625,
+     "max": 76.8134765625,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 159.44729799998458,
+     "p10": 158.50203400000464,
+     "p90": 171.79924399999436,
+     "min": 158.30811400001403,
+     "max": 171.79924399999436,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 271512
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "wayland",
+   "condition": "bw5rtt50",
+   "load": {
+    "load": 3.12,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 941.3602979999268,
+    "connectMs": 260.53938600001857,
+    "bytes": 270351,
+    "encodings": {
+     "-258": 1,
+     "-316": 1,
+     "cursor": 1,
+     "led": 1,
+     "ext-desktop-size": 1,
+     "tight": 261
+    }
+   },
+   "anim": {
+    "fps": 1.9768299892488288,
+    "updatesPerS": 1.9768299892488288,
+    "bytesPerS": 427208.37995058805,
+    "encodings": {
+     "tight": 2406
+    },
+    "tightKinds": {
+     "jpeg": 2406
+    },
+    "cpu": 15.112996251821443,
+    "cpuByName": {
+     "sway": 7.954208553590234,
+     "wayvnc": 7.158787698231209
+    },
+    "pageFps": 61.32028363127934
+   },
+   "scroll": {
+    "fps": 1.7793702640781597,
+    "updatesPerS": 1.7793702640781597,
+    "bytesPerS": 423151.44937700575,
+    "encodings": {
+     "tight": 2037
+    },
+    "tightKinds": {
+     "jpeg": 2037
+    },
+    "cpu": 15.310790347998264,
+    "cpuByName": {
+     "sway": 8.152498756726349,
+     "wayvnc": 7.158291591271916
+    },
+    "pageFps": 61.29090219409451
+   },
+   "video": {
+    "fps": 2.9659026238662873,
+    "updatesPerS": 2.9659026238662873,
+    "bytesPerS": 407989.16948536335,
+    "encodings": {
+     "tight": 2315
+    },
+    "tightKinds": {
+     "jpeg": 2315
+    },
+    "cpu": 7.359349205477765,
+    "cpuByName": {
+     "sway": 3.580223937799994,
+     "wayvnc": 3.7791252676777716
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 26.348876953125,
+     "p10": 26.208740234375,
+     "p90": 56.296875,
+     "min": 26.082763671875,
+     "max": 56.296875,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 300.89714300003834,
+     "p10": 298.2978159999475,
+     "p90": 383.82089299988,
+     "min": 278.7227169999387,
+     "max": 383.82089299988,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 272325
+   },
+   "enc": {
+    "zrle": {
+     "fps": 58.240085461540694,
+     "updatesPerS": 59.02978153559548,
+     "bytesPerS": 439379.3934913811,
+     "encodings": {
+      "zrle": 300
+     },
+     "tightKinds": {},
+     "cpu": 84.02729543141646,
+     "cpuByName": {
+      "sway": 9.733658336026965,
+      "wayvnc": 74.2936370953895
+     },
+     "pageFps": 61.270107372370575
+    },
+    "zrleScroll": {
+     "fps": 4.347600577086519,
+     "updatesPerS": 4.347600577086519,
+     "bytesPerS": 399451.0196218437,
+     "encodings": {
+      "zrle": 130
+     },
+     "tightKinds": {},
+     "cpu": 23.054017630817853,
+     "cpuByName": {
+      "sway": 10.73204269020831,
+      "wayvnc": 12.321974940609541
+     },
+     "pageFps": 61.120543293718164
+    },
+    "h264": {
+     "error": "Open H.264: nothing within 30000 ms"
+    }
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "wayland",
+   "condition": "bw1rtt150",
+   "load": {
+    "load": 2.73,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 3572.257219000021,
+    "connectMs": 759.4651039999444,
+    "bytes": 270387,
+    "encodings": {
+     "-258": 1,
+     "-316": 1,
+     "cursor": 1,
+     "led": 1,
+     "ext-desktop-size": 1,
+     "tight": 261
+    }
+   },
+   "anim": {
+    "fps": 0.3952383377478528,
+    "updatesPerS": 0.3952383377478528,
+    "bytesPerS": 107879.51381160092,
+    "encodings": {
+     "tight": 607
+    },
+    "tightKinds": {
+     "jpeg": 607
+    },
+    "cpu": 14.116416202765787,
+    "cpuByName": {
+     "sway": 7.9529105367694575,
+     "wayvnc": 6.163505665996329
+    },
+    "pageFps": 61.10223642172524
+   },
+   "scroll": {
+    "fps": 0.39553499451268986,
+    "updatesPerS": 0.39553499451268986,
+    "bytesPerS": 114833.30174690219,
+    "encodings": {
+     "tight": 553
+    },
+    "tightKinds": {
+     "jpeg": 553
+    },
+    "cpu": 13.923400257540985,
+    "cpuByName": {
+     "sway": 7.956228718594849,
+     "wayvnc": 5.967171538946136
+    },
+    "pageFps": 61.0949167432017
+   },
+   "video": {
+    "fps": 0.5934782019255547,
+    "updatesPerS": 0.5934782019255547,
+    "bytesPerS": 105939.02426078844,
+    "encodings": {
+     "tight": 616
+    },
+    "tightKinds": {
+     "jpeg": 616
+    },
+    "cpu": 6.563226526615265,
+    "cpuByName": {
+     "sway": 3.977713046433494,
+     "wayvnc": 2.585513480181771
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 76.1373291015625,
+     "p10": 76.020263671875,
+     "p90": 105.728271484375,
+     "min": 75.9677734375,
+     "max": 105.728271484375,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 1592.7833124999888,
+     "p10": 1451.2377589999232,
+     "p90": 1631.9036909998395,
+     "min": 1108.2163229999132,
+     "max": 1631.9036909998395,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 267723
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "wayland",
+   "condition": "loss1",
+   "load": {
+    "load": 2.71,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 872.6595270000398,
+    "connectMs": 259.07562400004826,
+    "bytes": 271835,
+    "encodings": {
+     "-258": 1,
+     "-316": 1,
+     "cursor": 1,
+     "led": 1,
+     "ext-desktop-size": 1,
+     "tight": 262
+    }
+   },
+   "anim": {
+    "fps": 1.3827828176485857,
+    "updatesPerS": 1.3827828176485857,
+    "bytesPerS": 290906.09590926155,
+    "encodings": {
+     "tight": 1639
+    },
+    "tightKinds": {
+     "jpeg": 1639
+    },
+    "cpu": 15.098731806239183,
+    "cpuByName": {
+     "sway": 8.344035998184811,
+     "wayvnc": 6.754695808054372
+    },
+    "pageFps": 61.21513030647446
+   },
+   "scroll": {
+    "fps": 1.1849097332862104,
+    "updatesPerS": 1.1849097332862104,
+    "bytesPerS": 291664.34593866736,
+    "encodings": {
+     "tight": 1402
+    },
+    "tightKinds": {
+     "jpeg": 1402
+    },
+    "cpu": 16.305303989299947,
+    "cpuByName": {
+     "sway": 8.948032677054849,
+     "wayvnc": 7.357271312245099
+    },
+    "pageFps": 61.06443694997105
+   },
+   "video": {
+    "fps": 1.9743300867660647,
+    "updatesPerS": 1.9743300867660647,
+    "bytesPerS": 300884.9437280181,
+    "encodings": {
+     "tight": 1724
+    },
+    "tightKinds": {
+     "jpeg": 1724
+    },
+    "cpu": 7.75184172206084,
+    "cpuByName": {
+     "sway": 4.174068619571222,
+     "wayvnc": 3.577773102489618
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 26.332763671875,
+     "p10": 26.22900390625,
+     "p90": 26.630615234375,
+     "min": 26.200439453125,
+     "max": 26.630615234375,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 175.85264200007077,
+     "p10": 166.20978599996306,
+     "p90": 311.19310000003316,
+     "min": 158.33841100009158,
+     "max": 311.19310000003316,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 268080
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "wayland",
+   "condition": "cpu20",
+   "load": {
+    "load": 2.31,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 21.000671999994665,
+    "connectMs": 8.02175399987027,
+    "bytes": 270265,
+    "encodings": {
+     "-258": 1,
+     "-316": 1,
+     "cursor": 1,
+     "led": 1,
+     "ext-desktop-size": 1,
+     "tight": 260
+    }
+   },
+   "anim": {
+    "fps": 16.992871553810254,
+    "updatesPerS": 23.908575093151637,
+    "bytesPerS": 5155168.147134534,
+    "encodings": {
+     "tight": 29040
+    },
+    "tightKinds": {
+     "jpeg": 29040
+    },
+    "cpu": 19.8694977586502,
+    "cpuByName": {
+     "sway": 4.371289506903044,
+     "wayvnc": 15.498208251747158
+    },
+    "pageFps": 39.717387833306724
+   },
+   "scroll": {
+    "fps": 18.977279370039366,
+    "updatesPerS": 25.500719153490397,
+    "bytesPerS": 6386315.89312293,
+    "encodings": {
+     "tight": 30642
+    },
+    "tightKinds": {
+     "jpeg": 30642
+    },
+    "cpu": 19.891905958760198,
+    "cpuByName": {
+     "sway": 4.177300251339641,
+     "wayvnc": 15.714605707420557
+    },
+    "pageFps": 39.19686425085993
+   },
+   "video": {
+    "fps": 27.883628905597163,
+    "updatesPerS": 27.883628905597163,
+    "bytesPerS": 2928432.048607966,
+    "encodings": {
+     "tight": 15897
+    },
+    "tightKinds": {
+     "jpeg": 15897
+    },
+    "cpu": 12.529058810169499,
+    "cpuByName": {
+     "sway": 3.5797310886198566,
+     "wayvnc": 8.949327721549642
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 1.42822265625,
+     "p10": 1.2412109375,
+     "p90": 1.90771484375,
+     "min": 1.208251953125,
+     "max": 1.90771484375,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 10.095487499958836,
+     "p10": 8.845717999851331,
+     "p90": 11.058685000054538,
+     "min": 8.829326999839395,
+     "max": 11.058685000054538,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 268989
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "wayland-tigervnc",
+   "condition": "rtt150",
+   "load": {
+    "load": 2.13,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 1511.1587680000812,
+    "connectMs": 759.4064490001183,
+    "bytes": 94184,
+    "encodings": {
+     "21": 15,
+     "vmware-cursor": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 48,
+     "last-rect": 2
+    }
+   },
+   "anim": {
+    "fps": 44.042901671485005,
+    "updatesPerS": 63.2005763895749,
+    "bytesPerS": 3053774.430438182,
+    "encodings": {
+     "21": 1613,
+     "tight": 2538,
+     "last-rect": 320
+    },
+    "tightKinds": {
+     "basic": 2537,
+     "fill": 1
+    },
+    "cpu": 53.657240797415284,
+    "cpuByName": {
+     "sway": 8.545412423292063,
+     "w0vncserver": 45.11182837412322
+    },
+    "pageFps": 61.25421496837526
+   },
+   "scroll": {
+    "fps": 45.85670499284086,
+    "updatesPerS": 58.111514085755225,
+    "bytesPerS": 4407630.458541903,
+    "encodings": {
+     "21": 2997,
+     "tight": 21860,
+     "last-rect": 294
+    },
+    "tightKinds": {
+     "fill": 17409,
+     "basic": 4451
+    },
+    "cpu": 33.40785340152887,
+    "cpuByName": {
+     "sway": 7.954250809887826,
+     "w0vncserver": 25.453602591641044
+    },
+    "pageFps": 61.16819253987927
+   },
+   "video": {
+    "fps": 32.036188964994906,
+    "updatesPerS": 53.986911033602524,
+    "bytesPerS": 2122529.816526083,
+    "encodings": {
+     "21": 9661,
+     "tight": 22530,
+     "last-rect": 273
+    },
+    "tightKinds": {
+     "fill": 3455,
+     "basic": 19075
+    },
+    "cpu": 24.060624295932694,
+    "cpuByName": {
+     "sway": 3.778114558865465,
+     "w0vncserver": 20.28250973706723
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 76.26220703125,
+     "p10": 76.156005859375,
+     "p90": 77.494384765625,
+     "min": 76.1455078125,
+     "max": 77.494384765625,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 167.98305100004654,
+     "p10": 167.7808799999766,
+     "p90": 181.2638150001876,
+     "min": 167.36334299994633,
+     "max": 181.2638150001876,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 73187
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "wayland-tigervnc",
+   "condition": "bw5rtt50",
+   "load": {
+    "load": 3,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 628.0814179999288,
+    "connectMs": 260.8292080000974,
+    "bytes": 96024,
+    "encodings": {
+     "21": 14,
+     "vmware-cursor": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 49,
+     "last-rect": 2
+    }
+   },
+   "anim": {
+    "fps": 6.919388724190466,
+    "updatesPerS": 7.314782365572778,
+    "bytesPerS": 529715.5830517873,
+    "encodings": {
+     "21": 264,
+     "tight": 301,
+     "last-rect": 37
+    },
+    "tightKinds": {
+     "basic": 300,
+     "fill": 1
+    },
+    "cpu": 25.850634717226654,
+    "cpuByName": {
+     "sway": 8.351743524027073,
+     "w0vncserver": 17.498891193199583
+    },
+    "pageFps": 61.28723149405095
+   },
+   "scroll": {
+    "fps": 4.941371774249708,
+    "updatesPerS": 5.929646129099649,
+    "bytesPerS": 430159.65582479205,
+    "encodings": {
+     "21": 296,
+     "tight": 1275,
+     "last-rect": 30
+    },
+    "tightKinds": {
+     "fill": 1074,
+     "basic": 201
+    },
+    "cpu": 39.36416899586861,
+    "cpuByName": {
+     "sway": 8.349975241547886,
+     "w0vncserver": 31.014193754320722
+    },
+    "pageFps": 61.24199565121986
+   },
+   "video": {
+    "fps": 4.540825638567304,
+    "updatesPerS": 5.330534445274661,
+    "bytesPerS": 411792.27526713966,
+    "encodings": {
+     "21": 1536,
+     "tight": 4496,
+     "last-rect": 27
+    },
+    "tightKinds": {
+     "basic": 3810,
+     "fill": 686
+    },
+    "cpu": 36.358868066968896,
+    "cpuByName": {
+     "sway": 3.7749644441115247,
+     "w0vncserver": 32.58390362285737
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 26.16064453125,
+     "p10": 26.07080078125,
+     "p90": 26.5283203125,
+     "min": 26.03515625,
+     "max": 26.5283203125,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 68.38944499997888,
+     "p10": 66.81319799995981,
+     "p90": 70.4777550001163,
+     "min": 66.3658150001429,
+     "max": 70.4777550001163,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 71738
+   },
+   "enc": {
+    "zrle": {
+     "fps": 58.04378531919036,
+     "updatesPerS": 60.61034725507293,
+     "bytesPerS": 279579.9350881949,
+     "encodings": {
+      "zrle": 5219,
+      "last-rect": 307
+     },
+     "tightKinds": {},
+     "cpu": 57.997677569203205,
+     "cpuByName": {
+      "sway": 9.73248698935259,
+      "w0vncserver": 48.26519057985061
+     },
+     "pageFps": 61.0595630050883
+    },
+    "zrleScroll": {
+     "fps": 6.7226710603339095,
+     "updatesPerS": 6.7226710603339095,
+     "bytesPerS": 422899.3116056562,
+     "encodings": {
+      "zrle": 2227,
+      "last-rect": 34
+     },
+     "tightKinds": {},
+     "cpu": 40.764488045747996,
+     "cpuByName": {
+      "sway": 8.1528976091496,
+      "w0vncserver": 32.6115904365984
+     },
+     "pageFps": 61.18898598252315
+    }
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "wayland-tigervnc",
+   "condition": "bw1rtt150",
+   "load": {
+    "load": 3.28,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 2170.2199010001495,
+    "connectMs": 759.2875710001681,
+    "bytes": 94085,
+    "encodings": {
+     "21": 13,
+     "vmware-cursor": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 50,
+     "last-rect": 2
+    }
+   },
+   "anim": {
+    "fps": 1.5800585094323256,
+    "updatesPerS": 1.7775658231113662,
+    "bytesPerS": 95444.02678420067,
+    "encodings": {
+     "21": 47,
+     "tight": 56,
+     "last-rect": 9
+    },
+    "tightKinds": {
+     "basic": 54,
+     "fill": 2
+    },
+    "cpu": 39.533087709240846,
+    "cpuByName": {
+     "sway": 9.3369604137403,
+     "w0vncserver": 30.196127295500546
+    },
+    "pageFps": 61.16574718157832
+   },
+   "scroll": {
+    "fps": 0.9887030663066945,
+    "updatesPerS": 1.1864436795680333,
+    "bytesPerS": 80148.6208483124,
+    "encodings": {
+     "21": 55,
+     "tight": 324,
+     "last-rect": 6
+    },
+    "tightKinds": {
+     "basic": 55,
+     "fill": 269
+    },
+    "cpu": 34.40401591324174,
+    "cpuByName": {
+     "sway": 8.153552904294285,
+     "w0vncserver": 26.25046300894746
+    },
+    "pageFps": 61.08272117534333
+   },
+   "video": {
+    "fps": 0.7909579273246058,
+    "updatesPerS": 0.9886974091557572,
+    "bytesPerS": 84322.83819518524,
+    "encodings": {
+     "21": 222,
+     "tight": 979,
+     "last-rect": 5
+    },
+    "tightKinds": {
+     "fill": 306,
+     "basic": 673
+    },
+    "cpu": 23.073119352323474,
+    "cpuByName": {
+     "sway": 3.7792178249495345,
+     "w0vncserver": 19.29390152737394
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 76.2008056640625,
+     "p10": 75.9931640625,
+     "p90": 76.727783203125,
+     "min": 75.889892578125,
+     "max": 76.727783203125,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 167.12863649998326,
+     "p10": 166.26691300002858,
+     "p90": 169.96109700016677,
+     "min": 166.2448719998356,
+     "max": 169.96109700016677,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 70975
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "wayland-tigervnc",
+   "condition": "loss1",
+   "load": {
+    "load": 2.84,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 1164.9722179998644,
+    "connectMs": 510.59122699988075,
+    "bytes": 94331,
+    "encodings": {
+     "21": 14,
+     "vmware-cursor": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 49,
+     "last-rect": 1
+    }
+   },
+   "anim": {
+    "fps": 3.557905658189306,
+    "updatesPerS": 4.546212785464113,
+    "bytesPerS": 268899.39383463137,
+    "encodings": {
+     "21": 133,
+     "tight": 157,
+     "last-rect": 23
+    },
+    "tightKinds": {
+     "basic": 155,
+     "fill": 2
+    },
+    "cpu": 42.751628667436805,
+    "cpuByName": {
+     "sway": 8.351480948987653,
+     "w0vncserver": 34.40014771844915
+    },
+    "pageFps": 61.20902783316054
+   },
+   "scroll": {
+    "fps": 3.953962980982073,
+    "updatesPerS": 4.547057428129384,
+    "bytesPerS": 306054.32986327785,
+    "encodings": {
+     "21": 212,
+     "tight": 984,
+     "last-rect": 23
+    },
+    "tightKinds": {
+     "basic": 156,
+     "fill": 828
+    },
+    "cpu": 47.319255143150826,
+    "cpuByName": {
+     "sway": 8.350456789967792,
+     "w0vncserver": 38.96879835318303
+    },
+    "pageFps": 61.227338904289915
+   },
+   "video": {
+    "fps": 2.368150656566484,
+    "updatesPerS": 2.762842432660898,
+    "bytesPerS": 219850.42373655827,
+    "encodings": {
+     "21": 755,
+     "tight": 2270,
+     "last-rect": 14
+    },
+    "tightKinds": {
+     "basic": 1932,
+     "fill": 338
+    },
+    "cpu": 23.034026296526335,
+    "cpuByName": {
+     "sway": 3.7728146520172445,
+     "w0vncserver": 19.26121164450909
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 26.13623046875,
+     "p10": 26.0009765625,
+     "p90": 26.820068359375,
+     "min": 25.932373046875,
+     "max": 26.820068359375,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 100.17861499998253,
+     "p10": 68.48941699997522,
+     "p90": 166.70411699987017,
+     "min": 67.14937300002202,
+     "max": 166.70411699987017,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 73154
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "wayland-tigervnc",
+   "condition": "cpu20",
+   "load": {
+    "load": 2.45,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 14.363042999990284,
+    "connectMs": 8.321702999994159,
+    "bytes": 93991,
+    "encodings": {
+     "21": 13,
+     "vmware-cursor": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 49,
+     "last-rect": 1
+    }
+   },
+   "anim": {
+    "fps": 19.564132954507233,
+    "updatesPerS": 34.385445798830894,
+    "bytesPerS": 1579550.588053078,
+    "encodings": {
+     "21": 785,
+     "tight": 939,
+     "last-rect": 174
+    },
+    "tightKinds": {
+     "basic": 939
+    },
+    "cpu": 19.892030102662954,
+    "cpuByName": {
+     "sway": 3.580565418479331,
+     "w0vncserver": 16.311464684183623
+    },
+    "pageFps": 36.5327796853789
+   },
+   "scroll": {
+    "fps": 31.642741281138107,
+    "updatesPerS": 60.121208434162405,
+    "bytesPerS": 3227829.958346908,
+    "encodings": {
+     "21": 2133,
+     "tight": 19662,
+     "last-rect": 304
+    },
+    "tightKinds": {
+     "fill": 15486,
+     "basic": 4176
+    },
+    "cpu": 19.88846437010272,
+    "cpuByName": {
+     "sway": 5.171000736226707,
+     "w0vncserver": 14.717463633876013
+    },
+    "pageFps": 47.87074897776005
+   },
+   "video": {
+    "fps": 24.51355787506641,
+    "updatesPerS": 52.9809154074016,
+    "bytesPerS": 2092277.435642994,
+    "encodings": {
+     "21": 9542,
+     "tight": 20801,
+     "last-rect": 268
+    },
+    "tightKinds": {
+     "basic": 17238,
+     "fill": 3563
+    },
+    "cpu": 19.887862854090233,
+    "cpuByName": {
+     "sway": 3.778693942277145,
+     "w0vncserver": 16.10916891181309
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 1.1221923828125,
+     "p10": 0.923828125,
+     "p90": 1.628662109375,
+     "min": 0.89892578125,
+     "max": 1.628662109375,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 16.939861500053667,
+     "p10": 16.43474700022489,
+     "p90": 19.440560000017285,
+     "min": 16.13060100004077,
+     "max": 19.440560000017285,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 13985
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "tigervnc",
+   "condition": "rtt150",
+   "load": {
+    "load": 2.02,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 1514.9125519997906,
+    "connectMs": 763.1005169998389,
+    "bytes": 95078,
+    "encodings": {
+     "21": 16,
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 56,
+     "last-rect": 2
+    }
+   },
+   "anim": {
+    "fps": 50.34643961615936,
+    "updatesPerS": 71.47220055313603,
+    "bytesPerS": 3535578.1297337366,
+    "encodings": {
+     "21": 2148,
+     "tight": 2689,
+     "last-rect": 362
+    },
+    "tightKinds": {
+     "fill": 5,
+     "basic": 2684
+    },
+    "cpu": 48.87943551333505,
+    "cpuByName": {
+     "Xvnc": 48.87943551333505
+    },
+    "pageFps": 60.00199342170836
+   },
+   "scroll": {
+    "fps": 49.53469641143917,
+    "updatesPerS": 59.99421398038848,
+    "bytesPerS": 4863128.4197082445,
+    "encodings": {
+     "21": 3319,
+     "tight": 24739,
+     "last-rect": 304
+    },
+    "tightKinds": {
+     "basic": 5232,
+     "fill": 19507
+    },
+    "cpu": 32.762683111727874,
+    "cpuByName": {
+     "Xvnc": 32.762683111727874
+    },
+    "pageFps": 60.00199342170836
+   },
+   "video": {
+    "fps": 29.85219326645832,
+    "updatesPerS": 49.226464393033915,
+    "bytesPerS": 2269390.025769833,
+    "encodings": {
+     "21": 10236,
+     "tight": 23832,
+     "last-rect": 249
+    },
+    "tightKinds": {
+     "fill": 3726,
+     "basic": 20106
+    },
+    "cpu": 24.454693322912203,
+    "cpuByName": {
+     "Xvnc": 24.454693322912203
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 76.25439453125,
+     "p10": 75.9404296875,
+     "p90": 77.01611328125,
+     "min": 75.880615234375,
+     "max": 77.01611328125,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 178.9942934999708,
+     "p10": 175.9797040000558,
+     "p90": 300.72815299988724,
+     "min": 175.0779770000372,
+     "max": 300.72815299988724,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 67042
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "tigervnc",
+   "condition": "bw5rtt50",
+   "load": {
+    "load": 2.55,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 606.4092610001098,
+    "connectMs": 260.3805350000039,
+    "bytes": 96048,
+    "encodings": {
+     "21": 15,
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 54,
+     "last-rect": 1
+    }
+   },
+   "anim": {
+    "fps": 5.925893553281705,
+    "updatesPerS": 7.308602049047436,
+    "bytesPerS": 450736.3030986386,
+    "encodings": {
+     "21": 250,
+     "tight": 242,
+     "last-rect": 37
+    },
+    "tightKinds": {
+     "basic": 238,
+     "fill": 4
+    },
+    "cpu": 34.9804341671789,
+    "cpuByName": {
+     "Xvnc": 34.9804341671789
+    },
+    "pageFps": 60.00318953831432
+   },
+   "scroll": {
+    "fps": 4.734563095906218,
+    "updatesPerS": 6.115477332212198,
+    "bytesPerS": 421134.06099737517,
+    "encodings": {
+     "21": 292,
+     "tight": 1513,
+     "last-rect": 31
+    },
+    "tightKinds": {
+     "basic": 299,
+     "fill": 1214
+    },
+    "cpu": 38.71166113166898,
+    "cpuByName": {
+     "Xvnc": 38.71166113166898
+    },
+    "pageFps": 60.00318953831433
+   },
+   "video": {
+    "fps": 5.33115241021918,
+    "updatesPerS": 5.923502678021311,
+    "bytesPerS": 432918.99577309826,
+    "encodings": {
+     "21": 1642,
+     "tight": 4557,
+     "last-rect": 30
+    },
+    "tightKinds": {
+     "basic": 3902,
+     "fill": 655
+    },
+    "cpu": 35.548461870802115,
+    "cpuByName": {
+     "Xvnc": 35.548461870802115
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 26.171875,
+     "p10": 26.067138671875,
+     "p90": 26.762939453125,
+     "min": 26.030517578125,
+     "max": 26.762939453125,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 76.21453849994577,
+     "p10": 75.83031399990432,
+     "p90": 80.28165600006469,
+     "min": 75.73594900011085,
+     "max": 80.28165600006469,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 71991
+   },
+   "enc": {
+    "zrle": {
+     "fps": 54.85652182493802,
+     "updatesPerS": 59.789662276820934,
+     "bytesPerS": 280038.20275271096,
+     "encodings": {
+      "zrle": 5151,
+      "last-rect": 303
+     },
+     "tightKinds": {},
+     "cpu": 38.35401111876242,
+     "cpuByName": {
+      "Xvnc": 38.35401111876242
+     },
+     "pageFps": 60.00199342170836
+    },
+    "zrleScroll": {
+     "fps": 6.314534737412244,
+     "updatesPerS": 6.314534737412244,
+     "bytesPerS": 410935.9103368402,
+     "encodings": {
+      "zrle": 2498,
+      "last-rect": 32
+     },
+     "tightKinds": {},
+     "cpu": 42.14417797021965,
+     "cpuByName": {
+      "Xvnc": 42.14417797021965
+     },
+     "pageFps": 60.00199342170836
+    }
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "tigervnc",
+   "condition": "bw1rtt150",
+   "load": {
+    "load": 2.97,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 2269.43062800006,
+    "connectMs": 760.9349599999841,
+    "bytes": 95675,
+    "encodings": {
+     "21": 14,
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 55,
+     "last-rect": 2
+    }
+   },
+   "anim": {
+    "fps": 1.1818749219678613,
+    "updatesPerS": 1.5758332292904818,
+    "bytesPerS": 93467.19934975269,
+    "encodings": {
+     "21": 52,
+     "tight": 50,
+     "last-rect": 8
+    },
+    "tightKinds": {
+     "basic": 49,
+     "fill": 1
+    },
+    "cpu": 39.88786148881648,
+    "cpuByName": {
+     "Xvnc": 39.88786148881648
+    },
+    "pageFps": 60.00199342170836
+   },
+   "scroll": {
+    "fps": 0.7899047409440815,
+    "updatesPerS": 0.9873809261801018,
+    "bytesPerS": 87499.72291622826,
+    "encodings": {
+     "21": 61,
+     "tight": 324,
+     "last-rect": 5
+    },
+    "tightKinds": {
+     "fill": 264,
+     "basic": 60
+    },
+    "cpu": 29.20748054513041,
+    "cpuByName": {
+     "Xvnc": 29.20748054513041
+    },
+    "pageFps": 60.00318953831433
+   },
+   "video": {
+    "fps": 0.7897126388378329,
+    "updatesPerS": 0.9871407985472912,
+    "bytesPerS": 88484.93204386267,
+    "encodings": {
+     "21": 221,
+     "tight": 964,
+     "last-rect": 5
+    },
+    "tightKinds": {
+     "fill": 264,
+     "basic": 700
+    },
+    "cpu": 22.851614798877268,
+    "cpuByName": {
+     "Xvnc": 22.851614798877268
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 76.050537109375,
+     "p10": 75.86572265625,
+     "p90": 76.7880859375,
+     "min": 75.726318359375,
+     "max": 76.7880859375,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 176.14640049997251,
+     "p10": 175.59175399993546,
+     "p90": 179.17282600002363,
+     "min": 175.13360100006685,
+     "max": 179.17282600002363,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 72688
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "tigervnc",
+   "condition": "loss1",
+   "load": {
+    "load": 3.51,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 562.1650140001439,
+    "connectMs": 260.50802300008945,
+    "bytes": 97740,
+    "encodings": {
+     "21": 15,
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 54,
+     "last-rect": 2
+    }
+   },
+   "anim": {
+    "fps": 4.5293237688183545,
+    "updatesPerS": 5.513959370735389,
+    "bytesPerS": 319677.50540487526,
+    "encodings": {
+     "21": 180,
+     "tight": 170,
+     "last-rect": 28
+    },
+    "tightKinds": {
+     "basic": 169,
+     "fill": 1
+    },
+    "cpu": 44.06411833215557,
+    "cpuByName": {
+     "Xvnc": 44.06411833215557
+    },
+    "pageFps": 60.00318953831433
+   },
+   "scroll": {
+    "fps": 3.553505353184144,
+    "updatesPerS": 4.540590173513073,
+    "bytesPerS": 304572.12832319736,
+    "encodings": {
+     "21": 215,
+     "tight": 913,
+     "last-rect": 23
+    },
+    "tightKinds": {
+     "basic": 158,
+     "fill": 755
+    },
+    "cpu": 32.3689846540349,
+    "cpuByName": {
+     "Xvnc": 32.3689846540349
+    },
+    "pageFps": 60.00199342170836
+   },
+   "video": {
+    "fps": 3.749554127937968,
+    "updatesPerS": 3.9468990820399665,
+    "bytesPerS": 339661.8465122872,
+    "encodings": {
+     "21": 1306,
+     "tight": 3759,
+     "last-rect": 20
+    },
+    "tightKinds": {
+     "basic": 3184,
+     "fill": 575
+    },
+    "cpu": 22.825644429626042,
+    "cpuByName": {
+     "Xvnc": 22.825644429626042
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 26.0574951171875,
+     "p10": 25.94140625,
+     "p90": 26.54150390625,
+     "min": 25.91015625,
+     "max": 26.54150390625,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 77.55205799988471,
+     "p10": 74.97225800016895,
+     "p90": 132.07709299982525,
+     "min": 74.94408600009046,
+     "max": 132.07709299982525,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 68744
+   }
+  },
+  {
+   "rep": 1,
+   "backend": "tigervnc",
+   "condition": "cpu20",
+   "load": {
+    "load": 3.33,
+    "busy": false,
+    "waitedS": 0
+   },
+   "first": {
+    "ms": 12.697342999977991,
+    "connectMs": 9.699775999877602,
+    "bytes": 95605,
+    "encodings": {
+     "21": 14,
+     "vmware-cursor": 1,
+     "led": 1,
+     "-258": 1,
+     "-316": 1,
+     "ext-desktop-size": 1,
+     "tight": 54,
+     "last-rect": 1
+    }
+   },
+   "anim": {
+    "fps": 21.731068753699287,
+    "updatesPerS": 31.806382448596228,
+    "bytesPerS": 1818411.9760617078,
+    "encodings": {
+     "21": 1012,
+     "tight": 924,
+     "last-rect": 161
+    },
+    "tightKinds": {
+     "basic": 924
+    },
+    "cpu": 19.890792531530764,
+    "cpuByName": {
+     "Xvnc": 19.890792531530764
+    },
+    "pageFps": 29.604021378474503
+   },
+   "scroll": {
+    "fps": 31.224388763282942,
+    "updatesPerS": 70.55130878792411,
+    "bytesPerS": 3590113.6211477583,
+    "encodings": {
+     "21": 2483,
+     "tight": 21638,
+     "last-rect": 357
+    },
+    "tightKinds": {
+     "basic": 4530,
+     "fill": 17108
+    },
+    "cpu": 19.887627387736316,
+    "cpuByName": {
+     "Xvnc": 19.887627387736316
+    },
+    "pageFps": 49.03915158280839
+   },
+   "video": {
+    "fps": 30.63058103526052,
+    "updatesPerS": 57.9016789892344,
+    "bytesPerS": 2333593.385187797,
+    "encodings": {
+     "21": 10809,
+     "tight": 23113,
+     "last-rect": 293
+    },
+    "tightKinds": {
+     "basic": 19374,
+     "fill": 3739
+    },
+    "cpu": 19.47083996115033,
+    "cpuByName": {
+     "Xvnc": 19.47083996115033
+    },
+    "pageFps": null
+   },
+   "click": {
+    "toHandler": {
+     "median": 1.11962890625,
+     "p10": 0.954345703125,
+     "p90": 1.44140625,
+     "min": 0.806640625,
+     "max": 1.44140625,
+     "n": 10
+    },
+    "clickToPhoton": {
+     "median": 25.809524499927647,
+     "p10": 25.29792799986899,
+     "p90": 29.531775000039488,
+     "min": 24.874569999985397,
+     "max": 29.531775000039488,
+     "n": 10
+    },
+    "lost": 0
+   },
+   "link": {
+    "dropped": 0,
+    "droppedChunks": 0,
+    "maxBuffered": 57837
+   }
+  }
+ ]
+}

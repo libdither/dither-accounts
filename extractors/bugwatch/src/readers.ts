@@ -6,6 +6,7 @@
 import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { type ErrorSource, errorBlocks } from '@dither-accounts/manager/errors';
+import { type FailureKind, isFailureKind } from '@dither-accounts/spec';
 
 export interface Rec {
   at: number;
@@ -17,6 +18,11 @@ export interface Rec {
   stack: string[];
   count: number;
   status?: number;
+  /**
+   * What its writer said it is (spec FailureKind). `expected` is never a bug; `transient` counts, but only a run of
+   * them raises it (a spike); `bug` and none are bugs. Records from older writers have none.
+   */
+  kind?: FailureKind;
   trace?: string;
   extra?: Record<string, unknown>;
 }
@@ -176,6 +182,7 @@ export function parseErrorsLine(line: string): Rec | null {
     stack: Array.isArray(j.stack) ? j.stack.slice(0, 10).map((f) => s1(f, 300)).filter(Boolean) : [],
     count,
     ...(typeof j.status === 'number' ? { status: j.status } : {}),
+    ...(isFailureKind(j.kind) ? { kind: j.kind } : {}),
     ...(typeof j.trace === 'string' && /^[0-9a-f]{32}$/.test(j.trace) ? { trace: j.trace } : {}),
     ...(j.extra && typeof j.extra === 'object' && !Array.isArray(j.extra) ? { extra: j.extra as Record<string, unknown> } : {}),
   };
@@ -187,7 +194,12 @@ const EXPECTED_OUTCOMES = new Set(['denied', 'limited', 'invalid', 'unknown-op',
 const EXPECTED_TEXT = /\b429\b|\b(?:status|http|answered|code|returned)\s*:?\s*4\d\d\b|\brate[ -]?limit|too many requests|captcha|\bterms\b|\babort(?:ed)?\b|AbortError/i;
 const ERROR_NAME = /^((?:[A-Z][A-Za-z0-9_$]*)?(?:Error|Exception)):\s*(.*)$/;
 
-/** A failed span of a trace file (dither-chat's hub.trace.ndjson, the manager's), unless it is an expected refusal. */
+/**
+ * A failed span of a trace file (dither-chat's hub.trace.ndjson, the manager's), unless it is an expected refusal.
+ * A span that says its failure's `kind` (the manager's call spans) is taken at its word: `expected` is left out, and
+ * the rest are kept whatever their status or words. One without a kind (older writers, an extractor's plain error) is
+ * still judged by its status, the manager's code (`outcome`) and its words.
+ */
 export function parseSpanLine(line: string): Rec | null {
   if (!line.includes('"error"')) return null;
   let j: Record<string, any>;
@@ -200,10 +212,14 @@ export function parseSpanLine(line: string): Rec | null {
   const attrs = (j.attrs && typeof j.attrs === 'object' ? j.attrs : {}) as Record<string, unknown>;
   // The hub's request spans say `http.status`; the manager's call spans `status`, an extractor's refusal's upstream one.
   const status = typeof attrs['http.status'] === 'number' ? (attrs['http.status'] as number) : typeof attrs.status === 'number' ? (attrs.status as number) : undefined;
-  if (status !== undefined && status < 500) return null;
-  if (typeof attrs.outcome === 'string' && EXPECTED_OUTCOMES.has(attrs.outcome)) return null;
+  const kind = isFailureKind(attrs.kind) ? attrs.kind : undefined;
   const error = s1(j.error, 300);
-  if (EXPECTED_TEXT.test(error)) return null;
+  if (kind === 'expected') return null;
+  if (!kind) {
+    if (status !== undefined && status < 500) return null;
+    if (typeof attrs.outcome === 'string' && EXPECTED_OUTCOMES.has(attrs.outcome)) return null;
+    if (EXPECTED_TEXT.test(error)) return null;
+  }
   const m = ERROR_NAME.exec(error);
   const name = s1(j.name, 200);
   const request = typeof attrs['http.route'] === 'string' || /^(GET|POST|PUT|PATCH|DELETE|HEAD) |^(call|command) /.test(name);
@@ -217,6 +233,7 @@ export function parseSpanLine(line: string): Rec | null {
     stack: [],
     count: 1,
     ...(status !== undefined ? { status } : {}),
+    ...(kind ? { kind } : {}),
     ...(typeof j.traceId === 'string' && /^[0-9a-f]{32}$/.test(j.traceId) ? { trace: j.traceId } : {}),
   };
 }

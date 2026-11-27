@@ -55,7 +55,7 @@ beforeAll(async () => {
   process.env.DITHER_ADAPTER_TOKEN = 'secret-token-for-the-test';
   sb = new AppSandbox({
     dir,
-    display: free.display,
+    display: free,
     width: 800,
     height: 600,
     command: [sh, join(appDir, 'app.sh')],

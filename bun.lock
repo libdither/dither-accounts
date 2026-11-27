@@ -56,6 +56,7 @@
         "@dither-accounts/interfaces": "workspace:*",
         "@dither-accounts/link": "workspace:*",
         "@dither-accounts/manager": "workspace:*",
+        "@dither-accounts/spec": "workspace:*",
       },
     },
     "extractors/chat-fake": {
@@ -198,6 +199,17 @@
         "@dither-chat/protocol": "workspace:*",
       },
     },
+    "extractors/luma": {
+      "name": "@dither-accounts/extractor-luma",
+      "dependencies": {
+        "@dither-accounts/browser": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+      "devDependencies": {
+        "@dither-accounts/client": "workspace:*",
+      },
+    },
     "extractors/mastodon": {
       "name": "@dither-accounts/extractor-mastodon",
       "dependencies": {
@@ -244,6 +256,17 @@
         "@dither-accounts/interfaces": "workspace:*",
         "@dither-accounts/link": "workspace:*",
         "@dither-accounts/manager": "workspace:*",
+      },
+    },
+    "extractors/partiful": {
+      "name": "@dither-accounts/extractor-partiful",
+      "dependencies": {
+        "@dither-accounts/browser": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-chat/protocol": "workspace:*",
+      },
+      "devDependencies": {
+        "@dither-accounts/client": "workspace:*",
       },
     },
     "extractors/privacy": {
@@ -311,6 +334,16 @@
         "@dither-accounts/interfaces": "workspace:*",
         "@dither-accounts/link": "workspace:*",
         "@dither-accounts/manager": "workspace:*",
+        "@dither-accounts/statements-common": "workspace:*",
+      },
+    },
+    "extractors/site": {
+      "name": "@dither-accounts/extractor-site",
+      "dependencies": {
+        "@dither-accounts/browser": "workspace:*",
+        "@dither-accounts/link": "workspace:*",
+        "@dither-accounts/manager": "workspace:*",
+        "@dither-accounts/spec": "workspace:*",
         "@dither-accounts/statements-common": "workspace:*",
       },
     },
@@ -391,6 +424,9 @@
     },
     "packages/browser": {
       "name": "@dither-accounts/browser",
+      "dependencies": {
+        "@dither-accounts/spec": "workspace:*",
+      },
     },
     "packages/chat-protocol": {
       "name": "@dither-chat/protocol",
@@ -413,6 +449,7 @@
     "packages/link": {
       "name": "@dither-accounts/link",
       "dependencies": {
+        "@dither-accounts/spec": "workspace:*",
         "@dither-chat/protocol": "workspace:*",
       },
     },
@@ -420,6 +457,7 @@
       "name": "@dither-accounts/manager",
       "dependencies": {
         "@dither-accounts/approval": "workspace:*",
+        "@dither-accounts/browser": "workspace:*",
         "@dither-accounts/interfaces": "workspace:*",
         "@dither-accounts/passkey": "workspace:*",
         "@dither-accounts/spec": "workspace:*",
@@ -530,6 +568,8 @@
 
     "@dither-accounts/extractor-lesswrong": ["@dither-accounts/extractor-lesswrong@workspace:extractors/lesswrong"],
 
+    "@dither-accounts/extractor-luma": ["@dither-accounts/extractor-luma@workspace:extractors/luma"],
+
     "@dither-accounts/extractor-mastodon": ["@dither-accounts/extractor-mastodon@workspace:extractors/mastodon"],
 
     "@dither-accounts/extractor-matrix": ["@dither-accounts/extractor-matrix@workspace:extractors/matrix"],
@@ -542,6 +582,8 @@
 
     "@dither-accounts/extractor-njalla": ["@dither-accounts/extractor-njalla@workspace:extractors/njalla"],
 
+    "@dither-accounts/extractor-partiful": ["@dither-accounts/extractor-partiful@workspace:extractors/partiful"],
+
     "@dither-accounts/extractor-privacy": ["@dither-accounts/extractor-privacy@workspace:extractors/privacy"],
 
     "@dither-accounts/extractor-proton": ["@dither-accounts/extractor-proton@workspace:extractors/proton"],
@@ -553,6 +595,8 @@
     "@dither-accounts/extractor-signal": ["@dither-accounts/extractor-signal@workspace:extractors/signal"],
 
     "@dither-accounts/extractor-simplefin": ["@dither-accounts/extractor-simplefin@workspace:extractors/simplefin"],
+
+    "@dither-accounts/extractor-site": ["@dither-accounts/extractor-site@workspace:extractors/site"],
 
     "@dither-accounts/extractor-substack": ["@dither-accounts/extractor-substack@workspace:extractors/substack"],
 

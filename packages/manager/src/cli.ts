@@ -7,6 +7,12 @@
  *   bun packages/manager/src/cli.ts grant <app> <interface> <level> [--accounts a,b] [--kinds k,l] [--dry-run]
  *   bun packages/manager/src/cli.ts import-dither-chat --hub-data <dir> (--accounts id,id | --all) [--dry-run]
  *   bun packages/manager/src/cli.ts forget <account>      stop it and drop it from the registry; its directory stays
+ *   bun packages/manager/src/cli.ts add <kind> [key=value…] [--label L] [--sign-in-with <account>]
+ *                                                     a new account, as the page's Add does (no secret fields: those are the page's)
+ *   bun packages/manager/src/cli.ts sign-in <account> --with <account> [--provider google] [--no-wait]
+ *                                                     link a Google account here to it and sign it in with that: its
+ *                                                     browser presses the site's "Continue with Google" itself
+ *   bun packages/manager/src/cli.ts display <account> <backend>|default   the screen its sandboxes draw on: x11, tigervnc, kasmvnc, wayland or wayland-tigervnc (restarts it)
  *   bun packages/manager/src/cli.ts export-to-dither-chat <account> --hub-data <dir>
  *   bun packages/manager/src/cli.ts set-password [--file <file>]   the page's password, from the file or stdin (never argv)
  *   bun packages/manager/src/cli.ts sessions                       the page's signed-in browsers
@@ -35,6 +41,7 @@ import { Database } from 'bun:sqlite';
 import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
+import { DISPLAY_BACKENDS, parseBackend } from '@dither-accounts/spec/display';
 import { CLI_HEADER, CLI_TOKEN_FILE, ensureSessionTable, LOGIN_FILE, MIN_PASSWORD, setPassword } from './auth.ts';
 import { newToken, Store } from './db.ts';
 import { ownDir } from './files.ts';
@@ -46,7 +53,7 @@ const opt = (n: string) => {
   const i = argv.indexOf(`--${n}`);
   return i >= 0 ? argv[i + 1] : undefined;
 };
-const positional = argv.filter((a, i) => !a.startsWith('--') && !(i > 0 && argv[i - 1].startsWith('--') && !['--dry-run', '--all'].includes(argv[i - 1])));
+const positional = argv.filter((a, i) => !a.startsWith('--') && !(i > 0 && argv[i - 1].startsWith('--') && !['--dry-run', '--all', '--no-wait'].includes(argv[i - 1])));
 const [cmd, ...rest] = positional;
 const root = resolve(import.meta.dir, '../../..');
 const url = (opt('url') ?? process.env.DITHER_ACCOUNTS_URL ?? 'http://127.0.0.1:8486').replace(/\/$/, '');
@@ -86,12 +93,26 @@ function store(): Store {
 }
 const list = (s: string | undefined) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : undefined);
 
+/** A started sign-in (signin.ts start), until it ends: how it went, and the exit code says so. */
+async function waitSignIn(id: string) {
+  const end = Date.now() + 12 * 60_000;
+  while (Date.now() < end) {
+    const r = (await call('GET', `/api/accounts/${encodeURIComponent(id)}/sign-in`)).signIn;
+    if (r && !r.running) {
+      if (r.ok) return void console.log(`${id}: signed in (${r.note})`);
+      die(`${id}: not signed in: ${r.note}`);
+    }
+    await Bun.sleep(2000);
+  }
+  die(`${id}: the sign-in had not ended after 12 minutes`);
+}
+
 async function main() {
   const up = await live();
   switch (cmd) {
     case 'accounts': {
-      const rows = up ? (await call('GET', '/api/state')).accounts : store().accounts().map((a) => ({ ...a, enabled: !!a.enabled, running: false, online: false, error: null }));
-      for (const a of rows) console.log(`${a.id}  ${a.kind.padEnd(9)} ${String(a.label).padEnd(16)} ${a.enabled ? (a.online ? 'online' : a.running ? 'running' : a.error ? `not running: ${a.error}` : 'stopped') : 'disabled'}  ${a.dir}`);
+      const rows = up ? (await call('GET', '/api/state')).accounts : store().accounts().map((a) => ({ ...a, enabled: !!a.enabled, running: false, online: false, asleep: false, error: null }));
+      for (const a of rows) console.log(`${a.id}  ${a.kind.padEnd(9)} ${String(a.label).padEnd(16)} ${a.enabled ? (a.online ? 'online' : a.asleep ? 'asleep' : a.running ? 'running' : a.error ? `not running: ${a.error}` : 'stopped') : 'disabled'}  ${a.dir}`);
       if (!up) console.log(`(the manager is not running; read from ${dataDir})`);
       return;
     }
@@ -126,10 +147,20 @@ async function main() {
     }
     case 'set': {
       const [id, key, value] = rest;
-      if (!id || !key || !value || !['on', 'off', 'true', 'false'].includes(value)) die('set <account> <setting> on|off');
+      // A switch takes on|off; a text setting takes its words ('' takes it away).
+      if (!id || !key || value === undefined) die('set <account> <setting> on|off|<text>');
       if (!up) die(`the manager is not running at ${url}`);
-      await call('PATCH', `/api/accounts/${encodeURIComponent(id)}`, { settings: { [key]: value === 'on' || value === 'true' } });
-      console.log(`${id}: ${key} ${value === 'on' || value === 'true' ? 'on' : 'off'} (its extractor restarts to take it)`);
+      const flag = ['on', 'off', 'true', 'false'].includes(value);
+      await call('PATCH', `/api/accounts/${encodeURIComponent(id)}`, { settings: { [key]: flag ? value === 'on' || value === 'true' : value } });
+      console.log(`${id}: ${key} ${flag ? (value === 'on' || value === 'true' ? 'on' : 'off') : JSON.stringify(value)} (its extractor restarts to take it)`);
+      return;
+    }
+    case 'display': {
+      const [id, value] = rest;
+      if (!id || !value || (value !== 'default' && !parseBackend(value))) die(`display <account> ${DISPLAY_BACKENDS.join('|')}|default`);
+      if (!up) die(`the manager is not running at ${url}`);
+      await call('PATCH', `/api/accounts/${encodeURIComponent(id)}`, { settings: { displayBackend: value === 'default' ? null : value } });
+      console.log(`${id}: display ${value === 'default' ? "the manager's default" : value} (its extractor restarts to take it)`);
       return;
     }
     case 'import-dither-chat':
@@ -150,6 +181,38 @@ async function main() {
       }
       return;
     }
+    case 'add': {
+      const [kind, ...pairs] = rest;
+      if (!kind) die('add <kind> [key=value…] [--label L] [--sign-in-with <account>]');
+      if (!up) die(`the manager is not running at ${url}`);
+      const st = await call('GET', '/api/state');
+      const k = st.kinds.find((x: any) => x.kind === kind);
+      if (!k) die(`no kind "${kind}" (${st.kinds.filter((x: any) => x.add).map((x: any) => x.kind).join(', ')})`);
+      const config: Record<string, string> = {};
+      for (const p of pairs) {
+        const i = p.indexOf('=');
+        if (i <= 0) die(`"${p}" is not key=value`);
+        const key = p.slice(0, i);
+        if (k.add?.fields?.find((f: any) => f.key === key)?.secret) die(`${key} is a secret: add this account on the page, where it never lands in a command line`);
+        config[key] = p.slice(i + 1);
+      }
+      const using = opt('sign-in-with');
+      const r = await call('POST', '/api/accounts', { kind, ...(opt('label') ? { label: opt('label') } : {}), config, ...(using ? { signInWith: { google: using } } : {}) });
+      console.log(`added ${r.id} (${kind})`);
+      if (r.signIn?.error) die(`not signed in with ${using}: ${r.signIn.error}`);
+      if (using) await waitSignIn(r.id);
+      return;
+    }
+    case 'sign-in': {
+      const [id] = rest;
+      const using = opt('with');
+      if (!id || !using) die('sign-in <account> --with <account> [--provider google] [--no-wait]');
+      if (!up) die(`the manager is not running at ${url}`);
+      await call('POST', `/api/accounts/${encodeURIComponent(id)}/sign-in`, { provider: opt('provider') ?? 'google', account: using });
+      console.log(`${id}: signing in with ${using}`);
+      if (!flag('no-wait')) await waitSignIn(id);
+      return;
+    }
     case 'set-password':
       return setPasswordCmd();
     case 'sessions': {
@@ -167,7 +230,7 @@ async function main() {
       return cliproxy(up);
     default:
       die(
-        'usage: cli.ts accounts | apps | approve <request> | grant <app> <interface> <level> | set <account> <setting> on|off | import-dither-chat --hub-data <dir> (--accounts id,id | --all) [--dry-run] | forget <account> | export-to-dither-chat <account> --hub-data <dir> | set-password [--file <file>] | sessions | revoke-sessions | cliproxy (status | connect [keys.env] | add-claude <email> [--mail <account>] | relink|enable|disable|remove <account>)',
+        'usage: cli.ts accounts | apps | approve <request> | grant <app> <interface> <level> | set <account> <setting> on|off | import-dither-chat --hub-data <dir> (--accounts id,id | --all) [--dry-run] | forget <account> | add <kind> [key=value…] [--label L] [--sign-in-with <account>] | sign-in <account> --with <account> | export-to-dither-chat <account> --hub-data <dir> | set-password [--file <file>] | sessions | revoke-sessions | cliproxy (status | connect [keys.env] | add-claude <email> [--mail <account>] | relink|enable|disable|remove <account>)',
       );
   }
 }

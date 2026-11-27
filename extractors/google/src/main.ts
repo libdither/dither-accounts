@@ -22,16 +22,21 @@
  * field would suggest (src/gmail/contacts.ts), in a small lane of its own beside the Gmail page's, so keystrokes never
  * wait behind mail and mail never waits behind them. docs/google.md.
  *
- * Config: { authuser?, mail?, gmailPollSeconds?, gmailCanaryHours?, apiBase?, gmailApiBase?, testOrigin?, testMailOrigin?,
- * peopleApiBase?, testFetchMs?, noSandbox? } (peopleApiBase: tests only, and only one of the test origins; testFetchMs:
+ * The Gmail tab stays open (the mail watch asks Gmail every minute). The Calendar tab is open while Calendar is used:
+ * once no Calendar call has come for `calendarIdleSeconds` (default 600) and the Gmail page is up and signed in, it is
+ * closed, and its renderer with it; the next Calendar call opens it again and waits for it (closeIdleCalendar).
+ *
+ * Config: { authuser?, mail?, gmailPollSeconds?, gmailCanaryHours?, calendarIdleSeconds?, apiBase?, gmailApiBase?,
+ * testOrigin?, testMailOrigin?, peopleApiBase?, testFetchMs?, noSandbox? } (peopleApiBase: tests only, and only one of the test origins; testFetchMs:
  * tests only, how long the hook gives a Gmail call before it cuts it off, with a test Gmail origin only).
  *
  * Logs ids and statuses, never cookies, keys, tokens, event contents or mail. Nothing here changes mail.
  */
 import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BridgeServer, diagnoseSilence, pickFreeDisplay, type Reached, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, diagnoseSilence, displayName, displayState, type FreeDisplay, pickFreeDisplay, type Reached, Sandbox, SignInAnswerer } from '@dither-accounts/browser';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
+import { Handover, HandoverError } from '@dither-accounts/spec/handover';
 import type { OutgoingMail } from '@dither-accounts/interfaces';
 import { type ContactsAnswer, GmailContacts } from './gmail/contacts.ts';
 import { GmailMail, type PageKind, stateOf, type SyncAnswer, type Transport } from './gmail/mail.ts';
@@ -76,8 +81,9 @@ const LONG_KINDS = new Set(['gmail.raw', 'gmail.upload']);
 const TAB_STATE_MS = 5_000;
 /**
  * A request made while its page's tab is being reloaded waits up to this (within its own time) for the new page's
- * hook, rather than going to the old page, which drops it as it unloads ("Failed to fetch"). Past it, the request is
- * sent as before: a reload that never brings the hook back still shows up as silence, and leads to the next reload.
+ * hook, rather than going to the old page, which drops it as it unloads ("Failed to fetch"). A page's hook is up a
+ * second or two after its load. Past it, requests are sent to the tab as it is: a reload that never brings the hook
+ * back still shows up as silence, and leads to the next reload.
  */
 const RELOAD_SETTLE_MS = 15_000;
 /** This many unanswered requests in a row to one page, and its tab is reloaded. */
@@ -109,6 +115,11 @@ const RAW_ANSWER_MS = 90_000;
 const RAW_PIECE = 4 * 1024 * 1024;
 /** A suggestions call is answered within this (the hook gives Google 6 s), under the op's 10 s. */
 const CONTACTS_ANSWER_MS = 8_000;
+/**
+ * A Calendar call that finds the Calendar tab closed (closeIdleCalendar) waits up to this, within its own time, for the
+ * reopened page to be up and signed in: a cold Calendar page takes longer than READY_WAIT_MS on a busy machine.
+ */
+const REOPEN_WAIT_MS = 20_000;
 
 type Role = 'calendar' | 'gmail';
 type KeySource = 'calendar-request' | 'gmail-request' | 'page-request' | 'page-html' | 'embed';
@@ -164,9 +175,12 @@ interface ShapeEntry {
   count: number;
   samples: unknown[];
 }
-/** The service worker's own: open the role's tab if it has none, or send it back to `url` (`fresh`: a new tab). */
+/**
+ * The service worker's own: open the role's tab if it has none, send it back to `url` (`fresh`: a new tab), close it
+ * (never the browser's last tab), or say how Chromium sees it.
+ */
 interface TabCmd {
-  kind: 'tab.open' | 'tab.reload' | 'tab.state';
+  kind: 'tab.open' | 'tab.reload' | 'tab.close' | 'tab.state';
   page: Role;
   url?: string;
   tabId: number | null;
@@ -221,6 +235,11 @@ const mailOn = cfg.mail !== false && !!mailOrigin;
 const pollMs = Math.max(0, Number(cfg.gmailPollSeconds ?? 60) || 0) * 1000;
 /** How often the canary runs (0: never); off by default in tests (a test Gmail origin), which turn it on by setting it. */
 const canaryMs = Math.max(0, Number(cfg.gmailCanaryHours ?? (testMailOrigin ? 0 : 24)) || 0) * 3600_000;
+/**
+ * How long the Calendar tab stays open with no Calendar call (0: always open). Only with a Gmail tab: it keeps the
+ * browser (closing its last tab would end it) and says whether Google is still signed in meanwhile.
+ */
+const calendarIdleMs = mailOn ? Math.max(0, Number(cfg.calendarIdleSeconds ?? 600) || 0) * 1000 : 0;
 const apiBase = String(cfg.apiBase ?? 'https://clients6.google.com').replace(/\/$/, '');
 const gmailApiBase = String(cfg.gmailApiBase ?? 'https://gmail.googleapis.com').replace(/\/$/, '');
 const startUrl = `${calendarOrigin}/calendar/u/${encodeURIComponent(authuser)}/r`;
@@ -263,6 +282,11 @@ class Lane {
     return true;
   }
 
+  /** Requests in flight or waiting for a slot. */
+  get busy(): number {
+    return this.inFlight + this.waiting.length;
+  }
+
   /** The slot goes to the next one waiting, or back. */
   give() {
     const next = this.waiting.shift();
@@ -293,6 +317,12 @@ interface Page {
   silent: number;
   /** Bumped by each reload: an older request's silence is the old page's, and no longer counts. */
   generation: number;
+  /**
+   * The page as a channel that a reload replaces (packages/spec handover.ts): requests wait while its tab is being
+   * reloaded, and those the old page had when it was reloaded run again on the new one (reads and label changes) or
+   * fail 'unsure'.
+   */
+  line: Handover<null>;
   answeredAt: number;
   /** When its hook last said it is up. */
   hookAt: number;
@@ -306,6 +336,11 @@ interface Page {
   /** Its hook said the page made a sync call of its own (Gmail): mail calls can be made. */
   synced: boolean;
 }
+const upLine = (name: string) => {
+  const h = new Handover<null>({ name });
+  h.open(null);
+  return h;
+};
 const newPage = (role: Role, name: string, url: string | null, lane: Lane): Page => ({
   role,
   name,
@@ -319,6 +354,7 @@ const newPage = (role: Role, name: string, url: string | null, lane: Lane): Page
   lane,
   silent: 0,
   generation: 0,
+  line: upLine(`the ${name} page`),
   answeredAt: 0,
   hookAt: 0,
   reloading: false,
@@ -342,12 +378,25 @@ const roleOf = (m: { role?: unknown }): Role => (m.role === 'gmail' ? 'gmail' : 
 // -------------------------------------------------------------------- state
 const statePath = join(link.accountDir, 'state.json');
 let kept: Partial<Winner> = readKept();
-let display = 0;
+let display: FreeDisplay | null = null;
 let liveView: { vncSocket: string; width: number; height: number } | null = null;
 let sandbox: Sandbox | null = null;
 let sandboxError: string | null = null;
 let startedAt = 0;
 let tabs: TabInfo[] = [];
+/** The Calendar tab was closed while idle (closeIdleCalendar): the next Calendar call opens it again (openCalendarTab). */
+let calClosed = false;
+let calClosing: Promise<void> | null = null;
+let calOpening: Promise<void> | null = null;
+/** When the Calendar tab was last opened again: a call waits for a hook that came up since. */
+let calOpenedAt = 0;
+/** Tabs closed that way: a list from the worker sent before one closed does not bring it back. */
+const closedTabs = new Set<number>();
+/** The address the Calendar page last said, kept while its tab is closed (Gmail's page may not have drawn its own). */
+let calEmail: string | null = null;
+/** When a Calendar call last started or ended, and how many are under way: they keep its tab open. */
+let calUsedAt = 0;
+let calUsers = 0;
 let signedInOnce = false;
 let verified: Winner | null = null;
 let probe: { at: number; ok: boolean; status: number | null; statuses: number[] } | null = null;
@@ -400,6 +449,17 @@ const bridge = new BridgeServer<Up, PageCmd | TabCmd>({
   resend: { kinds: RESEND_KINDS, when: (c) => resendable(c as { kind: string; method?: unknown; body?: unknown }) },
   log,
 });
+/** Other accounts' "Continue with Google", answered in this browser (packages/browser/src/signin.ts). */
+const signIns = new SignInAnswerer({
+  bridge,
+  provider: 'google',
+  testOrigin,
+  // A linked sign-in's account chooser and Continue are pressed on this screen, as this account (its email).
+  screen: () => sandbox?.screen ?? null,
+  who: () => who()?.email ?? null,
+  log,
+  onChange: () => status(),
+});
 
 // ------------------------------------------------------------------- status
 const LOGIN: Attention = { kind: 'login', message: 'Sign in to Google in the live view', liveView: true };
@@ -414,6 +474,15 @@ const onCalendar = (u: string | null) => !!u && u.startsWith(`${calendarOrigin}/
 const onMail = (u: string | null) => !!u && !!mailOrigin && u.startsWith(`${mailOrigin}/`);
 const tab = () => cal.url;
 const current = () => (cal.hooked ? cal.session : null);
+/** The page that says whether Google is signed in: Calendar's, or Gmail's while the Calendar tab is closed. */
+const signPage = () => (calClosed ? gm : cal);
+const onOwn = (p: Page, u: string | null) => (p.role === 'calendar' ? onCalendar(u) : onMail(u));
+/** What signPage last said, with Calendar's address while Gmail's page has not shown its own. */
+function who(): Page['session'] {
+  const p = signPage();
+  const s = p.hooked ? p.session : null;
+  return s && calClosed && !s.email ? { ...s, email: calEmail } : s;
+}
 const hhmm = (at: number) => `${new Date(at).toISOString().slice(11, 16)} UTC`;
 
 function state(): { status: string; attention: Attention | null } {
@@ -424,13 +493,16 @@ function state(): { status: string; attention: Attention | null } {
     if (Date.now() - startedAt > ATTACH_MS) return att({ kind: 'unknown', message: 'The sandbox extension did not attach; open the live view to see the browser', liveView: true });
     return { status: 'connecting', attention: null };
   }
-  const s = current();
-  const t = tab();
+  const relay = signIns.attention();
+  if (relay) return att(relay);
+  const p = signPage();
+  const s = who();
+  const t = p.url;
   if (hostOf(t) === SIGN_IN_HOST) return att(LOGIN);
   if (s && !s.signedIn) return att(LOGIN);
   if (!s) {
     // Signed out, calendar.google.com may send you elsewhere (a product page); after a sign-in, it is a detour.
-    if (t && !onCalendar(t)) return signedInOnce ? att({ kind: 'unknown', message: `Google Calendar is not open in the sandbox (it is on ${t}); open the live view and go back to it`, liveView: true }) : att(LOGIN);
+    if (t && !onOwn(p, t)) return signedInOnce ? att({ kind: 'unknown', message: `${p === cal ? 'Google Calendar' : 'Gmail'} is not open in the sandbox (it is on ${t}); open the live view and go back to it`, liveView: true }) : att(LOGIN);
     return { status: 'connecting', attention: null };
   }
   if (verified) return { status: 'online', attention: null };
@@ -454,17 +526,19 @@ function tabsSummary(): string | null {
 
 function details(): Record<string, string | number | boolean | null | string[]> {
   const shapes = [...new Set(cal.endpoints.filter((e) => e.auth).map((e) => `${e.auth!.schemes.join('+')}${e.auth!.u ? ' _u' : ''}`))];
-  const s = current();
+  const s = who();
   const g = gm.hooked ? gm.session : null;
   return {
     // What the account is to a mail client (dither-chat's hub): Gmail, on a Workspace domain too.
     provider: 'Gmail',
     email: s?.email ?? null,
     authuser,
-    display: liveView ? `:${display}` : null,
+    display: liveView ? displayName(display) : null,
     page: tab(),
     extensionAttached: bridge.connected,
     calendarPage: cal.hooked > 0,
+    // The Calendar tab closed while no Calendar call needs it; the next one opens it again.
+    calendarTabClosed: calClosed,
     signedIn: s ? s.signedIn : null,
     keySource: verified?.source ?? null,
     authStyle: verified?.auth ?? null,
@@ -499,6 +573,8 @@ function details(): Record<string, string | number | boolean | null | string[]> 
     // Suggesting people as Gmail's To field does (mail.contacts): now, or why not.
     contacts: contactsNote() === null,
     contactsNote: contactsNote(),
+    // Suggestions left out of answers that were read (packages/link records.ts), by kind and count; null when none.
+    contactsSkipped: contacts?.skips.summary() ?? null,
     gmailWatch: !mailOn ? null : !pollMs ? 'off' : !watchOn ? 'starts with the first mail call' : watchInfo.error ? `failed at ${hhmm(watchInfo.at)}: ${watchInfo.error}` : watchInfo.at ? `looked at ${hhmm(watchInfo.at)}` : 'starting',
     gmailSelfCheckAt: gmailSelfCheck ? new Date(gmailSelfCheck.at).toISOString() : null,
     gmailSelfCheck: gmailSelfCheck?.summary ?? null,
@@ -559,17 +635,18 @@ function gmailLayer(): Layer {
  * told it stops at Calendar.
  */
 function layers(): Layer[] {
-  const s = current();
-  const t = tab();
+  const p = signPage();
+  const s = who();
+  const t = p.url;
   // A sandbox that did not start: Chromium's own failures are the browser's, the rest (no free display, Xvfb) the display's.
   const browserFailed = !!sandboxError && /chromium/i.test(sandboxError);
   const screen: Layer = liveView
-    ? { name: 'display', state: 'ok', note: `Xvfb :${display}, live view ready` }
+    ? { name: 'display', ...displayState(display, sandbox?.screenHealth) }
     : sandboxError && !browserFailed
       ? { name: 'display', state: 'failed', note: sandboxError }
       : browserFailed
         ? { name: 'display', state: 'off', note: 'not started' }
-        : { name: 'display', state: 'waiting', note: 'starting Xvfb' };
+        : { name: 'display', state: 'waiting', note: 'starting the display' };
   const browser: Layer = liveView
     ? sandbox?.browserAlive
       ? { name: 'browser', state: 'ok', note: t ? `Chromium, on ${hostOf(t) ?? t}` : 'Chromium is running' }
@@ -578,7 +655,7 @@ function layers(): Layer[] {
       ? { name: 'browser', state: 'failed', note: sandboxError! }
       : { name: 'browser', state: 'waiting', note: 'not started yet' };
   const extension: Layer = bridge.connected
-    ? { name: 'extension', state: 'ok', note: cal.hooked ? 'attached, in the Calendar page' : 'attached' }
+    ? { name: 'extension', state: 'ok', note: cal.hooked ? 'attached, in the Calendar page' : calClosed && gm.hooked ? 'attached, in the Gmail page' : 'attached' }
     : liveView && startedAt && Date.now() - startedAt > ATTACH_MS
       ? { name: 'extension', state: 'failed', note: `did not attach within ${ATTACH_MS / 1000} s` }
       : { name: 'extension', state: 'waiting', note: 'not attached yet' };
@@ -586,11 +663,11 @@ function layers(): Layer[] {
     ? { name: 'signed in', state: 'ok', note: s.email ?? undefined }
     : !bridge.connected
       ? { name: 'signed in', state: 'waiting', note: 'waits for the extension' }
-      : (s && !s.signedIn) || hostOf(t) === SIGN_IN_HOST || (t && !onCalendar(t) && !signedInOnce)
+      : (s && !s.signedIn) || hostOf(t) === SIGN_IN_HOST || (t && !onOwn(p, t) && !signedInOnce)
         ? { name: 'signed in', state: 'waiting', note: 'sign in to Google in the live view' }
-        : t && !onCalendar(t)
-          ? { name: 'signed in', state: 'waiting', note: `Google Calendar is not open (the tab is on ${hostOf(t) ?? t})` }
-          : { name: 'signed in', state: 'waiting', note: 'Google Calendar is loading' };
+        : t && !onOwn(p, t)
+          ? { name: 'signed in', state: 'waiting', note: `${p === cal ? 'Google Calendar' : 'Gmail'} is not open (the tab is on ${hostOf(t) ?? t})` }
+          : { name: 'signed in', state: 'waiting', note: `${p === cal ? 'Google Calendar' : 'Gmail'} is loading` };
   const key: Layer = verified
     ? { name: 'API key', state: 'ok', note: `from ${verified.source}${verified.auth === 'u' ? ', _u hash' : ''}` }
     : probing
@@ -603,7 +680,7 @@ function layers(): Layer[] {
     verified && probe?.ok
       ? bad
         ? { name: 'Calendar API', state: bad.failed ? 'failed' : 'waiting', note: bad.note }
-        : { name: 'Calendar API', state: 'ok', note: `answered ${probe.status}, ${new Date(probe.at).toISOString().slice(0, 16).replace('T', ' ')} UTC` }
+        : { name: 'Calendar API', state: 'ok', note: `answered ${probe.status}, ${new Date(probe.at).toISOString().slice(0, 16).replace('T', ' ')} UTC${calClosed ? "; its tab is closed while no Calendar call comes, and the next one opens it" : ''}` }
       : { name: 'Calendar API', state: 'waiting', note: probe && !probe.ok ? `waits for a key (it answered ${probe.status ?? 'nothing'})` : 'waits for a key' };
   const protocol: Layer = gmail ? gmail.layer() : { name: 'Gmail protocol', state: 'off', note: 'no Gmail tab' };
   const c = canary.last;
@@ -615,7 +692,7 @@ function layers(): Layer[] {
 let lastSent = '';
 function status(force = false) {
   const st = state();
-  const email = current()?.email;
+  const email = who()?.email;
   const g = gm.hooked ? gm.session : null;
   const name = g?.email && g.email === email ? (g.name ?? null) : null;
   // `changed`: the canary saw Gmail's answers change or fail (src/gmail/canary.ts), until a run is clean again. The
@@ -629,20 +706,29 @@ function status(force = false) {
 
 // ------------------------------------------------------------------- bridge
 /** Each role's tab from the worker's list: its current page's, one with its hook, the one it had; Calendar's, else the active one. */
-function noteTabs(list: TabInfo[]) {
+function noteTabs(all: TabInfo[]) {
+  const list = all.filter((t) => !closedTabs.has(t.id));
   tabs = list;
   for (const p of [cal, gm]) {
     const mine = list.filter((t) => t.role === p.role);
     const other = p.role === 'calendar' ? gm.tabId : cal.tabId;
     let pick: TabInfo | undefined = mine.find((t) => t.current) ?? mine.find((t) => t.hook) ?? mine.find((t) => t.id === p.tabId) ?? list.find((t) => t.id === p.tabId && !t.role) ?? mine[0];
     // Calendar's tab is the browser's first: before its hook ever ran (sent straight to the sign-in page), the active one.
-    if (!pick && p.role === 'calendar') pick = list.find((t) => t.active && t.id !== other && t.role !== 'gmail') ?? list.find((t) => t.id !== other && t.role !== 'gmail');
+    // Not while it is closed on purpose: then another tab (the Gmail one, one opened in the live view) is not Calendar's.
+    if (!pick && p.role === 'calendar' && !calClosed) pick = list.find((t) => t.active && t.id !== other && t.role !== 'gmail') ?? list.find((t) => t.id !== other && t.role !== 'gmail');
     const was = p.url;
     p.tabId = pick?.id ?? null;
     p.url = pick?.url ?? null;
     p.hooked = mine.filter((t) => t.hook).length;
     if (p.url !== was) log('info', `${p.role} tab on ${p.url ?? 'nothing'}`);
   }
+  // A Calendar page came up while its tab was closed (opened in the live view): it is open again.
+  if (calClosed && cal.hooked && !calOpening) {
+    calClosed = false;
+    log('info', 'a Calendar tab is open again');
+  }
+  // Gmail's tab gone while Calendar's is closed: Calendar's comes back, so the browser keeps a page that says the sign-in.
+  if (calClosed && gm.tabId === null) void openCalendarTab().catch(() => {});
 }
 
 function onBridge(msg: Up) {
@@ -661,6 +747,7 @@ function onBridge(msg: Up) {
       pages[roleOf(msg)].synced = false;
       pages[roleOf(msg)].hookAt = Date.now();
       log('debug', `${roleOf(msg)} page hook up`, { page: msg.page });
+      settled(pages[roleOf(msg)]);
       break;
     case 'session': {
       const p = pages[roleOf(msg)];
@@ -668,6 +755,8 @@ function onBridge(msg: Up) {
       p.session = { signedIn: !!msg.signedIn, email: typeof msg.email === 'string' ? msg.email.slice(0, 200) : null, name: typeof msg.name === 'string' && msg.name.trim() ? msg.name.slice(0, 200) : null };
       if (p.session.signedIn !== was) log('info', `${p.role} page: ${p.session.signedIn ? 'signed in' : 'not signed in'}`);
       if (p.role === 'gmail') gmail?.notePage(p.session.signedIn);
+      // Signed out while the Calendar tab is closed: it comes back, and the sign-in goes on there, as before.
+      if (p.role === 'gmail' && calClosed && !p.session.signedIn) void openCalendarTab().catch(() => {});
       if (p.role !== 'calendar') break;
       if (p.session.signedIn) {
         signedInOnce = true;
@@ -710,6 +799,79 @@ async function openGmailTab(attempt = 0) {
 }
 
 /**
+ * The Calendar tab, closed while no Calendar call needs it. Gmail's tab stays open (the mail watch asks Gmail every
+ * minute), but Calendar's is only for Calendar calls, and a Google page holds a renderer of a hundred MB or more (in
+ * RAM or swap) all the same. Once no Calendar call has started or ended for calendarIdleMs, and its page has been up
+ * that long, it is closed, if: Google is signed in and a key known (no sign-in or probe under way), no reload is, and
+ * Gmail's page is up and signed in in a tab of its own (it says the sign-in meanwhile, and keeps the browser open).
+ * The next Calendar call opens it again (openCalendarTab) and waits for it.
+ */
+async function closeIdleCalendar() {
+  if (!calendarIdleMs || calClosed || calClosing || calOpening || cleaning || !bridge.connected) return;
+  if (calUsers || cal.lane.busy || probing || cal.reloading || deciding.has('calendar') || cal.line.state !== 'up') return;
+  if (Date.now() - Math.max(calUsedAt, cal.hookAt, startedAt) < calendarIdleMs) return;
+  const s = current();
+  if (!s?.signedIn || !verified || !onCalendar(cal.url) || cal.tabId === null) return;
+  const g = gm.hooked ? gm.session : null;
+  if (!g?.signedIn || !onMail(gm.url) || gm.tabId === null || gm.tabId === cal.tabId) return;
+  let done!: () => void;
+  calClosing = new Promise<void>((r) => (done = r));
+  const tabId = cal.tabId;
+  try {
+    const r = await bridge.request<{ closed: boolean; why?: string }>({ kind: 'tab.close', page: 'calendar', tabId }, TAB_COMMAND_MS);
+    if (r.closed) {
+      calClosed = true;
+      closedTabs.add(tabId);
+      calEmail = cal.session?.email ?? calEmail;
+      cal.tabId = null;
+      cal.url = null;
+      cal.hooked = 0;
+      cal.session = null;
+      log('info', `closed the Calendar tab: no Calendar call for ${Math.round(calendarIdleMs / 1000)} s; the next one opens it again`);
+    } else {
+      // Asked again after another idle spell, not on every sweep.
+      calUsedAt = Date.now();
+      log('info', `the Calendar tab was not closed: ${r.why ?? 'the worker said no'}`);
+    }
+  } catch (e) {
+    calUsedAt = Date.now();
+    log('warn', 'could not close the Calendar tab', String((e as Error).message ?? e).slice(0, 200));
+  } finally {
+    calClosing = null;
+    done();
+    status();
+    readiness.changed();
+  }
+}
+
+/** The Calendar tab opened again (in front, as the browser's start page is), once for every call that finds it closed. */
+function openCalendarTab(): Promise<void> {
+  calOpening ??= outsideOp(async () => {
+    try {
+      if (calClosing) await calClosing;
+      if (!calClosed || cleaning) return;
+      if (!bridge.connected) throw new StatusError('the sandbox browser is not attached', 503, 'unavailable', { kind: 'transient' });
+      calOpenedAt = Date.now();
+      const r = await bridge.request<{ tabId: number; how: string }>({ kind: 'tab.open', page: 'calendar', url: startUrl, tabId: null, active: true }, TAB_COMMAND_MS);
+      calClosed = false;
+      cal.tabId = r.tabId;
+      calUsedAt = Date.now();
+      log('info', r.how === 'open' ? 'a Calendar tab was open already' : 'opened the Calendar tab again');
+    } catch (e) {
+      if (e instanceof StatusError) throw e;
+      const msg = String((e as Error).message ?? e).slice(0, 200);
+      log('warn', 'could not open the Calendar tab again', msg);
+      throw new StatusError(`the Calendar tab could not be opened again (${msg})`, 503, 'unavailable', { kind: 'transient' });
+    }
+  }).finally(() => {
+    calOpening = null;
+    status();
+    readiness.changed();
+  });
+  return calOpening;
+}
+
+/**
  * A page that stopped answering (2026-11-10: one account's Calendar page went quiet and every call timed out for an
  * hour, its status still all ok) has its tab reloaded, that tab alone: sent back to its start page by the service
  * worker, or, when the last reload did not bring it back, a new tab opened and the old one closed. The other page,
@@ -741,6 +903,11 @@ async function reloadPage(p: Page) {
   p.silent = 0;
   p.reloads++;
   p.lastReload = { at: Date.now(), how: null };
+  // 2026-11-18: calls made between a reload's order and the old page unloading reached the old page, whose fetch the
+  // unload cut ("Failed to fetch", a 503). Requests now wait for the new page; past RELOAD_SETTLE_MS they go to the
+  // tab as it is. What the old page has is lost with it: reads run again on the new page, the rest fail 'unsure'.
+  p.line.opening('its tab is being reloaded', { ms: RELOAD_SETTLE_MS, late: () => p.line.open(null) });
+  p.line.cut('its tab was reloaded');
   if (p.role === 'calendar') recheck = true;
   // A reloaded Gmail page may answer what it did not: no request stays held for failing alike before (mail.ts REPEAT).
   if (p.role === 'gmail') gmail?.clearHolds();
@@ -759,17 +926,17 @@ async function reloadPage(p: Page) {
     log('warn', `the ${p.name} tab could not be reloaded`, p.lastReload.error);
   } finally {
     p.reloading = false;
+    settled(p);
     status();
     readiness.changed();
   }
 }
 
-/** Why a request to this page should wait: its tab is being reloaded, and the new page's hook is not up yet. */
-function reloadUnsettled(p: Page): string | null {
-  if (p.reloading) return 'its tab is being reloaded';
+/** The page's hook is up again since its reload (or the reload failed, and the tab is as it was): requests go to it. */
+function settled(p: Page) {
+  if (p.reloading || p.line.state !== 'opening') return;
   const r = p.lastReload;
-  if (r && !r.error && p.hookAt <= r.at && Date.now() - r.at < RELOAD_SETTLE_MS) return 'its hook is not up again since the reload';
-  return null;
+  if (!r || r.error || p.hookAt > r.at) p.line.open(null);
 }
 
 /** Whether the page's tab is loading as Chromium sees it (the worker's tab.state), or null when it did not say. */
@@ -792,19 +959,26 @@ async function tabLoading(p: Page): Promise<boolean | null> {
  */
 async function pageRequest<T>(role: Role, cmd: PageCmd, answerMs = PAGE_ANSWER_MS, lane = pages[role].lane): Promise<T> {
   const p = pages[role];
-  if (!bridge.connected) throw new StatusError('the sandbox browser is not attached', 503, 'unavailable');
+  if (!bridge.connected) throw new StatusError('the sandbox browser is not attached', 503, 'unavailable', { kind: 'transient' });
   const ms = Math.min(answerMs, remainingMs(answerMs));
   const silence = () => new StatusError(`the ${p.name} page did not answer in ${Math.max(1, Math.round(ms / 1000))} s`, 503);
   if (ms <= 0) throw new StatusError(`the ${p.name} page did not answer within this call's time (none of it was left for this request)`, 503);
   const deadline = Date.now() + ms;
-  // 2026-11-18: calls made in the moment between a reload's order and the old page unloading reached the old page,
-  // whose fetch the unload cut ("Failed to fetch", a 503). They wait for the new page instead.
-  if (reloadUnsettled(p)) {
-    const r = p.lastReload;
-    await readiness.until(() => reloadUnsettled(p), Math.min(deadline - Date.now(), r ? r.at + RELOAD_SETTLE_MS - Date.now() : RELOAD_SETTLE_MS));
-    if (Date.now() >= deadline) throw new StatusError(`the ${p.name} page is being reloaded, and the new page was not up within this request's time, so it was not sent`, 503, 'unavailable');
-  }
   if (!(await lane.take(deadline))) throw new StatusError(`the ${p.name} page is busy: ${lane.max} of its requests ahead of this one did not finish within ${Math.max(1, Math.round(ms / 1000))} s, so this one was not sent`, 503, 'unavailable');
+  try {
+    // The page's tab may be being reloaded: then the request waits for the new page (Page.line).
+    return await p.line.run(() => toPage<T>(p, role, cmd, deadline, silence), { deadline, repeatable: resendable(cmd) });
+  } catch (e) {
+    if (!(e instanceof HandoverError)) throw e;
+    if (e.code === 'retry') throw new StatusError(`the ${p.name} page is being reloaded, and the new page was not up within this request's time, so it was not sent`, 503, 'retry');
+    throw new StatusError(`the ${p.name} page was reloaded while it had this request: it may or may not have happened, and it was not sent again`, 504, 'unsure');
+  } finally {
+    lane.give();
+  }
+}
+
+/** One request to the page as it is now, answered within `deadline`; its silence counts against the page. */
+async function toPage<T>(p: Page, role: Role, cmd: PageCmd, deadline: number, silence: () => StatusError): Promise<T> {
   const generation = p.generation;
   const sentAt = Date.now();
   try {
@@ -815,8 +989,6 @@ async function pageRequest<T>(role: Role, cmd: PageCmd, answerMs = PAGE_ANSWER_M
     const msg = String((e as Error).message ?? e);
     if (!msg.startsWith('hook timed out')) {
       answered(p, false);
-      // One that was in the page when its tab was reloaded: the unload cut it, and the log should say so.
-      if (generation !== p.generation) throw new StatusError(`the ${p.name} page was reloaded while it had this request (${msg})`, 503);
       throw new StatusError(msg, 503);
     }
     // One cut short (by its wait in the lane, or its op's time) is not the page's silence; one sent to a page since
@@ -827,8 +999,6 @@ async function pageRequest<T>(role: Role, cmd: PageCmd, answerMs = PAGE_ANSWER_M
     const working = reached === 'page' && LONG_KINDS.has(cmd.kind);
     if (generation === p.generation && given >= SILENCE_COUNTS_MS && !working) unanswered(p, cmd, reached, given);
     throw silence();
-  } finally {
-    lane.give();
   }
 }
 
@@ -1199,6 +1369,12 @@ function writeError(e: unknown): StatusError {
 }
 
 /** The Gmail tab, as GmailMail needs it: every call through the hook in that page (docs/google.md, "Gmail mail"). */
+/** The hook's second try at a download that failed before any answer (RawNetwork.then), if it said one. */
+function rawThen(v: unknown): { then?: 'redirect' | 'network' | 'timeout' | number } {
+  if (v === 'redirect' || v === 'network' || v === 'timeout') return { then: v };
+  if (typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 1000) return { then: v };
+  return {};
+}
 const gmailTransport: Transport = {
   async info() {
     const r = await pageRequest<{ sync?: unknown; headers?: unknown; ik?: unknown; history?: unknown }>('gmail', { kind: 'gmail.syncInfo' });
@@ -1209,9 +1385,9 @@ const gmailTransport: Transport = {
     return { ...r, page: pageKindOf(r?.page) };
   },
   async raw(hex, max) {
-    const r = await pageRequest<{ status?: number; token?: string; size?: number; tooBig?: number; type?: string | null; error?: string; page?: unknown; stage?: unknown; ms?: unknown; got?: unknown; online?: unknown }>('gmail', { kind: 'gmail.raw', hex, max }, RAW_ANSWER_MS);
+    const r = await pageRequest<{ status?: number; token?: string; size?: number; tooBig?: number; type?: string | null; error?: string; page?: unknown; stage?: unknown; ms?: unknown; got?: unknown; online?: unknown; then?: unknown }>('gmail', { kind: 'gmail.raw', hex, max }, RAW_ANSWER_MS);
     const status = typeof r?.status === 'number' ? r.status : 0;
-    if (r?.error === 'network') return { status: 0, error: 'network', net: { stage: r.stage === 'body' ? 'body' : 'headers', ms: Number(r.ms) || 0, got: Number(r.got) || 0, online: typeof r.online === 'boolean' ? r.online : null } };
+    if (r?.error === 'network') return { status: 0, error: 'network', net: { stage: r.stage === 'body' ? 'body' : 'headers', ms: Number(r.ms) || 0, got: Number(r.got) || 0, online: typeof r.online === 'boolean' ? r.online : null, ...rawThen(r.then) } };
     if (typeof r?.token !== 'string') return { status, tooBig: typeof r?.tooBig === 'number' ? r.tooBig : undefined, type: r?.type ?? null, error: r?.error, page: pageKindOf(r?.page) };
     const size = Number(r.size);
     try {
@@ -1298,11 +1474,11 @@ const contacts = mailOn ? new GmailContacts(contactsTransport, { log, ready: con
 /** Why the Gmail tab cannot take a mail call now, or null: not attached, not open, signed out, not synced yet. */
 function gmailNotReady(): StatusError | null {
   if (!gmail) return new StatusError(cfg.mail === false ? 'this account reads no mail (mail: false in its config)' : 'this account has no Gmail tab', 501);
-  if (!bridge.connected) return new StatusError('the sandbox browser is not attached yet', 503, 'unavailable');
+  if (!bridge.connected) return new StatusError('the sandbox browser is not attached yet', 503, 'unavailable', { kind: 'transient' });
   const s = gm.hooked ? gm.session : null;
-  if (!s) return new StatusError('Gmail is not open in the sandbox yet', 503, 'unavailable');
-  if (!s.signedIn) return new StatusError('Google is not signed in; sign in in the live view', 401);
-  if (!gm.synced) return new StatusError('the Gmail page has not made a sync call of its own yet, so the headers it sends are not known; try again in a moment', 503, 'unavailable');
+  if (!s) return new StatusError('Gmail is not open in the sandbox yet', 503, 'unavailable', { kind: 'transient' });
+  if (!s.signedIn) return new StatusError('Google is not signed in; sign in in the live view', 401, undefined, { kind: 'expected' });
+  if (!gm.synced) return new StatusError('the Gmail page has not made a sync call of its own yet, so the headers it sends are not known; try again in a moment', 503, 'unavailable', { kind: 'transient' });
   return null;
 }
 /** Only a 503 passes by waiting (a page still coming up); 401 and 501 do not. */
@@ -1526,16 +1702,21 @@ function checkCanary() {
 // ---------------------------------------------------------------- calendar
 /** Why the Calendar page cannot take a call now, or null. */
 function calendarNotReady(): StatusError | null {
-  if (!bridge.connected) return new StatusError('the sandbox browser is not attached yet', 503, 'unavailable');
+  if (!bridge.connected) return new StatusError('the sandbox browser is not attached yet', 503, 'unavailable', { kind: 'transient' });
+  if (calClosed || calOpening || cal.hookAt < calOpenedAt) return new StatusError('the Calendar tab is being opened again', 503, 'unavailable', { kind: 'transient' });
   const s = current();
-  if (!s) return new StatusError('Google Calendar is not open in the sandbox', 503, 'unavailable');
-  if (!s.signedIn) return new StatusError('Google is not signed in; sign in in the live view', 401);
+  if (!s) return new StatusError('Google Calendar is not open in the sandbox', 503, 'unavailable', { kind: 'transient' });
+  if (!s.signedIn) return new StatusError('Google is not signed in; sign in in the live view', 401, undefined, { kind: 'expected' });
   return null;
 }
 
 /** The Calendar page up and signed in (waited for at start, as gmailReady), and a key that works. */
 async function ready(): Promise<Winner> {
-  const no = await readiness.until(calendarNotReady, Math.min(READY_WAIT_MS, remainingMs(READY_WAIT_MS)), (e) => !passes(e));
+  // Its tab closed while idle (or closing): opened again, and the wait for it is a cold page's.
+  const reopen = calClosed || !!calClosing || !!calOpening || cal.hookAt < calOpenedAt;
+  if (calClosed || calClosing || calOpening) await openCalendarTab();
+  const wait = reopen ? REOPEN_WAIT_MS : READY_WAIT_MS;
+  const no = await readiness.until(calendarNotReady, Math.min(wait, remainingMs(wait)), (e) => !passes(e));
   if (no) throw no;
   if (verified) return verified;
   const w = await runProbe();
@@ -1545,8 +1726,20 @@ async function ready(): Promise<Winner> {
 
 type Query = Record<string, string | number | boolean | undefined | null>;
 
-/** One Calendar API call, retried like rest.ts; on a 401/403, the key is probed again once. */
+/** One Calendar API call; while it runs, and for calendarIdleMs after, the Calendar tab stays open. */
 async function api(method: string, path: string, opts: { query?: Query; body?: unknown } = {}): Promise<any> {
+  calUsers++;
+  calUsedAt = Date.now();
+  try {
+    return await calendarApi(method, path, opts);
+  } finally {
+    calUsers--;
+    calUsedAt = Date.now();
+  }
+}
+
+/** One Calendar API call, retried like rest.ts; on a 401/403, the key is probed again once. */
+async function calendarApi(method: string, path: string, opts: { query?: Query; body?: unknown }): Promise<any> {
   let w = await ready();
   let reprobed = false;
   const query: Record<string, string | number | boolean> = {};
@@ -1582,6 +1775,8 @@ const page = (p: any) => ({ items: p.items ?? [], ...(p.nextPageToken ? { nextPa
 
 /** Each op under its own time (deadline.ts): every page request it makes is cut to what is left of it. */
 function onCommand(cmd: Command): Promise<unknown> {
+  // Another account's sign-in, from the manager (docs/signin-relay.md): its own time, up to minutes while you answer.
+  if (cmd.t === 'signin.authorize') return signIns.authorize(cmd as { url?: unknown; redirect?: unknown; ms?: unknown; auto?: unknown; who?: unknown });
   return withDeadline(opMs(cmd.t) - OP_MARGIN_MS, () => runOp(cmd));
 }
 
@@ -1667,26 +1862,28 @@ async function boot() {
   status();
   const tried: number[] = [];
   for (let attempt = 0; attempt < 3; attempt++) {
-    let free: { display: number };
+    let free: FreeDisplay;
     try {
       free = await pickFreeDisplay(undefined, tried);
     } catch (e) {
       sandboxError = String((e as Error).message ?? e);
       break;
     }
-    tried.push(free.display);
-    display = free.display;
+    if (free.display !== null) tried.push(free.display);
+    display = free;
     sandbox = new Sandbox({
       accountDir: link.accountDir,
-      display: free.display,
+      display: free,
       width: WIDTH,
       height: HEIGHT,
       extensionSrc: join(import.meta.dir, 'extension'),
-      config: { wsUrl: bridge.wsUrl, token: bridgeToken, authuser, testOrigin, testMailOrigin, peopleApiBase, fetchMs: testMailOrigin ? Number(cfg.testFetchMs) || null : null },
+      config: { wsUrl: bridge.wsUrl, token: bridgeToken, signIn: { consume: [] }, authuser, testOrigin, testMailOrigin, peopleApiBase, fetchMs: testMailOrigin ? Number(cfg.testFetchMs) || null : null },
       prepareExtension: testOrigin || testMailOrigin ? addTestOrigins : undefined,
       startUrl,
       noSandbox: !!cfg.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',
       log,
+      // The live view's server down or back (it is started again): said in the status at once.
+      onScreenHealth: () => status(true),
     });
     try {
       await sandbox.start();
@@ -1696,7 +1893,7 @@ async function boot() {
       break;
     } catch (e) {
       sandboxError = String((e as Error).message ?? e).slice(0, 300);
-      log('warn', `sandbox on :${free.display} failed`, sandboxError);
+      log('warn', `sandbox on ${displayName(free)} failed`, sandboxError);
       await sandbox.stop();
       sandbox = null;
     }
@@ -1720,6 +1917,7 @@ async function boot() {
   timers.push(setInterval(checkLearnRequest, PROBE_POLL_MS));
   timers.push(setInterval(checkSelfCheckRequest, PROBE_POLL_MS));
   timers.push(setInterval(checkCanary, PROBE_POLL_MS));
+  if (calendarIdleMs) timers.push(setInterval(() => void closeIdleCalendar(), Math.min(30_000, Math.max(1000, calendarIdleMs / 4))));
 }
 
 // ---------------------------------------------------------------- lifecycle

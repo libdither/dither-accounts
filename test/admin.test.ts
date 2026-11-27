@@ -4,12 +4,16 @@
  * its live view carried to the app on the app's token. Each needs an `accounts` grant at manage for the kind.
  */
 import type { UnixSocketListener } from 'bun';
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AccountsClient, CallFailed, liveViewPath, register } from '@dither-accounts/client';
 import { createManager, type Manager } from '@dither-accounts/manager';
+
+// These tests start real extractor processes, and under load one start can take seconds. A test's limit is longer
+// than the waits inside it, so one that hangs fails saying what it waited for, not with bun's bare 5 s timeout.
+setDefaultTimeout(30_000);
 
 let m: Manager;
 let dir: string;

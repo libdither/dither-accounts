@@ -5,6 +5,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { StatusError } from '@dither-accounts/link';
+import { LayoutChanged, Skips } from '@dither-accounts/link/records';
 import { CACHE_MS, type ContactsAnswer, ContactsLayoutError, contactsRequest, GmailContacts, readContacts, TROUBLE_MS } from '../extractors/google/src/gmail/contacts.ts';
 import { FAKE_PEOPLE, peopleAnswer, personMatches } from './fake-google.ts';
 
@@ -42,30 +43,50 @@ describe('the request and the answer', () => {
     expect(() => readContacts(one)).toThrow(new ContactsLayoutError('json[0][…][0][0][0][1]', 'an address on at least one suggestion', 'none'));
   });
 
-  test('another layout is refused, saying where and what kind of thing, never a value', () => {
+  test('another layout of the answer is refused, saying where and what kind of thing, never a value', () => {
     const at = (json: unknown) => {
       try {
         readContacts(json);
       } catch (e) {
-        expect(e).toBeInstanceOf(ContactsLayoutError);
+        expect(e instanceof ContactsLayoutError || e instanceof LayoutChanged).toBe(true);
         return (e as Error).message;
       }
       return null;
     };
-    expect(at(peopleAnswer(FAKE_PEOPLE, { swapped: true }))).toBe('at json[0][0][0][0][0][1][0]: expected an address, got a list of 2');
+    // The envelope: refused as a whole, as before.
     expect(at({ people: [] })).toBe('at json: expected a list, got an object');
     expect(at(['ann.lee@example.com'])).toBe('at json[0]: expected the list of suggestions, got a string');
+    // Every suggestion off: the layout changed, so the whole answer is refused (LayoutChanged, 502, a bug).
+    expect(at(peopleAnswer(FAKE_PEOPLE, { swapped: true }))).toBe('gmail.contacts: the answer is not laid out as this extractor knows it (at json[0][0][0][0][0][1][0]: expected an address, got a list of 2, and 7 of 7 records failed); nothing was returned rather than possibly misread records');
+  });
+
+  test("one suggestion off costs that suggestion: the rest are read, it is named by where and counted, never a value", () => {
+    const skipped = (json: unknown) => {
+      const skips = new Skips();
+      const r = readContacts(json, skips);
+      return { emails: r.contacts.map((c) => c.email), skipped: r.skipped.map((k) => `at ${k.where}: expected ${k.expected}, got ${k.got}`), counts: skips.summary() };
+    };
+    const twoOk = [FAKE_PEOPLE[1]!, FAKE_PEOPLE[3]!];
     // One level deeper does not pass for a group: every member is read as a person.
-    const deeper = peopleAnswer([FAKE_PEOPLE[0]!]) as any;
-    deeper[0][0] = [deeper[0][0]];
-    expect(at(deeper)).toBe('at json[0][0][0][0][1][0]: expected a profile or nothing, got a string');
-    const named = peopleAnswer([FAKE_PEOPLE[0]!]) as any;
+    const deeper = peopleAnswer([FAKE_PEOPLE[0]!, ...twoOk]) as any;
+    deeper[0][0][0] = [deeper[0][0][0]];
+    expect(skipped(deeper)).toEqual({ emails: ['alice@example.org', 'albert@example.net'], skipped: ['at json[0][0][0][0][1][0]: expected a profile or nothing, got a string'], counts: 'gmail.contacts: a profile or nothing 1' });
+    const named = peopleAnswer([FAKE_PEOPLE[0]!, ...twoOk]) as any;
     named[0][0][0][0][0][0][1] = 'Ann Lee';
-    expect(at(named)).toBe('at json[0][0][0][0][0][0][1]: expected a name or nothing, got a string');
-    const notAddress = peopleAnswer([FAKE_PEOPLE[0]!]) as any;
+    expect(skipped(named).skipped).toEqual(['at json[0][0][0][0][0][0][1]: expected a name or nothing, got a string']);
+    const notAddress = peopleAnswer([FAKE_PEOPLE[0]!, ...twoOk]) as any;
     notAddress[0][0][0][0][0][1][0] = 'Ann Lee';
-    expect(at(notAddress)).toBe('at json[0][0][0][0][0][1][0]: expected an address, got a string');
-    for (const m of [at(named), at(notAddress)]) expect(m).not.toContain('Ann');
+    expect(skipped(notAddress).skipped).toEqual(['at json[0][0][0][0][0][1][0]: expected an address, got a string']);
+    for (const m of [skipped(named), skipped(notAddress)]) expect(JSON.stringify(m)).not.toContain('Ann');
+    // Two of three off is still two records, not a layout (looksChanged wants at least 3, and more than were read).
+    const two = peopleAnswer([FAKE_PEOPLE[0]!, FAKE_PEOPLE[1]!, FAKE_PEOPLE[3]!]) as any;
+    two[0][0][0][0][0][1][0] = 'not an address';
+    two[0][1][0][0][0][1][0] = 'not an address';
+    expect(skipped(two).emails).toEqual(['albert@example.net']);
+    // Three of four off: refused.
+    const three = peopleAnswer([FAKE_PEOPLE[0]!, FAKE_PEOPLE[1]!, FAKE_PEOPLE[3]!, FAKE_PEOPLE[4]!]) as any;
+    for (const i of [0, 1, 2]) three[0][i][0][0][0][1][0] = 'not an address';
+    expect(() => readContacts(three)).toThrow(LayoutChanged);
   });
 });
 
@@ -165,7 +186,7 @@ describe('GmailContacts', () => {
     expect(c.troubled()).toBe(nokey.message);
     f.next.push({ status: 200, json: peopleAnswer(FAKE_PEOPLE, { swapped: true }) });
     const layout = await err(c.suggest({ query: 'x2' }));
-    expect([layout.status, layout.message]).toEqual([502, "Gmail's people suggestions answer is not laid out as this extractor knows it (at json[0][0][0][0][0][1][0]: expected an address, got a list of 2); nothing was returned rather than possibly wrong people"]);
+    expect([layout.status, layout.message]).toEqual([502, "Gmail's people suggestions answer is not laid out as this extractor knows it (at json[0][0][0][0][0][1][0]: expected an address, got a list of 2, and 7 of 7 suggestions failed); nothing was returned rather than possibly wrong people"]);
     f.next.push({ status: 400, code: 3 });
     expect((await err(c.suggest({ query: 'x3' }))).message).toBe('Google refused the people suggestions (400, code 3)');
     expect(c.troubled()).toBe('Google refused the people suggestions (400, code 3)');

@@ -14,7 +14,7 @@ import { fingerprint, firstInRepoFrame, normalize, parseFrame } from '../extract
 import { expand, parseErrorsLine, parseSpanLine, parseTextLines, tail } from '../extractors/bugwatch/src/readers.ts';
 import { run } from '../extractors/bugwatch/src/run.ts';
 import { DAY, fresh, HOUR, loadState, saveState, type State } from '../extractors/bugwatch/src/state.ts';
-import { type Deps, parseThreadId, parseThreadRecord, type RunResult, Watch } from '../extractors/bugwatch/src/watch.ts';
+import { type Deps, errorKind, parseThreadId, parseThreadRecord, type RunResult, verdictLines, Watch } from '../extractors/bugwatch/src/watch.ts';
 
 const ROOT = resolve(import.meta.dir, '..');
 const FAKE_T3 = join(ROOT, 'extractors/bugwatch/test/fake-t3.ts');
@@ -406,6 +406,8 @@ describe('threads', () => {
     expect(c!.stdin).toContain('at query (packages/hub/src/db.ts:120:7)');
     expect(c!.stdin).toContain('do not merge it, do not enable auto-merge, do not');
     expect(c!.stdin).not.toMatch(/\{\{\w+\}\}/);
+    expect(c!.stdin).toContain('None: no other bug shares a trace with it, has the same error elsewhere, or was first seen within 10 minutes of it.');
+    expect(c!.stdin).not.toMatch(/\n\n\n/);
     const b = Object.values(r.st.bugs)[0]!;
     expect(b.thread).toEqual({ title, at: T0, id: 'thread-1' });
     expect(news(r)[0]!.body).toContain(`A T3 thread is looking into it (${title}).`);
@@ -580,6 +582,119 @@ describe('threads', () => {
     expect(shown).toHaveLength(2);
     expect(r.w.report()).toEqual({ threads: 1, failed: 0, withPr: 1, runs: 3, items: 120, minutes: 45, unknown: 0 });
     expect(r.w.report(7, T0 + 8 * DAY).threads).toBe(0);
+  });
+
+  test('errorKind: a code error or a resource running out is a bug the first time; a network failure dressed as a TypeError is not', () => {
+    expect(errorKind('TypeError', "Cannot read properties of null (reading '<s>')")).toBe('code');
+    expect(errorKind('TypeError', 'Cannot set properties of null')).toBe('code');
+    expect(errorKind('TypeError', 'Illegal invocation')).toBe('code');
+    expect(errorKind('Error', 'x.map is not a function')).toBe('code');
+    expect(errorKind('ReferenceError', 'foo is not defined')).toBe('code');
+    expect(errorKind('Error', 'ENOSPC: no space left on device, write')).toBe('resource');
+    expect(errorKind('SQLiteError', 'database or disk is full')).toBe('resource');
+    expect(errorKind('TypeError', 'Failed to fetch')).toBeNull();
+    expect(errorKind('TypeError', 'fetch failed')).toBeNull();
+    expect(errorKind('TypeError', 'NetworkError when attempting to fetch resource.')).toBeNull();
+    expect(errorKind('Error', 'Gmail answered <n>')).toBeNull();
+    expect(errorKind('SQLiteError', 'database is locked')).toBeNull();
+  });
+
+  test('triage by kind: a code error or a full disk gets its thread at once, a network failure still waits; a full disk is urgent', async () => {
+    const r = rig({ threads: { recurMinutes: 60, gapMinutes: 0 } });
+    await r.w.scan();
+    r.write([errLine({ at: T0 + 1, where: 'job sync', source: 'job', name: 'TypeError', message: 'Failed to fetch' })]);
+    await r.w.scan();
+    expect(callsIn(r)).toEqual([]);
+    r.clock.now += 60_000;
+    r.write([errLine({ at: r.clock.now, where: 'job read', source: 'job', name: 'TypeError', message: "Cannot read properties of null (reading 'labels')" })]);
+    await r.w.scan();
+    expect(callsIn(r)).toHaveLength(1);
+    expect(callsIn(r)[0]!.stdin).toContain('- Its kind: a code error (the program broke its own assumption), a bug the first time it happens.');
+    r.clock.now += 60_000;
+    r.write([errLine({ at: r.clock.now, where: 'job write', source: 'job', name: 'Error', message: 'ENOSPC: no space left on device, write' })]);
+    await r.w.scan();
+    expect(callsIn(r)).toHaveLength(2);
+    expect(news(r).at(-1)!.urgency).toBe('high');
+    expect(news(r)[0]!.subject!.state).toBe('held');
+  });
+
+  test('the queue ranks by kind before count: a full disk seen once goes before a retry loop seen a hundred times', async () => {
+    const r = rig({ threads: { gapMinutes: 60 } });
+    await r.w.scan();
+    r.write([errLine({ at: T0 + 1, where: 'job first', source: 'job' })]);
+    await r.w.scan();
+    r.write([
+      ...Array.from({ length: 100 }, (_, i) => errLine({ at: T0 + 10 + i, where: 'job retry', source: 'job', name: 'Error', message: 'Gmail answered 503' })),
+      errLine({ at: T0 + 200, where: 'job null', source: 'job', name: 'TypeError', message: 'x.map is not a function' }),
+      errLine({ at: T0 + 300, where: 'job disk', source: 'job', name: 'Error', message: 'ENOSPC: no space left on device' }),
+    ]);
+    await r.w.scan();
+    expect(r.w.queue().map((b) => b.where)).toEqual(['job disk', 'job null', 'job retry']);
+  });
+
+  test('one failure seen from two places gets one thread: a bug sharing a trace joins the other\'s, until cleared', async () => {
+    const mgr = join(tmp(), 'errors.ndjson');
+    writeFileSync(mgr, '');
+    const r = rig({ threads: { gapMinutes: 0 }, sources: [{ name: 'manager', kind: 'errors-ndjson', path: mgr, project: '/srv/accounts', base: 'origin/main' }] });
+    await r.w.scan();
+    const trace = 'd'.repeat(32);
+    // The hub's request and the manager's call it made, in the same trace; the hub's is seen more.
+    r.write([errLine({ at: T0 + 1, trace }), errLine({ at: T0 + 2, trace })]);
+    appendFileSync(mgr, `${errLine({ at: T0 + 1, app: 'manager', where: 'call mail.get', name: 'Error', message: 'Gmail answered 500', trace })}\n`);
+    await r.w.scan();
+    expect(callsIn(r)).toHaveLength(1);
+    r.clock.now += 60_000;
+    await r.w.scan();
+    expect(callsIn(r)).toHaveLength(1);
+    const hub = Object.values(r.st.bugs).find((b) => b.sourceName === 'hub')!;
+    const m = Object.values(r.st.bugs).find((b) => b.sourceName === 'manager')!;
+    expect(hub.thread?.id).toBe('thread-1');
+    expect(m.joined).toBe(hub.id);
+    const n = r.w.notification(m);
+    expect(n.subject!.state).toBe('joined');
+    expect(n.body).toContain('No T3 thread of its own: it shares a trace with hub: SQLiteError: database is locked, whose thread (Bug: hub: SQLiteError: database is locked) covers both.');
+    expect(r.logs.some((l) => l.includes(`bug ${m.id} shares a trace with bug ${hub.id}`))).toBe(true);
+    // The hub's thread's brief lists the manager's bug as related, by its trace.
+    expect(callsIn(r)[0]!.stdin).toContain(`- \`${m.id}\` manager: Error: Gmail answered <n>: shares a trace with it;`);
+    // Cleared, it may have a thread of its own.
+    r.w.clear(m.id);
+    expect(m.joined).toBeUndefined();
+  });
+
+  test('related bugs and earlier verdicts go in the brief: a thread\'s Verdict, Class and Design cause lines are kept past a clear', async () => {
+    const reply = ['The page reloaded mid-call and the call was lost.', '', '**Verdict:** not a bug (3 a day, as before)', '- Class: an expected refusal reported as a bug', 'Design cause: errors lose their kind at each boundary'].join('\n');
+    const fake: Deps['run'] = async (argv): Promise<RunResult> => {
+      if (argv[0] === 'show') return { code: 0, stdout: JSON.stringify({ thread: { threadId: argv[1], status: 'idle', runCount: 1, itemCount: 9, settled: true }, messages: [{ role: 'user', text: 'Verdict: from the user' }, { role: 'assistant', text: reply }] }), stderr: '' };
+      return { code: 0, stdout: JSON.stringify({ threadId: 'thread-a' }), stderr: '' };
+    };
+    const r = rig({ run: fake, threads: { gapMinutes: 0, show: ['show', '{id}'] } });
+    await r.w.scan();
+    r.write([errLine({ at: T0 + 1, where: 'job a', source: 'job', name: 'TypeError', message: 'Failed to fetch' })]);
+    await r.w.scan();
+    const a = Object.values(r.st.bugs)[0]!;
+    expect(a.thread!.record).toMatchObject({ verdict: 'not a bug (3 a day, as before)', class: 'an expected refusal reported as a bug', cause: 'errors lose their kind at each boundary', done: true });
+    expect(a.verdicts).toEqual([{ thread: a.thread!.id!, at: T0, verdict: 'not a bug (3 a day, as before)', class: 'an expected refusal reported as a bug', cause: 'errors lose their kind at each boundary' }]);
+    // A week later, the same error somewhere else: its brief starts from that verdict.
+    r.clock.now = T0 + 7 * DAY;
+    r.write([errLine({ at: r.clock.now, where: 'job b', source: 'job', name: 'TypeError', message: 'Failed to fetch' })]);
+    await r.w.scan();
+    const b = Object.values(r.st.bugs).find((x) => x.where === 'job b')!;
+    const brief = r.w.brief(b);
+    expect(brief).toContain(`- \`${a.id}\` hub: TypeError: Failed to fetch: the same error, in \`hub\` at \`job a\`; 1 time, 2026-11-13 12:00 UTC to 2026-11-13 12:00 UTC; its thread (${a.thread!.id}, 2026-11-13 12:00 UTC) said verdict: not a bug (3 a day, as before); class: an expected refusal reported as a bug; design cause: errors lose their kind at each boundary.`);
+    // Cleared and looked at again: its own earlier verdict comes first.
+    r.w.clear(a.id);
+    expect(r.w.brief(a)).toContain(`- This fingerprint's earlier thread (${a.verdicts![0]!.thread}, 2026-11-13 12:00 UTC) said verdict: not a bug`);
+    // Never in a notice.
+    expect(JSON.stringify(r.w.notification(a))).not.toContain('expected refusal');
+    expect(JSON.stringify(r.w.notification(b))).not.toContain('expected refusal');
+  });
+
+  test('verdictLines: the latest reply\'s labelled lines, bold or listed, each clipped; nothing without them', () => {
+    expect(verdictLines([{ role: 'assistant', text: 'Verdict: fixed\nClass: work lost during a swap\nDesign cause: none: a one-off slip' }])).toEqual({ verdict: 'fixed', class: 'work lost during a swap', cause: 'none: a one-off slip' });
+    expect(verdictLines([{ role: 'assistant', text: '**Class**: a wait nobody answers' }, { role: 'user', text: 'Class: not this' }])).toEqual({ class: 'a wait nobody answers' });
+    expect(verdictLines([{ role: 'assistant', text: `Verdict: ${'x'.repeat(400)}` }]).verdict!.length).toBe(200);
+    expect(verdictLines([{ role: 'assistant', text: 'no labels here' }])).toEqual({});
+    expect(verdictLines(undefined)).toEqual({});
   });
 
   test('parseThreadRecord: t3\'s { thread: … }, or nothing', () => {

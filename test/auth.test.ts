@@ -5,7 +5,7 @@
  * going on with their own tokens and no login.
  */
 import { Database } from 'bun:sqlite';
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +13,10 @@ import { AccountsClient, register, self } from '@dither-accounts/client';
 import { testEcho } from '@dither-accounts/interfaces';
 import { createManager, type Manager } from '@dither-accounts/manager';
 import { ABSOLUTE_MS, Auth, Backoff, CLI_HEADER, CLI_TOKEN_FILE, LOGIN_FILE, safeNext, setPassword, SLIDING_MS } from '../packages/manager/src/auth.ts';
+
+// These tests start real extractor processes, and under load one start can take seconds. A test's limit is longer
+// than the waits inside it, so one that hangs fails saying what it waited for, not with bun's bare 5 s timeout.
+setDefaultTimeout(30_000);
 
 const PW = 'correct horse battery staple';
 const CLI = join(import.meta.dir, '../packages/manager/src/cli.ts');

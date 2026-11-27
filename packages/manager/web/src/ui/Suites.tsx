@@ -19,7 +19,7 @@ export interface PartState {
   text: string;
 }
 
-const RANK: Record<Tone, number> = { good: 0, warn: 1, danger: 2, off: 3 };
+const RANK: Record<Tone, number> = { good: 0, sleep: 0, warn: 1, danger: 2, off: 3 };
 
 /** How one part of an identity stands: which of its accounts gives it, and whether it works there. */
 export function partState(i: Identity, part: SuitePart): PartState {
@@ -27,7 +27,8 @@ export function partState(i: Identity, part: SuitePart): PartState {
     .filter((a) => gives(a, part))
     .map((a): PartState => {
       const c = condition(a);
-      if (c.tone !== 'good') return { part, by: a, tone: c.tone, text: c.text };
+      // Asleep works: a call wakes it.
+      if (c.tone !== 'good' && c.tone !== 'sleep') return { part, by: a, tone: c.tone, text: c.text };
       const stop = partStop(a, part);
       if (stop) return { part, by: a, tone: stop.state === 'failed' ? 'danger' : 'warn', text: stop.note ?? stop.name };
       return { part, by: a, tone: 'good', text: 'Working' };

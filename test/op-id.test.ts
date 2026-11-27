@@ -3,13 +3,17 @@
  * whose `id` is optional (cal.put: none means create) gets none when the app sent none. The call's own id travels as
  * `rid`; chat adapters still answer by `id`, which the manager sends too when the input has none.
  */
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AccountsClient, register } from '@dither-accounts/client';
 import { testEcho } from '@dither-accounts/interfaces';
 import { createManager, type Manager } from '@dither-accounts/manager';
+
+// These tests start real extractor processes, and under load one start can take seconds. A test's limit is longer
+// than the waits inside it, so one that hangs fails saying what it waited for, not with bun's bare 5 s timeout.
+setDefaultTimeout(30_000);
 
 let m: Manager;
 let dir: string;

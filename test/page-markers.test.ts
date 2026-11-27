@@ -14,12 +14,13 @@ import { expandIncludes, MARKER_KEY_ENV, markerHex, markerKey, markerName, stamp
 import { Sandbox } from '../packages/browser/src/sandbox.ts';
 import { Store } from '../packages/manager/src/db.ts';
 import { pageMarkerKey } from '../packages/manager/src/supervisor.ts';
+import { ramdir } from './ram.ts';
 
 const ROOT = join(import.meta.dir, '..');
 const IDENT = /^[A-Za-z][A-Za-z0-9]{7,14}$/;
 const dirs: string[] = [];
-const tmp = (p: string) => {
-  const d = mkdtempSync(join(tmpdir(), `dacc-markers-${p}-`));
+const tmp = (p: string, base = tmpdir()) => {
+  const d = mkdtempSync(join(base, `dacc-markers-${p}-`));
   dirs.push(d);
   return d;
 };
@@ -28,8 +29,13 @@ afterAll(() => {
   for (const s of stores) s.db.close();
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
-function install(dir = tmp('install')): Store {
-  const s = new Store(join(dir, 'accounts.sqlite'));
+/**
+ * A registry: in memory unless the test reopens it from `dir`. Making a registry file waits on fsyncs, and while other
+ * processes sync theirs one takes seconds: only the first test is about what the file keeps, and its file is in RAM
+ * (test/ram.ts).
+ */
+function install(dir?: string): Store {
+  const s = new Store(dir ? join(dir, 'accounts.sqlite') : ':memory:');
   stores.push(s);
   return s;
 }
@@ -65,7 +71,7 @@ const tagOf = (src: string) => src.match(/const UP = '([^']*)'/)?.[1];
 const downOf = (src: string) => src.match(/const DOWN = '([^']*)'/)?.[1];
 
 test('the install secret is made once and kept; two installs, and two accounts of one, get different keys', () => {
-  const dir = tmp('kept');
+  const dir = tmp('kept', ramdir);
   const a = install(dir);
   const k1 = pageMarkerKey(a, 'acc_one');
   expect(pageMarkerKey(a, 'acc_one')).toBe(k1);

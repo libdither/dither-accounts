@@ -11,6 +11,7 @@ export default {
   name: 'Proton Mail',
   interfaces: ['mail'],
   entry: 'src/main.ts',
+  screen: true,
   add: {
     blurb: 'Runs Proton Mail in a sandboxed browser on this machine; you sign in to Proton once in the live view (with "Keep me signed in"). Works on free plans: no Proton Bridge.',
     next: 'Open its live view and sign in to Proton as on your desktop (password, second factor, any check Proton shows), with "Keep me signed in" ticked. It goes online once your keys open.',

@@ -1,7 +1,7 @@
 /**
  * What bugwatch keeps in the account directory's state.json: where it is in each file, every fingerprint it saw in
- * the last 30 days (counts in 10-minute buckets for 8 days, first and last seen, up to 5 sample records, its notice
- * and its thread), the threads it started and the queue. Written whole (a temporary file renamed over the old one).
+ * the last 30 days (counts in 10-minute buckets for 8 days, first and last seen, up to 5 sample records, its notice,
+ * its thread and what its threads concluded), the threads it started and the queue. Written whole (a temporary file renamed over the old one).
  */
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -56,6 +56,20 @@ export interface ThreadRecord {
   done?: boolean;
   /** threads.show failed: how. */
   error?: string;
+  /** From the thread's latest reply (threads.show with its messages): its `Verdict:`, `Class:` and `Design cause:` lines. */
+  verdict?: string;
+  class?: string;
+  cause?: string;
+}
+
+/** What a thread concluded, kept with its bug past a clear, so the next thread on it or a related bug starts from it. */
+export interface Verdict {
+  /** The thread's id. */
+  thread: string;
+  at: number;
+  verdict?: string;
+  class?: string;
+  cause?: string;
 }
 
 export interface Bug {
@@ -77,6 +91,8 @@ export interface Bug {
   samples: Sample[];
   /** A process crash (an uncaught error) was among its records. */
   crash: boolean;
+  /** Every record of it so far said `transient` (readers.ts Rec.kind): it is raised only by a spike, never as new. */
+  transient?: boolean;
   notice?: { at: number; reason: Reason; unread: boolean; catchUp?: boolean };
   thread?: Thread;
   /** Waits for a thread since. */
@@ -87,6 +103,10 @@ export interface Bug {
   dropped?: boolean;
   /** Muted (notify.mute): no notices and no threads until cleared. */
   muted?: boolean;
+  /** Gets no thread of its own: it shares a trace with this bug, whose thread covers both (until cleared). */
+  joined?: string;
+  /** What its threads concluded, the latest last (at most 5). */
+  verdicts?: Verdict[];
   lastSpikeAt?: number;
   lastAlwaysAt?: number;
 }

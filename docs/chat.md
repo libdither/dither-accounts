@@ -18,6 +18,8 @@ same wire as before: dither-chat's adapter protocol, copied as `packages/chat-pr
 | `lesswrong` | `extractors/lesswrong` | a ForumMagnum site's GraphQL endpoint (LessWrong, the EA Forum) with plain fetch: posts and comments only, notifications as a feed, nothing marked read ([lesswrong.md](lesswrong.md)): no adapter in dither-chat |
 | `bluesky` | `extractors/bluesky` | the AT Protocol's HTTP API (XRPC) on the account's own server with plain fetch: posts only, notifications as a feed ([bluesky.md](bluesky.md)): no adapter in dither-chat |
 | `zulip` | `extractors/zulip` | a Zulip server's REST API and event queue with plain fetch: channels as forums, topics as threads ([zulip.md](zulip.md)) |
+| `partiful` | `extractors/partiful` | partiful.com in a sandbox (Xvfb, Chromium with a hook extension, x11vnc for the live view), every call made from its own page with its sign-in: events as posts (Explore by city, your events), comments and host messages as each event's conversation, chats through Stream, an RSVP action ([partiful.md](partiful.md)) |
+| `luma` | `extractors/luma` | luma.com signed in in a sandboxed browser, its web app's own calls: events as posts (Explore by city, your events, who is going), notifications as a feed, blasts and chats ([luma.md](luma.md)): no adapter in dither-chat |
 | `chat-fake` | `extractors/chat-fake` | a fake for tests: you and Alice in one DM |
 
 ## The `chat` interface
@@ -65,8 +67,11 @@ dither-chat's network search and index jobs (its `netsearch.ts` and `jobs.ts`) a
 own servers (`search`, capability `search`), to list a channel's threads (`threads`, capability `listThreads`) and to
 list a server's members (`walkMembers`, capability `walkMembers`). Hits come first as message facts (live=false) after
 the conversations, threads and people they need, then the reply names them; a walk is a `members` event with source
-`walk`, then `{ count, total?, next? }`. `history`'s reply carries `oldest`, the ts of the page's oldest message, and
-on Discord `next`, its id (see "Reading like a person").
+`walk`, then `{ count, total?, next? }`. `history`'s reply carries `oldest`, the ts of the oldest thing the page read,
+and `next`, where the next page goes back from (on Discord the oldest message's id; see "Reading like a person").
+Its `count` is the message facts it sent for exactly that conversation, ones sent before too; reactions, edits,
+deleted rows and thread replies kept in their threads are not counted, and a page of only those answers `count: 0`
+with its `oldest`, not `done`, so the walk goes on. `done` only when the network has nothing older.
 
 - **Discord** (`extractors/discord/src/search.ts`, hook.js `search`, `threads` and `walkMembers`). Checked on a live
   client with a test account (its own test server, and a large public server, as an ordinary member).
@@ -652,7 +657,7 @@ of the hooks: [page-traces.md](page-traces.md)); an extractor started without it
 else they find themselves, so the manager's unit needs the same environment dither-chat's hub had:
 
 - **PATH** with `bun` and `nix` (`/run/current-system/sw/bin`). Binaries not on PATH are built with nix on first use:
-  - **Discord:** `Xvfb`, `x11vnc` and `chromium`. Chromium is also looked for in `/etc/profiles/per-user/$USER/bin`, so `USER` matters.
+  - **Discord:** `Xvfb`, `x11vnc` and `chromium` (on the wayland display backend `sway`, `wayvnc` and `grim` in place of the first two: docs/browser.md). All of them, Chromium too, come prepared from the repo's pinned nixpkgs (`DITHER_BINS`, which the manager sets: nix/README.md).
   - **Signal:** `signal-cli`, rebuilt weekly, with the result cached in the account directory.
   - **WhatsApp:** the bridge, cached in the account directory per source hash. An imported account keeps its cache, since the bridge sources are unchanged.
 - **Optional overrides:**

@@ -9,6 +9,7 @@ export default {
   name: 'Instagram',
   interfaces: ['chat'],
   entry: 'src/main.ts',
+  screen: true,
   add: {
     blurb: 'Runs Instagram (instagram.com/direct) in a sandboxed browser on this machine; you sign in once in the live view. dither-chat reads and writes your direct messages through it.',
     next: 'Open its live view and sign in to Instagram as on your desktop (password, two-factor, any check Instagram shows; those are yours). It goes online once your inbox is read.',

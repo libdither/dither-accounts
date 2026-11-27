@@ -89,6 +89,9 @@ F(Enum, 'Enum');
 const RightButton = makeEnum('RightButton', ['SendActive', 'SendInactive', 'VoiceNote']);
 const MediaType = makeEnum('MediaType', ['Image', 'Video', 'Audio', 'File']);
 const HiddenState = makeEnum('HiddenState', ['Deleted', 'Expired']);
+function NeverHidden() {}
+F(NeverHidden, 'NeverHidden', null, 'object');
+const NEVER_HIDDEN = new NeverHidden();
 const TrustState = makeEnum('TrustState', ['Trusted', 'RequestSent', 'RequestReceived']);
 const CannotMessageReason = makeEnum('CannotMessageReason', ['NotFollowing', 'Blocked', 'NoPublicKey']);
 
@@ -510,7 +513,8 @@ function defineItem(name) {
     return new MessageInfo(!!this.o1k_1.edited);
   });
   g('hiddenState', function () {
-    return this.o1k_1.deleted ? HiddenState.Deleted : null;
+    // As x.com since 2026-11: a shown message's state is the sealed case NeverHidden, never null.
+    return this.o1k_1.deleted ? HiddenState.Deleted : NEVER_HIDDEN;
   });
   g('forwardedMessage', function () {
     return this.o1k_1.forwarded ? new ForwardedMessage(this.o1k_1) : null;

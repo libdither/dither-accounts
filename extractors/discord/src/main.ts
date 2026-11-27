@@ -1,8 +1,8 @@
 /**
  * dither-chat Discord adapter (one process per account).
  *
- * Spawns and supervises the sandbox (Xvfb + real Chromium + our extension +
- * x11vnc), runs the loopback WebSocket server the extension connects to, and maps
+ * Spawns and supervises the sandbox (a screen of its own, Xvfb or a Wayland
+ * compositor, + real Chromium + our extension + a VNC live view), runs the loopback WebSocket server the extension connects to, and maps
  * the raw Discord objects the in-page hook forwards into protocol facts for the
  * hub. Commands from the hub are run back through the client's own code paths,
  * paced like a human.
@@ -29,7 +29,7 @@ import { duePins, PIN_HOLD_MS } from './changes.ts';
 import { CHANNEL_TYPE, customEmoji, DISCORD_EPOCH, guildIconUrl, mapUser, refreshable } from './map.ts';
 import { BridgeServer, PaceQueue } from './server.ts';
 import { annotate, hookPhases, phase, sinceStart, traced } from './trace.ts';
-import { vncSocketPath } from '@dither-accounts/browser';
+import { displayName, displayNote, displayState, vncSocketPath } from '@dither-accounts/browser';
 import { Sandbox, pickDisplay } from './sandbox.ts';
 import { PageWatch } from './pagewatch.ts';
 import { StartupGate } from './startup.ts';
@@ -61,10 +61,11 @@ interface RawReactionContext {
 
 // -------------------------------------------------------------------- state
 const portFixed = hub.config.adapterPort != null || !!process.env.DITHER_ADAPTER_WS_PORT;
-const { display } = await pickDisplay(hub.accountId, hub.config, { portFixed });
-/** The live view's Unix socket (the sandbox's x11vnc listens there and on no port); the manager carries it. */
+const display = await pickDisplay(hub.accountId, hub.config, { portFixed });
+/** The live view's Unix socket (the sandbox's VNC server listens there and on no port); the manager carries it. */
 const vncSocket = vncSocketPath(hub.accountDir);
-const adapterPort = Number(hub.config.adapterPort ?? process.env.DITHER_ADAPTER_WS_PORT ?? 8700 + display);
+// On X, 8700 + display; a compositor of its own has no number, so any free loopback port (0).
+const adapterPort = Number(hub.config.adapterPort ?? process.env.DITHER_ADAPTER_WS_PORT ?? (display.display === null ? 0 : 8700 + display.display));
 const startUrl: string = hub.config.startUrl ?? 'https://discord.com/app';
 
 const st = newState();
@@ -112,7 +113,7 @@ function sessionLayers(): P.StatusLayer[] {
   const hooks = Object.values(lastFinders);
   const resolved = `${hooks.filter(Boolean).length} of ${hooks.length} resolve`;
   const broken = ['Dispatcher', 'ChannelStore', 'MessageActions'].filter((k) => !lastFinders[k]);
-  // A sandbox that did not start: Chromium's own failures are the browser's, the rest (Xvfb, x11vnc) the display's.
+  // A sandbox that did not start: Chromium's own failures are the browser's, the rest (the display, its VNC) the display's.
   const browserFailed = !!sandboxError && /chromium/i.test(sandboxError);
   const pageNote: Partial<Record<PageState, string>> = {
     login: 'Discord shows its sign-in page: sign in in the live view',
@@ -121,12 +122,12 @@ function sessionLayers(): P.StatusLayer[] {
   };
   return [
     sandboxUp
-      ? { name: 'display', state: 'ok', note: `Xvfb :${display}, live view ready` }
+      ? { name: 'display', ...displayState(display, sandbox?.screenHealth) }
       : sandboxError && !browserFailed
         ? { name: 'display', state: 'failed', note: sandboxError }
         : browserFailed
           ? { name: 'display', state: 'off', note: 'not started' }
-          : { name: 'display', state: 'waiting', note: `starting Xvfb on :${display}` },
+          : { name: 'display', state: 'waiting', note: `starting ${displayNote(display)}` },
     sandboxUp
       ? sandbox?.browserAlive
         ? { name: 'browser', state: 'ok', note: 'Chromium is running' }
@@ -134,7 +135,7 @@ function sessionLayers(): P.StatusLayer[] {
       : browserFailed
         ? { name: 'browser', state: 'failed', note: sandboxError! }
         : { name: 'browser', state: 'waiting', note: 'not started yet' },
-    bridge.connected ? { name: 'extension', state: 'ok', note: `attached on port ${adapterPort}` } : { name: 'extension', state: 'waiting', note: 'not attached yet' },
+    bridge.connected ? { name: 'extension', state: 'ok', note: `attached on port ${bridge.port || adapterPort}` } : { name: 'extension', state: 'waiting', note: 'not attached yet' },
     !gotFinders
       ? { name: 'hooks', state: 'waiting', note: 'not reported yet' }
       : broken.length && lastPage === 'app'
@@ -157,8 +158,8 @@ function sessionLayers(): P.StatusLayer[] {
 function sessionDetails(): Record<string, string | number | boolean | null> {
   const hooks = Object.values(lastFinders);
   return {
-    display: `:${display}`,
-    'extension port': adapterPort,
+    display: displayName(display),
+    'extension port': bridge.port || adapterPort,
     browser: sandbox?.browserAlive ? 'running' : 'not running',
     extension: bridge.connected ? 'attached' : 'not attached',
     page: lastPage,
@@ -306,6 +307,8 @@ async function boot() {
     noSandbox: !!hub.config.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',
     lab: hub.config.lab === true && process.env.DITHER_LAB === '1',
     log,
+    // The live view's server down or back (it is started again): said in the status at once.
+    onScreenHealth: () => pushStatus(),
   });
 
   // Report the live view immediately so the "Needs you" card can open it.
@@ -317,6 +320,8 @@ async function boot() {
   } catch (e: any) {
     log('error', 'sandbox failed to start', String(e?.message ?? e));
     sandboxError = String(e?.message ?? e).slice(0, 300);
+    // What it did start (the screen, its live view, the bus) goes with it, not left running beside the next try.
+    await sandbox.stop().catch(() => {});
     setStatus('error', { kind: 'unknown', message: `Sandbox failed: ${String(e?.message ?? e)}`, liveView: false });
     return;
   }

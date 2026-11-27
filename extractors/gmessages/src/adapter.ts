@@ -103,6 +103,14 @@ export function namespaceOf(phone: string): string {
 }
 
 const isPaired = (s: GmSession | undefined) => !!s?.browser && !!s.tachyon_token;
+
+/** A history page's `next`, `<phone message id>:<ts>`: the row the next page goes back from. */
+function parseHistoryCursor(s: string | undefined): { id: string; ts: number } | undefined {
+  const at = s?.lastIndexOf(':') ?? -1;
+  if (!s || at <= 0) return undefined;
+  const ts = Number(s.slice(at + 1));
+  return Number.isFinite(ts) ? { id: s.slice(0, at), ts } : undefined;
+}
 /** Paired by Google account (libgm writes a nil UUID for a QR pairing). */
 const isGoogle = (s: GmSession | undefined) => !!s?.dest_reg_id && s.dest_reg_id !== NIL_UUID;
 
@@ -981,7 +989,8 @@ export class GMessagesAdapter {
     return new Bun.CryptoHasher('sha256').update(`${m.subject ?? ''}\0${m.text ?? ''}\0${media}\0${m.replyTo ?? ''}\0${m.state === 'failed' ? m.error : ''}`).digest('hex').slice(0, 16);
   }
 
-  private async applyMessage(m: GmMessage, o: { live?: boolean; force?: boolean } = {}) {
+  /** Returns the conversation when it sent a message fact (a deleted, ignored or still-downloading one sends none). */
+  private async applyMessage(m: GmMessage, o: { live?: boolean; force?: boolean } = {}): Promise<string | undefined> {
     const row = await this.ensureConversation(m.conversation);
     if (!row) return;
     const conversation = row.id;
@@ -1019,12 +1028,14 @@ export class GMessagesAdapter {
       if (prev) this.reactionDiff(conversation, id, prev.reactions, reactions);
       // Receipts are news: for a message first seen in history or a sync, how far it got is already in the past.
       if (prev || o.live) this.receipts(row, stored, prev?.state ?? 'sending', m);
-      return;
+      return conversation;
     }
-    if (prev.hash !== hash) this.host.emit({ t: 'message', message: fact, live: false });
+    const changed = prev.hash !== hash;
+    if (changed) this.host.emit({ t: 'message', message: fact, live: false });
     this.reactionDiff(conversation, id, prev.reactions, reactions);
     this.receipts(row, stored, prev.state, m);
     this.state.putMsg(stored);
+    return changed ? conversation : undefined;
   }
 
   private reactionDiff(conversation: string, message: string, before: Record<string, string[]>, after: Record<string, string[]>) {
@@ -1103,7 +1114,7 @@ export class GMessagesAdapter {
       case 'send':
         return this.send(cmd.conversation, cmd.body, cmd.replyTo, cmd.attachments);
       case 'history':
-        return this.history(cmd.conversation, cmd.beforeTs, cmd.limit);
+        return this.history(cmd.conversation, cmd.beforeTs, cmd.limit, cmd.cursor);
       case 'markRead':
         return this.markRead(cmd.conversation, cmd.upTo);
       case 'typing':
@@ -1208,15 +1219,43 @@ export class GMessagesAdapter {
     return id ? { nativeId: id } : {};
   }
 
-  private async history(conversation: string, beforeTs: number | undefined, limit: number): Promise<{ count: number; done: boolean }> {
+  /**
+   * The messages just before beforeTs (without it: before the oldest known one). The phone pages back from a message
+   * (its id and ts): the hub's `cursor` when it continues the last page (that page's oldest row, which may be one this
+   * side skips and so never kept), else the oldest known message at or after beforeTs, else none (the newest page).
+   * Every row is sent again (`force`), known or not: the hub counts what lands. `count` is the message facts sent;
+   * rows it skips (deleted, protocol noise, an MMS still downloading) are not counted but still move `oldest` and
+   * `next` on. Done only when the phone has no older rows at all.
+   */
+  private async history(conversation: string, beforeTs: number | undefined, limit: number, from?: string): Promise<P.HistoryResult> {
     this.requirePaired();
     const c = this.conv(conversation);
-    const anchor = beforeTs !== undefined ? (this.state.latest(conversation, beforeTs - 1) ?? this.state.oldest(conversation)) : this.state.oldest(conversation);
-    const cursor = anchor ? { id: anchor.gmId, ts: anchor.ts } : undefined;
-    const r = await this.rpc.call<{ messages: GmMessage[] }>('messages', { conversation: c.gmId, count: Math.min(Math.max(limit, 1), 50), ...(cursor ? { cursor } : {}) }, 120_000);
-    const older = r.messages.filter((m) => !cursor || m.ts < cursor.ts).sort((a, b) => a.ts - b.ts);
-    for (const m of older) await this.queued(() => this.applyMessage(m, { live: false, force: true }));
-    return { count: older.length, done: older.length === 0 };
+    let below = beforeTs;
+    let cursor = parseHistoryCursor(from);
+    if (cursor && below !== undefined && cursor.ts > below) cursor = undefined;
+    if (!cursor) {
+      const anchor = below !== undefined ? this.state.earliest(conversation, below) : this.state.oldest(conversation);
+      if (anchor) cursor = { id: anchor.gmId, ts: anchor.ts };
+      below ??= anchor?.ts;
+    }
+    const count = Math.min(Math.max(limit, 1), 50);
+    // Each answer is rows older than the cursor; one that is all at or after beforeTs (a newest page, or a phone that
+    // answers its cursor's own row) moves the cursor back and asks again.
+    let older: GmMessage[] = [];
+    for (let tries = 0; ; tries++) {
+      const r = await this.rpc.call<{ messages: GmMessage[] }>('messages', { conversation: c.gmId, count, ...(cursor ? { cursor } : {}) }, 120_000);
+      const rows = r.messages.filter((m) => !cursor || m.ts < cursor.ts);
+      if (!rows.length) return { count: 0, done: true };
+      older = rows.filter((m) => below === undefined || m.ts < below).sort((a, b) => a.ts - b.ts);
+      if (older.length) break;
+      const last = rows.reduce((a, b) => (b.ts < a.ts ? b : a));
+      if (tries >= 20) throw new Error('the phone kept answering messages newer than the page asked for');
+      cursor = { id: last.id, ts: last.ts };
+    }
+    let sent = 0;
+    for (const m of older) if ((await this.queued(() => this.applyMessage(m, { live: false, force: true }))) === conversation) sent++;
+    const first = older[0];
+    return { count: sent, done: false, oldest: first.ts, next: `${first.id}:${first.ts}` };
   }
 
   private async markRead(conversation: string, upTo: string) {

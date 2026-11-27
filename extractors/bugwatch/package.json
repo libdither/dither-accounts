@@ -6,6 +6,7 @@
   "dependencies": {
     "@dither-accounts/interfaces": "workspace:*",
     "@dither-accounts/link": "workspace:*",
-    "@dither-accounts/manager": "workspace:*"
+    "@dither-accounts/manager": "workspace:*",
+    "@dither-accounts/spec": "workspace:*"
   }
 }

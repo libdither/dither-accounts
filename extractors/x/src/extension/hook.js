@@ -692,13 +692,18 @@
     const ci = get(st, 'chatItems');
     return { st, ci, items: arr(first(ci, ['items']) || ci) };
   }
-  function emitMessages(conv) {
+  /**
+   * Sends what the open conversation shows: its newest 400 items, or with `beforeMs` (history) the 400 just before it,
+   * so a conversation scrolled back past 400 messages still sends the older ones.
+   */
+  function emitMessages(conv, beforeMs) {
     const e = dms.get(conv);
     if (!e) return null;
     const { st, ci, items } = chatItems(e.dm);
     const messages = [];
     const other = {};
-    for (const it of items.slice(-400)) {
+    const shown = beforeMs && beforeMs !== Infinity ? items.filter((it) => (msOf(first(it, ['created', 'createdAt'])) || 0) < beforeMs) : items;
+    for (const it of shown.slice(-400)) {
       if (!isMessage(it)) {
         const n = kname(it) || 'plain';
         other[n] = (other[n] || 0) + 1;
@@ -749,12 +754,23 @@
       encrypted: boolOf(get(it, 'isEncrypted')),
       undecryptable: boolOf(get(it, 'isUndecryptable')),
       edited: boolOf(get(info, 'showEdited')) || arr(get(it, 'editHistory')).length > 0 || null,
-      hidden: hidden != null && enumName(hidden) !== 'Visible' && enumName(hidden) !== 'NONE' && enumName(hidden) !== 'None' ? enumName(hidden) || 'hidden' : null,
+      hidden: hiddenOf(hidden),
       forwarded: get(it, 'forwardedMessage') ? true : null,
       replyTo: reply ? { seq: seqOf(get(reply, 'sequenceNumber')), id: idOf(first(reply, ['messageId', 'id'])) } : null,
       reactions: reactionsRaw(get(it, 'reactions')),
       attachments: attachmentsRaw(it),
     };
+  }
+  /**
+   * Why the client hides a message, or null when it shows it. The state was an enum (Visible, Deleted, ...) and is now
+   * also a sealed class whose shown case is NeverHidden: either way the name says it. A state with no name at all is
+   * taken as shown, since reading every message as hidden would read none.
+   */
+  function hiddenOf(h) {
+    if (h == null) return null;
+    const n = enumName(h) || kname(h);
+    if (!n) return null;
+    return /^(visible|none|shown|never ?hidden|not ?hidden)$/i.test(n) ? null : n;
   }
   function reactionsRaw(list) {
     const out = [];
@@ -1358,7 +1374,7 @@
       const del = (acts && get(acts, 'deletableMessage')) || offered;
       if (!del) throw new Error('X does not offer to delete this message for everyone');
       onEvent(dm, new D.DeleteMessageForAll(get(del, 'message') || item));
-      await waitFor(() => !findItem(dm, cmd.conv, cmd.message) || get(findItem(dm, cmd.conv, cmd.message), 'hiddenState'), 20_000, 'the message to go').catch(() => null);
+      await waitFor(() => !findItem(dm, cmd.conv, cmd.message) || hiddenOf(get(findItem(dm, cmd.conv, cmd.message), 'hiddenState')), 20_000, 'the message to go').catch(() => null);
       return { ok: true };
     });
   }
@@ -1420,8 +1436,9 @@
         await waitFor(() => itemsOf(dm).length > n || !(first(chatItems(dm).ci, ['olderItemsInfo']) || first(chatItems(dm).st, ['olderItemsInfo'])), 15_000, 'older messages').catch(() => null);
         await sleep(human(700, 1600));
       }
-      const raw = emitMessages(cmd.conv);
-      return { count: raw ? raw.messages.length : 0, more: !!(raw && raw.older), rounds };
+      const raw = emitMessages(cmd.conv, beforeMs);
+      const times = raw ? raw.messages.map((m) => m.ts).filter((t) => typeof t === 'number') : [];
+      return { count: raw ? raw.messages.length : 0, more: !!(raw && raw.older), rounds, ...(times.length ? { oldest: Math.min(...times) } : {}) };
     });
   }
   /** A media file the page shows: a blob it already has, or a twimg URL fetched with its cookies, as an <img> would. */

@@ -519,7 +519,7 @@ async function action(name: string, args: Record<string, unknown>): Promise<unkn
         await app.kill();
         return { killed: true };
       }
-      app.quit();
+      await app.quit();
       return { asked: true, note: 'Haveno may ask in the live view first (open trades or offers)' };
     case 'status':
       return { phase, problem, ...details() };
@@ -616,9 +616,7 @@ async function shutdown() {
   stopStream();
   if (app.running) {
     // Ask it to quit (it quits at once when nothing is open), then kill what is left.
-    try {
-      app.quit();
-    } catch {}
+    await app.quit().catch(() => {});
     for (let i = 0; i < 30 && app.running; i++) await Bun.sleep(500);
     await app.kill();
   }

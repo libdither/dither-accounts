@@ -28,7 +28,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BridgeServer, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, displayName, type FreeDisplay, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
 import type { PrivacySession } from '@dither-accounts/interfaces';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
 import { NeedsYou, type PullOutcome, StatementsRunner, type Why, writeWhole } from '@dither-accounts/statements-common';
@@ -80,7 +80,7 @@ const RECLICK_MS = 10_000;
 const auth = new Authenticator(secretStore(link), DOMAINS, Date.now, 'top', undefined, approverVia(link));
 
 
-let display: number | null = null;
+let display: FreeDisplay | null = null;
 let liveView: { vncSocket: string; width: number; height: number } | null = null;
 let sandbox: Sandbox | null = null;
 let sandboxError: string | null = null;
@@ -151,6 +151,7 @@ function view(): View {
     display: liveView ? display : null,
     liveView: !!liveView,
     browserAlive: !!sandbox?.browserAlive,
+    screen: sandbox?.screenHealth,
     attached: bridge.connected,
     attachOverdue: !!liveView && !!startedAt && Date.now() - startedAt > ATTACH_MS,
     page: tab,
@@ -164,6 +165,7 @@ function view(): View {
 
 let lastSent = '';
 function status(force = false) {
+  statements.report();
   const v = view();
   const s = state(v);
   const d = {
@@ -495,6 +497,8 @@ const statements = new StatementsRunner({
   accounts: () => [{ id: 'privacy', name: 'Privacy.com', institution: 'Privacy.com', currency: 'USD', kind: 'card' }],
   blocked: () => statementsBlocked({ attached: bridge.connected, passkey: auth.summary(), hold: st.hold ?? null }),
   onChange: () => status(),
+  // Asleep while idle (docs/supervisor.md "Sleeping"): not while it signs in.
+  busy: () => (signingIn ? 'a sign-in with its passkey' : null),
 });
 
 // ---------------------------------------------------------------- lifecycle
@@ -513,18 +517,18 @@ async function boot() {
   status();
   const tried: number[] = [];
   for (let attempt = 0; attempt < 3; attempt++) {
-    let free: { display: number };
+    let free: FreeDisplay;
     try {
       free = await pickFreeDisplay(undefined, tried);
     } catch (e) {
       sandboxError = String((e as Error).message ?? e);
       break;
     }
-    tried.push(free.display);
-    display = free.display;
+    if (free.display !== null) tried.push(free.display);
+    display = free;
     sandbox = new Sandbox({
       accountDir: link.accountDir,
-      display: free.display,
+      display: free,
       width: WIDTH,
       height: HEIGHT,
       extensionSrc: join(import.meta.dir, 'extension'),
@@ -533,6 +537,8 @@ async function boot() {
       startUrl: `${appOrigin}/`,
       noSandbox: !!cfg.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',
       log,
+      // The live view's server down or back (it is started again): said in the status at once.
+      onScreenHealth: () => status(true),
     });
     try {
       await sandbox.start();
@@ -542,7 +548,7 @@ async function boot() {
       break;
     } catch (e) {
       sandboxError = String((e as Error).message ?? e).slice(0, 300);
-      log('warn', `sandbox on :${free.display} failed`, sandboxError);
+      log('warn', `sandbox on ${displayName(free)} failed`, sandboxError);
       await sandbox.stop();
       sandbox = null;
     }
@@ -562,6 +568,8 @@ async function boot() {
     const b = statementsBlocked({ attached: bridge.connected, passkey: auth.summary(), hold: st.hold ?? null });
     if (b) return;
     if (cfg.signInOnStart !== true) return void log('info', 'no sign-in at start: each pull signs in by itself');
+    // Woken from sleep (docs/supervisor.md "Sleeping"): for its daily pull, which signs in by itself, or for a call.
+    if (process.env.DITHER_WOKE) return void log('info', 'no sign-in at start: it was woken from sleep, and a pull signs in by itself');
     // A refusal from the phone stands: the start asks nothing (the attention says what does).
     if (signin.blocked('start')) return void log('info', 'no sign-in at start: the last approval on the phone was not given');
     await ensureSignedIn('start').catch((e) => log('warn', 'automatic sign-in at start did not go through', String((e as Error)?.message ?? e).slice(0, 200)));

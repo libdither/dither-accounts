@@ -268,7 +268,7 @@ export function attachmentKind(a: RawAttachment): AttachmentKind {
   if (ct.startsWith('audio/')) return 'audio';
   // fall back to the extension when Discord omits content_type
   const name = (a.filename ?? a.url ?? '').toLowerCase();
-  if (/\.(png|jpe?g|gif|webp|bmp|avif)$/.test(name)) return 'image';
+  if (/\.(png|jpe?g|gif|webp|bmp|avif|jxl)$/.test(name)) return 'image';
   if (/\.(mp4|mov|webm|mkv|avi)$/.test(name)) return 'video';
   if (/\.(mp3|ogg|wav|flac|m4a|opus)$/.test(name)) return 'audio';
   return 'file';

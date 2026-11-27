@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +6,10 @@ import { AccountsClient, CallFailed, register } from '@dither-accounts/client';
 import { googleCalendar } from '@dither-accounts/interfaces';
 import { createManager, type Manager } from '@dither-accounts/manager';
 import { CLIENT, type FakeGoogle, startFakeGoogle } from './fake-google.ts';
+
+// These tests start real extractor processes, and under load one start can take seconds. A test's limit is longer
+// than the waits inside it, so one that hangs fails saying what it waited for, not with bun's bare 5 s timeout.
+setDefaultTimeout(30_000);
 
 const LA = 'America/Los_Angeles';
 const PRIMARY = 'me@example.com';

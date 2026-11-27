@@ -10,17 +10,12 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server, ServerWebSocket, Subprocess } from 'bun';
-import { resolveBins } from '../../../packages/browser/src/index.ts';
 import { sha256hex } from '../../statements-common/src/spool.ts';
 import { activity, iso } from '../src/venmo.ts';
 import { csvFor, type FakeVenmo, startFakeVenmo } from './fake-venmo.ts';
+import { browserBins } from '../../../test/needs.ts';
 
-let bins: ReturnType<typeof resolveBins> | null = null;
-try {
-  bins = resolveBins(() => {});
-} catch (e) {
-  console.warn(`venmo browser: skipped, ${(e as Error).message}`);
-}
+const bins = browserBins('venmo browser');
 const it = test.skipIf(!bins);
 
 let fake: FakeVenmo;

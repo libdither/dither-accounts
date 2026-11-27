@@ -1,0 +1,1281 @@
+{
+ "when": "2026-11-26T08:35:13.296Z",
+ "machine": {
+  "cpus": 16
+ },
+ "size": "1280x800",
+ "reps": 2,
+ "maxLoad": 8,
+ "runs": [
+  {
+   "app": "signal",
+   "config": "x11",
+   "rep": 0,
+   "sandboxMs": 216.405551,
+   "backend": "x11",
+   "firstPictureMs": 24051.699592,
+   "colours": 861,
+   "idle": {
+    "cpu": 0.9983675165598682,
+    "cpuByName": {
+     "Xvfb": 0,
+     "x11vnc": 0.09983675165598682,
+     "dbus-daemon": 0,
+     "pulseaudio": 0,
+     "bwrap": 0,
+     "electron": 0.8985307649038814
+    },
+    "pssMB": 522.9619140625,
+    "screenPssMB": 29.1640625,
+    "appPssMB": 493.7978515625,
+    "pssByName": {
+     "Xvfb": 21.0859375,
+     "x11vnc": 8.078125,
+     "dbus-daemon": 1.6083984375,
+     "pulseaudio": 3.9404296875,
+     "bwrap": 0.8583984375,
+     "electron": 487.390625
+    }
+   },
+   "input": {
+    "changedPixels": 301.821,
+    "coloursAfter": 815
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 12,
+   "load": {
+    "load": 3.45,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "signal",
+   "config": "tigervnc",
+   "rep": 0,
+   "sandboxMs": 158.4618829999963,
+   "backend": "tigervnc",
+   "firstPictureMs": 12630.651995999993,
+   "colours": 461,
+   "idle": {
+    "cpu": 2.2962901214871105,
+    "cpuByName": {
+     "Xvnc": 0.0998387009342222,
+     "dbus-daemon": 0,
+     "pulseaudio": 0,
+     "bwrap": 0,
+     "electron": 2.1964514205528882
+    },
+    "pssMB": 524.845703125,
+    "screenPssMB": 25.4345703125,
+    "appPssMB": 499.4111328125,
+    "pssByName": {
+     "Xvnc": 25.4345703125,
+     "dbus-daemon": 1.5556640625,
+     "pulseaudio": 3.6826171875,
+     "bwrap": 0.9208984375,
+     "electron": 493.251953125
+    }
+   },
+   "input": {
+    "changedPixels": 301.821,
+    "coloursAfter": 815
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 13,
+   "load": {
+    "load": 3.97,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "signal",
+   "config": "kasmvnc",
+   "rep": 0,
+   "sandboxMs": 161.8672360000055,
+   "backend": "kasmvnc",
+   "firstPictureMs": 12729.581552999996,
+   "colours": 514,
+   "idle": {
+    "cpu": 2.3965451838404395,
+    "cpuByName": {
+     "Xkasmvnc": 0,
+     "dbus-daemon": 0,
+     "pulseaudio": 0,
+     "bwrap": 0,
+     "electron": 2.3965451838404395
+    },
+    "pssMB": 521.1416015625,
+    "screenPssMB": 23.9677734375,
+    "appPssMB": 497.1728515625,
+    "pssByName": {
+     "Xkasmvnc": 23.9677734375,
+     "dbus-daemon": 1.5849609375,
+     "pulseaudio": 3.91796875,
+     "bwrap": 0.8955078125,
+     "electron": 490.775390625
+    }
+   },
+   "input": {
+    "changedPixels": 301.821,
+    "coloursAfter": 815
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 14,
+   "load": {
+    "load": 2.94,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "signal",
+   "config": "pixman",
+   "rep": 0,
+   "sandboxMs": 304.67313799998374,
+   "backend": "wayland",
+   "firstPictureMs": 13029.328832,
+   "colours": 570,
+   "idle": {
+    "cpu": 2.5960082028163973,
+    "cpuByName": {
+     "sway": 0.09984646933909218,
+     "wayvnc": 0,
+     "dbus-daemon": 0,
+     "pulseaudio": 0,
+     "bwrap": 0,
+     "electron": 2.496161733477305
+    },
+    "pssMB": 544.9013671875,
+    "screenPssMB": 52.341796875,
+    "appPssMB": 492.5595703125,
+    "pssByName": {
+     "sway": 37.740234375,
+     "wayvnc": 14.6015625,
+     "dbus-daemon": 1.43359375,
+     "pulseaudio": 3.6220703125,
+     "bwrap": 0.7724609375,
+     "electron": 486.7314453125
+    }
+   },
+   "input": {
+    "changedPixels": 301.821,
+    "coloursAfter": 642
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 14,
+   "load": {
+    "load": 2.78,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "signal",
+   "config": "w0-pixman",
+   "rep": 0,
+   "sandboxMs": 241.42084999999497,
+   "backend": "wayland-tigervnc",
+   "firstPictureMs": 12995.503507999994,
+   "colours": 365,
+   "idle": {
+    "cpu": 2.0969641101441123,
+    "cpuByName": {
+     "sway": 0.0998554338163863,
+     "w0vncserver": 0,
+     "dbus-daemon": 0,
+     "pulseaudio": 0,
+     "bwrap": 0,
+     "electron": 1.997108676327726
+    },
+    "pssMB": 543.302734375,
+    "screenPssMB": 50.01953125,
+    "appPssMB": 493.283203125,
+    "pssByName": {
+     "sway": 27.8408203125,
+     "w0vncserver": 22.1787109375,
+     "dbus-daemon": 1.4453125,
+     "pulseaudio": 3.6201171875,
+     "bwrap": 0.7666015625,
+     "electron": 487.451171875
+    }
+   },
+   "input": {
+    "changedPixels": 301.821,
+    "coloursAfter": 642
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 14,
+   "load": {
+    "load": 2.5,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "telegram",
+   "config": "x11",
+   "rep": 0,
+   "sandboxMs": 156.30350700000417,
+   "backend": "x11",
+   "firstPictureMs": 5688.182769000006,
+   "colours": 1424,
+   "idle": {
+    "cpu": 180.01320436690582,
+    "cpuByName": {
+     "Xvfb": 12.87948051210807,
+     "x11vnc": 0,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "Telegram": 167.13372385479775
+    },
+    "pssMB": 333.19921875,
+    "screenPssMB": 25.361328125,
+    "appPssMB": 307.837890625,
+    "pssByName": {
+     "Xvfb": 17.19140625,
+     "x11vnc": 8.169921875,
+     "dbus-daemon": 1.8291015625,
+     "bwrap": 0.96484375,
+     "Telegram": 305.0439453125
+    }
+   },
+   "input": {
+    "changedPixels": 123563,
+    "coloursAfter": 628
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 4,
+   "load": {
+    "load": 2.45,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "telegram",
+   "config": "tigervnc",
+   "rep": 0,
+   "sandboxMs": 111.97523000001092,
+   "backend": "tigervnc",
+   "firstPictureMs": 2920.8118670000113,
+   "colours": 1424,
+   "idle": {
+    "cpu": 178.96587790038814,
+    "cpuByName": {
+     "Xvnc": 13.07558840209194,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "Telegram": 165.8902894982962
+    },
+    "pssMB": 332.99609375,
+    "screenPssMB": 21.197265625,
+    "appPssMB": 311.798828125,
+    "pssByName": {
+     "Xvnc": 21.197265625,
+     "dbus-daemon": 1.876953125,
+     "bwrap": 1.0556640625,
+     "Telegram": 308.8662109375
+    }
+   },
+   "input": {
+    "changedPixels": 123420,
+    "coloursAfter": 625
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 4,
+   "load": {
+    "load": 5.05,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "telegram",
+   "config": "kasmvnc",
+   "rep": 0,
+   "sandboxMs": 110.98688699997729,
+   "backend": "kasmvnc",
+   "firstPictureMs": 2825.79016699997,
+   "colours": 1424,
+   "idle": {
+    "cpu": 185.15333252746032,
+    "cpuByName": {
+     "Xkasmvnc": 13.574583948104909,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "Telegram": 171.57874857935542
+    },
+    "pssMB": 330.609375,
+    "screenPssMB": 19.1044921875,
+    "appPssMB": 311.5048828125,
+    "pssByName": {
+     "Xkasmvnc": 19.1044921875,
+     "dbus-daemon": 1.8701171875,
+     "bwrap": 1.0595703125,
+     "Telegram": 308.5751953125
+    }
+   },
+   "input": {
+    "changedPixels": 123415,
+    "coloursAfter": 649
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 4,
+   "load": {
+    "load": 6.69,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "telegram",
+   "config": "pixman",
+   "rep": 0,
+   "sandboxMs": 236.14177000004565,
+   "backend": "wayland",
+   "firstPictureMs": 2759.2057480000076,
+   "colours": 1442,
+   "idle": {
+    "cpu": 191.46540505262405,
+    "cpuByName": {
+     "sway": 10.182206108116608,
+     "wayvnc": 0.39930220031829833,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "Telegram": 180.88389674418914
+    },
+    "pssMB": 394.2216796875,
+    "screenPssMB": 54.76953125,
+    "appPssMB": 339.4521484375,
+    "pssByName": {
+     "sway": 39.8818359375,
+     "wayvnc": 14.8876953125,
+     "dbus-daemon": 1.7109375,
+     "bwrap": 0.8740234375,
+     "Telegram": 336.8671875
+    }
+   },
+   "input": {
+    "changedPixels": 125121,
+    "coloursAfter": 653
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 7,
+   "load": {
+    "load": 4.8,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "telegram",
+   "config": "w0-pixman",
+   "rep": 0,
+   "sandboxMs": 190.49711200001184,
+   "backend": "wayland-tigervnc",
+   "firstPictureMs": 2711.568464000011,
+   "colours": 1442,
+   "idle": {
+    "cpu": 216.6212336273656,
+    "cpuByName": {
+     "sway": 11.574418747477848,
+     "w0vncserver": 11.77397769139988,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "Telegram": 193.27283718848787
+    },
+    "pssMB": 391.1865234375,
+    "screenPssMB": 52.451171875,
+    "appPssMB": 338.7353515625,
+    "pssByName": {
+     "sway": 29.958984375,
+     "w0vncserver": 22.4921875,
+     "dbus-daemon": 1.701171875,
+     "bwrap": 0.82421875,
+     "Telegram": 336.2099609375
+    }
+   },
+   "input": {
+    "changedPixels": 125125,
+    "coloursAfter": 652
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 7,
+   "load": {
+    "load": 5.41,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "haveno",
+   "config": "x11",
+   "rep": 0,
+   "sandboxMs": 156.91812200000277,
+   "backend": "x11",
+   "firstPictureMs": 3562.191672999994,
+   "colours": 951,
+   "idle": {
+    "cpu": 1.897222825118036,
+    "cpuByName": {
+     "Xvfb": 0,
+     "x11vnc": 0.09985383290094926,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "flock": 0,
+     "java": 1.7973689922170868
+    },
+    "pssMB": 420.9462890625,
+    "screenPssMB": 24.37890625,
+    "appPssMB": 396.5712890625,
+    "pssByName": {
+     "Xvfb": 16.2099609375,
+     "x11vnc": 8.1689453125,
+     "dbus-daemon": 1.75390625,
+     "bwrap": 0.9658203125,
+     "flock": 0.1474609375,
+     "java": 393.7001953125
+    }
+   },
+   "input": {
+    "changedPixels": 23032.2,
+    "coloursAfter": 1272
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 10,
+   "load": {
+    "load": 4.73,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "haveno",
+   "config": "tigervnc",
+   "rep": 0,
+   "sandboxMs": 106.16276399994968,
+   "backend": "tigervnc",
+   "firstPictureMs": 2965.5402389999945,
+   "colours": 951,
+   "idle": {
+    "cpu": 1.4978330480826525,
+    "cpuByName": {
+     "Xvnc": 0,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "flock": 0,
+     "java": 1.4978330480826525
+    },
+    "pssMB": 431.48046875,
+    "screenPssMB": 21.0400390625,
+    "appPssMB": 410.4404296875,
+    "pssByName": {
+     "Xvnc": 21.0400390625,
+     "dbus-daemon": 1.7587890625,
+     "bwrap": 1.0537109375,
+     "flock": 0.1494140625,
+     "java": 407.478515625
+    }
+   },
+   "input": {
+    "changedPixels": 23032.2,
+    "coloursAfter": 1272
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 19,
+   "load": {
+    "load": 3.43,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "haveno",
+   "config": "kasmvnc",
+   "rep": 0,
+   "sandboxMs": 111.58986200002255,
+   "backend": "kasmvnc",
+   "firstPictureMs": 2925.2658850000007,
+   "colours": 951,
+   "idle": {
+    "cpu": 1.597588733762714,
+    "cpuByName": {
+     "Xkasmvnc": 0.09984929586016962,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "flock": 0,
+     "java": 1.4977394379025444
+    },
+    "pssMB": 385.9365234375,
+    "screenPssMB": 19.1513671875,
+    "appPssMB": 366.78515625,
+    "pssByName": {
+     "Xkasmvnc": 19.1513671875,
+     "dbus-daemon": 1.8623046875,
+     "bwrap": 1.0517578125,
+     "flock": 0.150390625,
+     "java": 363.720703125
+    }
+   },
+   "input": {
+    "changedPixels": 23032.2,
+    "coloursAfter": 1272
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 19,
+   "load": {
+    "load": 3.01,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "haveno",
+   "config": "pixman",
+   "rep": 0,
+   "sandboxMs": 230.47725500003435,
+   "backend": "wayland",
+   "firstPictureMs": 2772.5771740000346,
+   "colours": 950,
+   "idle": {
+    "cpu": 1.5977401867966277,
+    "cpuByName": {
+     "sway": 0,
+     "wayvnc": 0,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "flock": 0,
+     "xwayland-satel": 0,
+     "Xwayland": 0,
+     "tail": 0,
+     "java": 1.5977401867966277
+    },
+    "pssMB": 465.1025390625,
+    "screenPssMB": 79.7939453125,
+    "appPssMB": 385.30859375,
+    "pssByName": {
+     "sway": 35.1083984375,
+     "wayvnc": 13.9384765625,
+     "dbus-daemon": 1.4580078125,
+     "bwrap": 0.671875,
+     "flock": 0.150390625,
+     "xwayland-satel": 3.662109375,
+     "Xwayland": 27.0849609375,
+     "tail": 0.9443359375,
+     "java": 382.083984375
+    }
+   },
+   "input": {
+    "changedPixels": 23032.2,
+    "coloursAfter": 1272
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 16,
+   "load": {
+    "load": 4.26,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "haveno",
+   "config": "w0-pixman",
+   "rep": 0,
+   "sandboxMs": 188.54274899995653,
+   "backend": "wayland-tigervnc",
+   "firstPictureMs": 2702.555659000005,
+   "colours": 950,
+   "idle": {
+    "cpu": 1.3980093815714256,
+    "cpuByName": {
+     "sway": 0,
+     "w0vncserver": 0,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "flock": 0,
+     "xwayland-satel": 0,
+     "Xwayland": 0,
+     "tail": 0,
+     "java": 1.3980093815714256
+    },
+    "pssMB": 452.435546875,
+    "screenPssMB": 78.4033203125,
+    "appPssMB": 374.0322265625,
+    "pssByName": {
+     "sway": 25.06640625,
+     "w0vncserver": 22.1083984375,
+     "dbus-daemon": 1.45703125,
+     "bwrap": 0.671875,
+     "flock": 0.1494140625,
+     "xwayland-satel": 3.720703125,
+     "Xwayland": 27.5078125,
+     "tail": 0.9736328125,
+     "java": 370.7802734375
+    }
+   },
+   "input": {
+    "changedPixels": 23032.2,
+    "coloursAfter": 1272
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 19,
+   "load": {
+    "load": 3.56,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "signal",
+   "config": "tigervnc",
+   "rep": 1,
+   "sandboxMs": 157.13945699995384,
+   "backend": "tigervnc",
+   "firstPictureMs": 11929.833680999931,
+   "colours": 436,
+   "idle": {
+    "cpu": 1.9969532496252311,
+    "cpuByName": {
+     "Xvnc": 0.09984766248126156,
+     "dbus-daemon": 0,
+     "pulseaudio": 0,
+     "bwrap": 0,
+     "electron": 1.8971055871439695
+    },
+    "pssMB": 529.017578125,
+    "screenPssMB": 25.185546875,
+    "appPssMB": 503.83203125,
+    "pssByName": {
+     "Xvnc": 25.185546875,
+     "dbus-daemon": 1.587890625,
+     "pulseaudio": 3.689453125,
+     "bwrap": 0.916015625,
+     "electron": 497.638671875
+    }
+   },
+   "input": {
+    "changedPixels": 301.821,
+    "coloursAfter": 815
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 12,
+   "load": {
+    "load": 3.91,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "signal",
+   "config": "kasmvnc",
+   "rep": 1,
+   "sandboxMs": 161.83492699998897,
+   "backend": "kasmvnc",
+   "firstPictureMs": 12115.380682000075,
+   "colours": 462,
+   "idle": {
+    "cpu": 2.2963355082552006,
+    "cpuByName": {
+     "Xkasmvnc": 0,
+     "dbus-daemon": 0,
+     "pulseaudio": 0,
+     "bwrap": 0,
+     "electron": 2.2963355082552006
+    },
+    "pssMB": 528.2294921875,
+    "screenPssMB": 24.0546875,
+    "appPssMB": 504.1748046875,
+    "pssByName": {
+     "Xkasmvnc": 24.0546875,
+     "dbus-daemon": 1.595703125,
+     "pulseaudio": 3.90625,
+     "bwrap": 0.8984375,
+     "electron": 497.7744140625
+    }
+   },
+   "input": {
+    "changedPixels": 301.821,
+    "coloursAfter": 815
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 15,
+   "load": {
+    "load": 3.48,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "signal",
+   "config": "pixman",
+   "rep": 1,
+   "sandboxMs": 279.73251200001687,
+   "backend": "wayland",
+   "firstPictureMs": 12094.350944000063,
+   "colours": 469,
+   "idle": {
+    "cpu": 2.0967819019113065,
+    "cpuByName": {
+     "sway": 0.09984675723387172,
+     "wayvnc": 0,
+     "dbus-daemon": 0,
+     "pulseaudio": 0,
+     "bwrap": 0,
+     "electron": 1.9969351446774346
+    },
+    "pssMB": 550.7626953125,
+    "screenPssMB": 52.4365234375,
+    "appPssMB": 498.326171875,
+    "pssByName": {
+     "sway": 37.919921875,
+     "wayvnc": 14.5166015625,
+     "dbus-daemon": 1.439453125,
+     "pulseaudio": 3.6005859375,
+     "bwrap": 0.7763671875,
+     "electron": 492.509765625
+    }
+   },
+   "input": {
+    "changedPixels": 301.821,
+    "coloursAfter": 642
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 15,
+   "load": {
+    "load": 3.38,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "signal",
+   "config": "w0-pixman",
+   "rep": 1,
+   "sandboxMs": 236.47392899997067,
+   "backend": "wayland-tigervnc",
+   "firstPictureMs": 12147.05655400001,
+   "colours": 251,
+   "idle": {
+    "cpu": 1.9970143551012416,
+    "cpuByName": {
+     "sway": 0,
+     "w0vncserver": 0,
+     "dbus-daemon": 0,
+     "pulseaudio": 0,
+     "bwrap": 0,
+     "electron": 1.9970143551012416
+    },
+    "pssMB": 548.8896484375,
+    "screenPssMB": 49.9716796875,
+    "appPssMB": 498.91796875,
+    "pssByName": {
+     "sway": 27.779296875,
+     "w0vncserver": 22.1923828125,
+     "dbus-daemon": 1.439453125,
+     "pulseaudio": 3.62109375,
+     "bwrap": 0.7734375,
+     "electron": 493.083984375
+    }
+   },
+   "input": {
+    "changedPixels": 301.821,
+    "coloursAfter": 642
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 10,
+   "load": {
+    "load": 2.67,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "signal",
+   "config": "x11",
+   "rep": 1,
+   "sandboxMs": 207.3782099999953,
+   "backend": "x11",
+   "firstPictureMs": 12825.394166999962,
+   "colours": 859,
+   "idle": {
+    "cpu": 2.5956265348896816,
+    "cpuByName": {
+     "Xvfb": 0,
+     "x11vnc": 0.0998317898034493,
+     "dbus-daemon": 0,
+     "pulseaudio": 0,
+     "bwrap": 0,
+     "electron": 2.4957947450862323
+    },
+    "pssMB": 534.318359375,
+    "screenPssMB": 29.3603515625,
+    "appPssMB": 504.95703125,
+    "pssByName": {
+     "Xvfb": 21.2509765625,
+     "x11vnc": 8.109375,
+     "dbus-daemon": 1.591796875,
+     "pulseaudio": 3.9423828125,
+     "bwrap": 0.8603515625,
+     "electron": 498.5634765625
+    }
+   },
+   "input": {
+    "changedPixels": 301.821,
+    "coloursAfter": 815
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 13,
+   "load": {
+    "load": 2.34,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "telegram",
+   "config": "tigervnc",
+   "rep": 1,
+   "sandboxMs": 106.14099800004624,
+   "backend": "tigervnc",
+   "firstPictureMs": 2795.596972999978,
+   "colours": 1424,
+   "idle": {
+    "cpu": 178.87181452688998,
+    "cpuByName": {
+     "Xvnc": 13.076008762847428,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "Telegram": 165.79580576404254
+    },
+    "pssMB": 333.5634765625,
+    "screenPssMB": 21.234375,
+    "appPssMB": 312.3291015625,
+    "pssByName": {
+     "Xvnc": 21.234375,
+     "dbus-daemon": 1.869140625,
+     "bwrap": 1.087890625,
+     "Telegram": 309.3720703125
+    }
+   },
+   "input": {
+    "changedPixels": 123415,
+    "coloursAfter": 645
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 4,
+   "load": {
+    "load": 2.84,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "telegram",
+   "config": "kasmvnc",
+   "rep": 1,
+   "sandboxMs": 110.84108399995603,
+   "backend": "kasmvnc",
+   "firstPictureMs": 2860.3463439999614,
+   "colours": 1424,
+   "idle": {
+    "cpu": 183.0070208759574,
+    "cpuByName": {
+     "Xkasmvnc": 13.278741831152393,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "Telegram": 169.72827904480502
+    },
+    "pssMB": 332.1943359375,
+    "screenPssMB": 19.65234375,
+    "appPssMB": 312.5419921875,
+    "pssByName": {
+     "Xkasmvnc": 19.65234375,
+     "dbus-daemon": 1.890625,
+     "bwrap": 1.068359375,
+     "Telegram": 309.5830078125
+    }
+   },
+   "input": {
+    "changedPixels": 123418,
+    "coloursAfter": 648
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 4,
+   "load": {
+    "load": 2.72,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "telegram",
+   "config": "pixman",
+   "rep": 1,
+   "sandboxMs": 227.11843899998348,
+   "backend": "wayland",
+   "firstPictureMs": 2711.669265000033,
+   "colours": 1442,
+   "idle": {
+    "cpu": 196.03143011484605,
+    "cpuByName": {
+     "sway": 9.482172026940109,
+     "wayvnc": 0.39924934850274146,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "Telegram": 186.1500087394032
+    },
+    "pssMB": 392.72265625,
+    "screenPssMB": 52.6943359375,
+    "appPssMB": 340.0283203125,
+    "pssByName": {
+     "sway": 37.8974609375,
+     "wayvnc": 14.796875,
+     "dbus-daemon": 1.7119140625,
+     "bwrap": 0.8818359375,
+     "Telegram": 337.4345703125
+    }
+   },
+   "input": {
+    "changedPixels": 125120,
+    "coloursAfter": 652
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 6,
+   "load": {
+    "load": 2.71,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "telegram",
+   "config": "w0-pixman",
+   "rep": 1,
+   "sandboxMs": 186.6844539999729,
+   "backend": "wayland-tigervnc",
+   "firstPictureMs": 2675.4333669999614,
+   "colours": 1442,
+   "idle": {
+    "cpu": 207.04166822285003,
+    "cpuByName": {
+     "sway": 10.182377125713936,
+     "w0vncserver": 10.78134048605005,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "Telegram": 186.07795061108604
+    },
+    "pssMB": 391.6748046875,
+    "screenPssMB": 52.443359375,
+    "appPssMB": 339.2314453125,
+    "pssByName": {
+     "sway": 29.9365234375,
+     "w0vncserver": 22.5068359375,
+     "dbus-daemon": 1.6884765625,
+     "bwrap": 0.8583984375,
+     "Telegram": 336.6845703125
+    }
+   },
+   "input": {
+    "changedPixels": 125120,
+    "coloursAfter": 658
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 6,
+   "load": {
+    "load": 2.68,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "telegram",
+   "config": "x11",
+   "rep": 1,
+   "sandboxMs": 156.57793700008187,
+   "backend": "x11",
+   "firstPictureMs": 2834.1988470000215,
+   "colours": 1424,
+   "idle": {
+    "cpu": 180.0064005064533,
+    "cpuByName": {
+     "Xvfb": 12.878993713440087,
+     "x11vnc": 0.099837160569303,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "Telegram": 167.0275696324439
+    },
+    "pssMB": 336.9833984375,
+    "screenPssMB": 24.6845703125,
+    "appPssMB": 312.298828125,
+    "pssByName": {
+     "Xvfb": 16.4853515625,
+     "x11vnc": 8.19921875,
+     "dbus-daemon": 1.787109375,
+     "bwrap": 0.9736328125,
+     "Telegram": 309.5380859375
+    }
+   },
+   "input": {
+    "changedPixels": 123410,
+    "coloursAfter": 652
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 4,
+   "load": {
+    "load": 5.85,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "haveno",
+   "config": "tigervnc",
+   "rep": 1,
+   "sandboxMs": 106.83089400001336,
+   "backend": "tigervnc",
+   "firstPictureMs": 2945.7102040000027,
+   "colours": 951,
+   "idle": {
+    "cpu": 1.3978562131844243,
+    "cpuByName": {
+     "Xvnc": 0,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "flock": 0,
+     "java": 1.3978562131844243
+    },
+    "pssMB": 410.0439453125,
+    "screenPssMB": 21.1923828125,
+    "appPssMB": 388.85546875,
+    "pssByName": {
+     "Xvnc": 21.1923828125,
+     "dbus-daemon": 1.83984375,
+     "bwrap": 1.05859375,
+     "flock": 0.1484375,
+     "java": 385.8046875
+    }
+   },
+   "input": {
+    "changedPixels": 23032.2,
+    "coloursAfter": 1272
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 19,
+   "load": {
+    "load": 4.5,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "haveno",
+   "config": "kasmvnc",
+   "rep": 1,
+   "sandboxMs": 111.45360500004608,
+   "backend": "kasmvnc",
+   "firstPictureMs": 2985.7521690001013,
+   "colours": 951,
+   "idle": {
+    "cpu": 1.5977382647199079,
+    "cpuByName": {
+     "Xkasmvnc": 0.09985864154499426,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "flock": 0,
+     "java": 1.4978796231749136
+    },
+    "pssMB": 446.4970703125,
+    "screenPssMB": 19.3818359375,
+    "appPssMB": 427.115234375,
+    "pssByName": {
+     "Xkasmvnc": 19.3818359375,
+     "dbus-daemon": 1.79296875,
+     "bwrap": 1.0419921875,
+     "flock": 0.15625,
+     "java": 424.1240234375
+    }
+   },
+   "input": {
+    "changedPixels": 23032.2,
+    "coloursAfter": 1272
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 19,
+   "load": {
+    "load": 3.32,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "haveno",
+   "config": "pixman",
+   "rep": 1,
+   "sandboxMs": 240.04119500005618,
+   "backend": "wayland",
+   "firstPictureMs": 3341.911496000015,
+   "colours": 950,
+   "idle": {
+    "cpu": 1.3979902915160292,
+    "cpuByName": {
+     "sway": 0,
+     "wayvnc": 0,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "flock": 0,
+     "xwayland-satel": 0,
+     "Xwayland": 0,
+     "tail": 0,
+     "java": 1.3979902915160292
+    },
+    "pssMB": 483.013671875,
+    "screenPssMB": 79.8427734375,
+    "appPssMB": 403.1708984375,
+    "pssByName": {
+     "sway": 35.1611328125,
+     "wayvnc": 13.9736328125,
+     "dbus-daemon": 1.451171875,
+     "bwrap": 0.662109375,
+     "flock": 0.1484375,
+     "xwayland-satel": 3.7158203125,
+     "Xwayland": 26.9921875,
+     "tail": 0.9228515625,
+     "java": 399.986328125
+    }
+   },
+   "input": {
+    "changedPixels": 23032.2,
+    "coloursAfter": 1272
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 15,
+   "load": {
+    "load": 2.71,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "haveno",
+   "config": "w0-pixman",
+   "rep": 1,
+   "sandboxMs": 196.7395719999913,
+   "backend": "wayland-tigervnc",
+   "firstPictureMs": 2709.1532640000805,
+   "colours": 950,
+   "idle": {
+    "cpu": 1.49791530393739,
+    "cpuByName": {
+     "sway": 0,
+     "w0vncserver": 0,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "flock": 0,
+     "xwayland-satel": 0,
+     "Xwayland": 0,
+     "tail": 0,
+     "java": 1.49791530393739
+    },
+    "pssMB": 492.744140625,
+    "screenPssMB": 78.412109375,
+    "appPssMB": 414.33203125,
+    "pssByName": {
+     "sway": 25.037109375,
+     "w0vncserver": 22.1357421875,
+     "dbus-daemon": 1.43359375,
+     "bwrap": 0.689453125,
+     "flock": 0.1484375,
+     "xwayland-satel": 3.73046875,
+     "Xwayland": 27.5087890625,
+     "tail": 0.9775390625,
+     "java": 411.0830078125
+    }
+   },
+   "input": {
+    "changedPixels": 23032.2,
+    "coloursAfter": 1272
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 19,
+   "load": {
+    "load": 3.33,
+    "busy": false,
+    "waitedS": 0
+   }
+  },
+  {
+   "app": "haveno",
+   "config": "x11",
+   "rep": 1,
+   "sandboxMs": 156.41484199999832,
+   "backend": "x11",
+   "firstPictureMs": 3095.1216230000136,
+   "colours": 951,
+   "idle": {
+    "cpu": 1.4977385299957906,
+    "cpuByName": {
+     "Xvfb": 0,
+     "x11vnc": 0,
+     "dbus-daemon": 0,
+     "bwrap": 0,
+     "flock": 0,
+     "java": 1.4977385299957906
+    },
+    "pssMB": 441.0595703125,
+    "screenPssMB": 24.5537109375,
+    "appPssMB": 416.505859375,
+    "pssByName": {
+     "Xvfb": 16.3671875,
+     "x11vnc": 8.1865234375,
+     "dbus-daemon": 1.7666015625,
+     "bwrap": 0.970703125,
+     "flock": 0.1484375,
+     "java": 413.6201171875
+    }
+   },
+   "input": {
+    "changedPixels": 23032.2,
+    "coloursAfter": 1272
+   },
+   "appState": "running",
+   "appExits": 0,
+   "logLines": 17,
+   "load": {
+    "load": 2.7,
+    "busy": false,
+    "waitedS": 0
+   }
+  }
+ ]
+}

@@ -1,38 +1,21 @@
 /**
- * Per-account sandbox: a private Xvfb display, a NON-headless Chromium running the
- * real Discord web client with a persistent profile and our unpacked extension,
- * and an x11vnc server on a Unix socket in the account's directory (no TCP port:
- * packages/browser/src/vnc.ts) so the manager can carry a live view.
+ * Per-account sandbox: the shared browser sandbox (packages/browser/src/sandbox.ts: a private screen, a NON-headless
+ * Chromium with a persistent profile and an unpacked extension, the live view on a Unix socket in the account's
+ * directory) running the real Discord web client, with what Discord adds to it: its extension and the bridge it talks
+ * to, the call lab's hook, audio that plays without a click (calls), and screen sharing (Go Live) on a screen that can
+ * share only itself.
  *
- * Deliberately NOT automation: no Playwright/Puppeteer, no --enable-automation, no
- * --remote-debugging-port, no --headless. It is an ordinary browser window that
- * happens to run on a virtual display, so navigator.webdriver stays false and the
- * client behaves exactly as it would on the user's desktop.
+ * Deliberately NOT automation: no Playwright/Puppeteer, no --enable-automation, no --remote-debugging-port, no
+ * --headless. It is an ordinary browser window that happens to run on a virtual display, so navigator.webdriver stays
+ * false and the client behaves exactly as it would on the user's desktop.
  *
- * Isolation today is per-process: each account gets its own display, profile and
- * extension copy. Wrapping each sandbox in a podman container (one more boundary,
- * shared nothing) is the obvious follow-up but not needed to run.
+ * Discord's displays (below) are its own, so its accounts keep their slot from start to start.
  */
 
-import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { markerKey, stampExtension } from '@dither-accounts/browser/markers';
-import type { Subprocess } from 'bun';
-import {
-  claimDisplay,
-  displayIsOurs,
-  displayTaken,
-  MEMORY_DISABLED_FEATURES,
-  mergeFeatureFlags,
-  portInUse,
-  prepareVncSocket,
-  refreshWorker,
-  vncSocketPath,
-  waitForVncSocket,
-  x11vncArgs,
-} from '@dither-accounts/browser';
+import { claimDisplay, type DisplayBackend, displayBackend, displayTaken, type FreeDisplay, isWaylandBackend, portInUse, Sandbox as BrowserSandbox } from '@dither-accounts/browser';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const EXTENSION_SRC = join(HERE, 'extension');
@@ -40,7 +23,7 @@ const LAB_SRC = join(HERE, 'lab');
 
 export interface SandboxOptions {
   accountDir: string;
-  display: number; //    X display number, e.g. 91 -> :91
+  display: number | FreeDisplay; // pickDisplay's, or an X display number, e.g. 91 -> :91
   width: number;
   height: number;
   wsUrl: string; //      ws://127.0.0.1:<adapterPort>/
@@ -50,222 +33,38 @@ export interface SandboxOptions {
   lab?: boolean; //       call lab only: the lab probe and commands go into the hook (scripts/call-lab.ts)
   markerKey?: string; //  what the copy's page-visible names are made from (packages/browser markers.ts); default: the manager's
   log: (level: 'debug' | 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
+  /** The screen's live view's server went down or came back. */
+  onScreenHealth?: () => void;
 }
 
-interface Bins {
-  xvfb: string;
-  x11vnc: string;
-  chromium: string;
-}
-
-const CHROMIUM_CANDIDATES = [`/etc/profiles/per-user/${process.env.USER}/bin/chromium`, '/run/current-system/sw/bin/chromium'];
-
-/** Resolve a binary: env override -> PATH -> known candidates -> nix build. */
-function resolveBin(name: 'Xvfb' | 'x11vnc' | 'chromium', envVar: string, nixAttr: string, candidates: string[], log: SandboxOptions['log']): string {
-  const fromEnv = process.env[envVar];
-  if (fromEnv && existsSync(fromEnv)) return fromEnv;
-  const onPath = Bun.which(name);
-  if (onPath) return onPath;
-  for (const c of candidates) if (existsSync(c)) return c;
-  log('info', `resolving ${name} via nix build nixpkgs#${nixAttr}`);
-  const out = spawnSync('nix', ['build', `nixpkgs#${nixAttr}`, '--no-link', '--print-out-paths'], { encoding: 'utf8' });
-  if (out.status !== 0) throw new Error(`cannot find ${name}: set ${envVar}, put it on PATH, or make nix available (${out.stderr?.slice(0, 200)})`);
-  const store = out.stdout.trim().split('\n').pop()!.trim();
-  const bin = join(store, 'bin', name);
-  if (!existsSync(bin)) throw new Error(`nix built ${nixAttr} but ${bin} is missing`);
-  return bin;
-}
-
-export function resolveBins(log: SandboxOptions['log']): Bins {
-  return {
-    xvfb: resolveBin('Xvfb', 'XVFB_BIN', 'xvfb', [], log),
-    x11vnc: resolveBin('x11vnc', 'X11VNC_BIN', 'x11vnc', [], log),
-    chromium: resolveBin('chromium', 'CHROMIUM_BIN', 'chromium', CHROMIUM_CANDIDATES, log),
-  };
-}
-
-/**
- * Xvfb has no GL of its own, so left alone Chromium runs with WebGL off, which no ordinary desktop
- * browser does. Point it at the machine's GPU directly, or at its software renderer if there is none.
- */
-function gpuFlags(): string[] {
-  let render = false;
-  try {
-    render = readdirSync('/dev/dri').some((n) => n.startsWith('renderD'));
-  } catch {
-    /* no /dev/dri at all */
-  }
-  if (render) return ['--ignore-gpu-blocklist', '--use-angle=vulkan', '--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan'];
-  return ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
-}
-
-export class Sandbox {
-  private procs: { name: string; proc: Subprocess }[] = [];
-  private stopped = false;
-  readonly profileDir: string;
-  readonly extensionDir: string;
-  /** The live view: x11vnc's Unix socket (vnc.sock in the account directory). */
-  readonly vncSocket: string;
-
-  constructor(private opts: SandboxOptions) {
-    this.profileDir = join(opts.accountDir, 'profile');
-    this.extensionDir = join(opts.accountDir, 'extension');
-    this.vncSocket = vncSocketPath(opts.accountDir);
-  }
-
-  /** Copy the extension template, stamp this account's config into it, and give it this account's names. */
-  private prepareExtension() {
-    mkdirSync(this.profileDir, { recursive: true });
-    // Fresh copy each start so template edits take effect; profile (the login) persists.
-    rmSync(this.extensionDir, { recursive: true, force: true });
-    cpSync(EXTENSION_SRC, this.extensionDir, { recursive: true });
-    writeFileSync(
-      join(this.extensionDir, 'config.json'),
-      JSON.stringify({ wsUrl: this.opts.wsUrl, token: this.opts.token }, null, 2),
-      { mode: 0o600 },
-    );
-    // Call lab sandboxes only (scripts/call-lab.ts): the probe and the lab commands go inside the hook.
-    if (this.opts.lab) {
-      const hook = join(this.extensionDir, 'hook.js');
-      const lab = ['probe.js', 'lab.js'].map((f) => readFileSync(join(LAB_SRC, f), 'utf8')).join('\n');
-      writeFileSync(hook, readFileSync(hook, 'utf8').replace('/*@lab@*/', () => lab));
-    }
-    // The names the extension leaves in the page (the channel's event types…): this install's and account's, never ours.
-    const left = stampExtension(this.extensionDir, this.opts.markerKey ?? markerKey());
-    if (left.length) this.opts.log('warn', 'the extension copy still holds a name that is the same for every install', left);
-  }
-
-  /** Chromium must not offer to keep a password typed into the live view: this profile runs on --password-store=basic. */
-  private disablePasswordManager() {
-    const path = join(this.profileDir, 'Default', 'Preferences');
-    const prefs = readConfigFile<Record<string, any>>(path, {});
-    prefs.credentials_enable_service = false;
-    prefs.profile = { ...prefs.profile, password_manager_enabled: false };
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify(prefs));
-  }
-
-  private spawn(name: string, cmd: string[], env?: Record<string, string>): Subprocess {
-    this.opts.log('debug', `spawn ${name}`, cmd.join(' '));
-    const proc = Bun.spawn(cmd, {
-      env: { ...process.env, ...env },
-      stdout: 'pipe',
-      stderr: 'pipe',
-      onExit: (_p, code, signal) => {
-        if (!this.stopped) this.opts.log('warn', `${name} exited`, { code, signal });
-      },
-    });
-    this.procs.push({ name, proc });
-    // Drain output into the adapter log at debug level.
-    for (const stream of [proc.stdout, proc.stderr]) {
-      (async () => {
-        const reader = (stream as ReadableStream<Uint8Array>).getReader();
-        const dec = new TextDecoder();
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          const text = dec.decode(value).trim();
-          if (text) this.opts.log('debug', `[${name}] ${text.slice(0, 400)}`);
-        }
-      })().catch(() => {});
-    }
-    return proc;
-  }
-
-  async start(): Promise<Bins> {
-    const bins = resolveBins(this.opts.log);
-    this.prepareExtension();
-    this.disablePasswordManager();
-    // Chromium runs the worker it first registered in this profile, not the copy's: clear it when the copy's changed.
-    const worker = refreshWorker(this.opts.accountDir, this.profileDir, this.extensionDir);
-    if (worker === 'cleared') this.opts.log('info', "the extension's worker is new to this profile: cleared its service workers so Chromium runs it");
-    else if (worker === 'busy') this.opts.log('warn', "a browser still holds the profile: its service workers were left as they are");
-    const d = `:${this.opts.display}`;
-    const { width, height } = this.opts;
-
-    // 1. Virtual display.
-    // -dpi 96: Xvfb defaults to 100, and Chromium scales itself to match, which makes its window
-    // wider and taller than the display and the page cut off at the edges.
-    const xvfb = this.spawn('Xvfb', [bins.xvfb, d, '-screen', '0', `${width}x${height}x24`, '-nolisten', 'tcp', '-nocursor', '-dpi', '96']);
-    await this.waitForDisplay(d, xvfb, 8000);
-
-    // 2. The browser (ordinary window, persistent profile, our extension).
-    const flags = [
-      `--user-data-dir=${this.profileDir}`,
-      `--load-extension=${this.extensionDir}`,
-      // newer Chromium gates --load-extension behind this feature switch
-      '--disable-features=DisableLoadExtensionCommandLineSwitch',
-      // processes every browser would start and no account uses (flags.ts)
-      `--disable-features=${MEMORY_DISABLED_FEATURES.join(',')}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-sync',
-      '--password-store=basic',
-      '--use-mock-keychain',
-      '--disable-crash-reporter',
-      '--noerrdialogs',
-      '--disable-infobars',
-      `--window-size=${width},${height}`,
-      '--window-position=0,0',
+export class Sandbox extends BrowserSandbox {
+  constructor(opts: SandboxOptions) {
+    super({
+      accountDir: opts.accountDir,
+      display: opts.display,
+      width: opts.width,
+      height: opts.height,
+      extensionSrc: EXTENSION_SRC,
+      // The bridge's address and this account's token, in the copy's config.json (0600).
+      config: { wsUrl: opts.wsUrl, token: opts.token },
+      // Call lab sandboxes only (scripts/call-lab.ts): the probe and the lab commands go inside the hook.
+      prepareExtension: opts.lab
+        ? (dir) => {
+            const hook = join(dir, 'hook.js');
+            const lab = ['probe.js', 'lab.js'].map((f) => readFileSync(join(LAB_SRC, f), 'utf8')).join('\n');
+            writeFileSync(hook, readFileSync(hook, 'utf8').replace('/*@lab@*/', () => lab));
+          }
+        : undefined,
+      markerKey: opts.markerKey,
+      startUrl: opts.startUrl,
       // Calls: the client's audio feeds the bridge without anyone clicking first.
-      '--autoplay-policy=no-user-gesture-required',
-    ];
-    flags.push(...gpuFlags());
-    if (this.opts.noSandbox) flags.push('--no-sandbox');
-    this.spawn('chromium', [bins.chromium, ...mergeFeatureFlags(flags), this.opts.startUrl], { DISPLAY: d });
-
-    // 3. Live view: VNC on the account's own Unix socket and no TCP port, no password (the manager carries it,
-    // behind its login). -forever so it survives client disconnects; -shared for multiple viewers.
-    prepareVncSocket(this.vncSocket);
-    const vnc = this.spawn('x11vnc', x11vncArgs(bins.x11vnc, d, this.vncSocket));
-    await waitForVncSocket(this.vncSocket, vnc, 10_000);
-
-    this.opts.log('info', `sandbox up: display ${d}, vnc on ${this.vncSocket}`, { chromium: bins.chromium });
-    return bins;
-  }
-
-  /** Poll for our Xvfb's display (its socket, its lock naming it) so Chromium/x11vnc never race the display. */
-  private async waitForDisplay(display: string, xvfb: Subprocess, timeoutMs: number) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (xvfb.exitCode !== null) throw new Error(`Xvfb on ${display} exited (${xvfb.exitCode}); is the display taken?`);
-      if (displayIsOurs(Number(display.slice(1)), xvfb.pid)) return;
-      await Bun.sleep(100);
-    }
-    throw new Error(`Xvfb display ${display} did not come up within ${timeoutMs}ms`);
-  }
-
-  async stop() {
-    if (this.stopped) return;
-    this.stopped = true;
-    // Kill in reverse-ish order: browser and vnc first, display last.
-    const order = ['chromium', 'x11vnc', 'Xvfb'];
-    for (const name of order) {
-      for (const p of this.procs.filter((x) => x.name === name)) {
-        try {
-          p.proc.kill('SIGTERM');
-        } catch {}
-      }
-    }
-    // Give them a moment, then hard-kill anything still alive.
-    const killer = setTimeout(() => {
-      for (const p of this.procs) {
-        try {
-          p.proc.kill('SIGKILL');
-        } catch {}
-      }
-    }, 4000);
-    await Promise.all(this.procs.map((p) => p.proc.exited.catch(() => {})));
-    clearTimeout(killer);
-    this.procs = [];
-    rmSync(this.vncSocket, { force: true });
-    this.opts.log('info', 'sandbox stopped');
-  }
-
-  /** True while the Chromium process is alive. */
-  get browserAlive(): boolean {
-    const c = this.procs.find((p) => p.name === 'chromium');
-    return !!c && c.proc.exitCode === null;
+      flags: ['--autoplay-policy=no-user-gesture-required'],
+      noSandbox: opts.noSandbox,
+      // Go Live shares this sandbox's screen alone; if its portal and PipeWire fail to start, Discord runs without it.
+      screenShare: true,
+      log: opts.log,
+      onScreenHealth: opts.onScreenHealth,
+    });
   }
 }
 
@@ -287,25 +86,27 @@ export async function slotFree(n: number, port: number | null): Promise<boolean>
 }
 
 /**
- * The display from config/env when set; else the account's hashed slot in :91–:99 when it is free, or the next free one
- * after it. Two accounts can hash to the same slot, and the second then failed to start ("Is port 8796 in use?", the
- * extension port being 8700 + display), so a slot is taken only when slotFree says so. Its live view is a socket, not
- * a port.
+ * On the wayland backend, a compositor of its own (no number, nothing to pick). On x11, the display from config/env
+ * when set; else the account's hashed slot in :91–:99 when it is free, or the next free one after it. Two accounts can
+ * hash to the same slot, and the second then failed to start ("Is port 8796 in use?", the extension port being 8700 +
+ * display), so a slot is taken only when slotFree says so. Its live view is a socket, not a port.
  */
 export async function pickDisplay(
   accountId: string,
   config: Record<string, any>,
-  opts: { portFixed?: boolean; free?: (n: number, port: number | null) => Promise<boolean> } = {},
-): Promise<{ display: number }> {
+  opts: { portFixed?: boolean; free?: (n: number, port: number | null) => Promise<boolean>; backend?: DisplayBackend } = {},
+): Promise<FreeDisplay> {
+  const backend = opts.backend ?? displayBackend();
+  if (isWaylandBackend(backend)) return { backend, display: null };
   const envD = process.env.DITHER_DISPLAY ? Number(process.env.DITHER_DISPLAY) : undefined;
-  if (config.display || envD) return { display: Number(config.display ?? envD) };
+  if (config.display || envD) return { backend, display: Number(config.display ?? envD) };
   const free = opts.free ?? slotFree;
   const { from, to } = DISCORD_DISPLAYS;
   const span = to - from + 1;
   const start = hashedDisplay(accountId) - from;
   for (let i = 0; i < span; i++) {
     const n = from + ((start + i) % span);
-    if (await free(n, opts.portFixed ? null : 8700 + n)) return { display: n };
+    if (await free(n, opts.portFixed ? null : 8700 + n)) return { backend, display: n };
   }
   throw new Error(`no free Discord display in :${from}–:${to}; set this account's config.display to one outside it`);
 }

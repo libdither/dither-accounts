@@ -58,6 +58,12 @@ const RECEIPT_STATE: Record<string, P.ReceiptState> = { '': 'delivered', read: '
 const RECEIPT_RANK: Record<P.ReceiptState, number> = { delivered: 1, read: 2, played: 3 };
 /** How many (message, reader) pairs to remember receipts for. A repeat after that is harmless, only wasted. */
 const RECEIPTS_KEPT = 20_000;
+
+/** What one history sync held for one conversation: its message facts, and the time of the oldest item of any kind. */
+interface HistoryAnswer {
+  count: number;
+  oldest?: number;
+}
 /** A link read this recently (the preview the owner just saw) answers for the Join that follows it. */
 const LINK_FRESH_MS = 10 * 60_000;
 const ASK_NOTE = 'The group’s admins approve new members';
@@ -100,6 +106,8 @@ export interface AdapterOptions {
   expirySweepMs?: number;
   /** fetch, for profile pictures (tests replace it). */
   fetch?: typeof fetch;
+  /** Where the adapter's own database lives: state.db in the account's directory, or ':memory:' (tests). */
+  statePath?: string;
 }
 
 type Phase = 'starting' | 'linking' | 'connecting' | 'online' | 'banned' | 'replaced' | 'stopped' | 'broken';
@@ -127,8 +135,12 @@ export class WhatsAppAdapter {
   private groups = new Map<string, { g: WaGroup; at: number }>();
   /** Invite links read for the About panel (admins only). */
   private inviteLinks = new Map<string, string | null>();
-  private historyWaiters = new Map<string, (count: number) => void>();
-  private historyCounts = new Map<string, number>();
+  /** A history page waiting on the phone, per conversation: given what its answer held, or null for no answer. */
+  private historyWaiters = new Map<string, (answer: HistoryAnswer | null) => void>();
+  /** What the history sync in progress (up to its history_done) held, per conversation. */
+  private historyPages = new Map<string, HistoryAnswer>();
+  /** Conversations an on-demand history sync in progress names: one named with nothing in it is an empty answer. */
+  private onDemandChats = new Set<string>();
   private pendingReads = new Map<string, { unread: number; lastTs: number }>();
   private lastSnapshot = 0;
   private noAvatar = new Map<string, number>();
@@ -150,7 +162,7 @@ export class WhatsAppAdapter {
     private host: AdapterHost,
     private opts: AdapterOptions,
   ) {
-    this.state = new State(join(host.accountDir, 'state.db'));
+    this.state = new State(opts.statePath ?? join(host.accountDir, 'state.db'));
     this.aliases = new Aliases(this.state);
     this.mapper = new Mapper(this.state, this.aliases, () => this.selfIds(), (id) => this.nameOf(id));
     const s = this.state.get('self');
@@ -215,7 +227,7 @@ export class WhatsAppAdapter {
   private onBridgeExit(b: Bridge, code: number | null) {
     if (this.bridge !== b) return;
     this.bridge = null;
-    for (const [, w] of this.historyWaiters) w(0);
+    for (const [, w] of this.historyWaiters) w(null);
     this.historyWaiters.clear();
     if (this.phase === 'stopped' || this.phase === 'banned' || this.phase === 'replaced' || this.phase === 'broken') return;
     if (Date.now() - this.bridgeStarted > (this.opts.stableAfterMs ?? 120_000)) this.restarts = 0;
@@ -706,7 +718,16 @@ export class WhatsAppAdapter {
       } else if (ev.t === 'reaction') this.publish(ev.author);
       this.host.emit(ev);
     }
-    if (history) for (const t of out.touched) this.historyCounts.set(t.id, (this.historyCounts.get(t.id) ?? 0) + out.events.length);
+    if (history) {
+      // A page counts its message facts for each chat, nothing else (reactions, pins, edits of nothing known...), and
+      // remembers its oldest item of any kind: a page of only reactions still says how far back it read.
+      const page = (id: string) => this.historyPages.get(id) ?? this.historyPages.set(id, { count: 0 }).get(id)!;
+      for (const t of out.touched) {
+        const p = page(t.id);
+        if (t.ts > 0 && (p.oldest === undefined || t.ts < p.oldest)) p.oldest = t.ts;
+      }
+      for (const ev of out.events) if (ev.t === 'message') page(ev.message.conversation).count++;
+    }
   }
 
   private undecryptable(ev: Extract<BridgeEvent, { t: 'undecryptable' }>) {
@@ -741,6 +762,7 @@ export class WhatsAppAdapter {
       this.putChat(id, cur?.jid ?? h.chat, { ...base, ...h.patch }, h.lastTs ?? 0);
       if (isGroup(h.chat) && !cur) this.fetchGroup(h.chat);
       if (h.unread !== undefined && ev.syncType !== 'ON_DEMAND') this.pendingReads.set(id, { unread: h.unread, lastTs: h.lastTs ?? 0 });
+      if (ev.syncType === 'ON_DEMAND') this.onDemandChats.add(id);
     }
     this.host.log('info', `history sync ${ev.syncType} #${ev.chunkOrder ?? 0}: ${ev.conversations.length} chats${ev.progress ? `, ${ev.progress}%` : ''}`);
   }
@@ -754,14 +776,16 @@ export class WhatsAppAdapter {
     this.pendingReads.clear();
     if (ev.syncType === 'ON_DEMAND') {
       for (const [conv, w] of this.historyWaiters) {
-        const n = this.historyCounts.get(conv);
-        if (n !== undefined) {
+        // The phone's answer for this chat: what it held, or nothing at all when it named the chat with no messages.
+        const page = this.historyPages.get(conv) ?? (this.onDemandChats.has(conv) ? { count: 0 } : undefined);
+        if (page) {
           this.historyWaiters.delete(conv);
-          w(n);
+          w(page);
         }
       }
     }
-    this.historyCounts.clear();
+    this.historyPages.clear();
+    this.onDemandChats.clear();
   }
 
   private receipt(ev: Extract<BridgeEvent, { t: 'receipt' }>) {
@@ -1039,22 +1063,61 @@ export class WhatsAppAdapter {
     return { conversation: id, existed, startsAtFirstSend: !existed };
   }
 
-  private async fetchHistory(conversation: string, beforeTs: number | undefined, limit: number): Promise<{ count: number; done: boolean }> {
+  /**
+   * A page of older messages, from the phone: whatsmeow's on-demand history sync (BuildHistorySyncRequest) asks the
+   * phone for the `count` messages just before one message it names, and the answer comes as an ON_DEMAND history
+   * sync of history messages. The hub holds the stretch from the answer's `oldest` up to `beforeTs` whole after a
+   * page, so the page must be exactly what lies just below beforeTs:
+   *
+   * - The anchor is the first message known at or after beforeTs (the message the page goes back from). The phone
+   *   then sends everything just before it, any the store missed between beforeTs and it too, and nothing in the
+   *   stretch is skipped.
+   * - With nothing known at or after beforeTs (no beforeTs, or one newer than everything here), the anchor is the
+   *   newest message known, which lies inside the stretch: it is sent again from its stored copy, as part of the page.
+   * - `count` is the page's message facts for this chat; a page of only reactions, pins or edits answers count 0 with
+   *   its oldest item's time, and the hub walks on from there.
+   * - `done` only when the phone answered and its answer held nothing for this chat. No answer in time, a bridge that
+   *   went away, or no message known to ask from: count 0, not done, no oldest (the hub claims nothing).
+   */
+  private async fetchHistory(conversation: string, beforeTs: number | undefined, limit: number): Promise<P.HistoryResult> {
     this.requireLinked();
-    const oldest = this.state.oldest(conversation);
-    if (!oldest || (beforeTs !== undefined && oldest.ts > beforeTs + 60_000)) return { count: 0, done: true };
+    const after = beforeTs !== undefined ? this.state.firstFrom(conversation, beforeTs) : undefined;
+    const anchor = after ?? this.state.latest(conversation, beforeTs);
+    if (!anchor) return { count: 0, done: false };
+    // The anchor itself belongs to the page when it is below beforeTs; built before asking, from what is stored now.
+    const again = after ? undefined : this.storedFact(anchor);
     const prev = this.historyWaiters.get(conversation);
-    if (prev) prev(0);
-    const got = new Promise<number>((resolve) => {
+    if (prev) prev(null);
+    const got = new Promise<HistoryAnswer | null>((resolve) => {
       this.historyWaiters.set(conversation, resolve);
       setTimeout(() => {
         if (this.historyWaiters.get(conversation) === resolve) this.historyWaiters.delete(conversation);
-        resolve(0);
+        resolve(null);
       }, this.opts.historyTimeoutMs ?? 40_000);
     });
-    await this.rpc.call('historyRequest', { chat: oldest.chat, msgId: oldest.wid, fromMe: oldest.fromMe, ts: oldest.ts, sender: oldest.sender, count: Math.min(Math.max(limit, 1), 50) });
-    const count = await got;
-    return { count, done: count === 0 };
+    await this.rpc.call('historyRequest', { chat: anchor.chat, msgId: anchor.wid, fromMe: anchor.fromMe, ts: anchor.ts, sender: anchor.sender, count: Math.min(Math.max(limit, 1), 50) });
+    const page = await got;
+    if (!page) return { count: 0, done: false };
+    let { count, oldest } = page;
+    if (again) {
+      this.publish(again.author);
+      this.host.emit({ t: 'message', message: again, live: false });
+      count++;
+      if (oldest === undefined || anchor.ts < oldest) oldest = anchor.ts;
+    }
+    // An answer with nothing in it is the chat's start only when nothing older is kept here either: a phone also
+    // answers empty for a chat it no longer holds that far back, and messages known to be older say it is not the start.
+    const empty = page.count === 0 && page.oldest === undefined && !this.state.latest(conversation, anchor.ts);
+    return { count, done: empty, ...(oldest !== undefined ? { oldest } : {}) };
+  }
+
+  /** A stored message as the message fact it was sent as (its latest wording), or undefined when it cannot be rebuilt. */
+  private storedFact(m: StoredMsg): P.MessageFact | undefined {
+    if (!m.content) return undefined;
+    const info = { id: m.wid, chat: m.chat, sender: m.fromMe ? this.ownJid() : m.sender, fromMe: m.fromMe, isGroup: isGroup(m.chat), ts: m.ts };
+    const out = this.mapper.message({ info, message: m.content, history: true });
+    const ev = out.events.find((e): e is Extract<P.AdapterEvent, { t: 'message' }> => e.t === 'message' && e.message.nativeId === m.id);
+    return ev ? { ...ev.message, author: m.author } : undefined;
   }
 
   private async markRead(conversation: string, upTo: string) {

@@ -20,7 +20,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BridgeServer, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, displayName, displayState, type FreeDisplay, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
 import { SendOnce } from '@dither-accounts/link/once';
 import { type ApiAnswer, type ApiRequest, ProtonApi, ProtonError } from './api.ts';
@@ -95,7 +95,7 @@ const CONTACTS_MS = 8_000;
 
 // -------------------------------------------------------------------- state
 const eventsPath = join(link.accountDir, 'events.json');
-let display = 0;
+let display: FreeDisplay | null = null;
 let liveView: { vncSocket: string; width: number; height: number } | null = null;
 let sandbox: Sandbox | null = null;
 let sandboxError: string | null = null;
@@ -226,7 +226,7 @@ const contacts = new ProtonContacts(
     },
     page: (page, size) => api.call({ method: 'GET', path: 'contacts/v4/contacts/emails', query: { Page: page, PageSize: size } }),
   },
-  { ready: contactsUnavailable },
+  { ready: contactsUnavailable, log },
 );
 
 /** mail.contacts, answered within CONTACTS_MS: Proton not able to now (signed out, a human check, busy) is 503 'unavailable'. */
@@ -290,7 +290,7 @@ function details(): Record<string, string | number | boolean | null> {
     sendCap: SEND_CAP,
     maxRecipients: MAX_RECIPIENTS,
     email: self?.email ?? null,
-    display: liveView ? `:${display}` : null,
+    display: liveView ? displayName(display) : null,
     page: tab,
     extensionAttached: bridge.connected,
     mailPage: hookTabs > 0,
@@ -327,6 +327,8 @@ function details(): Record<string, string | number | boolean | null> {
     contacts: contactsUnavailable() === null,
     contactsNote: contactsUnavailable(),
     contactsFrom: contacts.from,
+    // Contact emails left out of the lists read (packages/link records.ts), by kind and count; null when none.
+    contactsSkipped: contacts.skips.summary(),
   };
 }
 
@@ -349,12 +351,12 @@ function layers(): Layer[] {
   const s = current();
   const browserFailed = !!sandboxError && /chromium/i.test(sandboxError);
   const screen: Layer = liveView
-    ? { name: 'display', state: 'ok', note: `Xvfb :${display}, live view ready` }
+    ? { name: 'display', ...displayState(display, sandbox?.screenHealth) }
     : sandboxError && !browserFailed
       ? { name: 'display', state: 'failed', note: sandboxError }
       : browserFailed
         ? { name: 'display', state: 'off', note: 'not started' }
-        : { name: 'display', state: 'waiting', note: 'starting Xvfb' };
+        : { name: 'display', state: 'waiting', note: 'starting the display' };
   const browser: Layer = liveView
     ? sandbox?.browserAlive
       ? { name: 'browser', state: 'ok', note: tab ? `Chromium, on ${hostOf(tab) ?? tab}` : 'Chromium is running' }
@@ -802,18 +804,18 @@ async function boot() {
   status();
   const tried: number[] = [];
   for (let attempt = 0; attempt < 3; attempt++) {
-    let free: { display: number };
+    let free: FreeDisplay;
     try {
       free = await pickFreeDisplay(undefined, tried);
     } catch (e) {
       sandboxError = String((e as Error).message ?? e);
       break;
     }
-    tried.push(free.display);
-    display = free.display;
+    if (free.display !== null) tried.push(free.display);
+    display = free;
     sandbox = new Sandbox({
       accountDir: link.accountDir,
-      display: free.display,
+      display: free,
       width: WIDTH,
       height: HEIGHT,
       extensionSrc: join(import.meta.dir, 'extension'),
@@ -822,6 +824,8 @@ async function boot() {
       startUrl: `${mailOrigin}/`,
       noSandbox: !!cfg.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',
       log,
+      // The live view's server down or back (it is started again): said in the status at once.
+      onScreenHealth: () => status(true),
     });
     try {
       await sandbox.start();
@@ -831,7 +835,7 @@ async function boot() {
       break;
     } catch (e) {
       sandboxError = String((e as Error).message ?? e).slice(0, 300);
-      log('warn', `sandbox on :${free.display} failed`, sandboxError);
+      log('warn', `sandbox on ${displayName(free)} failed`, sandboxError);
       await sandbox.stop();
       sandbox = null;
     }

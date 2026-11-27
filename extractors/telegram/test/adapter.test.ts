@@ -424,6 +424,38 @@ describe('signed in', () => {
     expect(await h.cmd({ t: 'reactionContext', conversation: DEVS })).toEqual({ canReact: true, custom: [] });
   });
 
+  test('presence for status dots: contacts and people with a DM, from what Telegram pushes; never a stranger in a group', async () => {
+    const n = h.events.length;
+    const soon = Math.floor(Date.now() / 1000) + 300;
+    const presence = () => h.since(n).filter((e): e is Extract<Ev, { t: 'presence' }> => e.t === 'presence');
+    // Carol shares a group only; Alice is a contact with a DM. Carol's comes first, so once Alice's is here, Carol's was read.
+    await h.fake.control({ op: 'status', user: FAKE_IDS.carol, status: { kind: 'online', expires: soon } });
+    await h.fake.control({ op: 'status', user: FAKE_IDS.alice, status: { kind: 'online', expires: soon } });
+    await h.until(() => presence().some((e) => e.who === String(FAKE_IDS.alice)), 'Alice online');
+    expect(presence().find((e) => e.who === String(FAKE_IDS.alice))).toMatchObject({ state: 'online', ts: expect.any(Number) });
+    expect(presence().some((e) => e.who === String(FAKE_IDS.carol))).toBe(false);
+    await h.fake.control({ op: 'status', user: FAKE_IDS.alice, status: { kind: 'recently' } });
+    await h.until(() => presence().some((e) => e.who === String(FAKE_IDS.alice) && e.state === 'offline'), 'Alice offline');
+    // Hidden says nothing; the same again is no news.
+    const m = presence().length;
+    await h.fake.control({ op: 'status', user: FAKE_IDS.bob, status: null });
+    await h.fake.control({ op: 'status', user: FAKE_IDS.alice, status: { kind: 'offline', wasOnline: soon - 600 } });
+    await h.fake.control({ op: 'status', user: FAKE_IDS.bob, status: { kind: 'online', expires: soon } });
+    await h.until(() => presence().some((e) => e.who === String(FAKE_IDS.bob)), 'Bob online');
+    expect(presence().slice(m).map((e) => [e.who, e.state])).toEqual([[String(FAKE_IDS.bob), 'online']]);
+    expect(h.fake.calls.some((c) => /status|presence/i.test(c.method))).toBe(false);
+    // A hub that started over hears it all again.
+    const k = h.events.length;
+    h.adapter.onHubConnect();
+    const again = h.since(k).filter((e): e is Extract<Ev, { t: 'presence' }> => e.t === 'presence');
+    expect(new Map(again.map((e) => [e.who, e.state]))).toEqual(
+      new Map([
+        [String(FAKE_IDS.alice), 'offline'],
+        [String(FAKE_IDS.bob), 'online'],
+      ]),
+    );
+  });
+
   test('markRead, typing (no more than Telegram’s own apps send), history', async () => {
     await h.cmd({ t: 'markRead', conversation: DM_ALICE, upTo: `${DM_ALICE}#3` });
     expect(h.fake.world.read[`user:${FAKE_IDS.alice}`].inbox).toBe(3);

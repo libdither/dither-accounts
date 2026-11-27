@@ -317,7 +317,15 @@ people Telegram names, when each reacted, and its totals), and live changes as `
 
 Events: `message` (live, and `live: false` for the snapshot and history), `delete`, `reaction`, `read` (with Telegram's
 own unread and mention counts), `receipt` (read, in private chats: Telegram says who only there), `typing` (6 s, as
-Telegram's apps), `pin`, `role` (admins given and taken), `identity`, `conversation`, `leave`.
+Telegram's apps), `pin`, `role` (admins given and taken), `presence` (below), `identity`, `conversation`, `leave`.
+
+`presence`, for dither-chat's status dots: online or offline, for contacts and people with a DM only, never a stranger
+met in a group (`src/presence.ts`). From what Telegram sends every client anyway, so nothing is asked for: the
+`status` on the users it hands over, and `updateUserStatus`. Telegram says online until a time and sends offline when
+they leave; one past its time with nothing newer is told offline, as Telegram's apps show it. Recently, last week and
+last month are offline; a hidden status says nothing. Each change is told once a run, and all of it again when the hub
+connects anew (the hub keeps what it was told across its own restarts, but a new one should not wait for a change).
+Someone whose DM appears later is told from the status Telegram gave before; signing out forgets it all.
 
 Commands: `send` (Markdown to entities, replies, into a topic, one file as a photo or document, several as an
 album, a file with `gif` as an animation: `sendGifs`, docs/chat.md "GIFs"), `edit`, `suppressEmbeds` (below), `redact` (deleted for everyone), `react` (one reaction each without Premium, as REACTION_RULES says),

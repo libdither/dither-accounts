@@ -42,6 +42,7 @@ import { Long } from '@mtcute/bun';
 import { type ConnState, type DeskClient, type DesktopKey, floodSeconds, isAuthGone, isRpc, rpcText, type SentCode, type TgBackend, type tl, type UpdateInfo } from './backend.ts';
 import type { DesktopHost } from './desktop.ts';
 import { type OutEntity, toTelegram } from './entities.ts';
+import { PresenceTeller } from './presence.ts';
 import { baseConv, convId, convOwner, emojiUrl, inviteAvatarUrl, joinRequestId, markedId, mediaUrl, msgId, parseAvatarUrl, parseConv, parseCustomKey, parseEmojiUrl, parseInviteAvatarUrl, parseJoinRequestId, parseMediaUrl, parseMsg, type ConvRef, type PeerRef, userId } from './ids.ts';
 import {
   authorOf,
@@ -199,6 +200,20 @@ export class TelegramAdapter {
    * since. `known` once both lists were read; `listed` once the whole list went out; `sent` what the hub was told.
    */
   private contactIds = new Set<number>();
+  /**
+   * Presence of the people it follows, from what Telegram sends anyway (presence.ts): contacts, and people with a DM.
+   * Self is never told.
+   */
+  private presence = new PresenceTeller(
+    (id) => {
+      // Signed out, self is not known: no one is followed.
+      const self = this.self ? Number(this.self.id) : (this.state.self?.id ?? 0);
+      const u = this.users.get(id);
+      if (!self || id === self || u?.bot) return false;
+      return this.contactIds.has(id) || !!(u?.contact || u?.mutualContact) || this.state.dialogs.has(convId(self, { kind: 'user', id }));
+    },
+    (id, state, ts) => this.host.emit({ t: 'presence', who: userId(id), state, ts }),
+  );
   private blockedIds = new Map<number, number | undefined>();
   private contactsSaved = 0;
   private relationsKnown = false;
@@ -253,6 +268,8 @@ export class TelegramAdapter {
     // The list as it stands (kept up to date from Telegram's updates), once it was known whole.
     if (this.requestsListed) this.host.emit({ t: 'requests', requests: [...this.joinRequests.values()] });
     if (this.relationsListed) this.sendRelationList();
+    // A hub (or a manager) that started again has not heard what was told: tell it again.
+    this.presence.retell();
   }
 
   private get ctx(): MapCtx {
@@ -389,6 +406,7 @@ export class TelegramAdapter {
     clearTimeout(this.requestsTimer);
     clearInterval(this.relationsTimer);
     clearTimeout(this.relationsSoonTimer);
+    this.presence.stop();
     await this.saveSession().catch(() => {});
     this.state.flush();
     await this.backend?.close().catch(() => {});
@@ -652,6 +670,7 @@ export class TelegramAdapter {
     clearTimeout(this.relationsSoonTimer);
     this.relationsSoonTimer = undefined;
     this.contactIds = new Set();
+    this.presence.reset();
     this.blockedIds = new Map();
     this.relationsKnown = false;
     this.relationsListed = false;
@@ -1151,6 +1170,7 @@ export class TelegramAdapter {
       }
       const f = identityOfUser(u.min && prev ? prev : u, self);
       if (f) this.sendIdentity(f);
+      if (!u.min) this.presence.note(id, u.status);
       if (id === self && !u.min) this.self = u;
     }
     for (const c of chats) {
@@ -1262,6 +1282,9 @@ export class TelegramAdapter {
       if (!this.state.dialogs.has(f.nativeId)) {
         this.state.dialogs.add(f.nativeId);
         this.state.save();
+        // A new DM: its person is followed now, with the status Telegram gave before the chat was known.
+        const ref = parseConv(f.nativeId);
+        if (ref?.peer.kind === 'user') this.presence.note(ref.peer.id, this.users.get(ref.peer.id)?.status);
       }
     }
     this.host.emit({ t: 'conversation', conversation: f });
@@ -1668,6 +1691,14 @@ export class TelegramAdapter {
       case 'updateUser':
         if (this.state.users.has(Number(upd.userId))) void this.refreshUser(Number(upd.userId));
         return null;
+      case 'updateUserStatus': {
+        const id = Number(upd.userId);
+        // Kept on the user too, so a user re-read for another reason (a new name) says the newest.
+        const u = this.users.get(id);
+        if (u) this.users.set(id, { ...u, status: upd.status });
+        this.presence.note(id, upd.status);
+        return null;
+      }
       case 'updateChat':
       case 'updateChannel': {
         const peer: PeerRef = upd._ === 'updateChat' ? { kind: 'chat', id: Number(upd.chatId) } : { kind: 'channel', id: Number(upd.channelId) };

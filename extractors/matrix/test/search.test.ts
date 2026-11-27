@@ -216,10 +216,10 @@ describe('the adapter', () => {
     await expect(search({ query: { text: '  ' } })).rejects.toThrow(/words/);
   });
 
-  test("history says its page's oldest message", async () => {
+  test("history says its page's oldest message, and where the next page starts", async () => {
     const { adapter, hs } = await startAdapter();
     const r = await adapter.command({ t: 'history', id: 'h', conversation: GROUP, limit: 2 });
     expect(hs.messagesAsked[0]).toMatchObject({ from: 'p0', dir: 'b' });
-    expect(r).toEqual({ count: 2, done: false, oldest: 40 });
+    expect(r).toEqual({ count: 2, done: false, oldest: 40, next: 'p1' });
   });
 });

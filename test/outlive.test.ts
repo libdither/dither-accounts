@@ -4,7 +4,7 @@
  * the choice of launch, the scope launch (a stand-in for systemd-run, and the real one where this machine has a user
  * systemd), and main.ts on SIGTERM: a restart leaves extractors running, a stop stops them.
  */
-import { afterAll, expect, test } from 'bun:test';
+import { afterAll, expect, setDefaultTimeout, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -16,7 +16,14 @@ import chatFakeManifest from '../extractors/chat-fake/manifest.ts';
 import fakeManifest from '../extractors/fake/manifest.ts';
 import { managerHandshake } from '../packages/chat-protocol/src/outlive.ts';
 
+// These tests start real extractor processes, and under load one start can take seconds. A test's limit is longer
+// than the waits inside it, so one that hangs fails saying what it waited for, not with bun's bare 5 s timeout.
+setDefaultTimeout(30_000);
+
 const ROOT = resolve(import.meta.dir, '..');
+// Account ids are machine-wide: a manager will not start an account some live process already runs, from any data
+// directory (acquireLock). This file can run in several checkouts at once, so its ids carry this run's pid.
+const RUN = process.pid.toString(36);
 const MAIN = join(ROOT, 'packages/manager/src/main.ts');
 const dirs: string[] = [];
 const managers: Manager[] = [];
@@ -56,7 +63,8 @@ const tempDir = (name: string) => {
 
 type Opts = Partial<Parameters<typeof createManager>[0]>;
 async function manager(dir: string, o: Opts = {}) {
-  const m = await createManager({ openPage: true, dataDir: dir, port: 0, kinds: kinds(), launch: 'detached', fingerprint: () => 'v1', restartPauseMs: 50, ...o });
+  // Every backend can run here, whatever this machine has (http.ts backendCheck): these tests are the queue's.
+  const m = await createManager({ openPage: true, dataDir: dir, port: 0, kinds: kinds(), launch: 'detached', fingerprint: () => 'v1', restartPauseMs: 50, backendCheck: () => ({ availability: 'ready', why: null }), ...o });
   managers.push(m);
   return m;
 }
@@ -102,22 +110,22 @@ async function started(m: Manager, dir: string, id: string, config: Record<strin
 test('a stopped account ends its extractor and everything it started: its process group, a session of its own, one with no environment (by its sandbox.json)', async () => {
   const dir = tempDir('children');
   const m = await manager(dir);
-  const p = await started(m, dir, 'acc-children-1');
+  const p = await started(m, dir, `acc-children-1-${RUN}`);
   expect(p.children).toHaveLength(3);
   // The third carries no environment: no account id to find it by.
   expect(readFileSync(`/proc/${p.children[2]}/environ`, 'utf8')).toBe('');
   expect(p.children.every((c) => procAlive(c))).toBe(true);
-  await m.sup.stop('acc-children-1');
+  await m.sup.stop(`acc-children-1-${RUN}`);
   await until(() => allGone([p.pid, ...p.children]), 10_000, 'the extractor and its children gone');
   // A crash: what it started goes before the next one starts.
   const q = await (async () => {
-    m.sup.start('acc-children-1');
-    await until(() => online(m, 'acc-children-1'), 15_000, 'online again');
-    return pidsOf(m, 'acc-children-1');
+    m.sup.start(`acc-children-1-${RUN}`);
+    await until(() => online(m, `acc-children-1-${RUN}`), 15_000, 'online again');
+    return pidsOf(m, `acc-children-1-${RUN}`);
   })();
   process.kill(q.pid, 'SIGKILL');
   await until(() => allGone(q.children), 15_000, "the crashed one's children gone");
-  await until(() => online(m, 'acc-children-1'), 20_000, 'started again');
+  await until(() => online(m, `acc-children-1-${RUN}`), 20_000, 'started again');
   await m.stop();
   expect(ofDir(dir)).toEqual([]);
 });
@@ -125,30 +133,30 @@ test('a stopped account ends its extractor and everything it started: its proces
 test('an adopted extractor that never reconnects is started afresh, and the old one and its children end first', async () => {
   const dir = tempDir('stuck');
   const m1 = await manager(dir);
-  const p = await started(m1, dir, 'acc-stuck-1');
+  const p = await started(m1, dir, `acc-stuck-1-${RUN}`);
   await m1.stop({ leaveExtractors: true });
   // A new port: the old extractor keeps knocking on the old one and never connects.
   const m2 = await manager(dir, { adoptConnectMs: 1500 });
-  await until(() => m2.sup.details('acc-stuck-1').adopted, 5000, 'adopted');
+  await until(() => m2.sup.details(`acc-stuck-1-${RUN}`).adopted, 5000, 'adopted');
   await until(() => allGone([p.pid, ...p.children]), 20_000, 'the stuck one and its children gone');
-  await until(() => online(m2, 'acc-stuck-1'), 15_000, 'a fresh one online');
-  expect((await pidsOf(m2, 'acc-stuck-1')).pid).not.toBe(p.pid);
+  await until(() => online(m2, `acc-stuck-1-${RUN}`), 15_000, 'a fresh one online');
+  expect((await pidsOf(m2, `acc-stuck-1-${RUN}`)).pid).not.toBe(p.pid);
   await m2.stop();
 });
 
 test('an adopted extractor that is SIGKILLed is a crash ("killed"): recorded, its children ended, started again', async () => {
   const dir = tempDir('killed');
   const m1 = await manager(dir);
-  const p = await started(m1, dir, 'acc-killed-1');
+  const p = await started(m1, dir, `acc-killed-1-${RUN}`);
   const port = m1.http.server.port!;
   await m1.stop({ leaveExtractors: true });
   // Its end is seen on the next look in /proc: often here, rather than a second's wait out of the test's 5 s.
   const m2 = await manager(dir, { port, errors: true, watchMs: 50 });
-  await until(() => online(m2, 'acc-killed-1'), 15_000, 'adopted and back');
+  await until(() => online(m2, `acc-killed-1-${RUN}`), 15_000, 'adopted and back');
   process.kill(p.pid, 'SIGKILL');
-  await until(() => m2.sup.details('acc-killed-1').lastExit?.signal === 'killed', 10_000, 'its end seen');
+  await until(() => m2.sup.details(`acc-killed-1-${RUN}`).lastExit?.signal === 'killed', 10_000, 'its end seen');
   await until(() => allGone(p.children), 10_000, 'its children gone');
-  await until(() => online(m2, 'acc-killed-1'), 20_000, 'started again');
+  await until(() => online(m2, `acc-killed-1-${RUN}`), 20_000, 'started again');
   m2.errors!.flush();
   const recs = readFileSync(join(dir, 'traces/errors.ndjson'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   expect(recs.some((r) => r.where === 'extractor fake' && r.extra?.signal === 'killed')).toBe(true);
@@ -158,32 +166,32 @@ test('an adopted extractor that is SIGKILLed is a crash ("killed"): recorded, it
 test('an account stopped while staggered restarts wait stays stopped; the others restart; the counts say so', async () => {
   const dir = tempDir('stagger');
   const m1 = await manager(dir);
-  const a = await started(m1, dir, 'acc-stagger-a', {});
-  const b = await started(m1, dir, 'acc-stagger-b', {});
+  const a = await started(m1, dir, `acc-stagger-a-${RUN}`, {});
+  const b = await started(m1, dir, `acc-stagger-b-${RUN}`, {});
   const port = m1.http.server.port!;
   await m1.stop({ leaveExtractors: true });
   // The pause before each restart is held until the test lets it go, so both still wait however slow the start was.
   const m2 = await manager(dir, { port, fingerprint: () => 'v2', restartPauseMs: 600_000 });
-  await until(() => online(m2, 'acc-stagger-a') && online(m2, 'acc-stagger-b'), 15_000, 'both adopted and back');
+  await until(() => online(m2, `acc-stagger-a-${RUN}`) && online(m2, `acc-stagger-b-${RUN}`), 15_000, 'both adopted and back');
   expect(m2.sup.codeRestarts()).toMatchObject({ queued: 2, active: 0, restarted: 0 });
   // Stopped on purpose (the page, an app) while it waits its turn.
-  await m2.sup.stop('acc-stagger-a');
+  await m2.sup.stop(`acc-stagger-a-${RUN}`);
   expect(procAlive(a.pid)).toBe(false);
   // The pauses let go as each comes: a's turn (passed over), then b's.
-  await until(() => (endPauses(m2), online(m2, 'acc-stagger-b') && !m2.sup.details('acc-stagger-b').adopted), 20_000, 'b restarted');
-  expect((await pidsOf(m2, 'acc-stagger-b')).pid).not.toBe(b.pid);
+  await until(() => (endPauses(m2), online(m2, `acc-stagger-b-${RUN}`) && !m2.sup.details(`acc-stagger-b-${RUN}`).adopted), 20_000, 'b restarted');
+  expect((await pidsOf(m2, `acc-stagger-b-${RUN}`)).pid).not.toBe(b.pid);
   // The restarts are over: a was passed over, and nothing is left to start it.
   await until(() => m2.sup.codeRestarts().active === 0, 10_000, 'the restarts over');
-  expect(m2.sup.state('acc-stagger-a').running).toBe(false);
+  expect(m2.sup.state(`acc-stagger-a-${RUN}`).running).toBe(false);
   expect(m2.sup.codeRestarts()).toEqual({ queued: 0, active: 0, restarted: 1, online: 1, crashed: 0 });
   const health = (await (await fetch(`${m2.url}/api/health`)).json()) as any;
   expect(health.codeRestarts).toEqual({ queued: 0, active: 0, restarted: 1, online: 1, crashed: 0 });
   // A restart asked for (the page, an app after a gap) is no crash of the new code.
-  await m2.sup.restart('acc-stagger-b');
-  await until(() => online(m2, 'acc-stagger-b'), 15_000, 'b back after its restart');
+  await m2.sup.restart(`acc-stagger-b-${RUN}`);
+  await until(() => online(m2, `acc-stagger-b-${RUN}`), 15_000, 'b back after its restart');
   expect(m2.sup.codeRestarts().crashed).toBe(0);
   // An exit nobody asked for is.
-  process.kill((await pidsOf(m2, 'acc-stagger-b')).pid, 'SIGKILL');
+  process.kill((await pidsOf(m2, `acc-stagger-b-${RUN}`)).pid, 'SIGKILL');
   await until(() => m2.sup.codeRestarts().crashed === 1, 10_000, 'the crash counted');
   await m2.stop();
 });
@@ -192,19 +200,19 @@ test('a start right after a stop waits for it: the new extractor is the one that
   const dir = tempDir('race');
   // Its shutdown takes a while (a browser closing), so the start comes while the stop is still under way.
   const m = await manager(dir);
-  const p = await started(m, dir, 'acc-race-1', { children: true, slowExit: 1500 });
-  const stopping = m.sup.stop('acc-race-1');
+  const p = await started(m, dir, `acc-race-1-${RUN}`, { children: true, slowExit: 1500 });
+  const stopping = m.sup.stop(`acc-race-1-${RUN}`);
   await Bun.sleep(20);
-  m.sup.start('acc-race-1');
+  m.sup.start(`acc-race-1-${RUN}`);
   await stopping;
   expect(allGone([p.pid, ...p.children])).toBe(true);
-  await until(() => online(m, 'acc-race-1'), 15_000, 'the new one online');
-  const q = await pidsOf(m, 'acc-race-1');
+  await until(() => online(m, `acc-race-1-${RUN}`), 15_000, 'the new one online');
+  const q = await pidsOf(m, `acc-race-1-${RUN}`);
   expect(q.pid).not.toBe(p.pid);
   // Still there a moment later, with what it started, and the manager knows it runs.
   await Bun.sleep(1500);
   expect([q.pid, ...q.children].every((c) => procAlive(c))).toBe(true);
-  expect(m.sup.state('acc-race-1')).toMatchObject({ running: true, online: true });
+  expect(m.sup.state(`acc-race-1-${RUN}`)).toMatchObject({ running: true, online: true });
   await m.stop();
   expect(allGone([q.pid, ...q.children])).toBe(true);
   expect(ofDir(dir)).toEqual([]);
@@ -213,7 +221,7 @@ test('a start right after a stop waits for it: the new extractor is the one that
 test('a stop of the whole manager fits well inside systemd\'s TimeoutStopSec (30 s), even for an extractor slow to go', async () => {
   const dir = tempDir('slowstop');
   const m = await manager(dir, { launch: 'child' });
-  const p = await started(m, dir, 'acc-slowstop-1', { children: true, slowExit: 60_000 });
+  const p = await started(m, dir, `acc-slowstop-1-${RUN}`, { children: true, slowExit: 60_000 });
   const t0 = Date.now();
   await m.stop();
   expect(Date.now() - t0).toBeLessThan(15_000);
@@ -228,7 +236,7 @@ test('an extractor with no manager for DITHER_MANAGER_GONE_EXIT_S ends itself, a
   const port = free.port;
   free.stop(true);
   const p = Bun.spawn(['bun', join(ROOT, 'extractors/fake/src/main.ts')], {
-    env: { ...process.env, DITHER_HUB_URL: `ws://127.0.0.1:${port}/extractor`, DITHER_ACCOUNT_ID: 'acc-gone-1', DITHER_ADAPTER_TOKEN: 'x', DITHER_ACCOUNT_DIR: accDir, DITHER_MANAGER_GONE_EXIT_S: '1', DITHER_EXTRACTOR_LAUNCH: 'detached', DITHER_MANAGER_DATA: dir },
+    env: { ...process.env, DITHER_HUB_URL: `ws://127.0.0.1:${port}/extractor`, DITHER_ACCOUNT_ID: `acc-gone-1-${RUN}`, DITHER_ADAPTER_TOKEN: 'x', DITHER_ACCOUNT_DIR: accDir, DITHER_MANAGER_GONE_EXIT_S: '1', DITHER_EXTRACTOR_LAUNCH: 'detached', DITHER_MANAGER_DATA: dir },
     stdout: 'ignore',
     stderr: 'ignore',
   });
@@ -287,10 +295,10 @@ test('the scope launch goes through systemd-run (a stand-in here) and the extrac
   writeFileSync(bin, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(args)}\nwhile [ "$#" -gt 0 ]; do case "$1" in --*) shift;; *) break;; esac; done\nexec "$@"\n`);
   chmodSync(bin, 0o755);
   const m = await manager(dir, { launch: 'scope', systemdRun: bin });
-  const p = await started(m, dir, 'acc-fakescope-1', {});
+  const p = await started(m, dir, `acc-fakescope-1-${RUN}`, {});
   const argv = readFileSync(args, 'utf8').split('\n');
   expect(argv.slice(0, 4)).toEqual(['--user', '--scope', '--quiet', '--collect']);
-  expect(argv.some((a) => /^--unit=dither-accounts-x-acc-fakescope-1-[a-z0-9]+\.scope$/.test(a))).toBe(true);
+  expect(argv.some((a) => new RegExp(`^--unit=dither-accounts-x-acc-fakescope-1-${RUN}-[a-z0-9]+\\.scope$`).test(a))).toBe(true);
   await m.stop();
   expect(procAlive(p.pid)).toBe(false);
 });
@@ -301,11 +309,11 @@ const systemd = Bun.spawnSync(['systemd-run', '--user', '--scope', '--quiet', '-
 test.skipIf(!systemd)('real systemd: an extractor in its own scope; a stop empties the scope', async () => {
   const dir = tempDir('scope');
   const m = await manager(dir, { launch: 'scope' });
-  const p = await started(m, dir, 'acc-scope-1');
+  const p = await started(m, dir, `acc-scope-1-${RUN}`);
   await until(() => !!cgroupOf(p.pid)?.includes('dither-accounts-x-acc-scope-1-'), 5000, 'its own scope');
   const cg = cgroupOf(p.pid)!;
   expect(cgroupMembers(cg).map((r) => r.pid)).toEqual(expect.arrayContaining([p.pid, ...p.children]));
-  await m.sup.stop('acc-scope-1');
+  await m.sup.stop(`acc-scope-1-${RUN}`);
   expect(allGone([p.pid, ...p.children])).toBe(true);
   expect(cgroupMembers(cg)).toEqual([]);
   await m.stop();
@@ -314,7 +322,7 @@ test.skipIf(!systemd)('real systemd: an extractor in its own scope; a stop empti
 test.skipIf(!systemd)('real systemd: main.ts as a service: a restart leaves its extractors to the next one, a stop stops them', async () => {
   const dir = tempDir('svc');
   const s = new Store(join(dir, 'accounts.sqlite'));
-  insertAccount(s, dir, 'acc-svc-1', { children: true });
+  insertAccount(s, dir, `acc-svc-1-${RUN}`, { children: true });
   s.db.close();
   const free = Bun.serve({ port: 0, fetch: () => new Response('') });
   const port = free.port;
@@ -323,10 +331,10 @@ test.skipIf(!systemd)('real systemd: main.ts as a service: a restart leaves its 
   units.push(unit);
   // Its output to a file: the start line says which launch it chose, and why.
   const out = join(dir, 'manager.out');
-  const run = Bun.spawnSync(['systemd-run', '--user', '--quiet', `--unit=${unit}`, '--collect', `--setenv=PATH=${process.env.PATH}`, `--working-directory=${ROOT}`, `--property=StandardOutput=append:${out}`, `--property=StandardError=append:${out}`, process.execPath, MAIN, '--data', dir, '--port', String(port), '--trace', '0', '--errors', '0'], { stdout: 'pipe', stderr: 'pipe' });
+  const run = Bun.spawnSync(['systemd-run', '--user', '--quiet', `--unit=${unit}`, '--collect', `--setenv=PATH=${process.env.PATH}`, `--working-directory=${ROOT}`, `--property=StandardOutput=append:${out}`, `--property=StandardError=append:${out}`, process.execPath, MAIN, '--data', dir, '--port', String(port), '--trace', '0', '--errors', '0', '--prepare-bins', '0'], { stdout: 'pipe', stderr: 'pipe' });
   expect(run.exitCode).toBe(0);
   const said = () => (existsSync(out) ? readFileSync(out, 'utf8') : '');
-  const adapterLog = join(dir, 'accounts/acc-svc-1/adapter.log');
+  const adapterLog = join(dir, `accounts/acc-svc-1-${RUN}/adapter.log`);
   const logged = () => (existsSync(adapterLog) ? readFileSync(adapterLog, 'utf8') : '');
   const health = async () => {
     try {
@@ -338,7 +346,7 @@ test.skipIf(!systemd)('real systemd: main.ts as a service: a restart leaves its 
   // Bun running the extractor: not systemd-run, which for a moment carries its environment and entry in the service's
   // own control group before its scope exists (CI caught it there once).
   const extractors = () =>
-    procsWithEnv((env) => env.DITHER_ACCOUNT_ID === 'acc-svc-1' && env.DITHER_MANAGER_DATA === dir).filter((r) => {
+    procsWithEnv((env) => env.DITHER_ACCOUNT_ID === `acc-svc-1-${RUN}` && env.DITHER_MANAGER_DATA === dir).filter((r) => {
       const c = readFileSync(`/proc/${r.pid}/cmdline`, 'utf8').split('\0');
       return /(^|\/)bun[^/]*$/.test(c[0] ?? '') && c.slice(1).some((a) => a.endsWith('/src/main.ts'));
     });
@@ -374,21 +382,21 @@ test('main.ts without systemd: SIGTERM leaves a detached launch running, and sto
   for (const launch of ['detached', 'child'] as const) {
     const dir = tempDir(`main-${launch}`);
     const s = new Store(join(dir, 'accounts.sqlite'));
-    insertAccount(s, dir, `acc-main-${launch}`, {});
+    insertAccount(s, dir, `acc-main-${launch}-${RUN}`, {});
     s.db.close();
     const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('DITHER_ACCOUNTS_') && k !== 'INVOCATION_ID'));
-    const p = Bun.spawn(['bun', MAIN, '--data', dir, '--port', '0', '--launch', launch, '--trace', '0', '--errors', '0'], { env: clean, stdout: 'ignore', stderr: 'ignore' });
+    const p = Bun.spawn(['bun', MAIN, '--data', dir, '--port', '0', '--launch', launch, '--trace', '0', '--errors', '0', '--prepare-bins', '0'], { env: clean, stdout: 'ignore', stderr: 'ignore' });
     const extractors = () => ofDir(dir).filter((r) => readFileSync(`/proc/${r.pid}/cmdline`, 'utf8').includes('/src/main.ts'));
     await until(() => extractors().length === 1, 20_000, `${launch}: its extractor`);
     const [x] = extractors();
     // Connected by then, so it can say it holds its events.
-    await until(() => readFileSync(join(dir, `accounts/acc-main-${launch}/adapter.log`), 'utf8').includes('fake extractor up'), 15_000, `${launch}: online`);
+    await until(() => readFileSync(join(dir, `accounts/acc-main-${launch}-${RUN}/adapter.log`), 'utf8').includes('fake extractor up'), 15_000, `${launch}: online`);
     p.kill('SIGTERM');
     await p.exited;
     await Bun.sleep(500);
     expect(procAlive(x!.pid, x!.start)).toBe(launch === 'detached');
     if (launch === 'detached') {
-      expect(JSON.parse(readFileSync(join(dir, 'handover.json'), 'utf8')).holding).toEqual([`acc-main-${launch}`]);
+      expect(JSON.parse(readFileSync(join(dir, 'handover.json'), 'utf8')).holding).toEqual([`acc-main-${launch}-${RUN}`]);
       process.kill(x!.pid, 'SIGTERM');
     }
   }
@@ -399,7 +407,7 @@ test("both links answer a going manager and say on their return whether they hel
   const dir = tempDir('handshake');
   const both = new Map([...kinds(), ['chat-fake', kindOf(chatFakeManifest, join(ROOT, 'extractors/chat-fake'))]]);
   const m1 = await manager(dir, { kinds: both });
-  const ids = ['acc-hs-fake', 'acc-hs-chat'];
+  const ids = [`acc-hs-fake-${RUN}`, `acc-hs-chat-${RUN}`];
   insertAccount(m1.store, dir, ids[0]!);
   insertAccount(m1.store, dir, ids[1]!);
   m1.store.run('UPDATE account SET kind = ? WHERE id = ?', 'chat-fake', ids[1]);
@@ -439,17 +447,17 @@ test("both links answer a going manager and say on their return whether they hel
 test('a Stop asked for while a Restart waits for its stop wins: the account stays stopped', async () => {
   const dir = tempDir('restartstop');
   const m = await manager(dir);
-  const p = await started(m, dir, 'acc-rs-1', { slowExit: 1500 });
-  const restarting = m.sup.restart('acc-rs-1');
+  const p = await started(m, dir, `acc-rs-1-${RUN}`, { slowExit: 1500 });
+  const restarting = m.sup.restart(`acc-rs-1-${RUN}`);
   await Bun.sleep(20);
-  await m.sup.stop('acc-rs-1');
+  await m.sup.stop(`acc-rs-1-${RUN}`);
   await restarting;
   expect(procAlive(p.pid)).toBe(false);
   await Bun.sleep(1000);
-  expect(m.sup.state('acc-rs-1').running).toBe(false);
+  expect(m.sup.state(`acc-rs-1-${RUN}`).running).toBe(false);
   // A Restart of a stopped account starts it.
-  await m.sup.restart('acc-rs-1');
-  await until(() => online(m, 'acc-rs-1'), 15_000, 'started by a restart');
+  await m.sup.restart(`acc-rs-1-${RUN}`);
+  await until(() => online(m, `acc-rs-1-${RUN}`), 15_000, 'started by a restart');
   await m.stop();
 }, 30_000);
 
@@ -457,9 +465,9 @@ test('restarts for changed code: one at a time per kind, different kinds side by
   const dir = tempDir('perkind');
   const two = new Map([...kinds(), ['fake2', kindOf({ ...fakeManifest, kind: 'fake2' }, join(ROOT, 'extractors/fake'))]]);
   const m1 = await manager(dir, { kinds: two });
-  const ids = ['acc-pk-a1', 'acc-pk-a2', 'acc-pk-b1'];
+  const ids = [`acc-pk-a1-${RUN}`, `acc-pk-a2-${RUN}`, `acc-pk-b1-${RUN}`];
   for (const id of ids) insertAccount(m1.store, dir, id, {});
-  m1.store.run('UPDATE account SET kind = ? WHERE id = ?', 'fake2', 'acc-pk-b1');
+  m1.store.run('UPDATE account SET kind = ? WHERE id = ?', 'fake2', `acc-pk-b1-${RUN}`);
   for (const id of ids) m1.sup.start(id);
   await until(() => ids.every((id) => online(m1, id)), 15_000, 'all online');
   const port = m1.http.server.port!;
@@ -478,7 +486,7 @@ test('restarts for changed code: one at a time per kind, different kinds side by
   await until(() => ids.every((id) => online(m2, id)), 15_000, 'all adopted and back');
   let bothFakeDown = false;
   const watch = setInterval(() => {
-    if (!online(m2, 'acc-pk-a1') && !online(m2, 'acc-pk-a2')) bothFakeDown = true;
+    if (!online(m2, `acc-pk-a1-${RUN}`) && !online(m2, `acc-pk-a2-${RUN}`)) bothFakeDown = true;
   }, 5);
   try {
     await until(() => (endPauses(m2), ids.every((id) => online(m2, id) && !m2.sup.details(id).adopted)), 30_000, 'all restarted');
@@ -495,34 +503,132 @@ test('restarts for changed code: one at a time per kind, different kinds side by
 test("a restarted extractor that does not come online on its new code stops its kind's restarts; the others keep their old code", async () => {
   const dir = tempDir('stuckroll');
   const m1 = await manager(dir);
-  const a = await started(m1, dir, 'acc-sr-a', { hangOn: 'v2' });
-  const b = await started(m1, dir, 'acc-sr-b', { hangOn: 'v2' });
+  const a = await started(m1, dir, `acc-sr-a-${RUN}`, { hangOn: 'v2' });
+  const b = await started(m1, dir, `acc-sr-b-${RUN}`, { hangOn: 'v2' });
   const port = m1.http.server.port!;
   await m1.stop({ leaveExtractors: true });
   const m2 = await manager(dir, { port, fingerprint: () => 'v2', restartPauseMs: 1000, restartOnlineMs: 1500 });
-  expect(m2.sup.details('acc-sr-a').adopted && m2.sup.details('acc-sr-b').adopted).toBe(true);
+  expect(m2.sup.details(`acc-sr-a-${RUN}`).adopted && m2.sup.details(`acc-sr-b-${RUN}`).adopted).toBe(true);
   await until(() => { const c = m2.sup.codeRestarts(); return c.queued === 0 && c.active === 0 && c.restarted === 1; }, 15_000, 'the restarts stopped');
   expect(m2.sup.codeRestarts()).toEqual({ queued: 0, active: 0, restarted: 1, online: 0, crashed: 0 });
   // One was restarted and hangs; the other still runs its old code, adopted.
   const kept = [a, b].filter((p) => procAlive(p.pid));
   expect(kept).toHaveLength(1);
-  expect(m2.sup.details(kept[0] === a ? 'acc-sr-a' : 'acc-sr-b')).toMatchObject({ adopted: true, pid: kept[0]!.pid });
+  expect(m2.sup.details(kept[0] === a ? `acc-sr-a-${RUN}` : `acc-sr-b-${RUN}`)).toMatchObject({ adopted: true, pid: kept[0]!.pid });
   await m2.stop();
 }, 30_000);
 
 test("calls to an extractor that goes away fail at once ('offline'), not after their timeout", async () => {
   const dir = tempDir('detach');
   const m = await manager(dir);
-  await started(m, dir, 'acc-detach-1', { slowExit: 1000 });
+  await started(m, dir, `acc-detach-1-${RUN}`, { slowExit: 1000 });
   const t0 = Date.now();
-  const slow = m.sup.command('acc-detach-1', { t: 'slow', ms: 20_000 }).catch((e) => e);
+  const slow = m.sup.command(`acc-detach-1-${RUN}`, { t: 'slow', ms: 20_000 }).catch((e) => e);
   await Bun.sleep(50);
-  const stopping = m.sup.stop('acc-detach-1');
-  await until(() => !!(m.sup as any).running.get('acc-detach-1')?.stopping, 2000, 'its stop under way');
+  const stopping = m.sup.stop(`acc-detach-1-${RUN}`);
+  await until(() => !!(m.sup as any).running.get(`acc-detach-1-${RUN}`)?.stopping, 2000, 'its stop under way');
   // Asked while it stops: it would never answer.
-  expect(((await m.sup.command('acc-detach-1', { t: 'echo', text: 'x' }).catch((e) => e)) as { code?: string }).code).toBe('offline');
+  expect(((await m.sup.command(`acc-detach-1-${RUN}`, { t: 'echo', text: 'x' }).catch((e) => e)) as { code?: string }).code).toBe('offline');
   expect(((await slow) as { code?: string }).code).toBe('offline');
   expect(Date.now() - t0).toBeLessThan(10_000);
   await stopping;
+  await m.stop();
+}, 30_000);
+
+/** Each restart of the roll as it begins, counted where it is recorded (rollingNow), not sampled. */
+function countRestarts(m: Manager) {
+  const seen = { max: 0, started: [] as string[] };
+  const rollingNow = (m.sup as any).rollingNow as Set<string>;
+  const add = rollingNow.add.bind(rollingNow);
+  rollingNow.add = (id: string) => {
+    add(id);
+    seen.started.push(id);
+    seen.max = Math.max(seen.max, rollingNow.size);
+    return rollingNow;
+  };
+  return seen;
+}
+/** Whether two of these accounts were ever down at once, from now until stop(). */
+function watchDown(m: Manager, ids: string[]) {
+  const w = { two: false, stop: () => clearInterval(t) };
+  const t = setInterval(() => {
+    if (ids.filter((id) => !online(m, id)).length > 1) w.two = true;
+  }, 5);
+  return w;
+}
+const backendNow = (m: Manager, id: string) => (m.sup as any).running.get(id)?.backend as string | undefined;
+const putDefault = (m: Manager, v: string | null) => fetch(`${m.url}/api/display`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ default: v }) });
+
+test('two new defaults in quick succession share one queue per kind: never two of a kind restarting at once', async () => {
+  const dir = tempDir('twodefaults');
+  const m = await manager(dir, { restartPauseMs: 600_000 });
+  const ids = [1, 2, 3].map((n) => `acc-td-${n}-${RUN}`);
+  for (const id of ids) insertAccount(m.store, dir, id, {});
+  for (const id of ids) m.sup.start(id);
+  await until(() => ids.every((id) => online(m, id)), 15_000, 'all online');
+  const seen = countRestarts(m);
+  const down = watchDown(m, ids);
+  expect((await putDefault(m, 'tigervnc')).status).toBe(200);
+  expect((await putDefault(m, 'wayland')).status).toBe(200);
+  // The pauses between them are let go as they come; each account ends on the last default.
+  await until(() => (endPauses(m), ids.every((id) => online(m, id) && backendNow(m, id) === 'wayland')), 30_000, 'all on wayland');
+  await until(() => (m.sup as any).rollingKinds.size === 0, 5000, 'the roll over');
+  down.stop();
+  expect(down.two).toBe(false);
+  expect(seen.max).toBe(1);
+  // One restart each, onto the default it finds by its turn (the first, asked for, may have gone to tigervnc first).
+  expect(seen.started.filter((id) => id !== ids[0])).toEqual(ids.slice(1));
+  // A screen move is not a deploy's restart for changed code.
+  expect(m.sup.codeRestarts().restarted).toBe(0);
+  await m.stop();
+}, 60_000);
+
+test('a new default during a deploy roll joins its queue: never two of a kind restarting at once', async () => {
+  const dir = tempDir('rollanddefault');
+  const m1 = await manager(dir);
+  const ids = [1, 2, 3].map((n) => `acc-rd-${n}-${RUN}`);
+  for (const id of ids) insertAccount(m1.store, dir, id, {});
+  for (const id of ids) m1.sup.start(id);
+  await until(() => ids.every((id) => online(m1, id)), 15_000, 'all online');
+  const port = m1.http.server.port!;
+  await m1.stop({ leaveExtractors: true });
+  // Changed code: every one is queued, and held at its first pause until let go.
+  const m2 = await manager(dir, { port, fingerprint: () => 'v2', restartPauseMs: 600_000 });
+  const seen = countRestarts(m2);
+  await until(() => ids.every((id) => online(m2, id)) && m2.sup.codeRestarts().queued === 3, 15_000, 'all adopted and queued');
+  const down = watchDown(m2, ids);
+  expect((await putDefault(m2, 'tigervnc')).status).toBe(200);
+  await until(() => (endPauses(m2), ids.every((id) => online(m2, id) && backendNow(m2, id) === 'tigervnc' && !m2.sup.details(id).adopted)), 30_000, 'all restarted on tigervnc');
+  await until(() => (m2.sup as any).rollingKinds.size === 0, 5000, 'the roll over');
+  down.stop();
+  expect(down.two).toBe(false);
+  expect(seen.max).toBe(1);
+  // Each restarted once: its new code and its new screen in the same restart.
+  expect([...seen.started].sort()).toEqual([...ids].sort());
+  await m2.stop();
+}, 60_000);
+
+test("a moved account that comes back without its live view stops its kind's moves; the others stay on their screen", async () => {
+  const dir = tempDir('noscreen');
+  const m = await manager(dir, { restartPauseMs: 50, restartOnlineMs: 1500 });
+  const ids = [1, 2].map((n) => `acc-ns-${n}-${RUN}`);
+  // A pretend live view (the fake offers one at this path), none on wayland: as a screen that cannot start there.
+  const config = { vncSocket: join(dir, 'pretend-vnc.sock'), noLiveViewOn: 'wayland' };
+  for (const id of ids) insertAccount(m.store, dir, id, config);
+  for (const id of ids) m.sup.start(id);
+  await until(() => ids.every((id) => online(m, id) && !!m.router.liveView(id)), 15_000, 'both online with a live view');
+  const pids = Object.fromEntries(ids.map((id) => [id, m.sup.details(id).pid]));
+  const seen = countRestarts(m);
+  expect((await putDefault(m, 'wayland')).status).toBe(200);
+  await until(() => seen.started.length === 1 && (m.sup as any).rollingKinds.size === 0, 15_000, 'the moves stopped');
+  const [moved] = seen.started;
+  const other = ids.find((id) => id !== moved)!;
+  // The moved one is back online on wayland, with no live view; the other was not moved: same process, on x11.
+  expect(m.sup.details(moved!)).toMatchObject({ displayBackend: 'wayland' });
+  expect(online(m, moved!) && !m.router.liveView(moved!)).toBe(true);
+  expect(m.sup.details(other)).toMatchObject({ pid: pids[other], displayBackend: 'x11' });
+  expect(!!m.router.liveView(other)).toBe(true);
+  const log = readFileSync(join(dir, 'accounts', moved!, 'adapter.log'), 'utf8');
+  expect(log).toMatch(/not back with its screen on wayland in 2 s: the 1 other fake account\(s\) waiting keep running on their screen/);
   await m.stop();
 }, 30_000);

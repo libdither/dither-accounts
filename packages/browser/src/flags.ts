@@ -10,6 +10,13 @@
  * - A spare renderer, started ahead of the next navigation to a new site: about 8 MiB, idle nearly all the time. A
  *   navigation now starts its renderer when it needs one.
  * Site isolation stays on: each site still gets its own renderer.
+ *
+ * Measured the same way and left out (each changes nothing a page can read, WebGL included):
+ * - --in-process-gpu: the GPU process (about 34 MiB) goes, but the browser process grows by about 25 MiB and the
+ *   zygotes by 7: nothing saved, and a GPU crash would take the whole browser down with it.
+ * - --process-per-site: tabs of one site share a renderer, about 12 MiB less for each tab past the first. Only Google
+ *   accounts keep two (Gmail and Calendar), and on one renderer they share its main thread, so a stalled Gmail page
+ *   would stall Calendar (docs/google.md "No cross-stalling") and one crash would close both.
  */
 export const MEMORY_DISABLED_FEATURES = [
   'SpareRendererForSitePerProcess',
@@ -43,4 +50,16 @@ export function mergeFeatureFlags(flags: string[]): string[] {
     for (const f of flag.slice(sw.length).split(',')) if (f && !list.includes(f)) list.push(f);
   }
   return out.map((f) => (features.has(f) ? f + features.get(f)!.join(',') : f));
+}
+
+/**
+ * Chromium's GPU flags, from whether its screen renders on the machine's GPU (Screen.chromiumFlags). Xvfb has no GL of
+ * its own, so left alone Chromium runs with WebGL off, which no ordinary desktop browser does: on x11 it is pointed at
+ * the GPU directly (a render node it can open), or at its software renderer if there is none. On Wayland the same
+ * follows the compositor's renderer: gles2 on that render node, and Chromium's WebGL reports the same Vulkan renderer
+ * as on X; a sway that fell back to pixman (wayland.ts start) has Chromium draw in software too.
+ */
+export function gpuFlags(onGpu: boolean): string[] {
+  if (onGpu) return ['--ignore-gpu-blocklist', '--use-angle=vulkan', '--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan'];
+  return ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
 }

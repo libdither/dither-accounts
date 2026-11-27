@@ -40,6 +40,21 @@ object Keys {
      */
     fun approval(c: Context, alias: String) = credential(c, alias)
 
+    /**
+     * The quick-approval key: like [approval], but one fingerprint or PIN unlocks it for [QUICK_KEY_WINDOW_S] seconds
+     * (Keystore auth tokens don't survive a reboot, so in practice until the phone restarts). It still works only while
+     * the phone is unlocked. The shorter window the user picks ([QuickWindow]) is kept by the app on top of this.
+     */
+    fun quickApproval(c: Context, alias: String) = generate(c, alias) {
+        it.setUserAuthenticationRequired(true)
+            .setUserAuthenticationParameters(QUICK_KEY_WINDOW_S, KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL)
+            .setUnlockedDeviceRequired(true)
+            .setInvalidatedByBiometricEnrollment(false)
+    }
+
+    /** 30 days: longer than a phone usually stays up, and far inside what every Keystore takes for an auth timeout. */
+    const val QUICK_KEY_WINDOW_S = 30 * 86_400
+
     private fun generate(c: Context, alias: String, extra: (KeyGenParameterSpec.Builder) -> Unit) {
         fun make(strongBox: Boolean) {
             val b = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN)

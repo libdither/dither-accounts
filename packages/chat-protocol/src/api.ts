@@ -32,7 +32,7 @@ import type { CalendarLinkView, CalendarNotifyRef, CalendarPlanView } from './ca
 import type { AccountSelfView } from './self.ts';
 import type { ContactCardView, MissingAttachmentFact, QuoteView, SendFailureView, StoryReplyView } from './extra.ts';
 import type { ForumView, ThreadView } from './threads.ts';
-import type { FeedItem, PostFact } from './feed.ts';
+import type { EventRsvp, FeedItem, PostFact } from './feed.ts';
 import type { NoticesBoot } from './notices.ts';
 
 export interface AccountView {
@@ -601,6 +601,8 @@ export interface MessageView {
   gone?: { how: 'deleted' | 'disappeared'; at: number; kept: boolean };
   /** Earlier versions the hub kept: GET /api/messages/:id/history. */
   edits?: number;
+  /** An event host's announcement to every guest (extra.ts blast; docs/events.md "Conversations"). */
+  blast?: true;
   /** Other things that happened to it the hub kept: reactions taken back, pins (docs/history.md). */
   events?: number;
   /** Pinned, as the last pin or unpin the hub saw says. */
@@ -644,8 +646,62 @@ export interface MessageView {
   post?: PostFact;
 }
 
-/** A post with the hub message it was logged as (docs/feed.md "Threads"). */
-export type PostView = PostFact & { messageId: string | null };
+/**
+ * A post with the hub message it was logged as (docs/feed.md "Threads"). An event's (docs/events.md) `event.hosts` and
+ * `event.guests` are hub identity ids, the guests the people you know first; on a card the guests are only the first
+ * few (EVENT_CARD_GUESTS), `guestsMore` saying how many more the site showed.
+ */
+export type PostView = PostFact & { messageId: string | null; eventView?: EventPostView };
+
+/** What the hub adds to an event post (docs/events.md "The event card"). */
+export interface EventPostView {
+  /** Hosts and guests who belong to someone you have a direct chat or a group with (not an event's own chat). */
+  known: string[];
+  /** Guests the site showed beyond those in `event.guests` here (a card's trimmed row). */
+  guestsMore: number;
+  /** The event's conversation on the hub, when it holds one (event.conversation). */
+  conversationId: string | null;
+  /** Your account it came through, which an RSVP is sent as. */
+  accountId: string | null;
+}
+
+/** Guests a card names; the event's page names all the site showed. */
+export const EVENT_CARD_GUESTS = 12;
+
+/**
+ * GET /api/events/:network/:event: one event as the hub holds it (logged from a timeline), every guest the site showed,
+ * hosts and guests as identities. POST /api/events/:network/:event/rsvp { account, status, note? } sends an RSVP
+ * (EventRsvpArgs) as that account and answers this again.
+ */
+export interface EventPageView {
+  network: Network;
+  event: string;
+  post: PostView;
+  identities: IdentityView[];
+  /** The account can send an RSVP from here (connected, an event site's account). */
+  canRsvp: boolean;
+}
+
+/** An event someone was seen at (docs/events.md "People"), for their profile's Events. */
+export interface PersonEventView {
+  network: Network;
+  event: string;
+  identityId: string;
+  /** 'host': they host it; 'guest': on the guest list the site showed; 'self': you, by your own RSVP. */
+  role: 'host' | 'guest';
+  /** Their RSVP when the site said it (yours, always). */
+  rsvp: EventRsvp | null;
+  title: string | null;
+  start: number | null;
+  timeZone?: string;
+  url: string | null;
+  place: string | null;
+  /** The event post's message, which opens it. */
+  messageId: string | null;
+  /** First and last seen there. */
+  firstAt: number;
+  seenAt: number;
+}
 
 /**
  * GET /api/posts/:network/:post/thread: a post's thread (PostThread in hub ids), each post logged as a message as it
@@ -869,6 +925,8 @@ export interface ProfileView {
    * there are. Only when they have an email identity; `withList` opens all of it.
    */
   mail?: { threads: MailThreadView[]; total: number };
+  /** Events they were seen at (docs/events.md "People"): hosting first, then the newest. */
+  events?: PersonEventView[];
 }
 
 /**

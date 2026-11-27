@@ -2,7 +2,7 @@
  * Chat accounts moving in from dither-chat: the import endpoint and tool (in place, never twice, never while a process
  * runs the account), forgetting an account (the per-account rollback), and the chat interface's types.
  */
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,6 +12,16 @@ import { chat } from '@dither-accounts/interfaces';
 import { createManager, type Manager } from '@dither-accounts/manager';
 import { CLI_HEADER, CLI_TOKEN_FILE } from '../packages/manager/src/auth.ts';
 import { accountProcesses } from '../packages/manager/src/supervisor.ts';
+
+// These tests start real extractor processes, and under load one start can take seconds. A test's limit is longer
+// than the waits inside it, so one that hangs fails saying what it waited for, not with bun's bare 5 s timeout.
+setDefaultTimeout(30_000);
+
+// Account ids are machine-wide: a manager will not start an account some live process already runs, from any data
+// directory (acquireLock). This file can run in several checkouts at once, so its ids carry this run's pid.
+const RUN = process.pid.toString(36);
+const A = `acc_fakeChatA${RUN}`;
+const B = `acc_fakeChatB${RUN}`;
 
 let m: Manager;
 let dir: string;
@@ -46,8 +56,8 @@ function hubData(): string {
     db.query('INSERT INTO account VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, 'matrix', `label ${id}`, '#fff', adapter, '{"x":1}', 'tok', enabled, demo, 0, 0);
     mkdirSync(join(d, 'accounts', id), { recursive: true });
   };
-  add('acc_fakeChatA001', 'chat-fake', 1, 0);
-  add('acc_fakeChatB002', 'chat-fake', 0, 0);
+  add(A, 'chat-fake', 1, 0);
+  add(B, 'chat-fake', 0, 0);
   add('acc_demoAccnt003', 'demo', 1, 1);
   db.close();
   return d;
@@ -67,28 +77,28 @@ test('import-dither-chat: in place, enabled as it was, demo refused, a second ti
   const hub = hubData();
   const run = (...args: string[]) => cli('import-dither-chat', '--hub-data', hub, '--url', m.url, ...args);
   const dry = await run('--all', '--dry-run');
-  expect(dry.out).toContain('would import acc_fakeChatA001');
+  expect(dry.out).toContain(`would import ${A}`);
   expect(dry.out).toContain('skip   acc_demoAccnt003  demo label acc_demoAccnt003: a demo account');
   expect(m.store.accounts().filter((a) => !m.kinds.get(a.kind)?.builtin)).toEqual([]);
 
   const r = await run('--all');
   expect(r.exitCode).toBe(0);
-  const a = m.store.account('acc_fakeChatA001')!;
-  expect(a).toMatchObject({ kind: 'chat-fake', label: 'label acc_fakeChatA001', config: '{"x":1}', enabled: 1, dir: join(hub, 'accounts', 'acc_fakeChatA001'), created_by: 'import' });
+  const a = m.store.account(A)!;
+  expect(a).toMatchObject({ kind: 'chat-fake', label: `label ${A}`, config: '{"x":1}', enabled: 1, dir: join(hub, 'accounts', A), created_by: 'import' });
   expect(a.token).not.toBe('tok');
-  expect(m.store.account('acc_fakeChatB002')!.enabled).toBe(0);
+  expect(m.store.account(B)!.enabled).toBe(0);
   expect(m.store.account('acc_demoAccnt003')).toBeNull();
-  await until(() => m.sup.state('acc_fakeChatA001').online, 10_000, 'the imported account online');
+  await until(() => m.sup.state(A).online, 10_000, 'the imported account online');
   // The extractor runs on the hub's directory, and holds its lock there.
-  expect(JSON.parse(readFileSync(join(hub, 'accounts', 'acc_fakeChatA001', 'extractor.lock'), 'utf8')).owner).toBe('dither-accounts');
+  expect(JSON.parse(readFileSync(join(hub, 'accounts', A, 'extractor.lock'), 'utf8')).owner).toBe('dither-accounts');
 
-  const again = await run('--accounts', 'acc_fakeChatA001');
+  const again = await run('--accounts', A);
   expect(again.exitCode).toBe(1);
   expect(again.out).toContain('already in the manager');
 }, 20_000);
 
 test('the scan finds the process running an account; import refuses it', async () => {
-  const pids = accountProcesses('acc_fakeChatA001');
+  const pids = accountProcesses(A);
   expect(pids.length).toBe(1);
   // Pretend the hub still runs B: a process with its id in the environment, running an adapter's main.ts.
   const fake = join(dir, 'src');
@@ -115,23 +125,23 @@ test('import and forget take the CLI token from this machine, never a browser, a
   // Any other process here: no token, or a wrong one.
   for (const h of [{}, { [CLI_HEADER]: 'nope' }] as Record<string, string>[]) {
     expect((await post('/api/accounts/import', { accounts: [] }, h)).status).toBe(401);
-    expect((await post('/api/accounts/forget', { id: 'acc_fakeChatA001' }, h)).status).toBe(401);
+    expect((await post('/api/accounts/forget', { id: A }, h)).status).toBe(401);
   }
-  expect(m.store.account('acc_fakeChatA001')).not.toBeNull();
+  expect(m.store.account(A)).not.toBeNull();
   expect((await post('/api/accounts/import', { accounts: [] })).status).toBe(200);
   expect((await post('/api/accounts/import', { accounts: [{ id: 'acc_nowhere0001', kind: 'chat-fake', label: 'x', dir: '/nonexistent/x' }] })).status).toBe(400);
   expect((await post('/api/accounts/import', { accounts: [{ id: 'acc_nowhere0001', kind: 'nope', label: 'x', dir: dir }] })).status).toBe(400);
 });
 
 test('forget: the extractor stops, the entry goes, the directory stays', async () => {
-  const d = m.store.account('acc_fakeChatA001')!.dir;
-  const r = await (await post('/api/accounts/forget', { id: 'acc_fakeChatA001' })).json();
-  expect(r).toEqual({ forgotten: 'acc_fakeChatA001', dir: d });
-  expect(m.store.account('acc_fakeChatA001')).toBeNull();
-  expect(m.sup.state('acc_fakeChatA001').running).toBe(false);
+  const d = m.store.account(A)!.dir;
+  const r = await (await post('/api/accounts/forget', { id: A })).json();
+  expect(r).toEqual({ forgotten: A, dir: d });
+  expect(m.store.account(A)).toBeNull();
+  expect(m.sup.state(A).running).toBe(false);
   expect(existsSync(d)).toBe(true);
   expect(existsSync(join(d, 'extractor.lock'))).toBe(false);
-  await until(() => accountProcesses('acc_fakeChatA001').length === 0, 5000, 'the extractor gone');
+  await until(() => accountProcesses(A).length === 0, 5000, 'the extractor gone');
 });
 
 test('the chat interface types calls from the protocol', () => {

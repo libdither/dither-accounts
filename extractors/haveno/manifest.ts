@@ -9,6 +9,7 @@ export default {
   name: 'Haveno',
   interfaces: ['exchange'],
   entry: 'src/main.ts',
+  screen: true,
   add: {
     blurb:
       'A Haveno node (Monero peer-to-peer exchange) that already runs on this machine, as a system service: its balances, offers, trades ' +

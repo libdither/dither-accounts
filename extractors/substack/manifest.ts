@@ -10,6 +10,7 @@ export default {
   name: 'Substack',
   interfaces: ['chat'],
   entry: 'src/main.ts',
+  screen: true,
   add: {
     blurb: "Runs substack.com in a sandboxed browser on this machine and reads your Substack inbox, Notes and activity from inside it; dither-chat's Feed page reads and answers through it (likes, restacks, comments, Notes). You sign in to Substack once in the live view.",
     next: 'Sign in to Substack in the live view (the emailed link or code, or your password). It goes online once you are signed in.',

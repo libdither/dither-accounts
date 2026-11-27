@@ -37,7 +37,12 @@ const until = async <T>(f: () => T | undefined | null | false | Promise<T | unde
     if (v) return v;
     await Bun.sleep(50);
   }
-  throw new Error(`timed out waiting for ${what}`);
+  // What the account's extractor said last, so a timeout on another machine says why.
+  let said = '';
+  try {
+    if (id) said = `\n${readFileSync(join(accDir(id), 'adapter.log'), 'utf8').split('\n').slice(-40).join('\n')}`;
+  } catch {}
+  throw new Error(`timed out waiting for ${what}${said}`);
 };
 const api = async <T = any>(path: string, body?: unknown): Promise<T> => (await fetch(m.url + path, { method: body === undefined ? 'GET' : 'POST', body: body === undefined ? undefined : JSON.stringify(body) })).json() as Promise<T>;
 const account = async (id: string) => (await api<{ accounts: AccountInfo[] }>('/api/state')).accounts.find((a) => a.id === id);

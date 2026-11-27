@@ -11,19 +11,15 @@ import { join } from 'node:path';
 import { AccountsClient, register } from '@dither-accounts/client';
 import { chat } from '@dither-accounts/interfaces';
 import { createManager, kindOf, type Manager } from '@dither-accounts/manager';
-import { markerName, resolveBins } from '../packages/browser/src/index.ts';
+import { markerName } from '../packages/browser/src/index.ts';
 import { inetSockets, rfbBanner, x11vncs } from '../packages/browser/test/inet.ts';
 import { pageMarkerKey } from '../packages/manager/src/supervisor.ts';
 import { ALICE, BOB, CAROL, DAVE, DIRECT, ERIN, type FakeX, GROUP, LEGACY, PIXEL, REQUEST, SELF, startFakeX } from './fake-x.ts';
 import { ANN, CARA, DEV, EMI, FINN, TRANSLATIONS } from './fake-x-feed.ts';
+import { browserBins } from './needs.ts';
 
 const ROOT = join(import.meta.dir, '..');
-let bins: ReturnType<typeof resolveBins> | null = null;
-try {
-  bins = resolveBins(() => {});
-} catch (e) {
-  console.warn(`x-browser: skipped, ${(e as Error).message}`);
-}
+const bins = browserBins('x-browser');
 const it = test.skipIf(!bins);
 
 let fake: FakeX;
@@ -471,23 +467,20 @@ it(
 );
 
 it(
-  'likes: your own Likes tab newest like first, page by page, through the Posts tab\'s factory; when each was liked from its sort index; video lengths; ads and gone posts left out',
+  "likes: your own Likes tab newest like first, page by page, through the Posts tab's factory; video lengths; no like time; ads and gone posts left out",
   async () => {
     const l = fake.feed.likes;
     const asked = () => fake.calls.filter((c) => c.op === 'graphql' && c.name === 'Likes');
     const one = await call('likes', { count: 50 });
     expect(one.items.map((i: any) => i.post.id)).toEqual([l.song.rest_id, l.talk.rest_id, l.pic.rest_id]);
-    expect(one.items.map((i: any) => i.likedAt)).toEqual([l.liked.song, l.liked.talk, l.liked.pic]);
+    expect(one.items.some((i: any) => 'likedAt' in i)).toBe(false);
     expect(one.items[0].post).toMatchObject({ author: CARA.id, text: 'new single out today', media: [{ kind: 'video', width: 1920, height: 1080, durationMs: 214_000 }] });
     expect(one.items[1].post.media).toEqual([expect.objectContaining({ kind: 'video', durationMs: 2_700_000 })]);
     expect(one.items[2].post.media[0].durationMs).toBeUndefined();
     expect(one.more).toBe(l.cursors.page2);
     expect(one.top).toBe(l.cursors.top);
     const two = await call('likes', { cursor: one.more });
-    expect(two.items.map((i: any) => [i.post.id, i.likedAt ?? null])).toEqual([
-      [l.old.rest_id, l.liked.old],
-      [l.odd.rest_id, null],
-    ]);
+    expect(two.items.map((i: any) => i.post.id)).toEqual([l.old.rest_id, l.odd.rest_id]);
     expect(await call('likes', { cursor: two.more })).toEqual({ items: [], more: null, top: l.cursors.top });
     // Asked for this account's own likes, the count given (at most 100), as the Likes tab asks.
     expect(asked().map((c) => [c.variables!.userId, c.variables!.count, c.variables!.cursor ?? null])).toEqual([
@@ -497,7 +490,7 @@ it(
     ]);
     expect(asked()[0]!.variables).toMatchObject({ includePromotedContent: false });
     for (const p of [CARA, DEV, EMI, FINN]) expect(evs(acc).some((e) => e.t === 'identity' && e.identity.nativeId === p.id)).toBe(true);
-    expect((await call('action', { action: 'diagnose' })).extractor.feed.dropped).toMatchObject({ 'likes.promoted': 1, 'likes.tombstone': 1, 'likes.no-like-time': 1 });
+    expect((await call('action', { action: 'diagnose' })).extractor.feed.dropped).toMatchObject({ 'likes.promoted': 1, 'likes.tombstone': 1 });
     await expect(call('likes', { cursor: '' })).rejects.toThrow('not an X cursor');
     expect(asked().length).toBe(3);
   },
@@ -721,6 +714,12 @@ it(
     await until(() => lastMessage(acc, 'm1'), 10_000, 'the oldest message');
     expect(lastMessage(acc, 'm1')).toMatchObject({ live: false, message: { body: 'legacy line 1', author: ALICE.id } });
     expect(fake.calls.filter((c) => c.op === 'read').length).toBe(1);
+    // The page's oldest message, so the hub can mark the stretch whole; asked before a time, only what is older.
+    const first = lastMessage(acc, 'm1').message.ts;
+    expect(r.oldest).toBe(first);
+    const second = fake.msgs.filter((x) => x.conv === LEGACY)[1]!;
+    const before = await call('history', { conversation: LEGACY, limit: 40, beforeTs: lastMessage(acc, second.id).message.ts });
+    expect(before).toMatchObject({ count: 1, done: true, oldest: first });
   },
   120_000,
 );

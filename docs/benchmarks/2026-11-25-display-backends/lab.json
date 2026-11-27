@@ -1,0 +1,820 @@
+{
+ "at": "2026-11-26T00:51:37.915Z",
+ "backends": [
+  "tigervnc",
+  "wayland",
+  "wayland-tigervnc"
+ ],
+ "reps": 1,
+ "runs": [
+  {
+   "rep": 0,
+   "account": "lab-1",
+   "kind": "proton",
+   "label": "Lab Proton A",
+   "backend": "tigervnc",
+   "load": 8.03,
+   "onlineMs": 3662.079229,
+   "usableMs": 10647.777205,
+   "drawnMs": 7100.717578,
+   "settledMs": 10647.777205,
+   "colours": 422,
+   "idle": {
+    "cpu": 3.6933235443117063,
+    "screenCpu": 0,
+    "cpuByName": {
+     "bun": 0.2994586657550032,
+     "Xvnc": 0,
+     "chromium": 3.3938648785567027
+    },
+    "pssMB": 643.9541015625,
+    "rssMB": 1164.94140625,
+    "ussMB": 549.046875,
+    "screenPssMB": 24.8203125,
+    "screenUssMB": 23.7421875
+   },
+   "interact": {
+    "firstMs": 251.46108700000332,
+    "fps": 22.24728130588972,
+    "updatesPerS": 35.4119569410263,
+    "bytesPerS": 411520.82083543,
+    "cpu": 60.68020445449451,
+    "cpuByName": {
+     "bun": 0.3085434124804805,
+     "Xvnc": 6.17086824960961,
+     "chromium": 54.20079279240442
+    },
+    "encodings": {
+     "21": 2064,
+     "vmware-cursor": 21,
+     "last-rect": 347,
+     "tight": 9621
+    }
+   },
+   "slow": {
+    "bw5rtt50": {
+     "firstWholeMs": 627.8098880000034,
+     "fps": 20.019559692998527,
+     "bytesPerS": 148055.3790559363,
+     "cpu": 56.74375896926934
+    },
+    "bw1rtt150": {
+     "firstWholeMs": 2298.7055669999972,
+     "fps": 10.014406283665265,
+     "bytesPerS": 63358.82637558291,
+     "cpu": 84.74724013494036
+    }
+   },
+   "procs": {
+    "bun": 1,
+    "Xvnc": 1,
+    "chromium": 2
+   }
+  },
+  {
+   "rep": 0,
+   "account": "lab-1",
+   "kind": "proton",
+   "label": "Lab Proton A",
+   "backend": "wayland",
+   "load": 10.03,
+   "onlineMs": 1060.1741509999993,
+   "usableMs": 4645.9076760000025,
+   "drawnMs": 1915.9809930000047,
+   "settledMs": 4645.9076760000025,
+   "colours": 426,
+   "idle": {
+    "cpu": 3.492736806658604,
+    "screenCpu": 0,
+    "cpuByName": {
+     "bun": 0.19958496038049167,
+     "sway": 0,
+     "wayvnc": 0,
+     "dbus-daemon": 0,
+     "chromium": 3.2931518462781124
+    },
+    "pssMB": 724.3427734375,
+    "rssMB": 1315.5390625,
+    "ussMB": 590.46875,
+    "screenPssMB": 105.666015625,
+    "screenUssMB": 83.1640625
+   },
+   "interact": {
+    "firstMs": 250.70054900000105,
+    "fps": 21.95026665622431,
+    "updatesPerS": 22.358643710293602,
+    "bytesPerS": 994942.1869890038,
+    "cpu": 51.28601305211172,
+    "cpuByName": {
+     "bun": 0.41111032506702777,
+     "sway": 4.72776873827082,
+     "wayvnc": 4.72776873827082,
+     "dbus-daemon": 0,
+     "chromium": 41.41936525050305
+    },
+    "encodings": {
+     "tight": 9674,
+     "cursor": 3
+    }
+   },
+   "slow": {
+    "bw5rtt50": {
+     "firstWholeMs": 934.4845769999956,
+     "fps": 8.708108229207292,
+     "bytesPerS": 272519.52135735645,
+     "cpu": 63.170313404876694
+    },
+    "bw1rtt150": {
+     "firstWholeMs": 3678.8579810000083,
+     "fps": 2.61338978958378,
+     "bytesPerS": 104046.01656276916,
+     "cpu": 66.13336105503068
+    }
+   },
+   "procs": {
+    "bun": 1,
+    "sway": 1
+   }
+  },
+  {
+   "rep": 0,
+   "account": "lab-1",
+   "kind": "proton",
+   "label": "Lab Proton A",
+   "backend": "wayland-tigervnc",
+   "load": 6,
+   "onlineMs": 4857.558086000005,
+   "usableMs": 9778.970243999996,
+   "drawnMs": 5815.516839999997,
+   "settledMs": 9778.970243999996,
+   "colours": 433,
+   "idle": {
+    "cpu": 4.680547228680845,
+    "screenCpu": 0,
+    "cpuByName": {
+     "bun": 0.19917222249705718,
+     "sway": 0,
+     "w0vncserver": 0,
+     "dbus-daemon": 0,
+     "chromium": 4.481375006183788
+    },
+    "pssMB": 675.9736328125,
+    "rssMB": 1265.515625,
+    "ussMB": 546.31640625,
+    "screenPssMB": 68.06640625,
+    "screenUssMB": 49.40234375
+   },
+   "interact": {
+    "firstMs": 253.06223199999658,
+    "fps": 30.603714160879875,
+    "updatesPerS": 47.27816307245562,
+    "bytesPerS": 331050.136731259,
+    "cpu": 83.55455301364997,
+    "cpuByName": {
+     "bun": 0.5138656396903443,
+     "sway": 8.427396490921646,
+     "w0vncserver": 7.810757723293232,
+     "dbus-daemon": 0,
+     "chromium": 66.80253315974475
+    },
+    "encodings": {
+     "21": 1645,
+     "last-rect": 465,
+     "tight": 8068
+    }
+   },
+   "slow": {
+    "bw5rtt50": {
+     "firstWholeMs": 659.5695469999919,
+     "fps": 27.484523620615395,
+     "bytesPerS": 152163.1467423629,
+     "cpu": 76.50848321449513
+    },
+    "bw1rtt150": {
+     "firstWholeMs": 2168.295928000007,
+     "fps": 16.658738032044095,
+     "bytesPerS": 67538.86973965426,
+     "cpu": 71.51623360624461
+    }
+   },
+   "procs": {
+    "bun": 1,
+    "sway": 1
+   }
+  },
+  {
+   "rep": 0,
+   "account": "lab-2",
+   "kind": "discord",
+   "label": "Lab Discord A",
+   "backend": "tigervnc",
+   "load": 21.5,
+   "onlineMs": 1426.4341819999972,
+   "usableMs": 11337.362355999998,
+   "drawnMs": 2346.115135,
+   "settledMs": 11337.362355999998,
+   "colours": 178,
+   "idle": {
+    "cpu": 11.173533461352523,
+    "screenCpu": 0,
+    "cpuByName": {
+     "bun": 0.09976369161921897,
+     "Xvnc": 0,
+     "chromium": 11.073769769733305
+    },
+    "pssMB": 577.7041015625,
+    "rssMB": 1214.7578125,
+    "ussMB": 474.50390625,
+    "screenPssMB": 19.7861328125,
+    "screenUssMB": 18.7109375
+   },
+   "interact": {
+    "firstMs": 251.13243699999293,
+    "fps": 9.567278981631913,
+    "updatesPerS": 13.058042934389505,
+    "bytesPerS": 54200.833319359495,
+    "cpu": 26.728859103499186,
+    "cpuByName": {
+     "bun": 0.13102381913479993,
+     "Xvnc": 0.9171667339435996,
+     "chromium": 25.680668550420783
+    },
+    "encodings": {
+     "21": 174,
+     "tight": 587,
+     "last-rect": 101,
+     "vmware-cursor": 7
+    }
+   },
+   "slow": {
+    "bw5rtt50": {
+     "firstWholeMs": 525.1415559999878,
+     "fps": 15.085874451856498,
+     "bytesPerS": 74129.98772366415,
+     "cpu": 16.951712450825728
+    },
+    "bw1rtt150": {
+     "firstWholeMs": 1723.95847100002,
+     "fps": 28.53762753553908,
+     "bytesPerS": 33500.62997012735,
+     "cpu": 20.636050228796126
+    }
+   },
+   "procs": {
+    "bun": 1,
+    "Xvnc": 1,
+    "chromium": 3
+   }
+  },
+  {
+   "rep": 0,
+   "account": "lab-2",
+   "kind": "discord",
+   "label": "Lab Discord A",
+   "backend": "wayland",
+   "load": 24.27,
+   "onlineMs": 1563.849029999983,
+   "usableMs": 12214.058816999954,
+   "drawnMs": 4490.844308999949,
+   "settledMs": 12214.058816999954,
+   "colours": 177,
+   "idle": {
+    "cpu": 9.850436580732053,
+    "screenCpu": 0,
+    "cpuByName": {
+     "bun": 0.09949935940133388,
+     "sway": 0,
+     "wayvnc": 0,
+     "dbus-daemon": 0,
+     "pipewire": 0,
+     "wireplumber": 0,
+     "xdg-desktop-po": 0,
+     "chromium": 9.75093722133072
+    },
+    "pssMB": 667.6748046875,
+    "rssMB": 1391.359375,
+    "ussMB": 541.10546875,
+    "screenPssMB": 80.33203125,
+    "screenUssMB": 57.71875
+   },
+   "interact": {
+    "firstMs": 251.4803580000298,
+    "fps": 8.252156965195176,
+    "updatesPerS": 9.154736633263399,
+    "bytesPerS": 89473.2382554132,
+    "cpu": 22.43872752629483,
+    "cpuByName": {
+     "bun": 0.1312206288087417,
+     "sway": 2.099530060939867,
+     "wayvnc": 0.6561031440437085,
+     "dbus-daemon": 0,
+     "pipewire": 0,
+     "wireplumber": 0,
+     "xdg-desktop-po": 0,
+     "chromium": 19.551873692502515
+    },
+    "encodings": {
+     "tight": 702,
+     "cursor": 7
+    }
+   },
+   "slow": {
+    "bw5rtt50": {
+     "firstWholeMs": 839.9599649999873,
+     "fps": 8.1990630385519,
+     "bytesPerS": 88353.64990763785,
+     "cpu": 20.808625817853823
+    },
+    "bw1rtt150": {
+     "firstWholeMs": 3096.535898000002,
+     "fps": 4.191621520318063,
+     "bytesPerS": 109802.62387976842,
+     "cpu": 12.363710564957033
+    }
+   },
+   "procs": {
+    "bun": 1,
+    "sway": 1
+   }
+  },
+  {
+   "rep": 0,
+   "account": "lab-2",
+   "kind": "discord",
+   "label": "Lab Discord A",
+   "backend": "wayland-tigervnc",
+   "load": 19.33,
+   "onlineMs": 2920.6916789999814,
+   "usableMs": 9378.549150999985,
+   "drawnMs": 4632.330067999952,
+   "settledMs": 9378.549150999985,
+   "colours": 180,
+   "idle": {
+    "cpu": 8.680312756405858,
+    "screenCpu": 0,
+    "cpuByName": {
+     "bun": 0.09977370984374549,
+     "sway": 0,
+     "w0vncserver": 0,
+     "dbus-daemon": 0,
+     "pipewire": 0,
+     "wireplumber": 0,
+     "xdg-desktop-po": 0,
+     "chromium": 8.580539046562112
+    },
+    "pssMB": 650.5517578125,
+    "rssMB": 1366.48828125,
+    "ussMB": 531.76171875,
+    "screenPssMB": 61.6142578125,
+    "screenUssMB": 46.984375
+   },
+   "interact": {
+    "firstMs": 251.0942030000151,
+    "fps": 16.901863156602786,
+    "updatesPerS": 21.322350443714285,
+    "bytesPerS": 57209.03636947319,
+    "cpu": 21.65105507520957,
+    "cpuByName": {
+     "bun": 0.13121851560733072,
+     "sway": 2.624370312146614,
+     "w0vncserver": 1.0497481248586458,
+     "dbus-daemon": 0,
+     "pipewire": 0,
+     "wireplumber": 0,
+     "xdg-desktop-po": 0,
+     "chromium": 17.845718122596978
+    },
+    "encodings": {
+     "21": 203,
+     "tight": 697,
+     "last-rect": 164
+    }
+   },
+   "slow": {
+    "bw5rtt50": {
+     "firstWholeMs": 509.106437999988,
+     "fps": 18.044825548130266,
+     "bytesPerS": 60213.577873494236,
+     "cpu": 15.128493422556733
+    },
+    "bw1rtt150": {
+     "firstWholeMs": 1699.6599460000289,
+     "fps": 34.08176794901387,
+     "bytesPerS": 35724.07175109176,
+     "cpu": 25.842740517902282
+    }
+   },
+   "procs": {
+    "bun": 1,
+    "sway": 1,
+    "w0vncserver": 1
+   }
+  },
+  {
+   "rep": 0,
+   "account": "lab-3",
+   "kind": "proton",
+   "label": "Lab Proton B",
+   "backend": "tigervnc",
+   "load": 8.64,
+   "onlineMs": 1698.0713550000219,
+   "usableMs": 6358.212655000039,
+   "drawnMs": 2510.8707830000203,
+   "settledMs": 6358.212655000039,
+   "colours": 484,
+   "idle": {
+    "cpu": 3.2933794888226697,
+    "screenCpu": 0,
+    "cpuByName": {
+     "bun": 0.1995987568983436,
+     "Xvnc": 0,
+     "chromium": 3.0937807319243262
+    },
+    "pssMB": 569.9970703125,
+    "rssMB": 1181.16015625,
+    "ussMB": 489.640625,
+    "screenPssMB": 23.7119140625,
+    "screenUssMB": 22.828125
+   },
+   "interact": {
+    "firstMs": 251.77852800005348,
+    "fps": 4.288127618997115,
+    "updatesPerS": 5.411208662067788,
+    "bytesPerS": 13325.15237948025,
+    "cpu": 5.658427097636982,
+    "cpuByName": {
+     "bun": 0.10288049268430877,
+     "Xvnc": 0.20576098536861753,
+     "chromium": 5.349785619584056
+    },
+    "encodings": {
+     "21": 24,
+     "vmware-cursor": 20,
+     "last-rect": 53,
+     "tight": 148
+    }
+   },
+   "slow": {
+    "bw5rtt50": {
+     "firstWholeMs": 641.3831019999925,
+     "fps": 5.514893849741132,
+     "bytesPerS": 16607.377184567824,
+     "cpu": 3.812863521542763
+    },
+    "bw1rtt150": {
+     "firstWholeMs": 2273.516183999949,
+     "fps": 16.41145575869843,
+     "bytesPerS": 25309.369462348146,
+     "cpu": 6.894690147681167
+    }
+   },
+   "procs": {
+    "bun": 1,
+    "Xvnc": 1
+   }
+  },
+  {
+   "rep": 0,
+   "account": "lab-3",
+   "kind": "proton",
+   "label": "Lab Proton B",
+   "backend": "wayland",
+   "load": 5.78,
+   "onlineMs": 1382.1258079999825,
+   "usableMs": 5213.177696000028,
+   "drawnMs": 2085.01185900002,
+   "settledMs": 5213.177696000028,
+   "colours": 475,
+   "idle": {
+    "cpu": 3.094467924073075,
+    "screenCpu": 0,
+    "cpuByName": {
+     "bun": 0.19964309187568224,
+     "sway": 0,
+     "wayvnc": 0,
+     "dbus-daemon": 0,
+     "chromium": 2.8948248321973926
+    },
+    "pssMB": 663.8662109375,
+    "rssMB": 1334.1875,
+    "ussMB": 567.08203125,
+    "screenPssMB": 107.923828125,
+    "screenUssMB": 91.2890625
+   },
+   "interact": {
+    "firstMs": 250.72044100007042,
+    "fps": 2.3480256339283514,
+    "updatesPerS": 3.981434770574161,
+    "bytesPerS": 30255.637438090333,
+    "cpu": 8.743579115773306,
+    "cpuByName": {
+     "bun": 0.10286563665615654,
+     "sway": 1.3372532765300351,
+     "wayvnc": 0.3085969099684696,
+     "dbus-daemon": 0,
+     "chromium": 6.9948632926186445
+    },
+    "encodings": {
+     "cursor": 16,
+     "tight": 276
+    }
+   },
+   "slow": {
+    "bw5rtt50": {
+     "firstWholeMs": 883.0173259999137,
+     "fps": 2.0316584309834584,
+     "bytesPerS": 28348.02032443091,
+     "cpu": 7.1848734343414895
+    },
+    "bw1rtt150": {
+     "firstWholeMs": 3344.9675900000148,
+     "fps": 2.4683306057788914,
+     "bytesPerS": 85702.32617957695,
+     "cpu": 7.480321085900745
+    }
+   },
+   "procs": {
+    "bun": 1,
+    "sway": 1,
+    "wayvnc": 1
+   }
+  },
+  {
+   "rep": 0,
+   "account": "lab-3",
+   "kind": "proton",
+   "label": "Lab Proton B",
+   "backend": "wayland-tigervnc",
+   "load": 5.36,
+   "onlineMs": 4806.047644000035,
+   "usableMs": 8948.874073000043,
+   "drawnMs": 5424.923696000013,
+   "settledMs": 8948.874073000043,
+   "colours": 482,
+   "idle": {
+    "cpu": 3.5915852687681014,
+    "screenCpu": 0,
+    "cpuByName": {
+     "bun": 0.2992987723973418,
+     "sway": 0,
+     "w0vncserver": 0,
+     "dbus-daemon": 0,
+     "chromium": 3.29228649637076
+    },
+    "pssMB": 613.07421875,
+    "rssMB": 1279.3828125,
+    "ussMB": 520.109375,
+    "screenPssMB": 59.63671875,
+    "screenUssMB": 46.75
+   },
+   "interact": {
+    "firstMs": 251.08517900004517,
+    "fps": 11.74294393913359,
+    "updatesPerS": 14.704208062915104,
+    "bytesPerS": 11577.623710981788,
+    "cpu": 8.232317641243949,
+    "cpuByName": {
+     "bun": 0.20580794103109873,
+     "sway": 1.6464635282487898,
+     "w0vncserver": 0.5145198525777469,
+     "dbus-daemon": 0,
+     "chromium": 5.865526319386315
+    },
+    "encodings": {
+     "21": 72,
+     "last-rect": 144,
+     "tight": 279
+    }
+   },
+   "slow": {
+    "bw5rtt50": {
+     "firstWholeMs": 620.2752159999218,
+     "fps": 11.75922662416562,
+     "bytesPerS": 13849.175099245724,
+     "cpu": 6.306805533106245
+    },
+    "bw1rtt150": {
+     "firstWholeMs": 2288.415801999974,
+     "fps": 37.18003873851003,
+     "bytesPerS": 36366.14445299983,
+     "cpu": 9.8267358284127
+    }
+   },
+   "procs": {
+    "bun": 1,
+    "sway": 1,
+    "w0vncserver": 1
+   }
+  },
+  {
+   "rep": 0,
+   "account": "lab-4",
+   "kind": "discord",
+   "label": "Lab Discord B",
+   "backend": "tigervnc",
+   "load": 5.61,
+   "onlineMs": 1003.461976999999,
+   "usableMs": 6738.310199000058,
+   "drawnMs": 4619.816585000022,
+   "settledMs": 6738.310199000058,
+   "colours": 274,
+   "idle": {
+    "cpu": 7.486586996299067,
+    "screenCpu": 0,
+    "cpuByName": {
+     "bun": 0.09982115995065421,
+     "Xvnc": 0,
+     "chromium": 7.386765836348413
+    },
+    "pssMB": 550.33984375,
+    "rssMB": 1223.8671875,
+    "ussMB": 476.4140625,
+    "screenPssMB": 19.439453125,
+    "screenUssMB": 18.71875
+   },
+   "interact": {
+    "firstMs": 250.772740000044,
+    "fps": 11.311882144704693,
+    "updatesPerS": 15.862639329356009,
+    "bytesPerS": 60113.81212800384,
+    "cpu": 13.785564239544454,
+    "cpuByName": {
+     "bun": 0.26258217599132294,
+     "Xvnc": 0.7877465279739688,
+     "chromium": 12.735235535579163
+    },
+    "encodings": {
+     "21": 233,
+     "tight": 915,
+     "last-rect": 122,
+     "vmware-cursor": 7
+    }
+   },
+   "slow": {
+    "bw5rtt50": {
+     "firstWholeMs": 524.4406199998921,
+     "fps": 15.306481105379886,
+     "bytesPerS": 75878.05345964443,
+     "cpu": 11.619601012285777
+    },
+    "bw1rtt150": {
+     "firstWholeMs": 1976.459045000025,
+     "fps": 20.052251679818816,
+     "bytesPerS": 36223.116607213065,
+     "cpu": 28.791975483304924
+    }
+   },
+   "procs": {
+    "bun": 1,
+    "Xvnc": 1,
+    "chromium": 4
+   }
+  },
+  {
+   "rep": 0,
+   "account": "lab-4",
+   "kind": "discord",
+   "label": "Lab Discord B",
+   "backend": "wayland",
+   "load": 5.66,
+   "onlineMs": 1067.250134000089,
+   "usableMs": 6594.840268000029,
+   "drawnMs": 4680.927282000077,
+   "settledMs": 6594.840268000029,
+   "colours": 281,
+   "idle": {
+    "cpu": 7.086903297819419,
+    "screenCpu": 0,
+    "cpuByName": {
+     "bun": 0.0998155394059073,
+     "sway": 0,
+     "wayvnc": 0,
+     "dbus-daemon": 0,
+     "pipewire": 0,
+     "wireplumber": 0,
+     "xdg-desktop-po": 0,
+     "chromium": 6.987087758413511
+    },
+    "pssMB": 625.9326171875,
+    "rssMB": 1380.44921875,
+    "ussMB": 534.05078125,
+    "screenPssMB": 71.3349609375,
+    "screenUssMB": 56.125
+   },
+   "interact": {
+    "firstMs": 250.63909599999897,
+    "fps": 9.750959677262696,
+    "updatesPerS": 10.791062042837384,
+    "bytesPerS": 105880.47062356773,
+    "cpu": 15.356232193105209,
+    "cpuByName": {
+     "bun": 0.26249969560863606,
+     "sway": 1.8374978692604527,
+     "wayvnc": 0.6562492390215902,
+     "dbus-daemon": 0,
+     "pipewire": 0,
+     "wireplumber": 0,
+     "xdg-desktop-po": 0,
+     "chromium": 12.59998538921453
+    },
+    "encodings": {
+     "tight": 782,
+     "cursor": 7
+    }
+   },
+   "slow": {
+    "bw5rtt50": {
+     "firstWholeMs": 849.5940620000474,
+     "fps": 10.390425940273937,
+     "bytesPerS": 98113.87554321653,
+     "cpu": 11.629534014663848
+    },
+    "bw1rtt150": {
+     "firstWholeMs": 3305.4842380000046,
+     "fps": 2.3701681933758754,
+     "bytesPerS": 110330.23547786544,
+     "cpu": 16.243754695565215
+    }
+   },
+   "procs": {
+    "bun": 1,
+    "sway": 1,
+    "wayvnc": 1
+   }
+  },
+  {
+   "rep": 0,
+   "account": "lab-4",
+   "kind": "discord",
+   "label": "Lab Discord B",
+   "backend": "wayland-tigervnc",
+   "load": 4.58,
+   "onlineMs": 2917.0536200000206,
+   "usableMs": 7841.80582499993,
+   "drawnMs": 6029.238634999958,
+   "settledMs": 7841.80582499993,
+   "colours": 282,
+   "idle": {
+    "cpu": 7.0873217983335195,
+    "screenCpu": 0,
+    "cpuByName": {
+     "bun": 0.19964286755869068,
+     "sway": 0,
+     "w0vncserver": 0,
+     "dbus-daemon": 0,
+     "pipewire": 0,
+     "wireplumber": 0,
+     "xdg-desktop-po": 0,
+     "chromium": 6.887678930774829
+    },
+    "pssMB": 610.048828125,
+    "rssMB": 1361.0703125,
+    "ussMB": 522.1171875,
+    "screenPssMB": 58.1826171875,
+    "screenUssMB": 46.86328125
+   },
+   "interact": {
+    "firstMs": 251.7183420000365,
+    "fps": 16.903509656947058,
+    "updatesPerS": 24.835156495976065,
+    "bytesPerS": 60466.454582846854,
+    "cpu": 15.88591666902153,
+    "cpuByName": {
+     "bun": 0,
+     "sway": 2.363194215226343,
+     "w0vncserver": 1.050308540100597,
+     "dbus-daemon": 0,
+     "pipewire": 0,
+     "wireplumber": 0,
+     "xdg-desktop-po": 0,
+     "chromium": 12.47241391369459
+    },
+    "encodings": {
+     "21": 284,
+     "tight": 980,
+     "last-rect": 191
+    }
+   },
+   "slow": {
+    "bw5rtt50": {
+     "firstWholeMs": 523.5386700000381,
+     "fps": 18.408116387261668,
+     "bytesPerS": 74876.38034452252,
+     "cpu": 13.101230934585326
+    },
+    "bw1rtt150": {
+     "firstWholeMs": 1972.120821999968,
+     "fps": 23.696656707407215,
+     "bytesPerS": 26457.864059744174,
+     "cpu": 21.224163594497266
+    }
+   },
+   "procs": {
+    "bun": 1,
+    "sway": 1,
+    "w0vncserver": 1
+   }
+  }
+ ],
+ "notes": []
+}

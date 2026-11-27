@@ -9,6 +9,7 @@ export default {
   name: 'Messenger',
   interfaces: ['chat'],
   entry: 'src/main.ts',
+  screen: true,
   add: {
     blurb: 'Runs Messenger (messenger.com) in a sandboxed browser on this machine; you sign in once in the live view. dither-chat reads and writes through it.',
     fields: [

@@ -56,7 +56,8 @@ What the hooks use (all exported names, from `dm-core` and the React chunks that
 - A message item (`MessageItemReceived` and its siblings): `id`, `created`, `sequenceNumber`,
   `sequenceNumberForReadState`, `textContent`, `fullText`, `senderInfo`, `isEncrypted`, `isUndecryptable`,
   `reactions` (`ReactionItem`: `reaction`, `participants`, `isSelected`, `attachmentId`), `replyPreview`, `attachments`,
-  `editHistory`, `messageInfo.showEdited`, `hiddenState`, `forwardedMessage`, `alignsToViewerSide`.
+  `editHistory`, `messageInfo.showEdited`, `hiddenState` (an enum, or since November 2026 a sealed class whose shown case is
+  `NeverHidden`), `forwardedMessage`, `alignsToViewerSide`.
 - The graph's other factories, each what a screen makes: `messageRequestsComponent(callbacks, cancellation, other)`
   (the Requests page: `DefaultMessageRequestsComponent`, state `MessageRequestsState` with `previews`,
   `isLoading`, `hasMoreItemsInfo`, `confirmDeleteConvId`, `confirmBlockConvId`; `onEvent(MessageRequestsEvent)`),
@@ -211,7 +212,7 @@ toast they raise is the refusal.
 | `addMembers` | Add people with each from its search, Done; whom X refuses is in `failed` |
 | `about` | the inbox row's settings and members (a group's name, description, picture, admins, admin-only flags; a one-to-one's two people) |
 | `configure` | `name` and `topic` (description) on Edit Group, where the About says this account may; the picture is refused (not built) |
-| `history` | scrolls to the top (`ScrolledToTop`) until it has enough or X has no more; messages arrive as backfill |
+| `history` | scrolls to the top (`ScrolledToTop`) until it has enough before `beforeTs` or X has no more; the 400 messages just before `beforeTs` arrive as backfill, and the answer says the oldest one's time (`oldest`) |
 | `fetchMedia` (`x-media://<conversation>/<message>/<n>`) | the attachment as the page shows it: its blob, or after `ResolveMediaImmediately` (the client loading it), or its twimg URL fetched with the page's cookies as an `<img>` would. At most 25 MB. |
 | `profile` | someone's profile and recent posts through responsive-web's own endpoints ("Notifications and profiles") |
 | `post` | one post's thread (what it answers, the post, its replies; `cursor` for more replies) through the post page's own endpoint ("Notifications and profiles", `post`) |
@@ -588,7 +589,8 @@ message text, a notification's words, a person's name or handle (the account's o
   are counted in `extra.attachmentReactions`, not shown); `extra.seq`, `extra.encrypted`, `extra.edited`. An edit sends
   the message again with `editedTs` (when it was seen). Live only when newer than what was announced in that
   conversation and less than 15 minutes old.
-- **Deletes**: a message the client hides (`hiddenState`), or one gone from inside the range the page has loaded.
+- **Deletes**: a message the client hides (`hiddenState` names a reason: not `Visible`, `None` or `NeverHidden`; a state
+  with no name counts as shown), or one gone from inside the range the page has loaded.
 - **Read state**: from the inbox row (unread count, up to the last read message when it is known).
 - **Typing**: from the inbox's typing indicators (start, and stop when gone; 8 s).
 - **Groups**: a group's description is its `topic`; a conversation you muted on X has `mute: { level: 'none' }`.

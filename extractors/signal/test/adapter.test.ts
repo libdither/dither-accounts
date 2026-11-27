@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { About, AddMembersResult, AdapterEvent, CreateGroupResult, PersonAbout, StickerPackFact, StickerPage } from '@dither-chat/protocol';
+import type { Clock } from '../src/link.ts';
 import { type AdapterHost, CAPABILITIES, createGroupError, createGroupParams, LINK_MESSAGE, readSignalSettings, SignalAdapter, socketPathFor, untold, untoldNotes, updateGroupParams } from '../src/adapter.ts';
 import { SIGNAL_CLI_JAVA_OPTIONS } from '../src/cli.ts';
 
@@ -46,6 +47,29 @@ const until = async <T>(what: string, fn: () => T | undefined | null | false, ms
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}\n${logs.slice(-15).join('\n')}`);
     await Bun.sleep(20);
   }
+};
+/** A clock that only moves when advance() is called; advance() runs the timers that come due, in order. */
+const handClock = () => {
+  let now = 0;
+  let seq = 0;
+  const timers = new Map<number, { at: number; fn: () => void }>();
+  const clock: Clock & { advance(ms: number): void } = {
+    now: () => now,
+    setTimeout: (fn, ms) => (timers.set(++seq, { at: now + ms, fn }), seq),
+    clearTimeout: (t) => void timers.delete(t as number),
+    advance(ms) {
+      const end = now + ms;
+      for (;;) {
+        const due = [...timers].filter(([, t]) => t.at <= end).sort(([a, x], [b, y]) => x.at - y.at || a - b)[0];
+        if (!due) break;
+        timers.delete(due[0]);
+        now = due[1].at;
+        due[1].fn();
+      }
+      now = end;
+    },
+  };
+  return clock;
 };
 const of = <K extends AdapterEvent['t']>(t: K, from = 0) => events.slice(from).filter((e): e is Extract<AdapterEvent, { t: K }> => e.t === t);
 const lastStatus = () => of('status').at(-1);
@@ -1429,25 +1453,32 @@ describe('signal adapter against a fake signal-cli', () => {
   });
 
   test('QR rotation pauses when nobody scans, and startLink resumes it', async () => {
-    // a second adapter with a short attention span, on its own dir
+    // A second adapter on its own dir, whose link flow keeps time by a clock the test moves: rotation and the pause
+    // happen when the test says, however long the fake signal-cli takes to start.
     const dir2 = mkdtempSync(join(tmpdir(), 'dither-sig-'));
     const ev2: AdapterEvent[] = [];
+    const clock = handClock();
     const a2 = new SignalAdapter(
       { emit: (e) => ev2.push(e), log: () => {}, accountDir: dir2, config: { deviceName: 'test-device' }, secret: () => ({}), saveSecret: () => {} },
-      { signalCli: async () => [process.execPath, FAKE], linkRotateMs: 200, linkMaxActiveMs: 500 },
+      { signalCli: async () => [process.execPath, FAKE], linkRotateMs: 1000, linkMaxActiveMs: 1500, linkClock: clock },
     );
     try {
       await a2.start();
       const st2 = () => ev2.filter((e): e is Extract<AdapterEvent, { t: 'status' }> => e.t === 'status');
-      await until('paused', () => st2().find((s) => s.attention?.message.startsWith('The QR code expired')));
-      const qrs = new Set(st2().map((s) => s.attention?.qr).filter(Boolean));
-      expect(qrs.size).toBeGreaterThanOrEqual(2);
-      const mark = ev2.length;
+      const qrsNow = () => new Set(st2().map((s) => s.attention?.qr).filter(Boolean));
+      const paused = () => st2().some((s) => s.attention?.message.startsWith('The QR code expired'));
+      const linkRuns = () => readFileSync(join(dir2, 'signal-cli', 'fake-rpc.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.t === 'argv');
+      await until('first QR', () => qrsNow().size === 1);
+      clock.advance(1000); // 1 s in: time to rotate, still under 1.5 s without a scan
+      await until('second QR', () => qrsNow().size === 2);
+      expect(paused()).toBe(false);
+      clock.advance(1000); // 2 s in: the next rotation finds 1.5 s gone by, and pauses instead
+      expect(paused()).toBe(true);
+      expect(qrsNow().size).toBe(2);
       expect(await a2.command({ t: 'action', id: 'x', action: 'startLink' })).toEqual({ ok: true });
-      const fresh = await until('fresh QR after resume', () => ev2.slice(mark).find((e) => e.t === 'status' && !!e.attention?.qr));
-      expect(qrs.has((fresh as any).attention.qr)).toBe(false);
-      const argv = readFileSync(join(dir2, 'signal-cli', 'fake-rpc.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))[0].argv;
-      expect(argv).toEqual(['--config', join(dir2, 'signal-cli'), '--trust-new-identities', 'always', 'link', '-n', 'test-device']);
+      await until('a fresh QR after resume', () => qrsNow().size === 3);
+      expect(linkRuns()).toHaveLength(3); // one per code: the pause started none of its own
+      expect(linkRuns()[0].argv).toEqual(['--config', join(dir2, 'signal-cli'), '--trust-new-identities', 'always', 'link', '-n', 'test-device']);
     } finally {
       await a2.shutdown();
       rmSync(dir2, { recursive: true, force: true });

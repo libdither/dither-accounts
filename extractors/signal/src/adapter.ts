@@ -28,7 +28,7 @@ import { ChildRegistry, type Logger, signalCliEnv } from './cli.ts';
 import { Daemon, type DaemonExit } from './daemon.ts';
 import { DesktopCalls } from './desktop/calls.ts';
 import { type CallsHost, type DesktopOptions, SignalDesktop } from './desktop/desktop.ts';
-import { LinkFlow } from './link.ts';
+import { type Clock, LinkFlow } from './link.ts';
 import {
   adminChanges,
   checkAbout,
@@ -145,6 +145,8 @@ export interface AdapterOptions {
   signalCli: () => Promise<string[]>;
   linkRotateMs?: number;
   linkMaxActiveMs?: number;
+  /** Time and timers for the link flow's rotation and pause (link.ts); tests move it by hand. */
+  linkClock?: Clock;
   restartBackoffMs?: number[];
   /** Re-read contacts and groups at these offsets after the daemon is ready (sync data trickles in after linking)... */
   resnapshotMs?: number[];
@@ -528,6 +530,7 @@ export class SignalAdapter {
       log: this.host.log,
       rotateAfterMs: this.opts.linkRotateMs,
       maxActiveMs: this.opts.linkMaxActiveMs,
+      clock: this.opts.linkClock,
       onUri: (qr, note, qrRefreshAt) => this.setStatus('attention', { kind: 'link_device', message: (note ? note + ' ' : '') + intro + LINK_MESSAGE, qr, qrRefreshAt }),
       onScanned: () => this.setStatus('connecting', null),
       onTrouble: (message) => this.setStatus('attention', { kind: 'link_device', message }),

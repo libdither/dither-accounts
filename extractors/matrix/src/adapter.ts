@@ -1730,7 +1730,10 @@ export class MatrixAdapter {
     const pronouns = (p['m.pronouns'] ?? p['io.fsky.nyx.pronouns']) as { summary?: string }[] | undefined;
     if (Array.isArray(pronouns) && pronouns[0]?.summary) out.pronouns = String(pronouns[0].summary);
     const tz = p['m.tz'] ?? p['us.cloke.msc4175.tz'];
-    if (typeof tz === 'string') out.facts = [{ label: 'Time zone', value: tz }];
+    if (typeof tz === 'string') {
+      out.timeZone = tz;
+      out.facts = [{ label: 'Time zone', value: tz }];
+    }
     if (who === this.selfId) out.friends = Object.keys(direct).filter((u) => u !== who);
     else out.relationship = direct[who]?.length ? 'contact' : 'stranger';
     return out;

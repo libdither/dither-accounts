@@ -31,7 +31,7 @@ export interface FakeOptions {
 export function fakeZulip(opts: FakeOptions = {}) {
   const users = [
     { user_id: 8, email: 'user8@chat.example.org', delivery_email: 'quinn@example.com', full_name: 'Quinn Park', role: 100, is_active: true, avatar_url: '/user_avatars/2/q.png' },
-    { user_id: 9, email: 'user9@chat.example.org', full_name: 'Ann Lee', role: 200, is_active: true, avatar_url: 'https://example.com/ann.png' },
+    { user_id: 9, email: 'user9@chat.example.org', full_name: 'Ann Lee', role: 200, is_active: true, avatar_url: 'https://example.com/ann.png', timezone: 'Europe/Berlin' },
     { user_id: 10, email: 'user10@chat.example.org', full_name: 'Bob Kim', role: 400, is_active: true },
   ];
   for (const [id, extra] of Object.entries(opts.users ?? {})) {
@@ -42,7 +42,7 @@ export function fakeZulip(opts: FakeOptions = {}) {
   const sub = (stream_id: number, name: string, extra: object = {}) => ({ stream_id, name, description: '', invite_only: false, history_public_to_subscribers: true, is_muted: false, ...extra });
   let messages: any[] = [
     { id: 100, sender_id: 9, sender_full_name: 'Ann Lee', content: 'hello @**Quinn Park|8**', timestamp: 1_700_000_000, type: 'stream', stream_id: 3, subject: 'plans', display_recipient: 'general', reactions: [], submessages: [], flags: ['mentioned'] },
-    { id: 101, sender_id: 8, sender_full_name: 'Quinn Park', content: 'hi', timestamp: 1_700_000_010, type: 'stream', stream_id: 3, subject: 'plans', display_recipient: 'general', reactions: [{ emoji_name: 'thumbs_up', emoji_code: '1f44d', reaction_type: 'unicode_emoji', user_id: 9 }], submessages: [], flags: ['read'] },
+    { id: 101, sender_id: 8, sender_full_name: 'Quinn Park', content: 'hi', timestamp: 1_700_000_010, last_moved_timestamp: 1_700_000_050, type: 'stream', stream_id: 3, subject: 'plans', display_recipient: 'general', reactions: [{ emoji_name: 'thumbs_up', emoji_code: '1f44d', reaction_type: 'unicode_emoji', user_id: 9 }], submessages: [], flags: ['read'] },
     { id: 102, sender_id: 9, sender_full_name: 'Ann Lee', content: 'dm', timestamp: 1_700_000_020, type: 'private', display_recipient: [{ id: 8, email: 'user8@chat.example.org', full_name: 'Quinn Park' }, { id: 9, email: 'user9@chat.example.org', full_name: 'Ann Lee' }], reactions: [], submessages: [], flags: [] },
     ...(opts.messages ?? []),
   ];
@@ -145,6 +145,11 @@ export function fakeZulip(opts: FakeOptions = {}) {
       if (/^\/streams\/\d+\/members$/.test(path)) return ok({ subscribers: opts.subscribers?.[Number(path.split('/')[2])] ?? users.map((u) => u.user_id) });
       if (/^\/messages\/\d+$/.test(path) && req.method === 'PATCH') return ok();
       if (/^\/users\/me\/muted_users\/\d+$/.test(path)) return ok();
+      if (/^\/users\/\d+$/.test(path)) {
+        const u = users.find((x) => x.user_id === Number(path.split('/')[2]));
+        return u ? ok({ user: u }) : json({ result: 'error', msg: 'No such user' }, 400);
+      }
+      if (path === '/realm/profile_fields') return ok({ custom_fields: [] });
       if (/^\/users\/me\/\d+\/topics$/.test(path)) {
         const stream = Number(path.split('/')[3]);
         const topics = new Map<string, number>();

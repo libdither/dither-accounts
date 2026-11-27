@@ -759,13 +759,16 @@ export class ZulipAdapter {
     // A rename is the topic's new spelling, a change of case too (its id stays the same).
     const info = st.topics.get(toConv);
     if (info) info.name = toTopic;
+    // Resolving or unresolving a topic renames it by its ✔ only: Zulip does not count that as moving its messages.
+    const bare = (t: string | undefined) => (t?.startsWith(RESOLVED) ? t.slice(RESOLVED.length) : t);
+    const resolving = toStream === ev.stream_id && ev.orig_subject !== undefined && bare(ev.orig_subject) === bare(toTopic) && ev.orig_subject !== toTopic;
     const known = ids.map((id) => st.message(id)).filter((m): m is ZMessage => !!m);
     const missing = ids.filter((id) => !st.message(id));
     const fetched = missing.length ? await this.fetchMessages(missing) : [];
     for (const m of [...known, ...fetched].sort((a, b) => a.id - b.id)) {
       m.stream_id = toStream;
       m.subject = toTopic;
-      m.last_moved_timestamp = ev.edit_timestamp;
+      if (!resolving) m.last_moved_timestamp = ev.edit_timestamp;
       if (ev.new_stream_id !== undefined) m.display_recipient = st.streams.get(toStream)?.name ?? m.display_recipient;
       st.remember(m);
       if (st.unread.has(m.id)) st.unread.set(m.id, this.convOf(m));
@@ -1251,7 +1254,8 @@ export class ZulipAdapter {
     } else if (w?.kind === 'todo') body = todoBody(w);
     if (m.is_me_message) body = `*${m.sender_full_name ?? st.users.get(m.sender_id)?.full_name ?? ''}* ${body.replace(/^\/me\s*/, '')}`;
     if (m.client === 'Internal' || (st.users.get(m.sender_id)?.is_bot && st.users.get(m.sender_id)?.bot_type === null && m.sender_email?.startsWith('notification-bot'))) kind = 'system';
-    if (m.last_moved_timestamp) extra.zulip = { movedAt: m.last_moved_timestamp * 1000 };
+    // When it was last moved to another topic or channel (Zulip 10+): the app marks it "moved" (protocol extra.ts movedAt).
+    if (m.last_moved_timestamp) extra.movedAt = m.last_moved_timestamp * 1000;
     const reactions = new Map<string, P.ReactionFact>();
     for (const r of m.reactions ?? []) {
       const key = keyOf(r);

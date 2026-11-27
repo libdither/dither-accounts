@@ -57,7 +57,9 @@ is Zulip's stand-in (`user8@chat.example.org`, where the organization keeps addr
   line and a quote, and a message that starts that way is read back as a reply to the linked message, without the quote.
 - **Edits, deletes, moves**: content edits, which keep what the hub's copy never held (the reply's quote, uploads,
   silent mentions staying silent); a topic rename or a move to another topic or channel moves the messages
-  (the hub's `MessageFact.moved`); resolving a topic (`✔ ` in front of its name) shows as the thread being closed.
+  (the hub's `MessageFact.moved`), and a moved message carries when it last moved (`last_moved_timestamp`, Zulip 10+)
+  as `extra.movedAt` in ms, for the app's "moved" mark; resolving a topic (`✔ ` in front of its name) shows as the
+  thread being closed.
   `redact` deletes, where the server lets you.
 - **Uploads**: files linked from `/user_uploads/` are attachments, fetched with your key through `fetchMedia`
   (`zulip:/user_uploads/...`); sending media uploads first (`POST /user_uploads`) and links the file.
@@ -99,7 +101,8 @@ is Zulip's stand-in (`user8@chat.example.org`, where the organization keeps addr
   looked up before anything is sent to it, so its capitals stay as Zulip has them.
 - **Channels**: about (description, who may post, privacy, history, subscribers), join one by name, link or
   `#name` (`resolve`, `add`), leave, mute, invite people, and an admin's settings (`configure`).
-- **People**: profiles with custom profile fields, pronouns, time zone, status; your own name, avatar, status and
+- **People**: profiles with custom profile fields, pronouns, time zone (`PersonAbout.timeZone`, the IANA name, and a
+  "Time zone" fact for an app that does not read it), status; your own name, avatar, status and
   fields (`setProfile`); invisible mode (`setPresence`); muting a person (`ignore`). A profile names the organization
   (`mutualSpaces`) with their role first, then the user groups they are directly in, by name (not the system
   `role:…` groups, nor deactivated ones); a walk of the members (`walkMembers`) gives the same roles. A person field

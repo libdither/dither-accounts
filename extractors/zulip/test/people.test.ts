@@ -178,6 +178,8 @@ test("a profile names the organization with their role and user groups; people f
     { label: 'Manager', value: 'Bob Kim', people: [`${host}/u/10`] },
     // Someone not known here: named by id, and the names stay text.
     { label: 'Reviewers', value: 'Bob Kim, User 77' },
+    // Their time zone, also as `timeZone`, for an app that does not read it.
+    { label: 'Time zone', value: 'Europe/Berlin' },
   ]);
   expect(ann.links).toEqual([
     { label: 'Forge', value: 'ann lee', url: 'https://forge.example.org/ann%20lee' },

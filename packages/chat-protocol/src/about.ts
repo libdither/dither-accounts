@@ -589,6 +589,11 @@ export interface PersonAbout {
   /** Connected accounts, websites, a phone number. */
   links?: { label: string; value: string; url?: string; verified?: boolean }[];
   /**
+   * Their time zone, an IANA name ("Europe/Berlin"), where the network says one (Zulip's `timezone`, Matrix's `m.tz`):
+   * the app shows their local time from it.
+   */
+  timeZone?: string;
+  /**
    * Anything else worth a line: "Business account", "Local time". `people`: native identity ids of the people the value
    * names, in its order (a bot's owner, a person field), so the app can link them; identity facts for them come first.
    */

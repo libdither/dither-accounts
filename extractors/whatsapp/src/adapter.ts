@@ -1105,7 +1105,9 @@ export class WhatsAppAdapter {
       count++;
       if (oldest === undefined || anchor.ts < oldest) oldest = anchor.ts;
     }
-    const empty = page.count === 0 && page.oldest === undefined;
+    // An answer with nothing in it is the chat's start only when nothing older is kept here either: a phone also
+    // answers empty for a chat it no longer holds that far back, and messages known to be older say it is not the start.
+    const empty = page.count === 0 && page.oldest === undefined && !this.state.latest(conversation, anchor.ts);
     return { count, done: empty, ...(oldest !== undefined ? { oldest } : {}) };
   }
 

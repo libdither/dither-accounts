@@ -156,6 +156,11 @@ export class State {
     const r = this.db.query('SELECT * FROM msg WHERE conversation = ? AND ts <= ? ORDER BY ts DESC LIMIT 1').get(conversation, upToTs);
     return r ? this.msgRow(r) : undefined;
   }
+  /** The oldest known message at or after ts. */
+  earliest(conversation: string, fromTs: number): MsgRow | undefined {
+    const r = this.db.query('SELECT * FROM msg WHERE conversation = ? AND ts >= ? ORDER BY ts ASC LIMIT 1').get(conversation, fromTs);
+    return r ? this.msgRow(r) : undefined;
+  }
   countMsgs(): number {
     return (this.db.query('SELECT count(*) AS n FROM msg').get() as { n: number }).n;
   }

@@ -11,6 +11,8 @@ export function telegramManifest(desktop: boolean): Manifest {
     name: 'Telegram',
     interfaces: desktop ? ['chat', 'notifications', 'desktop'] : ['chat'],
     entry: 'src/main.ts',
+    // Telegram Desktop in a sandbox of its own, when that way is on.
+    screen: desktop,
     add: {
       blurb: desktop
         ? "Signs in to Telegram as you. Either here, by a QR code as another device the way Telegram Desktop does, or through Telegram Desktop itself, running in this account's sandbox: you sign in with Telegram's own screens in the live view, and the app stays there, its notifications, links and saved files routed to this account. By QR code it signs in with an app of your own (api_id and api_hash from my.telegram.org → API development tools), as Telegram's terms ask, or with Telegram Desktop's published app if you choose it. Only the session is kept; a two-step password never is."

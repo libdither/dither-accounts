@@ -92,9 +92,16 @@ object Links {
         synchronized(Store) {
             p.approvalAlias = null
             p.approvalFingerprint = null
+            p.approvalQuick = false
             runCatching { Store.save() }
         }
         links[p.deviceId]?.sendKeys()
+    }
+
+    /** The approval key changed (switched to the quick-approval key): send the new one on the open link. */
+    fun resendKeys(p: Pairing) {
+        links[p.deviceId]?.sendKeys()
+        changed()
     }
 
     /** Tells every open link this phone's push endpoint (or null after unregistering). */

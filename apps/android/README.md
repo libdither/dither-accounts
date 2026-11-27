@@ -54,7 +54,14 @@ the page shows beside the new device.
   expiry, the body (monospace, scrolling inside its box past a third of the screen), the payload's lines, a box for a
   message (at most 1000 characters), and one button per action. An action marked 🔒 is `signed`: it opens the system
   prompt and signs with the approval key; `deny` and actions marked `any` answer at once, unsigned. A cancelled
-  prompt leaves the approval waiting.
+  prompt leaves the approval waiting. On a manager whose key is a quick-approval key (below), each approval with a
+  signed `approve` action has a box, **Include in Approve selected** (ticked), and with two or more such approvals
+  an **Approve selected (N) 🔒** button sits above them: a confirm lists their titles, then one prompt (or none
+  inside the window) signs `approve` on each, with no message.
+- **Quick approvals** (on Requests, below the managers): how long one fingerprint or PIN lets the quick-approval key
+  sign without asking (30 s, the default; 5 min, 1 h, 8 h, 1 day, or until the phone restarts; 8 h and longer ask
+  first), when the next prompt comes, and **Ask again now**. On each manager still on the old key: **Prepare a
+  quick-approval key** (below).
 - **Pair**: above.
 - **Passkeys**: every credential: account, rpId, id's start, created, last used, counter, where its key lives
   (StrongBox, TEE, or software on an emulator) and through which manager. **Delete** destroys the key and forgets
@@ -108,6 +115,18 @@ next link. After every `ready` the app sends `{t:"keys", kind:"phone", approval:
 identity key (DER, base64url, like the hello's) over `"dither-approver-key-v1\n" + deviceId + "\n" + "phone" + "\n"
 + approval`. Unpair deletes it. If the screen lock is removed the Keystore voids it; the next try to sign says so,
 and a new key (a new fingerprint) is made and sent.
+
+**The quick-approval key**: the same, except `setUserAuthenticationParameters(30 days, ...)`: one fingerprint or PIN
+lets the Keystore sign with it until the phone restarts (auth tokens don't survive a reboot) or the screen lock goes,
+and only while the phone is unlocked. The window the user picks is kept by the app on top of that: the last prompt is
+stored as `SystemClock.elapsedRealtime()` and `Settings.Global.BOOT_COUNT`, and a signature needs a new prompt when
+there is none, the boot count differs, the clock is behind it, or the window has passed (QuickWindow.kt). A prompt is
+the system one without a CryptoObject (it only opens the Keystore's window); a `UserNotAuthenticatedException` while
+the app thought the window open prompts once and tries again. A new pairing gets a quick-approval key. One paired
+before keeps its key, since the hosts that check answers pin it: **Prepare** makes the new key beside it and shows
+its fingerprint and the keys-file line (`deviceId  phone  SPKI  fingerprint  name`, **Copy line**); after the line is
+in those hosts' keys, **Switch to it** sends it in a keys frame and deletes the old key (**Discard** deletes the new
+one instead). Unpair deletes both.
 
 **A request** `{t:"request", op:"approve", id, ask, display, expiresAt}` is checked before it is shown: `ask` is
 exactly the statement's eight asker lines, canonical; its `id` is the request's; its `payload-sha256` is SHA-256 of
@@ -210,9 +229,26 @@ links, the seven requests, ping/pong); the approval key's fingerprint on the man
 stand-in computed; the notification while backgrounded. Not verified: a real fingerprint (the emulator's prompt took
 the PIN) and StrongBox.
 
+### Quick approvals on the emulator: `--approvals --batch`
+
+```
+bun apps/android/tools/fake-manager.ts --port 9120 --approvals --batch
+```
+
+With an app paired before quick approvals (on the old key): it sends `first` (tap Approve 🔒, PIN). When the keys
+frame brings another key (Prepare, then Switch to it), it sends `batch-1`, `batch-2` and `batch-3` (Approve selected:
+one PIN for the three), then `again` once they are answered (inside the 30 s window: no prompt), then `late` 40 s
+after that (past the window: one prompt). Every signature is checked against the approval key the app last sent.
+
+Verified 2026-11-26 on the Android 15 emulator, headless, with the device PIN: 15 of 15 (an app from master approving
+`first` with its old key, the upgrade keeping that key, Prepare and Switch, the batch with one PIN, `again` without
+one, `late` with one). Not verified: a real fingerprint, StrongBox, a release build.
+
 ## Unit tests
 
-`./gradlew testDebugUnitTest` (JVM, JDK keys, 49 tests). Approvals (StatementTest): the statement byte for byte, the
+`./gradlew testDebugUnitTest` (JVM, JDK keys, 56 tests). Quick approvals (QuickWindowTest): no prompt yet, inside
+and at the end of each window, until restart, any window ending at a new boot count, a clock behind the last
+prompt, unknown windows falling back to 30 s, the labels. Approvals (StatementTest): the statement byte for byte, the
 payload, display and message hashes and the key's fingerprint against a vector made with dither-chat's
 packages/approvals (statement.ts); the reference's DER signature verified here and read as r ‖ s, the JDK's DER read
 the same way, malformed DER refused; the keys frame's input; and each check failing on its own (an ask with too many

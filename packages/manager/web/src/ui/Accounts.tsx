@@ -4,15 +4,16 @@
  * runs a browser), what it needs from you (a code to scan, a sign-in), what it is signed in as, its process and
  * session, the apps that reach it, its call counts, its files and log, and its operations to try.
  */
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import type { AccountDetail, AccountInfo, DirListing, ManagerState, StatusLayer } from '../../../src/api-types.ts';
 import { CATEGORIES, categoryOf, nicknameOf, subtitleOf, usernameOf } from '../catalog.ts';
 import { groupIdentities, gives, identityOf, SUITES } from '../suites.ts';
-import { act, addedNote, ago, api, appName, bytes, confirm, confirmWith, copy, go, href, kindName, named, openWhenReady, route, since, state, takeQuery, toast } from '../state.ts';
+import { act, addedNote, ago, api, appName, bytes, confirm, confirmWith, copy, go, href, kindName, named, openWhenReady, route, since, state, takeQuery, toast, whenAt } from '../state.ts';
 import { openAdd } from './Add.tsx';
 import { approvers, loadApprovers } from './Approvers.tsx';
 import { AttentionBlock, HavenoControls } from './Attention.tsx';
 import { attentionOf, Avatar, condition, Dot, Empty, LevelPill, type Level } from './bits.tsx';
+import { AccountScreen } from './Display.tsx';
 import { Icon } from './icons.tsx';
 import { LiveView } from './LiveView.tsx';
 import { MoneroKeyImages } from './Monero.tsx';
@@ -57,7 +58,7 @@ function AccountList({ active }: { active: string | undefined }) {
             <div class="acc-group-head">
               <span>{su.name}</span>
               <span class="faint">
-                {all.filter((a) => a.online).length}/{all.length}
+                {all.filter((a) => a.online || a.asleep).length}/{all.length}
               </span>
             </div>
             {list.map((i) => (
@@ -97,7 +98,7 @@ function AccountList({ active }: { active: string | undefined }) {
             <div class="acc-group-head">
               <span>{c.name}</span>
               <span class="faint">
-                {list.filter((a) => a.online).length}/{list.length}
+                {list.filter((a) => a.online || a.asleep).length}/{list.length}
               </span>
             </div>
             {list.map((a) => {
@@ -218,20 +219,34 @@ function Chain({ layers }: { layers: StatusLayer[] }) {
   );
 }
 
-/** Its kind's own settings (the manifest's `settings`), each a switch; changing one restarts the extractor to take it. */
+/**
+ * Its kind's own settings (the manifest's `settings`), each a switch or a line of text (kept when the box is left);
+ * changing one restarts the extractor to take it. Stay awake (kinds that may sleep) is the manager's: no restart.
+ */
 function Settings({ a, reload }: { a: AccountInfo; reload: () => void }) {
   const flip = async (key: string, label: string, value: boolean) => {
-    if (await act(`/api/accounts/${a.id}`, { method: 'PATCH', body: { settings: { [key]: value } } }, `${label} ${value ? 'on' : 'off'}: restarting it`)) reload();
+    if (await act(`/api/accounts/${a.id}`, { method: 'PATCH', body: { settings: { [key]: value } } }, `${label} ${value ? 'on' : 'off'}${key === 'stayAwake' ? '' : ': restarting it'}`)) reload();
+  };
+  const save = async (key: string, label: string, was: string, value: string) => {
+    if (value.trim() === was) return;
+    if (await act(`/api/accounts/${a.id}`, { method: 'PATCH', body: { settings: { [key]: value.trim() } } }, `${label} ${value.trim() ? 'set' : 'cleared'}: restarting it`)) reload();
   };
   return (
     <section class="pane-section" data-settings>
       <h4>Settings</h4>
       {a.settings.map((x) => (
         <div key={x.key} data-setting={x.key}>
-          <label class="row nowrap small">
-            <input type="checkbox" checked={x.value} onChange={(e) => void flip(x.key, x.label, (e.target as HTMLInputElement).checked)} />
-            <span>{x.label}</span>
-          </label>
+          {x.type === 'text' ? (
+            <label class="row nowrap small">
+              <span>{x.label}</span>
+              <input type="text" value={x.text ?? ''} placeholder={x.placeholder} onChange={(e) => void save(x.key, x.label, x.text ?? '', (e.target as HTMLInputElement).value)} />
+            </label>
+          ) : (
+            <label class="row nowrap small">
+              <input type="checkbox" checked={x.value} onChange={(e) => void flip(x.key, x.label, (e.target as HTMLInputElement).checked)} />
+              <span>{x.label}</span>
+            </label>
+          )}
           <p class="muted small">{x.note}</p>
         </div>
       ))}
@@ -310,6 +325,16 @@ function Passkeys({ a, d, reload }: { a: AccountInfo; d: AccountDetail; reload: 
   );
 }
 
+/** An idle time in words: "20 minutes" ("30 s" below a minute, as `sleep_idle_minutes` may set). */
+const idleWords = (min: number) => (min >= 1 ? `${Math.round(min)} minute${Math.round(min) === 1 ? '' : 's'}` : `${Math.max(1, Math.round(min * 60))} s`);
+
+/** The overview's Sleep line (docs/supervisor.md "Sleeping"): asleep until when, or what keeps it awake. */
+function sleepLine(z: NonNullable<AccountInfo['sleep']>): string {
+  if (z.asleep) return `asleep for ${since(z.since)}; wakes on the next call${z.wakeAt ? `, or by itself ${whenAt(z.wakeAt)} (${z.wakeFor ?? 'scheduled'})` : ''}`;
+  if (z.awake) return `awake: ${z.awake}; sleeps after ${idleWords(z.idleMinutes)} idle`;
+  return `idle for ${since(z.idleSince) || '0 s'}; sleeps at ${idleWords(z.idleMinutes)}`;
+}
+
 function AccountOverview({ a, d, reload }: { a: AccountInfo; d: AccountDetail | null; reload: () => void }) {
   const s = state.value!;
   const google = s.providers.google as GoogleStatus | undefined;
@@ -352,13 +377,17 @@ function AccountOverview({ a, d, reload }: { a: AccountInfo; d: AccountDetail | 
 
       {a.settings?.length > 0 && <Settings a={a} reload={reload} />}
 
+      {a.display && <AccountScreen a={a} reload={reload} />}
+
       {d?.passkeys && <Passkeys a={a} d={d} reload={reload} />}
 
       <section class="pane-section">
         <h4>Extractor</h4>
         <Kv
           rows={[
-            ['State', `${(a.status?.status as string | undefined) ?? (a.online ? 'online' : a.running ? 'starting' : 'not running')}${a.error ? ` · ${a.error}` : ''}`],
+            ['State', `${a.asleep ? 'asleep' : ((a.status?.status as string | undefined) ?? (a.online ? 'online' : a.running ? 'starting' : 'not running'))}${a.error ? ` · ${a.error}` : ''}`],
+            // A kind that may sleep: what keeps it awake now, or when it wakes (docs/supervisor.md "Sleeping").
+            ['Sleep', a.sleep ? sleepLine(a.sleep) : null],
             ['Online for', a.online && p?.onlineSince ? since(p.onlineSince) : null],
             ['Process', a.builtin ? 'part of the manager' : p?.pid ? `pid ${p.pid}, running ${since(p.startedAt)}${p.adopted ? ', kept running through the manager\'s restart' : ''}` : 'not running'],
             [
@@ -649,6 +678,8 @@ function AccountPane({ a, tab, sub }: { a: AccountInfo; tab: Tab; sub?: string }
   const [d, reload] = useDetail(a.id);
   const [live, setLive] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
+  const nickInput = useRef<HTMLInputElement>(null);
+  useEffect(() => void (renaming !== null && nickInput.current?.focus()), [renaming !== null]);
   const [replacing, setReplacing] = useState(false);
   const c = condition(a);
   const at = attentionOf(a);
@@ -667,6 +698,7 @@ function AccountPane({ a, tab, sub }: { a: AccountInfo; tab: Tab; sub?: string }
     if (a.enabled && !(await confirm(`Disable ${named(a)}?`, 'Its extractor stops and apps cannot reach it until you enable it again. Its session stays where it is.', 'Disable', false))) return;
     await act(`/api/accounts/${a.id}`, { method: 'PATCH', body: { enabled: !a.enabled } }, a.enabled ? `Disabled ${named(a)}` : `Enabled ${named(a)}`);
   };
+  const wake = () => act(`/api/accounts/${a.id}/wake`, { method: 'POST' }, `Waking ${named(a)}`);
   const restart = async () => {
     if (await confirm(`Restart ${named(a)}?`, 'Its extractor stops and starts again; apps lose it for a moment (and a call it is in, such as a voice call, ends).', 'Restart', false))
       await act(`/api/accounts/${a.id}/restart`, { method: 'POST' }, `Restarted ${named(a)}`);
@@ -705,7 +737,7 @@ function AccountPane({ a, tab, sub }: { a: AccountInfo; tab: Tab; sub?: string }
         <div class="pane-title">
           {renaming !== null ? (
             <form class="row" onSubmit={rename}>
-              <input value={renaming} placeholder={usernameOf(a) ?? kn} onInput={(e) => setRenaming((e.target as HTMLInputElement).value)} aria-label="Nickname (empty: none)" autoFocus />
+              <input value={renaming} placeholder={usernameOf(a) ?? kn} onInput={(e) => setRenaming((e.target as HTMLInputElement).value)} aria-label="Nickname (empty: none)" ref={nickInput} />
               <button class="btn sm primary">Save</button>
               <button type="button" class="btn sm ghost" onClick={() => setRenaming(null)}>
                 Cancel
@@ -725,6 +757,11 @@ function AccountPane({ a, tab, sub }: { a: AccountInfo; tab: Tab; sub?: string }
         </div>
         <span class="grow" />
         <div class="pane-actions">
+          {a.asleep && (
+            <button class="btn primary" onClick={wake} data-wake>
+              Wake
+            </button>
+          )}
           {a.liveView && (
             <button class="btn primary" onClick={() => setLive(true)} data-open-live>
               Live view
@@ -753,6 +790,12 @@ function AccountPane({ a, tab, sub }: { a: AccountInfo; tab: Tab; sub?: string }
       </header>
       {replacing && <ReplaceSecret a={a} fields={secretFields} onClose={() => setReplacing(false)} />}
       {a.error && <p class="banner error pane-banner">{a.error}</p>}
+      {a.asleep && a.sleep?.asleep && (
+        <p class="banner info pane-banner" data-asleep>
+          Asleep for {since(a.sleep.since)}: nothing needed it for {idleWords(a.sleep.idleMinutes)}, so its extractor stopped to free its memory. The next call wakes it
+          {a.sleep.wakeAt ? `, and it wakes by itself ${whenAt(a.sleep.wakeAt)} for ${a.sleep.wakeFor ?? 'its schedule'}` : ''}. What it shows below is from before it fell asleep.
+        </p>
+      )}
       <AttentionBlock a={a} onLive={() => setLive(true)} />
       {a.kind === 'haveno' && <HavenoControls a={a} onLive={() => setLive(true)} />}
       {a.kind === 'monero' && <MoneroKeyImages a={a} />}

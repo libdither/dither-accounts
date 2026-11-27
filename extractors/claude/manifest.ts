@@ -11,10 +11,15 @@ export default {
   name: 'Claude',
   interfaces: ['claude'],
   entry: 'src/main.ts',
+  screen: true,
   add: {
     blurb:
       "A Claude account in a sandboxed browser on this machine, for the CLIProxyAPI hub that serves your Claude subscriptions to Claude Code. It signs in with the link claude.ai emails you (read from that address's mail account here) and approves the hub's sign-in on claude.ai's own page. It never reads your chats. Usually added through the cliproxy provider: `cli.ts cliproxy add-claude <email>`.",
     fields: [{ key: 'email', label: 'Email', placeholder: 'the email you sign in to Claude with', pattern: '^[^@\\s]+@[^@\\s]+$', hint: 'its sign-in links are read from the mail account here with this address' }],
     next: 'The cliproxy provider signs it in and links it to the hub; a check only you can answer shows up here with the live view.',
   },
+  // Only the cliproxy provider's link jobs use it (at most every few hours, each holding it awake while it runs); the
+  // hub serves Claude Code with its own tokens. Sleeping costs nothing: a signed-out claude.ai is signed in again by
+  // the next job, with the emailed link.
+  sleep: { idleMinutes: 15 },
 } satisfies Manifest;

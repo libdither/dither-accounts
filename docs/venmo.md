@@ -33,6 +33,10 @@ and writes the same bytes it wrote. **Read only**: nothing here pays, requests, 
   found you signed in is over 12 hours old: config `autoPullHours`), at most once per 10 minutes; daily at `pullAt`
   (05:30 + jitter); and on `statements.refresh`. Venmo ends a session after ~30 idle minutes and nothing here keeps it
   alive, so the daily pull usually finds you signed out and skips quietly.
+- **Asleep in between** ([supervisor.md](supervisor.md#sleeping-browser-accounts-only-needed-now-and-then)): after 20
+  idle minutes its browser stops; it is woken 2 minutes before its daily pull and by any call. No keep-alive: Venmo's
+  session ends either way. While it asks you to sign in (the attention) it stays up, with its live view; so it does
+  while tabs an app opened are open. Stay awake (a setting) keeps it running.
 - **Status**: online when signed in, or when the last pull that found you signed in is under `nagAfterDays` (7) old;
   otherwise the attention `login` with the live view ("sign in; the pull follows"). Layers: display → browser →
   extension → signed in → pull.

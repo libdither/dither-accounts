@@ -78,6 +78,8 @@ interface WUser {
   about?: string;
   /** Whom they let add them to groups (absent: everyone): the others are their missingInvitees. */
   addPrivacy?: 'nobody' | 'premium';
+  /** Their status as Telegram shows it (absent: hidden). `expires`: online until, in seconds. */
+  status?: { kind: 'online'; expires: number } | { kind: 'offline'; wasOnline: number } | { kind: 'recently' };
 }
 /** One of the account's other sessions (Settings → Devices). Hashes are signed 64-bit numbers, as Telegram's. */
 interface WAuth {
@@ -479,6 +481,14 @@ export class FakeTelegram implements TgBackend {
         this.push({ _: 'updateMessageReactions', peer: this.tlPeer(c.peer), msgId: m.id, reactions: this.tlReactions(c.peer, m)! });
         return {};
       }
+      // Someone's status changes: Telegram tells every client that may see it (updateUserStatus).
+      case 'status': {
+        const u = this.user(c.user);
+        u.status = c.status;
+        this.save();
+        this.push({ _: 'updateUserStatus', userId: u.id, status: c.status ? tlStatus(c.status) : { _: 'userStatusEmpty' } });
+        return {};
+      }
       case 'typing': {
         const action: tl.TypeSendMessageAction = { _: c.stop ? 'sendMessageCancelAction' : 'sendMessageTypingAction' };
         if (c.peer.startsWith('user:')) this.push({ _: 'updateUserTyping', userId: c.from, action });
@@ -812,6 +822,7 @@ export class FakeTelegram implements TgBackend {
       ...(u.bot ? { bot: true, botInfoVersion: 1 } : {}),
       ...(u.verified ? { verified: true } : {}),
       ...(u.photo ? { photo: { _: 'userProfilePhoto', photoId: Long.fromString(u.photo), dcId: DC } } : {}),
+      ...(u.status ? { status: tlStatus(u.status) } : {}),
     } as tl.RawUser;
   }
 
@@ -1293,8 +1304,12 @@ export class FakeTelegram implements TgBackend {
     return { library: 'fake Telegram', layer: 232, testMode: false, dc: DC };
   }
 
+  /** Told of each method as it is called (a test waiting for a call). */
+  onCall?: (method: string) => void;
+
   private record(method: string, req: unknown) {
     this.calls.push({ method, at: Date.now(), req });
+    this.onCall?.(method);
     if (this.calls.length > 2000) this.calls.splice(0, 500);
   }
 
@@ -1870,3 +1885,9 @@ const idOf = (p: string) => Number(p.split(':')[1]);
 /** A request as JSON can carry it: 64-bit numbers as decimal strings, bytes as base64. */
 const plain = (x: unknown): unknown => JSON.parse(JSON.stringify(x, (_k, v) => (v instanceof Long ? v.toString() : v instanceof Uint8Array ? Buffer.from(v).toString('base64') : v)));
 const invite = (link: string) => ({ _: 'chatInviteExported', link, adminId: FAKE_IDS.self, date: T0(), permanent: true });
+
+function tlStatus(s: NonNullable<WUser['status']>): tl.TypeUserStatus {
+  if (s.kind === 'online') return { _: 'userStatusOnline', expires: s.expires };
+  if (s.kind === 'offline') return { _: 'userStatusOffline', wasOnline: s.wasOnline };
+  return { _: 'userStatusRecently' };
+}

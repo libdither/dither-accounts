@@ -74,6 +74,15 @@ still shows up. Read state: `unread_notifications` counts plus your `m.read` rec
 The since token, per-room back-pagination tokens and the relation indexes live in `matrix.sqlite`, so a
 restart resumes where it left off.
 
+The `history` command reads one page back. With `cursor` (the page before's `next`, a `/messages` token) it goes
+on from there; with only `beforeTs` it starts at the last event before that time (`timestamp_to_event`, then
+`/context` for a token), or on a server without `timestamp_to_event` pages back from now to there, at most 20
+pages. Events at or after `beforeTs` are left to newer pages. `count` is the message facts for the conversation
+asked (a room's page also brings its threads' replies, which go to the thread); `oldest` is the oldest event read,
+so a page of only reactions or thread replies still moves the walk back; `done` only when the server has nothing
+older. Without either it goes on from the room's back-pagination token, as gap filling leaves it. A thread pages
+its `/relations` the same way, from its newest when only `beforeTs` is given.
+
 History (docs/history.md), from what sync already brings:
 
 | Matrix | event |

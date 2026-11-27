@@ -79,5 +79,6 @@ object Pairings {
         }
         Keys.delete(p.keyAlias)
         p.approvalAlias?.let { Keys.delete(it) }
+        p.nextAlias?.let { Keys.delete(it) }
     }
 }

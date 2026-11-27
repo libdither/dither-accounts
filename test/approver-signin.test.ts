@@ -103,7 +103,13 @@ async function setup(o: { local?: boolean } = {}) {
       : signin.run(trigger, once, { done: () => site.signedIn, hold: () => new NeedsYou('held'), failed: (last) => `Signing in did not work (${last})` });
 
   const events: any[] = [];
-  const link = { accountId: 'acc_signin', accountDir: dir, config: { pullAt: '06:00', jitterMinutes: 0 }, label: 'Test', emit: (e: unknown) => events.push(e), log: () => {}, secret: () => ({}), saveSecret: () => {}, connected: true, close: () => {} } as unknown as Link;
+  /** Who waits for the next statements.pulled (pulledAfter). */
+  const waiting = new Set<() => void>();
+  const emit = (e: any) => {
+    events.push(e);
+    if (e.t === 'statements.pulled') for (const w of waiting) w();
+  };
+  const link = { accountId: 'acc_signin', accountDir: dir, config: { pullAt: '06:00', jitterMinutes: 0 }, label: 'Test', emit, log: () => {}, secret: () => ({}), saveSecret: () => {}, sleep: () => {}, connected: true, close: () => {} } as unknown as Link;
   const runner = new StatementsRunner({
     link,
     // The pull signs in first (both kinds), then hands a file over.
@@ -115,6 +121,17 @@ async function setup(o: { local?: boolean } = {}) {
     now,
   });
   const pulled = () => events.filter((e) => e.t === 'statements.pulled');
+  /** Resolves once the pull under way has said how it went (its statements.pulled): the event itself, not a count of turns. */
+  const pulledAfter = (before: number) =>
+    new Promise<void>((done) => {
+      const check = () => {
+        if (pulled().length <= before) return;
+        waiting.delete(check);
+        done();
+      };
+      waiting.add(check);
+      check();
+    });
   /** Moves the clock and the runner's timers together, and lets a pull that starts finish. */
   const advance = async (ms: number) => {
     for (let left = ms; left > 0; ) {
@@ -123,23 +140,17 @@ async function setup(o: { local?: boolean } = {}) {
       left -= step;
       const before = pulled().length;
       jest.advanceTimersByTime(step);
-      if (runner.pulling) await until(() => pulled().length > before);
+      if (runner.pulling) await pulledAfter(before);
     }
   };
   /** A pull started now (statements.refresh with its why: a manual one, or schwab's after you sign in). */
   const pull = async (why: Why) => {
     const before = pulled().length;
     expect(runner.refresh({}, why)).toEqual({ started: true });
-    await until(() => pulled().length > before);
+    await pulledAfter(before);
     return pulled().at(-1);
   };
   return { dir, phone, auth, rp, signin, opts, site, runner, pulled, advance, pull, waits, logs, saved: () => saved, assertions: () => assertions, expire: () => void (site.signedIn = false), now };
-}
-
-/** Waits on promises only (WebCrypto), never on the clock. */
-async function until(f: () => boolean) {
-  for (let i = 0; i < 2000 && !f(); i++) await new Promise<void>((r) => queueMicrotask(r)).then(() => crypto.subtle.digest('SHA-256', new Uint8Array(1)));
-  if (!f()) throw new Error('never happened');
 }
 
 let dirs: string[] = [];

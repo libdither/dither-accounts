@@ -8,7 +8,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { BridgeServer, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, displayName, displayState, type FreeDisplay, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
 import type { Link } from '@dither-accounts/link';
 
 export const WIDTH = 1280;
@@ -47,6 +47,16 @@ export interface HostOpts {
   testOrigins?: string[];
   /** The kind's extension has a passkey (hook.js and content.js content scripts): passkeys.js goes in with the driver. */
   passkeys?: boolean;
+  /**
+   * Host permission patterns its manifest.json can't name, added the same way: the general `site` kind's own site,
+   * which each account sets.
+   */
+  origins?: string[];
+  /**
+   * The browser signs in to its site with another account here (docs/signin-relay.md): the relay's worker goes in with
+   * the driver (signin.js), and this is config.json's `signIn` (packages/browser signInConfig).
+   */
+  signIn?: { consume: unknown[] };
   onTabs?: (tabs: TabReport[]) => void;
   onChange?: () => void;
   /** Anything else the extension says (the page hooks' `webauthn` and `hook`). */
@@ -54,20 +64,20 @@ export interface HostOpts {
 }
 
 /**
- * The driver as the extension's sw.js (browser.js after it, for the `browser` interface, and passkeys.js for a kind
- * with a passkey), and in tests the fake
- * site's origins added to the host permissions and the content scripts' matches.
+ * The driver as the extension's sw.js (browser.js after it, for the `browser` interface, passkeys.js for a kind with a
+ * passkey, signin.js for one that signs in with another account), and `patterns` (and in tests the fake site's
+ * origins) added to the host permissions and the content scripts' matches.
  */
-export function prepareDriver(dir: string, opts: { passkeys?: boolean; testOrigins?: (string | null | undefined)[] } = {}) {
+export function prepareDriver(dir: string, opts: { passkeys?: boolean; signIn?: boolean; testOrigins?: (string | null | undefined)[]; patterns?: string[] } = {}) {
   const ext = join(import.meta.dir, '../extension');
-  const worker = readFileSync(join(ext, 'driver.js'), 'utf8') + readFileSync(join(ext, 'browser.js'), 'utf8') + (opts.passkeys ? readFileSync(join(ext, 'passkeys.js'), 'utf8') : '');
-  writeFileSync(join(dir, 'sw.js'), worker);
-  const origins = (opts.testOrigins ?? []).filter((o): o is string => !!o);
-  if (!origins.length) return;
+  const parts = ['driver.js', 'browser.js', ...(opts.passkeys ? ['passkeys.js'] : []), ...(opts.signIn ? ['signin.js'] : [])];
+  writeFileSync(join(dir, 'sw.js'), parts.map((f) => readFileSync(join(ext, f), 'utf8')).join(''));
+  const patterns = [...(opts.patterns ?? []), ...(opts.testOrigins ?? []).filter((o): o is string => !!o).map((o) => `${o}/*`)];
+  if (!patterns.length) return;
   const path = join(dir, 'manifest.json');
   const m = JSON.parse(readFileSync(path, 'utf8'));
-  m.host_permissions = [...(m.host_permissions ?? []), ...origins.map((o) => `${o}/*`)];
-  for (const cs of m.content_scripts ?? []) cs.matches = [...cs.matches, ...origins.map((o) => `${o}/*`)];
+  m.host_permissions = [...new Set([...(m.host_permissions ?? []), ...patterns])];
+  for (const cs of m.content_scripts ?? []) cs.matches = [...new Set([...cs.matches, ...patterns])];
   writeFileSync(path, JSON.stringify(m, null, 2));
 }
 
@@ -78,7 +88,7 @@ export class BrowserHost {
   private token = Buffer.from(crypto.getRandomValues(new Uint8Array(24))).toString('base64url');
   sandbox: Sandbox | null = null;
   sandboxError: string | null = null;
-  display: number | null = null;
+  display: FreeDisplay | null = null;
   liveView: { vncSocket: string; width: number; height: number } | null = null;
   startedAt = 0;
   tabs: TabReport[] = [];
@@ -116,7 +126,8 @@ export class BrowserHost {
     } else this.o.onMessage?.(m as { t: string });
   }
 
-  private prepare = (dir: string) => prepareDriver(dir, { passkeys: this.o.passkeys, testOrigins: [this.o.testOrigin, ...(this.o.testOrigins ?? [])] });
+  private prepare = (dir: string) =>
+    prepareDriver(dir, { passkeys: this.o.passkeys, signIn: !!this.o.signIn, patterns: this.o.origins, testOrigins: [this.o.testOrigin, ...(this.o.testOrigins ?? [])] });
 
   async start(): Promise<boolean> {
     const { link } = this.o;
@@ -128,28 +139,30 @@ export class BrowserHost {
     } catch {}
     const tried: number[] = [];
     for (let attempt = 0; attempt < 3; attempt++) {
-      let free: { display: number };
+      let free: FreeDisplay;
       try {
         free = await pickFreeDisplay(undefined, tried);
       } catch (e) {
         this.sandboxError = String((e as Error).message ?? e);
         break;
       }
-      tried.push(free.display);
-      this.display = free.display;
+      if (free.display !== null) tried.push(free.display);
+      this.display = free;
       const sb = new Sandbox({
         accountDir: link.accountDir,
-        display: free.display,
+        display: free,
         width: WIDTH,
         height: HEIGHT,
         extensionSrc: this.o.extensionSrc,
-        config: { wsUrl: this.bridge.wsUrl, token: this.token },
+        config: { wsUrl: this.bridge.wsUrl, token: this.token, ...(this.o.signIn ? { signIn: this.o.signIn } : {}) },
         prepareExtension: this.prepare,
         startUrl: this.o.startUrl,
         // The HTTP cache is not the sign-in: keep it out of the account's directory.
         flags: [`--disk-cache-dir=${cache}`],
         noSandbox: !!link.config.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',
         log: (l, m, d) => link.log(l, m, d),
+        // The live view's server down or back (it is started again): said in the status at once.
+        onScreenHealth: () => this.o.onChange?.(),
       });
       try {
         await sb.start();
@@ -160,7 +173,7 @@ export class BrowserHost {
         break;
       } catch (e) {
         this.sandboxError = String((e as Error).message ?? e).slice(0, 300);
-        link.log('warn', `sandbox on :${free.display} failed`, this.sandboxError);
+        link.log('warn', `sandbox on ${displayName(free)} failed`, this.sandboxError);
         await sb.stop();
       }
     }
@@ -237,10 +250,10 @@ export class BrowserHost {
       }
     })();
     const display: Layer = this.liveView
-      ? { name: 'display', state: 'ok', note: `Xvfb :${this.display}, live view ready` }
+      ? { name: 'display', ...displayState(this.display, this.sandbox?.screenHealth) }
       : this.sandboxError
         ? { name: 'display', state: 'failed', note: this.sandboxError }
-        : { name: 'display', state: 'waiting', note: 'starting Xvfb' };
+        : { name: 'display', state: 'waiting', note: 'starting the display' };
     const browser: Layer = !this.liveView
       ? { name: 'browser', state: this.sandboxError ? 'off' : 'waiting', note: 'not started yet' }
       : this.sandbox?.browserAlive

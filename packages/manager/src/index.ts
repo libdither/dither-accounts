@@ -1,17 +1,20 @@
 /** The manager as a library: main.ts runs it, tests make one on a temp dir and port. */
 import { join, resolve } from 'node:path';
+import type { DisplayBackend } from '@dither-accounts/spec/display';
 import { Approvals, APPROVER_KIND, approverKind } from './approvals.ts';
 import { Approvers } from './approvers.ts';
 import { errorBlocks, ErrorLog } from './errors.ts';
 import { Store } from './db.ts';
-import { Http } from './http.ts';
+import { type BackendCheck, Http } from './http.ts';
 import { type Kind, loadKinds } from './kinds.ts';
+import { KeptBins } from './prepare.ts';
 import { type NoticeTimes, Notices, NOTICES_KIND, noticesKind } from './notices.ts';
 import { providers as factories, type Provider } from './providers/index.ts';
 import { Router } from './router.ts';
+import { SignInRelays } from './signin.ts';
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { procAlive, procStat } from './procs.ts';
-import { acquireManagerLock, chooseLaunch, type CodeRestarts, type Launch, releaseManagerLock, Supervisor } from './supervisor.ts';
+import { acquireManagerLock, chooseLaunch, type CodeRestarts, type Launch, releaseManagerLock, type SleepOpts, Supervisor } from './supervisor.ts';
 import { NdjsonFile, setTraceSink, StallWatch } from './trace.ts';
 
 export interface ManagerOpts {
@@ -61,10 +64,28 @@ export interface ManagerOpts {
   adoptConnectMs?: number;
   /** Tests only: how often adopted extractors are looked at in /proc (1 s). */
   watchMs?: number;
+  /** The display backend of accounts whose config names none (default x11; docs/browser.md "Display backends"). */
+  displayBackend?: DisplayBackend;
+  /**
+   * Build the sandboxes' programs from the repo's pinned nixpkgs into <data>/bins at start (prepare.ts), and start
+   * kinds with a screen once they are there; a failed build is tried again in the background (KeptBins). main.ts
+   * turns it on (prepare_bins); tests leave it off, or give a stand-in nix-build (and a short first retry).
+   */
+  prepareBins?: boolean | { nixBuild: string; firstRetryMs?: number };
+  /**
+   * Tests only: whether a display backend can run here, in place of what the manager finds (http.ts backendCheck: the
+   * programs prepared, or on PATH where nothing is prepared).
+   */
+  backendCheck?: (b: DisplayBackend) => BackendCheck;
   /** Tests only: what a `scope` launch goes through instead of systemd-run. */
   systemdRun?: string;
   /** Tests only: how long a surviving extractor waits for a manager before it ends itself (1800 s). */
   managerGoneExitS?: number;
+  /**
+   * Idle accounts of kinds that may sleep stop until the next call or their next run (supervisor.ts SleepOpts,
+   * docs/supervisor.md "Sleeping"). On by default; main.ts reads `sleep`, `sleep_idle_minutes`, `sleep_keep_alive_hours`.
+   */
+  sleep?: SleepOpts;
 }
 
 /** What a manager that goes on a restart leaves the next one (docs/supervisor.md "Handing over"). */
@@ -102,6 +123,10 @@ export interface Manager {
   service: string | null;
   /** Why its launch is what it is (supervisor.ts chooseLaunch): logged at start. */
   launchWhy: string;
+  /** The sandboxes' programs being prepared (prepare.ts), when prepareBins is on: `ready`, and how it stands. */
+  bins: KeptBins | null;
+  /** The servers built from forks (prepare.ts), a build of their own after it, started once one is in use. */
+  forkBins: KeptBins | null;
   /**
    * Stops the manager. With `leaveExtractors`, extractors that can outlive it are left running for the next manager
    * to adopt (main.ts on SIGTERM: a restart keeps every session); without it every extractor stops.
@@ -126,11 +151,35 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
   kinds.set(APPROVER_KIND, approverKind());
   const store = new Store(join(o.dataDir, 'accounts.sqlite'));
   let router!: Router;
+  let signIns!: SignInRelays;
   let http!: Http;
   let notices: Notices | undefined;
   const publicUrl = (o.publicUrl ?? `http://localhost:${o.port}`).replace(/\/$/, '');
   const approvers = new Approvers(store, { dataDir: o.dataDir, publicUrl, pushHttp: o.approverPushHttp === true, requestMs: o.approverRequestMs, onChange: () => router?.accountsChanged(), count: (account, op, outcome) => router?.count('approver', account, op, outcome), onNoDevice: (account, rpId, op) => notices?.noDevice(account, rpId, op) });
   const launch = chooseLaunch(o.launch ?? 'child');
+  // The sandboxes' programs (prepare.ts): built while the manager starts, and again until a build succeeds; kinds with
+  // a screen wait for them. How it stands is on the page (ManagerState.bins).
+  const bins = o.prepareBins
+    ? new KeptBins({
+        repoRoot,
+        dataDir: o.dataDir,
+        ...(typeof o.prepareBins === 'object' ? o.prepareBins : {}),
+        log: (l, m) => console.log(`${l}: ${m}`),
+        onChange: () => router?.accountsChanged(),
+      })
+    : null;
+  const forkBins = bins
+    ? new KeptBins({
+        repoRoot,
+        dataDir: o.dataDir,
+        ...(typeof o.prepareBins === 'object' ? o.prepareBins : {}),
+        attr: 'dither-bins-forks',
+        lazy: true,
+        after: bins.ready,
+        log: (l, m) => console.log(`${l}: ${m}`),
+        onChange: () => router?.accountsChanged(),
+      })
+    : null;
   let handoverNow: Handover | null = null;
   const resumedOnce = new Set<string>();
   const sup = new Supervisor(store, kinds, {
@@ -138,13 +187,18 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     repoRoot,
     dataDir: o.dataDir,
     launch: launch.launch,
+    displayBackend: o.displayBackend,
+    bins: bins ?? undefined,
+    forkBins: forkBins ?? undefined,
     fingerprint: o.fingerprint,
     restartPauseMs: o.restartPauseMs,
     adoptConnectMs: o.adoptConnectMs,
     watchMs: o.watchMs,
     restartOnlineMs: o.restartOnlineMs,
+    screenUp: (id) => !!router?.liveView(id),
     systemdRun: o.systemdRun,
     managerGoneExitS: o.managerGoneExitS,
+    sleep: o.sleep,
     onEvent: (id, ev) => {
       router.event(id, ev);
       if (ev.t === 'status') notices?.poke();
@@ -159,10 +213,10 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
       const block = errorBlocks(exit.stderr, repoRoot).at(-1);
       const extra = { kind, account: id, code: exit.code, signal: exit.signal };
       const where = `extractor ${kind}`;
-      if (block) errors?.record({ source: 'uncaught', where, name: block.name, message: block.message, stack: block.frames, extra });
-      else errors?.record({ source: 'uncaught', where, name: 'Exit', message: exit.signal ? `ended by signal ${exit.signal}` : `exited with code ${exit.code}`, extra });
+      if (block) errors?.record({ source: 'uncaught', where, name: block.name, message: block.message, stack: block.frames, extra, kind: 'bug' });
+      else errors?.record({ source: 'uncaught', where, name: 'Exit', message: exit.signal ? `ended by signal ${exit.signal}` : `exited with code ${exit.code}`, extra, kind: 'bug' });
     },
-    onExit: (id) => router?.processGone(id),
+    onExit: (id, asleep) => router?.processGone(id, asleep),
     // An adopted extractor back after a handover that did not name it: a gap only if it says it did not hold its events.
     // Only its first return counts: a later blip of its socket, with this manager up all along, loses nothing.
     onResumed: (id, held) => {
@@ -170,14 +224,19 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
       resumedOnce.add(id);
       if (!held && handoverNow && !handoverNow.holding?.includes(id)) router.markGap(id);
     },
-    // The approver's questions, for kinds that hold passkeys; the manager names the account itself.
+    // An extractor's questions, for its own account (the manager names it itself): the approver's, for kinds that hold
+    // passkeys, and signing in with another account here (signin.ts), for kinds that do.
     onAsk: async (id, what, input) => {
       const a = store.account(id);
-      if (!a || !kinds.get(a.kind)?.passkeys) throw new Error('this account holds no passkeys');
+      if (!a) throw new Error('no such account');
+      if (what === 'signin.choices') return signIns.choices(id, input);
+      if (what === 'signin.relay') return signIns.relay(id, input);
+      if (!kinds.get(a.kind)?.passkeys) throw new Error('this account holds no passkeys');
       if (what === 'approver.request') return approvers.request(a, input);
       throw new Error(`the manager answers no "${what}"`);
     },
   });
+  signIns = new SignInRelays({ store, kinds, statusOf: (id) => (router?.lastStatus(id)?.status as string | undefined) ?? null, command: (id, cmd, ms): Promise<unknown> => sup.command(id, cmd, ms) });
   // An app that hears of a gap restarts the account: that start must not trust what the extractor kept (DITHER_RESYNC).
   router = new Router(store, kinds, sup, { dataDir: o.dataDir, onGap: (id) => sup.markResync(id) });
   // Links to an account's page only when the page has an address of its own (localhost is not one a phone can open).
@@ -195,12 +254,16 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     publicUrl,
     startedAt: Date.now(),
     openPage: o.openPage === true,
+    bins,
+    forkBins,
+    backendCheck: o.backendCheck,
   }, approvers);
   // What the manager before handed over (a restart): its held events first, before anything new comes.
   const handover = takeHandover(o.dataDir);
   if (handover) router.restoreHeld(handover.held ?? {});
   handoverNow = handover;
   http.notices = notices;
+  http.signIns = signIns;
   http.codeRestarts = () => sup.codeRestarts();
   http.start();
   if (o.startAccounts !== false) {
@@ -224,7 +287,11 @@ export async function createManager(o: ManagerOpts): Promise<Manager> {
     url: `http://127.0.0.1:${http.server.port}`,
     service: launch.unit,
     launchWhy: launch.why,
+    bins,
+    forkBins,
     async stop(so = {}) {
+      bins?.stop();
+      forkBins?.stop();
       for (const p of providers) p.stop?.();
       notices!.stop();
       approvals.stop();
@@ -306,7 +373,7 @@ function takeHandover(dataDir: string): Handover | null {
   }
 }
 
-export type { CodeRestarts };
+export type { CodeRestarts, SleepOpts };
 export type { Kind, Manifest } from './kinds.ts';
 export { kindOf, loadKinds } from './kinds.ts';
 export { acquireLock, releaseLock, LOCK, type Launch } from './supervisor.ts';

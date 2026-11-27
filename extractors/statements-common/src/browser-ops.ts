@@ -3,17 +3,18 @@
  * account's signed-in browser, driven like a person drives it, in tabs of its own.
  *
  * The extension (browser.js, appended to the driver) reads the page and says where an element is on the screen; the
- * input itself is real: xdotool moves the mouse, clicks and presses keys on the account's own display, which this
- * extractor owns. Nothing is synthesized in the page but a <select>'s choice (browser.select).
+ * input itself is real: the sandbox's screen (packages/browser screen.ts) moves the mouse, clicks and presses keys on
+ * the account's own display, which this extractor owns (xdotool on X; on Wayland the compositor's virtual pointer and
+ * keyboard, through the live view's own socket). Nothing is synthesized in the page but a <select>'s choice
+ * (browser.select).
  *
  * Only tabs this interface opened are read or touched, only URLs inside the extension's host permissions are loaded,
  * buttons that buy, pay, send or delete are pressed only by browser.press (manage), and while the kind is busy (a
  * pull) a call that brings a tab forward answers 409. Typed text and page contents never reach the log.
  */
-import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveImport, resolveXdotool } from '@dither-accounts/browser';
+import type { ScreenInput } from '@dither-accounts/browser';
 import { type Command, StatusError } from '@dither-accounts/link';
 import type { BrowserHost } from './tabs.ts';
 
@@ -24,6 +25,11 @@ export const GUARD =
 const IDLE_MS = 15 * 60_000;
 const SETTLE_MS = 1500;
 const LOAD_MS = 30_000;
+/**
+ * How long a call waits for the browser to come up (it was asleep and this call woke it, or it just started) before
+ * answering 503: within the 30 s an op without a time of its own has.
+ */
+const UP_WAIT_MS = 20_000;
 
 export interface BrowserOpsOpts {
   host: BrowserHost;
@@ -51,8 +57,6 @@ export function matchPattern(p: string): RegExp | null {
 export class BrowserOps {
   /** Tabs this interface opened → when last used. */
   private own = new Map<number, number>();
-  private xdotool: string | null = null;
-  private importBin: string | null = null;
   private timer: Timer;
   private chain: Promise<unknown> = Promise.resolve();
 
@@ -63,6 +67,11 @@ export class BrowserOps {
 
   stop() {
     clearInterval(this.timer);
+  }
+
+  /** Tabs an app opened here and has not closed (closed after 15 idle minutes): a sleep would close them (link.sleep). */
+  inUse(): string | null {
+    return this.own.size ? `${this.own.size} browser tab(s) an app opened` : null;
   }
 
   /** The `browser` ops; undefined for anything else. One at a time: two callers' clicks never interleave. */
@@ -76,6 +85,7 @@ export class BrowserOps {
   private async run(cmd: Command): Promise<unknown> {
     const i = cmd as Record<string, any>;
     const { host } = this.o;
+    for (const end = Date.now() + UP_WAIT_MS; !host.attached && Date.now() < end; ) await sleep(250);
     if (!host.attached) throw new StatusError('the browser is not ready yet', 503, 'unavailable');
     switch (cmd.t) {
       case 'browser.tabs': {
@@ -125,7 +135,7 @@ export class BrowserOps {
         if (p.guarded && cmd.t === 'browser.click')
           throw new StatusError(`"${p.name}" looks like it buys, pays, sends or deletes: only browser.press (manage) presses it`, 403, 'guarded');
         if (p.covered) this.o.log('debug', `browser: ${i.ref} is under a ${p.covered}; clicking where it shows`);
-        await this.input(id, ['mousemove', '--sync', String(p.x), String(p.y), 'sleep', '0.15', 'click', '1']);
+        await this.input(id, (s) => s.click(p.x, p.y));
         this.o.log('info', `${cmd.t}: ${p.tag}`);
         return this.settle(id);
       }
@@ -134,9 +144,12 @@ export class BrowserOps {
         this.notBusy();
         if (typeof i.text !== 'string') throw new StatusError('text is required', 400);
         const p = await this.point(id, i.ref);
-        await this.input(id, ['mousemove', '--sync', String(p.x), String(p.y), 'sleep', '0.15', 'click', '1', 'sleep', '0.2']);
-        if (i.clear) await this.input(id, ['key', 'ctrl+a']);
-        if (i.text) await this.input(id, ['type', '--delay', '35', '--', i.text]);
+        await this.input(id, async (s) => {
+          await s.click(p.x, p.y);
+          await sleep(200);
+        });
+        if (i.clear) await this.input(id, (s) => s.keys(['ctrl+a']));
+        if (i.text) await this.input(id, (s) => s.type(i.text, 35));
         if (i.enter) await this.keys(id, 'Return', 'browser.press');
         this.o.log('info', `browser.type: ${i.text.length} characters into a ${p.tag}${i.enter ? ', then Enter' : ''}`);
         return this.settle(id);
@@ -158,8 +171,7 @@ export class BrowserOps {
         const id = await this.tab(i.tabId);
         this.notBusy();
         await this.front(id);
-        const button = i.direction === 'up' ? '4' : '5';
-        await this.input(id, ['mousemove', '--sync', '640', '450', 'click', '--repeat', '6', '--delay', '40', button]);
+        await this.input(id, (s) => s.scroll(640, 450, i.direction === 'up' ? 'up' : 'down', 6));
         await sleep(400);
         return this.after(id);
       }
@@ -246,38 +258,37 @@ export class BrowserOps {
       const f = await this.call<{ guarded: boolean; name: string }>(tabId, 'focused', [GUARD]);
       if (f.guarded) throw new StatusError(`the focus is on "${f.name}", which looks like it buys, pays, sends or deletes: only browser.press presses it`, 403, 'guarded');
     }
-    await this.input(tabId, ['key', '--delay', '60', '--', ...list]);
+    await this.input(tabId, (s) => s.keys(list, 60));
   }
 
-  /** xdotool on the account's display, with the tab in front first. */
-  private async input(tabId: number, args: string[]) {
-    const { host } = this.o;
-    if (host.display === null) throw new StatusError('no display', 503, 'unavailable');
+  /** The account's screen, for input and pictures (screen.ts). */
+  private screenOf(): ScreenInput {
+    const s = this.o.host.sandbox?.screen;
+    if (!s) throw new StatusError('no display', 503, 'unavailable');
+    return s;
+  }
+
+  /** Real input on the account's display, with the tab in front first. */
+  private async input(tabId: number, act: (s: ScreenInput) => Promise<void>) {
+    const s = this.screenOf();
     await this.front(tabId);
-    this.xdotool ??= resolveXdotool(this.o.log);
-    await new Promise<void>((resolve, reject) => {
-      const p = spawn(this.xdotool!, args, { env: { ...process.env, DISPLAY: `:${host.display}` }, stdio: ['ignore', 'ignore', 'pipe'] });
-      let err = '';
-      p.stderr.on('data', (d) => (err += String(d)));
-      p.on('error', reject);
-      p.on('exit', (code) => (code === 0 ? resolve() : reject(new StatusError(`input failed: ${err.trim().slice(0, 200) || `xdotool exited ${code}`}`, 500))));
-    });
+    try {
+      await act(s);
+    } catch (e) {
+      if (e instanceof StatusError) throw e;
+      const msg = String((e as Error).message ?? e);
+      throw new StatusError(msg.startsWith('input failed') || msg.startsWith('typing failed') ? msg.slice(0, 240) : `input failed: ${msg.slice(0, 200)}`, /no key|no modifier/.test(msg) ? 400 : 500);
+    }
   }
 
   /** A PNG of the whole display, as the live view shows it (Chromium won't capture a tab for a site-only extension). */
   private async screen(): Promise<Buffer> {
-    const { host } = this.o;
-    if (host.display === null) throw new StatusError('no display', 503, 'unavailable');
-    this.importBin ??= resolveImport(this.o.log);
-    return new Promise<Buffer>((resolve, reject) => {
-      const p = spawn(this.importBin!, ['-window', 'root', 'png:-'], { env: { ...process.env, DISPLAY: `:${host.display}` }, stdio: ['ignore', 'pipe', 'pipe'] });
-      const out: Buffer[] = [];
-      let err = '';
-      p.stdout.on('data', (d: Buffer) => out.push(d));
-      p.stderr.on('data', (d) => (err += String(d)));
-      p.on('error', reject);
-      p.on('exit', (code) => (code === 0 ? resolve(Buffer.concat(out)) : reject(new StatusError(`screenshot failed: ${err.trim().slice(0, 200) || `import exited ${code}`}`, 500))));
-    });
+    try {
+      return await this.screenOf().screenshot();
+    } catch (e) {
+      if (e instanceof StatusError) throw e;
+      throw new StatusError(String((e as Error).message ?? e).slice(0, 240), 500);
+    }
   }
 
   /** After input: wait for a load it started, then say where the tab is. */

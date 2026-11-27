@@ -3,8 +3,11 @@
  * dither-chat's hub writes too (docs/bugwatch.md), so the `bugwatch` extractor reads both the same way:
  *
  *   { v: 1, at, app: 'manager', source: 'uncaught' | 'rejection' | 'request' | 'job' | 'attempt' | 'client', where,
- *     name, message (one line, ≤ 300 chars), stack (≤ 10 frames, repo-relative), status?, trace?, version?, extra?,
- *     count? }
+ *     name, message (one line, ≤ 300 chars), stack (≤ 10 frames, repo-relative), status?, kind?, trace?, version?,
+ *     extra?, count? }
+ *
+ * `kind` is the failure's kind (spec FailureKind: expected, transient or bug). A record without one (an older writer's)
+ * is read as before: its reader guesses. The manager's own records are crashes, so they say `bug`.
  *
  * What goes in it: the manager's own uncaught exceptions and unhandled rejections (installProcessHandlers, which keeps
  * the crash a crash), and an extractor whose process ends on its own with a failure (its last error and frames from
@@ -17,6 +20,7 @@
  * Also here, because the manager needs it for an extractor's stderr and bugwatch for plain logs: errorBlocks, which
  * finds error lines and their `at` frames in a log, and never keeps anything else (Bun's source excerpts, other lines).
  */
+import { type FailureKind, isFailureKind } from '@dither-accounts/spec';
 import { NdjsonFile } from './trace.ts';
 
 export type ErrorSource = 'uncaught' | 'rejection' | 'request' | 'job' | 'attempt' | 'client';
@@ -30,6 +34,8 @@ export interface ErrorRecord {
   message: string;
   stack: string[];
   status?: number;
+  /** Expected, transient or bug (spec FailureKind); absent when the writer did not know. */
+  kind?: FailureKind;
   trace?: string;
   version?: string;
   extra?: Record<string, string | number | boolean | null>;
@@ -161,9 +167,12 @@ export class ErrorLog {
   }
 
   /** One error. Never throws: recording an error must not make another. */
-  record(x: { source: ErrorSource; where: string; error: unknown; extra?: ErrorRecord['extra']; status?: number; trace?: string } | { source: ErrorSource; where: string; name: string; message: string; stack?: string[]; extra?: ErrorRecord['extra']; status?: number; trace?: string }) {
+  record(x: ({ error: unknown } | { name: string; message: string; stack?: string[] }) & { source: ErrorSource; where: string; extra?: ErrorRecord['extra']; status?: number; kind?: FailureKind; trace?: string }) {
     try {
       const f = 'error' in x ? errorFields(x.error, this.o.root) : { name: clip(oneLine(x.name), 80), message: clip(oneLine(x.message), MAX_MESSAGE), stack: (x.stack ?? []).slice(0, MAX_FRAMES).map((s) => relFrame(s, this.o.root)) };
+      // The kind given, else the one the error itself carries (a StatusError's), else none.
+      const own = 'error' in x ? (x.error as { kind?: unknown } | null)?.kind : undefined;
+      const kind = isFailureKind(x.kind) ? x.kind : isFailureKind(own) ? own : undefined;
       const rec: ErrorRecord = {
         v: 1,
         at: this.o.now(),
@@ -172,6 +181,7 @@ export class ErrorLog {
         where: clip(oneLine(x.where), 200),
         ...f,
         ...(typeof x.status === 'number' ? { status: x.status } : {}),
+        ...(kind ? { kind } : {}),
         ...(x.trace ? { trace: x.trace } : {}),
         ...(this.o.version ? { version: this.o.version } : {}),
         ...(x.extra ? { extra: x.extra } : {}),
@@ -241,7 +251,7 @@ export function installProcessHandlers(log: ErrorLog) {
 /** One of those handlers: record, write it out now, say it on stderr as the crash would have, and end. */
 export function onProcessError(log: ErrorLog, source: 'uncaught' | 'rejection', exit: (code: number) => void = (c) => process.exit(c)) {
   return (e: unknown) => {
-    log.record({ source, where: 'process', error: e });
+    log.record({ source, where: 'process', error: e, kind: 'bug' });
     log.flush();
     console.error(source === 'uncaught' ? 'uncaught exception:' : 'unhandled rejection:', e);
     exit(1);

@@ -20,10 +20,13 @@ import { type Credentials, Zulip, ZulipError, baseOf } from './http.ts';
 import { Ids, msOf, narrowLink, RESOLVED, type Place } from './ids.ts';
 import { Emoji, customOf, keyOf, reactionOf, type EmojiTable } from './emoji.ts';
 import { editedContent, fromZulip, mediaUrl, plainText, replyQuote, toZulip, type MdCtx } from './markdown.ts';
-import { State, type TopicInfo, type ZMessage, type ZStream, type ZSub, type ZUser } from './state.ts';
+import { NOTIFY_DEFAULTS, State, type NotifySettings, type TopicInfo, type ZMessage, type ZStream, type ZSub, type ZUser } from './state.ts';
 import { apply, fold, pollCommand, pollFact, todoBody, voteChanges, type Submessage } from './widgets.ts';
 import * as about from './about.ts';
 import { Receipts, START_WINDOW_MS } from './receipts.ts';
+
+/** A channel's subscription properties its topics' facts say too (topicNotify). */
+const TOPIC_PROPS = new Set(['is_muted', 'in_home_view', 'desktop_notifications', 'push_notifications', 'audible_notifications', 'wildcard_mentions_notify']);
 
 const num = (k: string, d: number) => {
   const v = Number(process.env[k]);
@@ -348,6 +351,11 @@ export class ZulipAdapter {
     st.recentDms.clear();
     for (const c of r.recent_private_conversations ?? []) st.recentDms.set([...c.user_ids].sort((a: number, b: number) => a - b).join(','), c.max_message_id);
     st.presenceEnabled = r.user_settings?.presence_enabled ?? r.presence_enabled ?? true;
+    st.notify = { ...NOTIFY_DEFAULTS };
+    for (const k of Object.keys(NOTIFY_DEFAULTS) as (keyof NotifySettings)[]) {
+      const v = r.user_settings?.[k] ?? r[k];
+      if (typeof v === typeof NOTIFY_DEFAULTS[k]) (st.notify as any)[k] = v;
+    }
     st.offlineMs = Number(r.server_presence_offline_threshold_seconds ?? 140) * 1000;
     st.pingMs = Number(r.server_presence_ping_interval_seconds ?? 60) * 1000;
     this.presencePolledAt = Date.now();
@@ -367,6 +375,8 @@ export class ZulipAdapter {
     // Unread: every unread message's conversation; their times come with the messages read next.
     st.unread.clear();
     st.unreadMentions = new Set(r.unread_msgs?.mentions ?? []);
+    // unread_msgs.mentions does not say which were wildcards: the flags of the messages read next do (noteFlags).
+    st.unreadWildcards.clear();
     const u = r.unread_msgs ?? {};
     for (const s of u.streams ?? []) for (const id of s.unread_message_ids ?? []) st.unread.set(id, this.ids.topic(s.stream_id, s.topic));
     for (const p of u.pms ?? []) for (const id of p.unread_message_ids ?? []) st.unread.set(id, this.ids.dm([st.self, p.other_user_id ?? p.sender_id]));
@@ -439,7 +449,7 @@ export class ZulipAdapter {
         this.watchReceipts(m);
         if (!(m.flags ?? []).includes('read')) {
           st.unread.set(m.id, this.convOf(m));
-          if ((m.flags ?? []).some((f) => f === 'mentioned' || f.endsWith('wildcard_mentioned'))) st.unreadMentions.add(m.id);
+          this.noteFlags(m.id, m.flags ?? []);
         }
         this.emitRead(this.convOf(m));
         return;
@@ -458,6 +468,7 @@ export class ZulipAdapter {
           st.forget(id);
           st.unread.delete(id);
           st.unreadMentions.delete(id);
+          st.unreadWildcards.delete(id);
           touched.add(conv);
         }
         for (const c of touched) this.emitRead(c);
@@ -487,6 +498,7 @@ export class ZulipAdapter {
               if (c) touched.add(c);
               st.unread.delete(id);
               st.unreadMentions.delete(id);
+              st.unreadWildcards.delete(id);
             }
           } else {
             for (const id of ids) {
@@ -495,10 +507,12 @@ export class ZulipAdapter {
               const conv = m ? this.convOf(m) : d ? (d.type === 'stream' ? this.ids.topic(d.stream_id, d.topic ?? '') : this.ids.dm([st.self, ...(d.user_ids ?? [])])) : null;
               if (!conv) continue;
               st.unread.set(id, conv);
-              if (d?.mentioned) st.unreadMentions.add(id);
+              if (m?.flags) this.noteFlags(id, m.flags);
+              else if (d?.mentioned) st.unreadMentions.add(id);
               touched.add(conv);
             }
-            await this.learnTimes(ids.filter((id) => !st.ts.has(id)));
+            // Their times where unknown, and a mention's flags where the message is not held.
+            await this.learnTimes(ids.filter((id) => !st.ts.has(id) || (st.unreadMentions.has(id) && !st.message(id))));
           }
           for (const c of touched) this.emitRead(c, ev.op === 'remove');
         } else if (ev.flag === 'starred') {
@@ -594,9 +608,19 @@ export class ZulipAdapter {
         for (const [id, e] of Object.entries<any>(ev.realm_emoji ?? {})) this.emoji.realm.set(id, { ...e, id });
         return;
       case 'user_group':
-        if (ev.op === 'add' && ev.group) st.groups.set(ev.group.id, ev.group);
-        else if (ev.op === 'remove') st.groups.delete(ev.group_id);
-        else if (ev.op === 'update' && st.groups.has(ev.group_id)) Object.assign(st.groups.get(ev.group_id)!, ev.data ?? {});
+        if (ev.op === 'add' && ev.group) {
+          // A new group: the people it was made with were given it.
+          const fresh = !st.groups.has(ev.group.id);
+          st.groups.set(ev.group.id, ev.group);
+          if (fresh) this.groupChanged(ev.group, ev.group.members ?? [], true);
+        } else if (ev.op === 'remove') st.groups.delete(ev.group_id);
+        else if (ev.op === 'update' && st.groups.has(ev.group_id)) {
+          const g = st.groups.get(ev.group_id)!;
+          const was = !!g.deactivated;
+          Object.assign(g, ev.data ?? {});
+          // Deactivated, or back again: everyone in it lost it, or has it again.
+          if (ev.data?.deactivated !== undefined && !!g.deactivated !== was) this.groupChanged({ ...g, deactivated: false }, g.members ?? [], !g.deactivated);
+        }
         else if (ev.op === 'add_members' && st.groups.has(ev.group_id)) {
           const g = st.groups.get(ev.group_id)!;
           const added = (ev.user_ids ?? []).filter((u: number) => !g.members.includes(u));
@@ -689,6 +713,12 @@ export class ZulipAdapter {
           st.presenceEnabled = !!ev.value;
           this.emitSelfState();
         }
+        // What notifies you changed: every channel and topic says its level again.
+        if (ev.property in NOTIFY_DEFAULTS && typeof ev.value === typeof NOTIFY_DEFAULTS[ev.property as keyof NotifySettings]) {
+          (st.notify as any)[ev.property] = ev.value;
+          for (const sub of st.subs.values()) this.emitConv(this.channelFact(sub));
+          for (const t of st.topics.values()) this.emitTopic(t.stream, t.name);
+        }
         return;
       case 'restart':
         return;
@@ -706,6 +736,7 @@ export class ZulipAdapter {
       const m = st.message(ev.message_id) ?? (await this.fetchMessages([ev.message_id]))[0];
       if (m) {
         m.content = ev.content;
+        const was = `${st.unreadMentions.has(m.id)}${st.unreadWildcards.has(m.id)}`;
         // Zulip works the mentions out again for the new words.
         if (Array.isArray(ev.flags)) m.flags = ev.flags;
         m.last_edit_timestamp = ev.edit_timestamp ?? Math.floor(Date.now() / 1000);
@@ -714,12 +745,8 @@ export class ZulipAdapter {
         this.emitMessage(m, { live: false });
         // A mention added or taken out by the edit changes an unread message's count.
         if (Array.isArray(ev.flags) && st.unread.has(m.id)) {
-          const mentions = ev.flags.some((f: string) => f === 'mentioned' || f.endsWith('wildcard_mentioned'));
-          if (mentions !== st.unreadMentions.has(m.id)) {
-            if (mentions) st.unreadMentions.add(m.id);
-            else st.unreadMentions.delete(m.id);
-            this.emitRead(this.convOf(m));
-          }
+          this.noteFlags(m.id, ev.flags);
+          if (`${st.unreadMentions.has(m.id)}${st.unreadWildcards.has(m.id)}` !== was) this.emitRead(this.convOf(m));
         }
       }
     }
@@ -781,8 +808,8 @@ export class ZulipAdapter {
       (s as any)[ev.property] = ev.value;
       if (ev.property === 'in_home_view') s.is_muted = !ev.value;
       this.emitConv(this.channelFact(s));
-      // A channel's mute is its topics' too, unless a topic says otherwise.
-      if (ev.property === 'is_muted' || ev.property === 'in_home_view') for (const t of st.topics.values()) if (t.stream === s.stream_id) this.emitTopic(t.stream, t.name);
+      // A channel's mute and notification settings are its topics' too, unless a topic says otherwise.
+      if (TOPIC_PROPS.has(ev.property)) for (const t of st.topics.values()) if (t.stream === s.stream_id) this.emitTopic(t.stream, t.name);
     }
   }
 
@@ -984,10 +1011,66 @@ export class ZulipAdapter {
       ...(s.description ? { topic: plainText(s.description) } : {}),
       spaces: this.spacesOf(s),
       archived: !!s.is_archived,
-      mute: s.is_muted || s.in_home_view === false ? { muted: true } : {},
+      mute: this.channelMute(s),
       forum: { tags: [], sort: 'activity', layout: 'list' },
       ...(newest ? { lastMessageAt: newest.ts } : {}),
     };
+  }
+
+  /**
+   * Does a channel notify every message, and do wildcard mentions notify there? As Zulip decides it: the channel's own
+   * setting, else the account's default (`receives_notifications` in Zulip's web/src/stream_data.ts; server side
+   * `user_allows_notifications_in_StreamTopic` in zerver/lib/notification_data.py). Desktop, push or sound: any.
+   */
+  private channelNotifies(sub: ZSub | undefined) {
+    const n = this.st.notify;
+    const on = (own: boolean | null | undefined, dflt: boolean) => own ?? dflt;
+    const every =
+      !!sub &&
+      (on(sub.desktop_notifications, n.enable_stream_desktop_notifications) ||
+        on(sub.push_notifications, n.enable_stream_push_notifications) ||
+        (n.notification_sound !== 'none' && on(sub.audible_notifications, n.enable_stream_audible_notifications)));
+    return { every, wildcards: on(sub?.wildcard_mentions_notify, n.wildcard_mentions_notify) };
+  }
+
+  /**
+   * A channel's own notification setting (NativeMute). Muted: nothing notifies but your name, and wildcards only where
+   * the channel itself (not the default) turns them on, as Zulip's message_is_notifiable has it.
+   */
+  channelMute(s: ZSub): P.NativeMute {
+    const c = this.channelNotifies(s);
+    if (s.is_muted || s.in_home_view === false) return { muted: true, level: 'mentions', suppressEveryone: s.wildcard_mentions_notify !== true };
+    return { ...(c.every ? { level: 'all' as const } : {}), suppressEveryone: !c.wildcards };
+  }
+
+  /**
+   * What a topic notifies, by its visibility policy (0 inherit, 1 muted, 2 unmuted, 3 followed), as Zulip's
+   * get_recipient_info (zerver/actions/message_send.py) and should_send_desktop_notification (web/src/
+   * message_notifications.ts) decide:
+   *  - muted: nothing but your name;
+   *  - inherit: as its channel (nothing is said here, so the channel's mute and level apply);
+   *  - unmuted in a muted channel: as the channel's settings say, as if the channel were not muted; elsewhere as inherit;
+   *  - followed: every message when the followed-topic notifications are on (desktop, push or sound), or the channel
+   *    notifies every message and is not muted; wildcards when the followed-topic wildcard setting is on, or the
+   *    channel's would let them through.
+   * A followed topic is never more than that: "every message" makes it as important as what Zulip notifies, never an
+   * alert by itself (dither-chat's triage).
+   */
+  topicNotify(sub: ZSub | undefined, policy: number): { mute: P.NativeMute; every: boolean } {
+    const n = this.st.notify;
+    const channelMuted = !!(sub?.is_muted || sub?.in_home_view === false);
+    const c = this.channelNotifies(sub);
+    // Muted: your name only. Said in full, or the channel's level and wildcards would show through.
+    if (policy === 1) return { mute: { muted: true, level: 'mentions', suppressEveryone: true }, every: false };
+    if (policy === 2 && channelMuted) return { mute: { level: c.every ? 'all' : 'mentions', suppressEveryone: !c.wildcards }, every: c.every };
+    if (policy === 3) {
+      const followed = n.enable_followed_topic_desktop_notifications || n.enable_followed_topic_push_notifications || (n.notification_sound !== 'none' && n.enable_followed_topic_audible_notifications);
+      const every = followed || (!channelMuted && c.every);
+      const wild = n.enable_followed_topic_wildcard_mentions_notify || (channelMuted ? sub?.wildcard_mentions_notify === true : c.wildcards);
+      // Said even where it is "mentions", so the muted channel's mute does not hold for it.
+      return { mute: { ...(every ? { level: 'all' as const } : channelMuted ? { level: 'mentions' as const } : {}), suppressEveryone: !wild }, every };
+    }
+    return { mute: channelMuted && policy === 0 ? { muted: true, level: 'mentions' } : {}, every: !channelMuted && c.every };
   }
 
   topicName(t: TopicInfo | undefined, raw?: string) {
@@ -1003,8 +1086,7 @@ export class ZulipAdapter {
     const ut = this.st.userTopics.get(this.st.topicKey(stream, topic));
     const sub = this.st.subs.get(stream);
     const policy = ut?.visibility_policy ?? 0;
-    const channelMuted = !!(sub?.is_muted || sub?.in_home_view === false);
-    const muted = policy === 1 || (channelMuted && policy === 0);
+    const n = this.topicNotify(sub, policy);
     const name = this.topicName(t, topic);
     return {
       nativeId: id,
@@ -1015,8 +1097,8 @@ export class ZulipAdapter {
       parentConversation: this.ids.channel(stream),
       // A resolved topic (Zulip's ✔) reads as archived: done, kept, still open to write in.
       archived: name.startsWith(RESOLVED),
-      mute: muted ? { muted: true } : policy === 3 || policy === 2 ? { level: 'all' } : {},
-      thread: { joined: policy === 3, ...(policy === 3 ? { notify: 'all' as const } : policy === 1 ? { muted: true } : {}) },
+      mute: n.mute,
+      thread: { joined: policy === 3, ...(policy === 3 ? { notify: n.every ? ('all' as const) : ('mentions' as const) } : policy === 1 ? { muted: true } : {}) },
       ...(t?.lastTs ? { lastMessageAt: t.lastTs } : {}),
     };
   }
@@ -1101,14 +1183,20 @@ export class ZulipAdapter {
     return out;
   }
 
+  /** Unread messages' times, and whether an unread mention among them was only a wildcard. */
   private async learnTimes(ids: number[]) {
-    for (const m of await this.fetchMessages(ids)) this.st.ts.set(m.id, msOf(m));
+    for (const m of await this.fetchMessages(ids)) {
+      this.st.ts.set(m.id, msOf(m));
+      if (m.flags && this.st.unreadMentions.has(m.id)) this.noteWildcard(m.id, m.flags);
+    }
   }
 
   /** A message as facts: its conversation (and topic, channel, people) first, then the message. */
   emitMessage(m: ZMessage, o: { live: boolean; late?: boolean; moved?: boolean }) {
     const st = this.st;
     st.remember(m);
+    // An unread mention from `/register` read now: its flags say whether it was only a wildcard.
+    if (m.flags && st.unreadMentions.has(m.id)) this.noteWildcard(m.id, m.flags);
     const conv = this.convOf(m);
     const ts = msOf(m);
     st.ts.set(m.id, ts);
@@ -1178,6 +1266,8 @@ export class ZulipAdapter {
     }
     const mentionsSelf = flags.some((f) => f === 'mentioned' || f.endsWith('wildcard_mentioned') || f === 'has_alert_word');
     const mentionsAll = mentionsSelf && !flags.includes('mentioned') && flags.some((f) => f.endsWith('wildcard_mentioned'));
+    // Zulip's `mentioned` is you by name or a group you are in: a group's when its words ping one of yours and not you.
+    const mentionsGroup = flags.includes('mentioned') && !parsed.pinged.people.includes(this.ids.user(st.self)) && parsed.pinged.groups.some((g) => this.inGroup(g));
     return {
       nativeId: this.ids.message(m.id),
       conversation: this.convOf(m),
@@ -1189,13 +1279,44 @@ export class ZulipAdapter {
       ...(parsed.replyTo ? { replyTo: parsed.replyTo } : {}),
       ...(mentionsSelf ? { mentionsSelf: true } : {}),
       ...(mentionsAll ? { mentionsAll: true } : {}),
+      ...(mentionsGroup ? { mentionsGroup: true } : {}),
       ...(parsed.attachments.length ? { attachments: parsed.attachments } : {}),
       reactions: [...reactions.values()],
       ...(Object.keys(extra).length ? { extra } : {}),
     };
   }
 
+  /** Is this account in the user group (`<host>/g/<id>`), directly or through its subgroups? */
+  inGroup(nativeId: string, seen = new Set<number>()): boolean {
+    const id = Number(nativeId.split('/g/')[1]);
+    const g = this.st.groups.get(id);
+    if (!g || seen.has(id)) return false;
+    seen.add(id);
+    if (g.members.includes(this.st.self)) return true;
+    return (g.direct_subgroup_ids ?? []).some((sub) => this.inGroup(`${this.ids.host}/g/${sub}`, seen));
+  }
+
   // ---------------------------------------------------------------- reading state
+
+  /**
+   * An unread message's flags, when read: whether it mentions this account, and whether only by a wildcard (@all,
+   * @topic), which the hub weighs less than you or your group (the read event's `wildcards`).
+   */
+  /** An unread mention's flags: only a wildcard, or you or your group. */
+  noteWildcard(id: number, flags: string[]) {
+    if (!flags.includes('mentioned') && flags.some((f) => f.endsWith('wildcard_mentioned'))) this.st.unreadWildcards.add(id);
+    else this.st.unreadWildcards.delete(id);
+  }
+
+  noteFlags(id: number, flags: string[]) {
+    const st = this.st;
+    const named = flags.includes('mentioned');
+    const wild = flags.some((f) => f.endsWith('wildcard_mentioned'));
+    if (named || wild) st.unreadMentions.add(id);
+    else st.unreadMentions.delete(id);
+    if (wild && !named) st.unreadWildcards.add(id);
+    else st.unreadWildcards.delete(id);
+  }
 
   /** A conversation's read point: just before its oldest unread message, or its newest message when none is unread. */
   emitRead(conv: string, manual = false) {
@@ -1203,17 +1324,19 @@ export class ZulipAdapter {
     let oldest = Infinity;
     let unread = 0;
     let mentions = 0;
+    let wildcards = 0;
     for (const [id, c] of st.unread) {
       if (c !== conv) continue;
       unread++;
       if (st.unreadMentions.has(id)) mentions++;
+      if (st.unreadMentions.has(id) && st.unreadWildcards.has(id)) wildcards++;
       const t = st.ts.get(id);
       if (t !== undefined && t < oldest) oldest = t;
     }
     const newest = st.newest.get(conv);
     const upToTs = unread ? (Number.isFinite(oldest) ? oldest - 1 : 0) : (newest?.ts ?? 0);
     if (!upToTs && !unread) return;
-    this.link.emit({ t: 'read', conversation: conv, upToTs, unread, mentions, ...(manual ? { manual: true } : {}) });
+    this.link.emit({ t: 'read', conversation: conv, upToTs, unread, mentions, wildcards, ...(manual ? { manual: true } : {}) });
   }
 
   emitReads() {
@@ -1547,7 +1670,7 @@ export class ZulipAdapter {
         const q = cmd.query.toLowerCase();
         const users = [...st.users.values()].filter((u) => u.is_active !== false && (!q || u.full_name.toLowerCase().startsWith(q) || !!this.handleOf(u)?.toLowerCase().startsWith(q))).slice(0, cmd.limit);
         for (const u of users) this.ensureIdentity(u.user_id);
-        this.link.emit({ t: 'members', space: this.ids.space, members: users.map((u) => ({ who: this.ids.user(u.user_id), ...(u.date_joined ? { joinedAt: Date.parse(u.date_joined) } : {}), roles: [about.roleName(u.role)] })), source: 'walk', total: [...st.users.values()].filter((u) => u.is_active !== false).length });
+        this.link.emit({ t: 'members', space: this.ids.space, members: users.map((u) => ({ who: this.ids.user(u.user_id), ...(u.date_joined ? { joinedAt: Date.parse(u.date_joined) } : {}), roles: [about.roleName(u.role), ...about.groupsOf(this, u.user_id)] })), source: 'walk', total: [...st.users.values()].filter((u) => u.is_active !== false).length });
         return { count: users.length, total: [...st.users.values()].filter((u) => u.is_active !== false).length } satisfies P.WalkResult;
       }
       case 'mentionables':

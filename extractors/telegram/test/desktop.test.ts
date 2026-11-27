@@ -4,9 +4,9 @@
  * auth.acceptLoginToken, or, refused, Telegram Desktop's key shared and read from tdata each start; an ended session
  * is not imported again by itself. test/telegram-desktop.test.ts runs the real sandbox with the fake Telegram Desktop.
  */
-import { afterAll, describe, expect, setDefaultTimeout, test } from 'bun:test';
+import { describe, expect, setDefaultTimeout, test } from 'bun:test';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as P from '@dither-chat/protocol';
@@ -16,12 +16,11 @@ import type { DesktopKey } from '../src/backend.ts';
 import type { DesktopHost, DesktopSignIn } from '../src/desktop.ts';
 import { FAKE_IDS, FakeTelegram } from '../src/fake.ts';
 import { keyFingerprint } from '../src/tdata.ts';
+import { harnesses, Waits } from './waits.ts';
 
 setDefaultTimeout(30_000);
 const dirs: string[] = [];
-afterAll(() => {
-  for (const d of dirs) rmSync(d, { recursive: true, force: true });
-});
+const track = harnesses<Harness>(dirs);
 const FAST = { spacing: { dialogs: 0, history: 0, send: 0, read: 0, media: 0, light: 0 }, perChatSendMs: 0 };
 type Ev = P.AdapterEvent;
 type Status = Extract<Ev, { t: 'status' }>;
@@ -70,6 +69,7 @@ const newKey = (): DesktopKey => {
 class Harness {
   events: Ev[] = [];
   logs: string[] = [];
+  waits = new Waits();
   /** The api_id of each client the adapter made (on Telegram Desktop's, it says it is Telegram Desktop: profile.ts). */
   apiIds: number[] = [];
   fake: FakeTelegram;
@@ -82,9 +82,17 @@ class Harness {
     if (!existsSync(join(dir, 'secret.json'))) writeSecretFile(join(dir, 'secret.json'), {});
     if (o.desktop) this.desktop = o.desktop;
     this.fake = new FakeTelegram({ dir, qrMs: 600 });
+    this.fake.onCall = () => this.waits.changed();
+    track(this);
     const host: Host = {
-      emit: (e) => this.events.push(e),
-      log: (l, m) => this.logs.push(`[${l}] ${m}`),
+      emit: (e) => {
+        this.events.push(e);
+        this.waits.changed();
+      },
+      log: (l, m) => {
+        this.logs.push(`[${l}] ${m}`);
+        this.waits.changed();
+      },
       accountDir: dir,
       config: o.config ?? { signIn: 'desktop' },
       secret: () => readSecretFile(join(dir, 'secret.json')),
@@ -107,13 +115,9 @@ class Harness {
   layers() {
     return this.status!.layers!.map((l) => [l.name, l.state]);
   }
-  async until(f: () => unknown, what: string, ms = 6000) {
-    const end = Date.now() + ms;
-    while (Date.now() < end) {
-      if (f()) return;
-      await Bun.sleep(10);
-    }
-    throw new Error(`timed out waiting for ${what}; last status ${JSON.stringify(this.status)}`);
+  /** Until f() holds: looked at as each event, log line or call to the fake comes (waits.ts). */
+  until(f: () => unknown, what: string) {
+    return this.waits.until(f, what);
   }
   action(action: string, args?: unknown) {
     return this.adapter.command({ t: 'action', id: 'x', action, args } as P.AdapterCommand);

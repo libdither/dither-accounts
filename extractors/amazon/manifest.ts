@@ -11,6 +11,7 @@ export default {
   name: 'Amazon orders',
   interfaces: ['statements', 'browser'],
   entry: 'src/main.ts',
+  screen: true,
   add: {
     blurb:
       "Reads your Amazon order history (Your Orders and each order's details) in a sandboxed browser on this machine, once a day at a person's pace, for an app such as dither-finance. When Amazon asks for your password again the stored one answers; a captcha or a code stops the pull until you clear it in the live view. Read only: it cannot order, cancel or return.",
@@ -21,4 +22,7 @@ export default {
     ],
     next: 'Open its live view and sign in to Amazon once (or let the first pull do it with the password). It pulls once a day; a captcha shows up here as an attention with the live view.',
   },
+  // A daily pull and the odd browser call: asleep in between (docs/supervisor.md "Sleeping"), woken for the pull and,
+  // every few hours, to open Amazon once so its long-lived sign-in is used.
+  sleep: { idleMinutes: 20, keepAliveHours: 6 },
 } satisfies Manifest;

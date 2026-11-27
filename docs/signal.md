@@ -91,7 +91,7 @@ Mapped into `MessageFact.extra` under the keys dither-chat's protocol names (`ex
 | an attachment with no `id`, or whose file is not there | `extra.missingAttachments` (`name, mime, size`) | signal-cli downloads a message's files before it hands the message over, so a file not there failed or was skipped |
 | `sourceDevice`, `serverReceivedTimestamp`, `serverDeliveredTimestamp` | `extra.sourceDevice`, `serverReceivedTs`, `serverDeliveredTs` | not for edits |
 | a `receive` with an `exception` and nothing readable, from someone else | a system message in your 1:1 with them, "A message from Sam could not be decrypted.", id `<author>:<ts>:undecrypted` | once per message; none for `…Duplicate…` or `SelfSend…` exceptions. The warning is logged as before. Reading up to it (`markRead`) acknowledges what came before it and sends no receipt for the line itself |
-| your `send`'s `results[]` that are not `SUCCESS` (some of a group) | `extra.failed` on the echo (`who, number, reason`) | when nobody gets it signal-cli fails the call, as before |
+| your `send`'s `results[]` that are not `SUCCESS` (some of a group) | `extra.failed` on the echo (`who, number, reason`) | when nobody gets it signal-cli fails the call, as before. `UNREGISTERED_FAILURE` (they left Signal) is left out, as Signal's apps leave it out: it would come back on every message to that group |
 
 What you send:
 
@@ -346,6 +346,29 @@ the lab is done.
 The tunnel is [signal-call-tunnel](https://github.com/visigoth/signal-call-tunnel) (RingRTC 2.65); signal-cli added
 calls in 0.14.2 ([CHANGELOG](https://github.com/AsamK/signal-cli/blob/master/CHANGELOG.md)) and has an open request
 for video ([#1735](https://github.com/AsamK/signal-cli/issues/1735)).
+
+## Memory
+
+signal-cli is a Java program, and left to its defaults the JVM may take a quarter of the machine's RAM for heap; its
+G1 collector grows the heap to hundreds of MB under a burst of work and keeps it, though a linked device holds 40 to
+90 MB of heap in use after hours of running. So the extractor starts signal-cli with
+
+    -Xmx256m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError
+
+in `JDK_JAVA_OPTIONS`, which the `java` launcher reads whatever script starts it (signal-cli's own, nixpkgs'
+wrapper): a heap of at most 256 MB, the serial collector (one thread, and it gives memory back), the quick compiler
+alone (no second compiler's threads and code cache; signal-cli's cryptography is native code anyway), and an exit
+when the heap runs out. Java says `NOTE: Picked up JDK_JAVA_OPTIONS: …` on stderr at each start; the extractor leaves
+it out of its error lines.
+
+Measured with signal-cli 0.14.8 on a throwaway config with no account, idle and then after forty 4 MB JSON-RPC
+requests: 144 MB and 477 MB (PSS) with the JVM's defaults, 128 MB and 202 MB with these options, no
+`OutOfMemoryError`.
+
+`SIGNAL_CLI_JAVA_OPTIONS` in the extractor's environment replaces the options (for a larger heap, `-Xmx512m
+-XX:+UseSerialGC`; empty for the JVM's defaults). Options already in `JDK_JAVA_OPTIONS` come after these, so they
+win. A daemon that runs out of heap exits (`Terminating due to java.lang.OutOfMemoryError` in the account's log) and
+is restarted like any daemon that ends; raise the cap if that repeats.
 
 ## Not built
 

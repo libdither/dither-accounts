@@ -15,7 +15,7 @@ import type { Notification, Urgency } from '@dither-accounts/interfaces';
 import type { Config, Source } from './config.ts';
 import { clip, fingerprint } from './normalize.ts';
 import { expand, lineTime, oldestTime, parseErrorsLine, parseSpanLine, parseTextLines, type Rec, tail } from './readers.ts';
-import { type Around, type Bug, BUCKET_MS, countBetween, DAY, HOUR, prune, type Reason, type Sample, type State, type ThreadRecord } from './state.ts';
+import { type Around, type Bug, BUCKET_MS, countBetween, DAY, HOUR, prune, type Reason, type Sample, type State, type ThreadRecord, type Verdict } from './state.ts';
 
 export interface RunResult {
   code: number | null;
@@ -52,10 +52,35 @@ export const AROUND_FILES = 6;
 export const FOLLOW_EVERY_MS = 30 * 60_000;
 /** A thread is not followed past this age. */
 export const FOLLOW_FOR_MS = 3 * DAY;
+/** Another bug first seen this close to a bug's first sighting is listed in its brief as perhaps the same incident. */
+export const RELATED_WINDOW_MS = 10 * 60_000;
+/** At most this many related bugs in a brief. */
+export const RELATED_MAX = 8;
 const LEVEL = /^(?:\S+Z )?\[(?:warn|error)\] /;
 export const SOURCE = 'bugwatch';
 const RANK: Record<Reason, number> = { new: 3, always: 2, spike: 1 };
 const KIND_ORDER = { 'errors-ndjson': 0, 'text-log': 1, 'trace-ndjson': 2 } as const;
+
+/**
+ * What kind of error it is, from its name and message alone. `code`: the program broke its own assumptions (a
+ * TypeError on null, a call on the wrong object, a function that isn't one), which is a bug the first time it happens.
+ * `resource`: the machine ran out of something (disk, memory, file handles), which gets worse if left. Anything else
+ * (a refusal, a timeout, a network failure) may be the world rather than the code, so triage waits to see it again.
+ * A browser's network failure is a TypeError too ("Failed to fetch"), so a TypeError about fetching or the network is
+ * not `code`.
+ */
+export type ErrorKind = 'code' | 'resource';
+const RESOURCE = /ENOSPC|no space left|EMFILE|too many open files|ENOMEM|out of memory|heap limit|SQLITE_FULL|database or disk is full/i;
+const CODE_MESSAGE = /Cannot (?:read|set) propert|is not a function|is not defined|is not a constructor|is not iterable|Illegal invocation|undefined is not an object|null is not an object|Maximum call stack|Cannot access .* before initialization/i;
+const CODE_NAME = /^(?:TypeError|ReferenceError|RangeError)$/;
+const NETWORK = /fetch|network|load failed|abort|socket|connection|timed? ?out/i;
+
+export function errorKind(name: string, message: string): ErrorKind | null {
+  if (RESOURCE.test(`${name}: ${message}`)) return 'resource';
+  if (CODE_MESSAGE.test(message)) return 'code';
+  if (CODE_NAME.test(name) && !NETWORK.test(message)) return 'code';
+  return null;
+}
 
 export const noticeId = (bugId: string) => `bug:${bugId}`;
 export const bugIdOf = (id: string) => id.replace(/^bug:/, '');
@@ -260,8 +285,14 @@ export class Watch {
     return this.cfg.ignore.some((re) => texts.some((t) => re.test(t)));
   }
 
+  /**
+   * One record into its bug. Its writer's kind (Rec.kind) decides first: an `expected` one is no bug and is dropped; a
+   * `transient` one is counted, so a run of them shows as a spike, but one alone raises nothing (it is the world, not
+   * the code). A bug whose records were all transient is raised as new by its first record that is not.
+   */
   private ingest(src: Source, r: Rec, raised: Map<string, Reason>, touched: Set<Bug>) {
-    if (this.ignored(r)) return;
+    if (r.kind === 'expected' || this.ignored(r)) return;
+    const passing = r.kind === 'transient';
     const fp = fingerprint({ sourceName: src.name, source: r.source, where: r.where, name: r.name, message: r.message, stack: r.stack }, src.project);
     let b = this.st.bugs[fp.id];
     const prevLast = b?.last;
@@ -281,8 +312,11 @@ export class Watch {
         buckets: {},
         samples: [],
         crash: false,
+        ...(passing ? { transient: true } : {}),
       };
     }
+    const wasTransient = b.transient === true;
+    if (!passing && wasTransient) delete b.transient;
     b.count += r.count;
     const k = String(Math.floor(r.at / BUCKET_MS));
     b.buckets[k] = (b.buckets[k] ?? 0) + r.count;
@@ -301,7 +335,7 @@ export class Watch {
       if (this.pending.length > 50) this.pending.shift();
     }
 
-    if (prevLast === undefined || r.at - prevLast > NEW_AFTER) this.raise(b, 'new', raised);
+    if (!passing && (prevLast === undefined || wasTransient || r.at - prevLast > NEW_AFTER)) this.raise(b, 'new', raised);
     const rule = this.cfg.always.find((a) => a.match.test(`${r.source}/${r.where}`));
     if (rule && (!b.lastAlwaysAt || r.at - b.lastAlwaysAt >= rule.gapHours * HOUR)) {
       b.lastAlwaysAt = r.at;
@@ -350,12 +384,13 @@ export class Watch {
   // ---------------------------------------------------------------- triage
 
   /**
-   * Is it worth a thread now: a spike, an `always` rule, a crash, or a new bug seen again recurMinutes or more after
-   * its first sighting. A one-off that recovers on its own waits (held) and gets none unless it comes back.
+   * Is it worth a thread now: a spike, an `always` rule, a crash, a code or resource error (errorKind: a bug the first
+   * time), or a new bug seen again recurMinutes or more after its first sighting. A one-off that recovers on its own
+   * waits (held) and gets none unless it comes back.
    */
   persists(b: Bug, reason: Reason): boolean {
     const t = this.cfg.threads;
-    if (reason !== 'new' || b.crash || !t || t.recurMinutes <= 0) return true;
+    if (reason !== 'new' || b.crash || errorKind(b.name, b.message) || !t || t.recurMinutes <= 0) return true;
     return b.last - b.first >= t.recurMinutes * 60_000;
   }
 
@@ -366,11 +401,19 @@ export class Watch {
     return !!s?.project && !!s.base;
   }
 
-  /** The queue, most frequent first; past queueMax the rest are left out (and say so). */
+  /**
+   * The queue: crashes and resources running out first, then code errors, then the rest; the most frequent first within
+   * each (a count mostly measures how often something retries, not how bad it is). Past queueMax the rest are left out
+   * (and say so).
+   */
   queue(): Bug[] {
+    const rank = (b: Bug) => {
+      const k = errorKind(b.name, b.message);
+      return b.crash || k === 'resource' ? 2 : k === 'code' ? 1 : 0;
+    };
     return Object.values(this.st.bugs)
-      .filter((b) => b.queued !== undefined && !b.muted && !b.thread)
-      .sort((a, b) => b.count - a.count || a.queued! - b.queued!);
+      .filter((b) => b.queued !== undefined && !b.muted && !b.thread && !b.joined)
+      .sort((a, b) => rank(b) - rank(a) || b.count - a.count || a.queued! - b.queued!);
   }
 
   private trimQueue() {
@@ -393,6 +436,15 @@ export class Watch {
   async pump(): Promise<void> {
     if (this.pumping) return this.pumping;
     const p = (async () => {
+      // One failure seen from two places (the hub and the manager, a request and its job) is one bug: a queued bug that
+      // shares a trace with one whose thread is still recent joins that thread instead of starting its own.
+      for (const b of this.queue()) {
+        const host = this.threadSharingTrace(b);
+        if (!host) continue;
+        b.queued = undefined;
+        b.joined = host.id;
+        this.deps.log('info', `bug ${b.id} shares a trace with bug ${host.id}: no thread of its own, that one's covers both`);
+      }
       // A bug whose latest occurrence still waits for its context starts a scan or two later, with it.
       const next = this.queue().find((b) => !this.pending.some((p) => p.bug === b));
       if (next && this.canStart()) await this.startThread(next);
@@ -404,6 +456,36 @@ export class Watch {
     } finally {
       if (this.pumping === p) this.pumping = null;
     }
+  }
+
+  private traceIds(b: Bug): Set<string> {
+    return new Set(b.samples.flatMap((s) => (s.trace ? [s.trace] : [])));
+  }
+
+  /** Another bug with a trace in common whose thread started (not failed) within FOLLOW_FOR_MS. */
+  private threadSharingTrace(b: Bug): Bug | undefined {
+    const mine = this.traceIds(b);
+    if (!mine.size) return undefined;
+    const now = this.deps.now();
+    return Object.values(this.st.bugs).find((o) => o !== b && o.thread && !o.thread.failed && now - o.thread.at < FOLLOW_FOR_MS && o.samples.some((s) => s.trace && mine.has(s.trace)));
+  }
+
+  /**
+   * Bugs that may be the same incident or the same mistake, for the brief: those sharing a trace with it, those with
+   * the same error (name and message) somewhere else that a thread looked at, and those first seen within
+   * RELATED_WINDOW_MS of its first sighting. At most RELATED_MAX, in that order.
+   */
+  related(b: Bug): { bug: Bug; why: string }[] {
+    const mine = this.traceIds(b);
+    const others = Object.values(this.st.bugs).filter((o) => o !== b);
+    const out: { bug: Bug; why: string }[] = [];
+    const add = (list: Bug[], why: (o: Bug) => string) => {
+      for (const o of list.sort((x, y) => y.last - x.last)) if (!out.some((r) => r.bug === o)) out.push({ bug: o, why: why(o) });
+    };
+    add(others.filter((o) => o.samples.some((s) => s.trace && mine.has(s.trace))), () => 'shares a trace with it');
+    add(others.filter((o) => o.name === b.name && o.message === b.message && (o.thread || o.verdicts?.length)), (o) => `the same error, in \`${o.sourceName}\` at \`${o.where}\``);
+    add(others.filter((o) => Math.abs(o.first - b.first) <= RELATED_WINDOW_MS), (o) => `first seen ${Math.round(Math.abs(o.first - b.first) / 60_000)} min ${o.first < b.first ? 'before' : 'after'} it`);
+    return out.slice(0, RELATED_MAX);
   }
 
   threadTitle(b: Bug) {
@@ -465,6 +547,10 @@ export class Watch {
       if (rec) {
         if (old) rec.done = true;
         t.record = rec;
+        if (rec.verdict || rec.class || rec.cause) {
+          const v: Verdict = { thread: t.id!, at: now, ...(rec.verdict ? { verdict: rec.verdict } : {}), ...(rec.class ? { class: rec.class } : {}), ...(rec.cause ? { cause: rec.cause } : {}) };
+          due.verdicts = [...(due.verdicts ?? []).filter((x) => x.thread !== v.thread), v].slice(-5);
+        }
       } else {
         const how = r.timedOut ? 'it timed out' : r.code === null ? 'it could not run' : r.code === 0 ? 'its output was not a thread' : `exit code ${r.code}`;
         t.record = { ...t.record, checkedAt: now, error: how, ...(old ? { done: true } : {}) };
@@ -533,6 +619,24 @@ export class Watch {
     const reach = this.reach()
       .map((r) => `- \`${r.name}\` (${r.kind}, ${plural(r.files, 'file')}): ${r.from === null ? 'no dated line in it' : `from ${when(r.from)}`}`)
       .join('\n');
+    const verdictText = (v: Verdict) => [v.verdict && `verdict: ${v.verdict}`, v.class && `class: ${v.class}`, v.cause && `design cause: ${v.cause}`].filter(Boolean).join('; ');
+    const threadText = (o: Bug) => {
+      const v = o.verdicts?.at(-1);
+      if (v) return `its thread (${v.thread}, ${when(v.at)}) said ${verdictText(v)}`;
+      if (o.thread?.failed) return 'its thread failed to start';
+      if (o.thread) return `a thread looked at it (${o.thread.id ?? o.thread.title}, ${when(o.thread.at)}) and left no verdict line`;
+      if (o.joined) return `it joined bug \`${o.joined}\`'s thread`;
+      return 'no thread';
+    };
+    const rel = this.related(b);
+    const own = (b.verdicts ?? []).map((v) => `- This fingerprint's earlier thread (${v.thread}, ${when(v.at)}) said ${verdictText(v)}.`);
+    const related = [
+      ...own,
+      ...rel.map(({ bug: o, why }) => `- \`${o.id}\` ${this.title(o)}: ${why}; ${plural(o.count, 'time')}, ${when(o.first)} to ${when(o.last)}; ${threadText(o)}.`),
+    ];
+    const relatedText = related.length
+      ? related.join('\n')
+      : `None: no other bug shares a trace with it, has the same error elsewhere, or was first seen within ${RELATED_WINDOW_MS / 60_000} minutes of it.`;
     const trace = [...b.samples].reverse().find((x) => x.trace)?.trace;
     const data = s?.data ?? (s ? (s.path.includes('/traces/') ? s.path.slice(0, s.path.lastIndexOf('/traces/')) : dirname(s.path)) : '');
     const how = trace
@@ -557,10 +661,16 @@ export class Watch {
       samples,
       trace: how,
       reach,
+      related: relatedText,
+      kind: (() => {
+        const k = errorKind(b.name, b.message);
+        return k === 'code' ? '- Its kind: a code error (the program broke its own assumption), a bug the first time it happens.' : k === 'resource' ? '- Its kind: the machine ran out of something (disk, memory, file handles).' : '';
+      })(),
       budget: String(this.cfg.threads?.budgetMinutes ?? 60),
       recur: b.last - b.first >= 60_000 ? `- Seen over ${Math.round((b.last - b.first) / 60_000)} minutes, from the first sighting to the last: not a one-off.` : '',
     };
-    let out = this.deps.briefTemplate.replace(/\{\{(\w+)\}\}/g, (m, k: string) => values[k] ?? m);
+    // A line that is only a placeholder left empty (no recurrence, no kind) goes, so it leaves no gap in its list.
+    let out = this.deps.briefTemplate.replace(/^\{\{(\w+)\}\}\n/gm, (m, k: string) => (values[k] === '' ? '' : m)).replace(/\{\{(\w+)\}\}/g, (m, k: string) => values[k] ?? m);
     for (const a of this.cfg.briefs) {
       if (!a.match.test(b.text)) continue;
       try {
@@ -582,6 +692,10 @@ export class Watch {
     const t = this.cfg.threads;
     if (b.thread?.failed) return `Starting a T3 thread failed (${b.thread.failed}): the bugwatch account's log says more.`;
     if (b.thread) return b.notice && b.notice.at > b.thread.at + 60_000 ? `A T3 thread already looked into it (${b.thread.title}).` : `A T3 thread is looking into it (${b.thread.title}).`;
+    if (b.joined) {
+      const host = this.st.bugs[b.joined];
+      return host?.thread ? `No T3 thread of its own: it shares a trace with ${this.title(host)}, whose thread (${host.thread.title}) covers both.` : 'No T3 thread of its own: it shares a trace with a bug that had one.';
+    }
     if (b.held && t) return `No T3 thread yet: one starts if it comes back ${plural(t.recurMinutes, 'minute')} or more after it was first seen (a one-off that recovers on its own gets none).`;
     if (b.queued !== undefined && t) return `A T3 thread will start when the limits allow (one every ${plural(t.gapMinutes, 'minute')}, ${t.dayMax} a day).`;
     if (!t) return 'No T3 thread: threads are not set up in the config.';
@@ -600,7 +714,7 @@ export class Watch {
       const mean = countBetween(b, now - 7 * DAY - HOUR, now - HOUR) / (7 * 24);
       seen += `, ${lastHour} in the last hour against about ${mean.toFixed(1)} an hour over the week before`;
     }
-    const urgency: Urgency = b.crash ? 'high' : 'normal';
+    const urgency: Urgency = b.crash || errorKind(b.name, b.message) === 'resource' ? 'high' : 'normal';
     return {
       id: noticeId(b.id),
       source: SOURCE,
@@ -609,7 +723,7 @@ export class Watch {
       url: null,
       reason: n.reason,
       context: b.sourceName,
-      subject: { kind: 'bug', title: clip(`${b.name}: ${b.message}`, 200), url: null, state: b.thread?.failed ? 'thread-failed' : b.thread ? 'thread' : b.queued !== undefined ? 'queued' : b.held ? 'held' : 'no-thread' },
+      subject: { kind: 'bug', title: clip(`${b.name}: ${b.message}`, 200), url: null, state: b.thread?.failed ? 'thread-failed' : b.thread ? 'thread' : b.joined ? 'joined' : b.queued !== undefined ? 'queued' : b.held ? 'held' : 'no-thread' },
       actors: [],
       at: n.at,
       unread: n.unread,
@@ -669,6 +783,7 @@ export class Watch {
     const b = this.st.bugs[bugIdOf(id)];
     if (!b) return false;
     b.thread = undefined;
+    b.joined = undefined;
     b.dropped = false;
     b.muted = false;
     b.held = false;
@@ -711,5 +826,26 @@ export function parseThreadRecord(stdout: string, now: number): ThreadRecord | n
   if (Number.isFinite(created) && Number.isFinite(updated) && updated >= created) rec.minutes = Math.round((updated - created) / 6_000) / 10;
   if (rec.status === undefined && rec.runs === undefined && rec.items === undefined) return null;
   if (t.settled === true || t.archived === true) rec.done = true;
+  Object.assign(rec, verdictLines(j?.messages));
   return rec;
+}
+
+/**
+ * The `Verdict:`, `Class:` and `Design cause:` lines of a thread's latest reply (threads.show's `messages`, as
+ * `t3 thread show --json --messages 1` prints them), each at most 200 characters; bold or a list mark around a label is
+ * fine. The thread's own words about the bug, kept for later briefs: never sent in a notice.
+ */
+export function verdictLines(messages: unknown): Pick<ThreadRecord, 'verdict' | 'class' | 'cause'> {
+  if (!Array.isArray(messages)) return {};
+  const last = [...messages].reverse().find((m) => m && typeof m === 'object' && (m as any).role === 'assistant' && typeof (m as any).text === 'string') as { text: string } | undefined;
+  if (!last) return {};
+  const out: Pick<ThreadRecord, 'verdict' | 'class' | 'cause'> = {};
+  const keys = { verdict: 'verdict', class: 'class', 'design cause': 'cause' } as const;
+  for (const line of last.text.split('\n')) {
+    const m = /^\s*(?:[-*]\s+)?[*_]*(verdict|class|design cause)[*_]*\s*:\s*[*_]*\s*(.+?)\s*$/i.exec(line);
+    if (!m) continue;
+    const k = keys[m[1]!.toLowerCase() as keyof typeof keys];
+    out[k] ??= clip(m[2]!.replace(/^[*_]+|[*_]+$/g, '').trim(), 200);
+  }
+  return out;
 }

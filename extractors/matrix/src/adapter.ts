@@ -48,6 +48,8 @@ const VERIFY_SYNC_TIMEOUT = 5_000;
 const VERIFY_SYNC_GIVE_UP = 20_000;
 const TIMELINE_LIMIT = 50;
 const GAP_PAGES = 4;
+/** A history page before a time, on a server that cannot jump to one: at most this many pages skipped to reach it. */
+const SKIP_PAGES = 20;
 const MAX_MEDIA = 24 * 1024 * 1024;
 const KEEP_EVENTS = 200_000;
 const BACKOFF = [1, 2, 5, 10, 30, 60];
@@ -123,11 +125,25 @@ interface Ctx {
   mode: Mode;
   /** Message facts emitted (history replies with this). */
   count: number;
-  /** The ts of the oldest of them (history's `oldest`). */
-  oldest?: number;
+  /**
+   * History only: count just the message facts for this conversation (a room's page also brings its threads'
+   * replies), the tombstones and edited messages it sends again too.
+   */
+  conversation?: string;
   /** Their native ids, in the order emitted (search's hits). */
   hits?: string[];
 }
+
+/** A page of events going back, newest first; `end` goes on from it, left out when nothing is older. */
+type Chunk = { chunk: MxEvent[]; end?: string };
+
+/** `next` is where the page stopped; without one, the server had nothing older. */
+const historyResult = (ctx: Ctx, oldest: number | undefined, next: string | undefined): P.HistoryResult => ({
+  count: ctx.count,
+  done: !next,
+  ...(oldest !== undefined ? { oldest } : {}),
+  ...(next ? { next } : {}),
+});
 
 class NeedsLogin extends Error {}
 class Restart extends Error {}
@@ -977,11 +993,14 @@ export class MatrixAdapter {
     const f = this.buildMessage(room, ev, conv, ctx);
     if (f) {
       this.hub.emit({ t: 'message', message: f, live: ctx.live });
-      ctx.count++;
-      if (ctx.oldest === undefined || f.ts < ctx.oldest) ctx.oldest = f.ts;
+      this.counted(f, ctx);
       ctx.hits?.push(f.nativeId);
     }
     if (conv !== room.id) this.bumpThread(conv, ev);
+  }
+
+  private counted(f: P.MessageFact, ctx: Ctx) {
+    if (ctx.conversation === undefined || f.conversation === ctx.conversation) ctx.count++;
   }
 
   /** The latest valid replacement of a message, from our index or bundled by the server. */
@@ -1107,7 +1126,10 @@ export class MatrixAdapter {
     if (row?.json) {
       const original = JSON.parse(row.json) as MxEvent;
       const f = this.buildMessage(room, original, row.conv, ctx);
-      if (f) this.hub.emit({ t: 'message', message: f, live: ctx.live });
+      if (f) {
+        this.hub.emit({ t: 'message', message: f, live: ctx.live });
+        if (ctx.conversation !== undefined) this.counted(f, ctx);
+      }
       return;
     }
     // Older than anything we have: when backfilling it will be paged in (and pick the edit up); otherwise fetch it.
@@ -1173,7 +1195,9 @@ export class MatrixAdapter {
     if (known?.redacted) return;
     const conv = known?.conv ?? room.id;
     if (!known?.json) {
-      this.hub.emit({ t: 'message', live: false, message: { nativeId: ev.event_id, conversation: conv, author: ev.sender, ts: ev.origin_server_ts, kind: 'text', body: '' } });
+      const f: P.MessageFact = { nativeId: ev.event_id, conversation: conv, author: ev.sender, ts: ev.origin_server_ts, kind: 'text', body: '' };
+      this.hub.emit({ t: 'message', live: false, message: f });
+      if (ctx.conversation !== undefined) this.counted(f, ctx);
     }
     this.db.putEvent(ev, room.id, conv, false);
     this.db.markRedacted(ev.event_id);
@@ -1389,7 +1413,7 @@ export class MatrixAdapter {
       case 'openDirect':
         return openDirect(this.directHost(), cmd.peer);
       case 'history':
-        return this.history(cmd.conversation, cmd.limit);
+        return this.history(cmd);
       case 'search':
         return this.search(cmd);
       case 'markRead':
@@ -1810,40 +1834,142 @@ export class MatrixAdapter {
     return { ok: true };
   }
 
-  private async history(conversation: string, limit: number): Promise<P.HistoryResult> {
-    const { roomId, root } = splitConversation(conversation);
+  /**
+   * One page of history: message facts for the page, then how far back it read.
+   *
+   * - `cursor` (a page's `next`, a /messages token): on from there.
+   * - `beforeTs` alone: from the last event before that time (timestamp_to_event, MSC3030, then /context for a
+   *   token), or on a server without it, back from now skipping what is newer.
+   * - Neither: on from where the last such page ended (room.backToken, which gap fill moves too).
+   *
+   * Events at or after beforeTs are left to newer pages (after a cursor only those after it: ones at it can be what
+   * the page before had no room for). `oldest` is the oldest event read, a reaction, an edit or a thread's reply as
+   * much as a message, so a page of only those still moves the walk on; `count` is this conversation's messages.
+   * `done` only when the server has nothing older.
+   */
+  private async history(cmd: Extract<P.AdapterCommand, { t: 'history' }>): Promise<P.HistoryResult> {
+    const { roomId, root } = splitConversation(cmd.conversation);
     const room = this.joinedRoom(roomId);
-    const want = Math.max(1, Math.min(limit || 50, 200));
-    const ctx: Ctx = { live: false, mode: 'history', count: 0 };
-    if (root) return this.threadHistory(room, root, want, ctx);
-    for (let page = 0; page < 6 && ctx.count < want && room.backToken; page++) {
-      const res: any = await this.api().request('GET', `/_matrix/client/v3/rooms/${enc(room.id)}/messages`, {
-        query: { from: room.backToken, dir: 'b', limit: Math.min(100, want - ctx.count + 10), filter: LAZY },
-      });
-      this.historyMembers(room, res.state);
-      await this.processTimeline(room, [...(res.chunk ?? [])].reverse(), ctx);
-      room.backToken = typeof res.end === 'string' && res.end && res.chunk?.length ? res.end : '';
-      this.db.saveRoom(room);
+    const want = Math.max(1, Math.min(cmd.limit || 50, 200));
+    const ctx: Ctx = { live: false, mode: 'history', count: 0, conversation: cmd.conversation };
+    if (root) return this.threadHistory(room, root, want, ctx, cmd);
+    const page = (from?: string) => this.messagesPage(room, from, Math.min(100, want - ctx.count + 10));
+    const r = this.reader(room, ctx, cmd.beforeTs, cmd.cursor !== undefined);
+    if (cmd.cursor === undefined && cmd.beforeTs === undefined) {
+      for (let n = 0; n < 6 && ctx.count < want && room.backToken; n++) {
+        const res = await page(room.backToken);
+        await r.read(res.chunk);
+        room.backToken = res.end ?? '';
+        this.db.saveRoom(room);
+      }
+      return historyResult(ctx, r.oldest, room.backToken || undefined);
     }
-    return { count: ctx.count, done: !room.backToken, ...(ctx.oldest !== undefined ? { oldest: ctx.oldest } : {}) };
+    let token = cmd.cursor;
+    if (token === undefined) {
+      const start = await this.startBefore(room, cmd.beforeTs!, r.keep);
+      if (!start) return { count: 0, done: true };
+      await r.read(start.chunk);
+      token = start.end;
+    }
+    for (let n = 0; n < 6 && ctx.count < want && token; n++) {
+      const res = await page(token);
+      await r.read(res.chunk);
+      token = res.end;
+    }
+    return historyResult(ctx, r.oldest, token);
   }
 
-  private async threadHistory(room: Room, root: string, want: number, ctx: Ctx): Promise<P.HistoryResult> {
+  /** GET /messages backwards from `from` (from now without one). `end` is left out when the server has nothing older. */
+  private async messagesPage(room: Room, from: string | undefined, limit = 100): Promise<Chunk> {
+    const res: any = await this.api().request('GET', `/_matrix/client/v3/rooms/${enc(room.id)}/messages`, { query: { from, dir: 'b', limit, filter: LAZY } });
+    this.historyMembers(room, res.state);
+    return { chunk: Array.isArray(res.chunk) ? res.chunk : [], end: typeof res.end === 'string' && res.end && res.end !== from ? res.end : undefined };
+  }
+
+  /**
+   * Where a page before `ts` starts: the last event before it, and a token back from there. null: nothing in the
+   * room is older. A server without timestamp_to_event pages back from now instead, skipping what `keep` does not.
+   */
+  private async startBefore(room: Room, ts: number, keep: (ev: MxEvent) => boolean): Promise<Chunk | null> {
+    let found: any;
+    try {
+      found = await this.api().request('GET', `/_matrix/client/v1/rooms/${enc(room.id)}/timestamp_to_event`, { query: { ts: ts - 1, dir: 'b' } });
+    } catch (e) {
+      if (!(e instanceof MatrixError)) throw e;
+      if (e.errcode === 'M_NOT_FOUND') return null;
+      if (e.errcode !== 'M_UNRECOGNIZED' && e.status !== 404 && e.status !== 405) throw e;
+      found = null;
+    }
+    if (typeof found?.event_id !== 'string') return this.skipTo((from) => this.messagesPage(room, from), this.db.get('since') ?? undefined, keep);
+    const c: any = await this.api().request('GET', `/_matrix/client/v3/rooms/${enc(room.id)}/context/${enc(found.event_id)}`, { query: { limit: 0, filter: LAZY } });
+    this.historyMembers(room, c.state);
+    return { chunk: c.event?.event_id ? [c.event] : [], end: typeof c.start === 'string' && c.start ? c.start : undefined };
+  }
+
+  /** Pages back from `from` until one holds an event with a time `keep` keeps: that page, or null when none is older. */
+  private async skipTo(page: (from?: string) => Promise<Chunk>, from: string | undefined, keep: (ev: MxEvent) => boolean): Promise<Chunk | null> {
+    for (let n = 0; n < SKIP_PAGES; n++) {
+      const res = await page(from);
+      if (res.chunk.some((ev) => typeof ev?.origin_server_ts === 'number' && keep(ev))) return res;
+      if (!res.end) return null;
+      from = res.end;
+    }
+    throw new Error(`history: the time asked for is more than ${SKIP_PAGES} pages back, and this server cannot jump to a time`);
+  }
+
+  /** What a history page reads of the events it is given (newest first), and the oldest time among them. */
+  private reader(room: Room, ctx: Ctx, beforeTs: number | undefined, atToo: boolean) {
+    const keep = (ev: MxEvent) => beforeTs === undefined || typeof ev?.origin_server_ts !== 'number' || (atToo ? ev.origin_server_ts <= beforeTs : ev.origin_server_ts < beforeTs);
+    const r = {
+      oldest: undefined as number | undefined,
+      keep,
+      read: async (events: MxEvent[]) => {
+        const kept = events.filter(keep);
+        for (const ev of kept) if (typeof ev?.origin_server_ts === 'number' && (r.oldest === undefined || ev.origin_server_ts < r.oldest)) r.oldest = ev.origin_server_ts;
+        await this.processTimeline(room, kept.reverse(), ctx);
+      },
+    };
+    return r;
+  }
+
+  /** A thread's history, by the relations endpoint: as a room's, but a thread has no way to jump to a time. */
+  private async threadHistory(room: Room, root: string, want: number, ctx: Ctx, cmd: Extract<P.AdapterCommand, { t: 'history' }>): Promise<P.HistoryResult> {
     const id = await this.ensureThread(room, root, ctx);
-    let t = this.db.thread(id)!;
-    for (let page = 0; page < 6 && ctx.count < want && !t.done; page++) {
+    const page = async (from?: string): Promise<Chunk> => {
       const res: any = await this.api().request('GET', `/_matrix/client/v1/rooms/${enc(room.id)}/relations/${enc(root)}/m.thread`, {
-        query: { dir: 'b', limit: Math.min(100, want - ctx.count + 10), from: t.back_token ?? undefined },
+        query: { dir: 'b', limit: Math.min(100, want - ctx.count + 10), from },
       });
-      await this.processTimeline(room, [...(res.chunk ?? [])].reverse(), ctx);
-      t = { ...this.db.thread(id)!, back_token: res.next_batch ?? null, done: res.next_batch ? 0 : 1 };
-      this.db.putThread(t);
+      return { chunk: Array.isArray(res.chunk) ? res.chunk : [], end: typeof res.next_batch === 'string' && res.next_batch && res.next_batch !== from ? res.next_batch : undefined };
+    };
+    const r = this.reader(room, ctx, cmd.beforeTs, cmd.cursor !== undefined);
+    let token: string | undefined;
+    if (cmd.cursor === undefined && cmd.beforeTs === undefined) {
+      let t = this.db.thread(id)!;
+      for (let n = 0; n < 6 && ctx.count < want && !t.done; n++) {
+        const res = await page(t.back_token ?? undefined);
+        await r.read(res.chunk);
+        t = { ...this.db.thread(id)!, back_token: res.end ?? null, done: res.end ? 0 : 1 };
+        this.db.putThread(t);
+      }
+      token = t.done ? undefined : (t.back_token ?? undefined);
+    } else {
+      token = cmd.cursor;
+      if (token === undefined) {
+        const start = await this.skipTo(page, undefined, r.keep);
+        if (start) await r.read(start.chunk);
+        token = start?.end;
+      }
+      for (let n = 0; n < 6 && ctx.count < want && token; n++) {
+        const res = await page(token);
+        await r.read(res.chunk);
+        token = res.end;
+      }
     }
     if (!this.db.event(root)?.json) {
       const ev = await this.fetchEvent(room.id, root);
       if (ev) await this.processEvent(room, ev, { live: false, mode: 'fetch', count: 0 });
     }
-    return { count: ctx.count, done: !!t.done, ...(ctx.oldest !== undefined ? { oldest: ctx.oldest } : {}) };
+    return historyResult(ctx, r.oldest, token);
   }
 
   /**

@@ -245,7 +245,7 @@ export function Runner(props: { account?: AccountInfo; iface?: string; op?: stri
                 {accounts.map((a) => (
                   <option value={a.id} key={a.id}>
                     {named(a)} · {kindName.value.get(a.kind) ?? a.kind}
-                    {a.online ? '' : ' (offline)'}
+                    {a.online ? '' : a.asleep ? ' (asleep)' : ' (offline)'}
                   </option>
                 ))}
               </select>
@@ -304,7 +304,8 @@ export function Runner(props: { account?: AccountInfo; iface?: string; op?: stri
           </label>
         )}
         <span class="grow" />
-        {account && !account.online && <span class="small warn">{account.label} is offline</span>}
+        {/* Asleep is fine: running an operation wakes it, and the call waits for it (docs/supervisor.md "Sleeping"). */}
+        {account && !account.online && (account.asleep ? <span class="small muted">{account.label} is asleep: running wakes it</span> : <span class="small warn">{account.label} is offline</span>)}
         <button class={`btn ${writes && !dryRun ? 'danger' : 'primary'}`} disabled={!account || !!parseError || running} onClick={run} data-run>
           {running ? 'Running…' : writes && !dryRun ? `Run as you` : 'Run'}
         </button>

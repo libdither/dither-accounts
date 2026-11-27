@@ -268,7 +268,7 @@ export function attachmentKind(a: RawAttachment): AttachmentKind {
   if (ct.startsWith('audio/')) return 'audio';
   // fall back to the extension when Discord omits content_type
   const name = (a.filename ?? a.url ?? '').toLowerCase();
-  if (/\.(png|jpe?g|gif|webp|bmp|avif)$/.test(name)) return 'image';
+  if (/\.(png|jpe?g|gif|webp|bmp|avif|jxl)$/.test(name)) return 'image';
   if (/\.(mp4|mov|webm|mkv|avi)$/.test(name)) return 'video';
   if (/\.(mp3|ogg|wav|flac|m4a|opus)$/.test(name)) return 'audio';
   return 'file';
@@ -522,8 +522,11 @@ export function mapMessage(m: RawMessage, selfId: string, ctx: MapContext = {}):
   // A bot's controls, and a Components V2 message's text and files, which have no content of their own (rich.ts).
   const flat = flattenComponents(m.components, m.attachments);
   const body = system !== null ? system : normalizeMentions(m.content || flat.body || bodyFallback(m));
-  // A ping to a role you hold is a mention of you, as Discord counts it.
-  const byName = (m.mentions?.some((u) => u.id === selfId) ?? false) || body.includes(`<@${selfId}>`) || pingsYourRole(m, ctx.selfRoles);
+  // A ping to a role you hold is a mention of you, as Discord counts it: a group's (mentionsGroup) when not also by name.
+  const you = (m.mentions?.some((u) => u.id === selfId) ?? false) || body.includes(`<@${selfId}>`);
+  // With @everyone too it stays a mention, as before: a server may suppress role mentions and not @everyone.
+  const role = !you && !m.mention_everyone && pingsYourRole(m, ctx.selfRoles);
+  const byName = you || pingsYourRole(m, ctx.selfRoles);
   const mentionsSelf = byName || !!m.mention_everyone;
   const rich = richExtra(m, body, flat.rows);
   const embeds = embedExtra(m);
@@ -548,6 +551,7 @@ export function mapMessage(m: RawMessage, selfId: string, ctx: MapContext = {}):
     threadRoot: m.thread?.id,
     mentionsSelf: mentionsSelf || undefined,
     mentionsAll: (mentionsSelf && !byName) || undefined,
+    mentionsGroup: role || undefined,
     attachments: all,
     reactions: m.reactions?.length ? reactionFacts(m, selfId) : undefined,
     ...(forward ? { forward } : {}),

@@ -68,8 +68,34 @@ is Zulip's stand-in (`user8@chat.example.org`, where the organization keeps addr
 - **Polls and to-do lists**: Zulip's widgets (`/poll`, `/todo`). A poll is a hub poll (votes changeable, several per
   person, options added later shown); voting sends the widget's own submessages. A to-do list is shown as its tasks with
   ☑ and ☐.
+- **Mentions**: Zulip's flags say whether a message mentions you (`mentioned`) or everyone (`stream_wildcard_mentioned`,
+  `topic_wildcard_mentioned`). `mentioned` covers both you by name and a user group you are in (through subgroups
+  too): the message's words tell them apart, and a group's alone is `mentionsGroup`. A wildcard alone is `mentionsAll`.
 - **Read state**: unread counts and mentions per topic and DM from `/register`, then `update_message_flags`; mark
-  read up to a message (`markRead`, `markReadMany`), mark unread, typing both ways.
+  read up to a message (`markRead`, `markReadMany`), mark unread, typing both ways. The `read` event's `wildcards`
+  says how many of the unread mentions were only a wildcard. `/register`'s `unread_msgs.mentions` mixes them (Zulip's
+  [`aggregate_unread_data`](https://github.com/zulip/zulip/blob/13.2/zerver/lib/message.py)), so they are told apart
+  from the flags of the unread messages read at start, and of each one since.
+- **What Zulip would notify you about**, as each place's `mute` (the hub ranks by it and never alerts by it alone),
+  from the account's settings in `/register`'s `user_settings` and each subscription's, kept up to date by
+  `user_settings` and `subscription` update events. As Zulip decides it
+  ([`user_allows_notifications_in_StreamTopic`](https://github.com/zulip/zulip/blob/13.2/zerver/lib/notification_data.py),
+  [`get_recipient_info`](https://github.com/zulip/zulip/blob/13.2/zerver/actions/message_send.py), the web app's
+  [`should_send_desktop_notification`](https://github.com/zulip/zulip/blob/13.2/web/src/message_notifications.ts)
+  and [`receives_notifications`](https://github.com/zulip/zulip/blob/13.2/web/src/stream_data.ts)); desktop, push or
+  sound count alike, and a sound only when the notification sound is not "none"; email does not count.
+  - A channel is `level: 'all'` when its `desktop_notifications`, `push_notifications` or `audible_notifications`
+    (null: the account's `enable_stream_*` default) is on. Wildcards off there (`wildcard_mentions_notify`, null: the
+    account's) is `suppressEveryone`. A muted channel is `muted` with `level: 'mentions'`, and lets wildcards through
+    only when the channel itself turns them on.
+  - A followed topic is `all` only while the followed-topic notifications are on
+    (`enable_followed_topic_desktop_notifications`, `_push_`, `_audible_`), or its channel notifies every message and
+    is not muted; its wildcards notify when `enable_followed_topic_wildcard_mentions_notify` is on or the channel's
+    would. Its thread's `notify` says the same.
+  - A topic unmuted in a muted channel is as the channel's settings say, as if it were not muted: not every message by
+    itself. A topic left to its channel says nothing (in a muted channel, `muted`); a muted one is `muted`, your name
+    only and no wildcards (`level: 'mentions'`, `suppressEveryone`), said in full so its channel's level does not show
+    through. Mentions inside a quote ping nobody, as in Zulip.
 - **Topics**: follow, unfollow, mute and unmute a topic (`user_topics`), list a channel's topics (`threads`; resolved
   ones are its archived list), rename and resolve one (`configure`, `threadState`). A topic not seen since start is
   looked up before anything is sent to it, so its capitals stay as Zulip has them.
@@ -77,14 +103,20 @@ is Zulip's stand-in (`user8@chat.example.org`, where the organization keeps addr
   `#name` (`resolve`, `add`), leave, mute, invite people, and an admin's settings (`configure`).
 - **People**: profiles with custom profile fields, pronouns, time zone (`PersonAbout.timeZone`, the IANA name, and a
   "Time zone" fact for an app that does not read it), status; your own name, avatar, status and
-  fields (`setProfile`); invisible mode (`setPresence`); muting a person (`ignore`).
+  fields (`setProfile`); invisible mode (`setPresence`); muting a person (`ignore`). A profile names the organization
+  (`mutualSpaces`) with their role first, then the user groups they are directly in, by name (not the system
+  `role:…` groups, nor deactivated ones); a walk of the members (`walkMembers`) gives the same roles. A person field
+  and a bot's owner are facts with the people's ids (`facts[].people`), so the app links them; a date field reads as
+  "March 5, 1990"; an external account field links through its `url_pattern` (or GitHub's and X's own); a custom
+  status emoji is `:name:` with its picture (`status.emojiUrl`).
 - **Presence**: everyone's at start (offline too, so nobody stays online in the hub from before), then as it changes.
   Zulip's event says only when someone comes online; its apps read everyone's times again each ping interval and
   work out idle and offline from them, after the server's `server_presence_offline_threshold_seconds`. The extractor
   does the same: `GET /realm/presence` each `server_presence_ping_interval_seconds` (one request a minute; reading
   it does not change your own presence), and a look every 15 s for whoever aged past the threshold.
 - **Roles**: a new role in the organization (member → administrator) is a role lost and one given (`role`); joining or
-  leaving a user group is that group's role given or lost, as Discord's roles are.
+  leaving a user group is that group's role given or lost, as Discord's roles are; a new group is given to the people
+  it was made with, and a group deactivated (or back again) is lost (or given) by everyone in it.
 - **Read receipts** for your own messages in DMs and group DMs, where the organization has them on (Zulip 6.0+). Zulip
   sends no event for them, so the extractor asks (`GET /messages/{id}/read_receipts`) about your newest message in each
   DM 30 s, 2 min, 10 min and 1 h after you sent it, and again a few seconds after someone there writes or starts

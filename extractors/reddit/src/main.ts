@@ -20,7 +20,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BridgeServer, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
+import { BridgeServer, displayName, type FreeDisplay, pickFreeDisplay, Sandbox } from '@dither-accounts/browser';
 import type * as P from '@dither-chat/protocol';
 import { linkHub } from '@dither-chat/protocol/client';
 import { composeState, POST_RULES } from '@dither-chat/protocol';
@@ -86,7 +86,7 @@ function readKept(): { feed?: FeedKept } {
   }
 }
 
-let display: number | null = null;
+let display: FreeDisplay | null = null;
 let vncSocket: string | null = null;
 let sandbox: Sandbox | null = null;
 let sandboxError: string | null = null;
@@ -123,7 +123,7 @@ const readPace = fast ? new Pace(fast, 0) : new Pace(2500, 3500);
 function facts(): Facts {
   return {
     now: Date.now(),
-    sandbox: { started: !!sandbox && !sandboxError && display !== null && startedAt > 0, error: sandboxError, browserAlive: !!sandbox?.browserAlive, display, startedAt },
+    sandbox: { started: !!sandbox && !sandboxError && display !== null && startedAt > 0, error: sandboxError, browserAlive: !!sandbox?.browserAlive, screen: sandbox?.screenHealth, display, startedAt },
     extensionAttached: bridge.connected,
     hookTabs,
     tab,
@@ -633,18 +633,18 @@ async function boot() {
   status();
   const tried: number[] = [];
   for (let attempt = 0; attempt < 3; attempt++) {
-    let free: { display: number };
+    let free: FreeDisplay;
     try {
       free = await pickFreeDisplay(undefined, tried);
     } catch (e) {
       sandboxError = String((e as Error).message ?? e);
       break;
     }
-    tried.push(free.display);
-    display = free.display;
+    if (free.display !== null) tried.push(free.display);
+    display = free;
     sandbox = new Sandbox({
       accountDir: hub.accountDir,
-      display: free.display,
+      display: free,
       width: WIDTH,
       height: HEIGHT,
       extensionSrc: join(import.meta.dir, 'extension'),
@@ -653,6 +653,8 @@ async function boot() {
       startUrl: `${origin}/`,
       noSandbox: !!cfg.noSandbox || process.env.DITHER_CHROMIUM_NO_SANDBOX === '1',
       log,
+      // The live view's server down or back (it is started again): said in the status at once.
+      onScreenHealth: () => status(true),
     });
     try {
       await sandbox.start();
@@ -662,7 +664,7 @@ async function boot() {
       break;
     } catch (e) {
       sandboxError = String((e as Error).message ?? e).slice(0, 300);
-      log('warn', `sandbox on :${free.display} failed`, sandboxError);
+      log('warn', `sandbox on ${displayName(free)} failed`, sandboxError);
       await sandbox.stop();
       sandbox = null;
       display = null;

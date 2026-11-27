@@ -81,6 +81,13 @@ export interface MessageExtra {
   sourceDevice?: number;
   serverReceivedTs?: number;
   serverDeliveredTs?: number;
+  /**
+   * An event's host writing to every guest (a Luma blast, a Partiful text blast; docs/events.md "Conversations"): shown
+   * as an announcement, not a chat line.
+   */
+  blast?: boolean;
+  /** The event (its id on the network) an event conversation, or a message about one, belongs to. */
+  event?: string;
 }
 
 /**

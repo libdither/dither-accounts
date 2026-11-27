@@ -218,11 +218,15 @@ export class Mapper {
       this.byConv.set(conversation, list);
     }
   }
-  /** Say a message, if it differs from what was said; with live set by the window unless given. */
-  private message(fact: MessageFact, out: Ev[], live?: boolean) {
+  /**
+   * Say a message, if it differs from what was said; with live set by the window unless given. A history page says
+   * each of its messages again (`again`): the hub counts a page by the messages that come with it (dither-chat
+   * historypage.ts), so a page of ones said before would come empty and look as if it never arrived.
+   */
+  private message(fact: MessageFact, out: Ev[], live?: boolean, again = false) {
     const known = this.messages.get(fact.nativeId);
     const s = sig({ ...fact, reactions: undefined });
-    if (known && known.sig === s) return;
+    if (known && known.sig === s && !again) return;
     const isLive = known ? false : (live ?? this.isLive(fact.conversation, fact.ts));
     this.messages.set(fact.nativeId, { conversation: fact.conversation, ts: fact.ts, sig: s, fact });
     if (this.messages.size > 20000) this.messages.delete(this.messages.keys().next().value!);
@@ -408,7 +412,7 @@ export class Mapper {
       const fact = this.lsFact(m);
       const rs = byMsg.get(m.messageId);
       if (rs?.size) fact.reactions = this.reactionFacts(rs);
-      this.message(fact, out, false);
+      this.message(fact, out, false, true);
       if (rs) this.reactionsNow(m.threadKey, m.messageId, rs, out, true);
     }
     return { events: out, count };
@@ -612,13 +616,13 @@ export class Mapper {
     for (const r of m.reactions ?? []) by.set(r.senderFbid, canonicalReactionKey(r.emoji));
     return by;
   }
-  private slMessage(m: SMessage, out: Ev[], backfill: boolean) {
+  private slMessage(m: SMessage, out: Ev[], backfill: boolean, again = false) {
     const fact = this.slFact(m);
     const rs = this.slReactions(m);
     const known = this.messages.has(m.messageId);
     if (backfill || !known) {
       if (rs.size) fact.reactions = this.reactionFacts(rs);
-      this.message(fact, out, backfill ? false : undefined);
+      this.message(fact, out, backfill ? false : undefined, again);
       this.reactionsNow(m.threadFbid, m.messageId, rs, out, true);
       return;
     }
@@ -651,7 +655,7 @@ export class Mapper {
     const out: Ev[] = [];
     const s = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
     const messages = (Array.isArray(s.messages) ? s.messages : []).map((m) => checkSlideMessage(m, this.drops)).filter((m): m is SMessage => !!m);
-    for (const m of messages) this.slMessage(m, out, true);
+    for (const m of messages) this.slMessage(m, out, true, true);
     return { events: out, count: messages.length };
   }
   slideRecords(raw: unknown): Ev[] {

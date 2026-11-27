@@ -3,7 +3,7 @@
  * a restart on the saved session, every command, Telegram's updates as events, and the errors.
  */
 import { afterAll, describe, expect, setDefaultTimeout, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as P from '@dither-chat/protocol';
@@ -11,12 +11,11 @@ import type { tl } from '../src/backend.ts';
 import { readSecretFile, writeSecretFile } from '@dither-chat/protocol/secret-file';
 import { type AdapterOptions, contactsHash, type Host, TELEGRAM_DESKTOP, TelegramAdapter } from '../src/adapter.ts';
 import { FAKE_IDS, FAKE_INVITES, FakeTelegram } from '../src/fake.ts';
+import { harnesses, Waits } from './waits.ts';
 
 setDefaultTimeout(30_000);
 const dirs: string[] = [];
-afterAll(() => {
-  for (const d of dirs) rmSync(d, { recursive: true, force: true });
-});
+const track = harnesses<Harness>(dirs);
 const tmp = () => {
   const d = mkdtempSync(join(tmpdir(), 'dacc-tg-'));
   dirs.push(d);
@@ -38,6 +37,7 @@ type Ev = P.AdapterEvent;
 class Harness {
   events: Ev[] = [];
   logs: string[] = [];
+  waits = new Waits();
   fake: FakeTelegram;
   adapter: TelegramAdapter;
   constructor(
@@ -46,9 +46,17 @@ class Harness {
   ) {
     if (!existsSync(join(dir, 'secret.json'))) writeSecretFile(join(dir, 'secret.json'), o.secret ?? { apiHash: '0123456789abcdef0123456789abcdef' });
     this.fake = new FakeTelegram({ dir, qrMs: 400 });
+    this.fake.onCall = () => this.waits.changed();
+    track(this);
     const host: Host = {
-      emit: (e) => this.events.push(e),
-      log: (l, m) => this.logs.push(`[${l}] ${m}`),
+      emit: (e) => {
+        this.events.push(e);
+        this.waits.changed();
+      },
+      log: (l, m) => {
+        this.logs.push(`[${l}] ${m}`);
+        this.waits.changed();
+      },
       accountDir: dir,
       config: o.config ?? { apiId: '12345' },
       secret: () => readSecretFile(join(dir, 'secret.json')),
@@ -65,13 +73,9 @@ class Harness {
   since(n: number) {
     return this.events.slice(n);
   }
-  async until(f: () => unknown, what: string, ms = 4000) {
-    const end = Date.now() + ms;
-    while (Date.now() < end) {
-      if (f()) return;
-      await Bun.sleep(10);
-    }
-    throw new Error(`timed out waiting for ${what}; last status ${JSON.stringify(this.status)}`);
+  /** Until f() holds: looked at as each event, log line or call to the fake comes (waits.ts). */
+  until(f: () => unknown, what: string) {
+    return this.waits.until(f, what);
   }
   cmd(c: Record<string, unknown>) {
     return this.adapter.command({ id: 'x', ...c } as P.AdapterCommand);
@@ -120,6 +124,7 @@ describe('sign-in', () => {
         fake: false,
         backend: (c) => {
           creds = c;
+          h.waits.changed();
           return h.fake;
         },
       },
@@ -152,12 +157,14 @@ describe('sign-in', () => {
 
   test('QR: the tg://login code is the attention, a fresh one as each expires or on New code; a scan signs in and keeps only the session', async () => {
     const h = new Harness(tmp());
+    const before = Date.now();
     await h.adapter.start();
     await h.until(() => h.status?.attention?.qr, 'a QR code');
     const first = h.status!;
     expect(first).toMatchObject({ status: 'attention', attention: { kind: 'link_device', message: expect.stringContaining('Link Desktop Device') } });
     expect(first.attention!.qr).toMatch(/^tg:\/\/login\?token=[\w-]+$/);
-    expect(first.attention!.qrRefreshAt!).toBeGreaterThan(Date.now());
+    // When the code expires: the fake's 400 ms after it made it (not after now, which a slow machine may have passed).
+    expect(first.attention!.qrRefreshAt!).toBeGreaterThanOrEqual(before + 400);
     expect(first.layers!.map((l) => [l.name, l.state])).toEqual([
       ['api_id and api_hash', 'ok'],
       ['connection', 'ok'],
@@ -422,6 +429,38 @@ describe('signed in', () => {
     expect(h.since(n).find((e) => e.t === 'reaction')).toEqual({ t: 'reaction', conversation: DEVS, message: msg, author: String(S), key: '🔥', remove: true });
     expect(h.fake.world.msgs[`channel:${FAKE_IDS.devs}`][0].reactions).toEqual({});
     expect(await h.cmd({ t: 'reactionContext', conversation: DEVS })).toEqual({ canReact: true, custom: [] });
+  });
+
+  test('presence for status dots: contacts and people with a DM, from what Telegram pushes; never a stranger in a group', async () => {
+    const n = h.events.length;
+    const soon = Math.floor(Date.now() / 1000) + 300;
+    const presence = () => h.since(n).filter((e): e is Extract<Ev, { t: 'presence' }> => e.t === 'presence');
+    // Carol shares a group only; Alice is a contact with a DM. Carol's comes first, so once Alice's is here, Carol's was read.
+    await h.fake.control({ op: 'status', user: FAKE_IDS.carol, status: { kind: 'online', expires: soon } });
+    await h.fake.control({ op: 'status', user: FAKE_IDS.alice, status: { kind: 'online', expires: soon } });
+    await h.until(() => presence().some((e) => e.who === String(FAKE_IDS.alice)), 'Alice online');
+    expect(presence().find((e) => e.who === String(FAKE_IDS.alice))).toMatchObject({ state: 'online', ts: expect.any(Number) });
+    expect(presence().some((e) => e.who === String(FAKE_IDS.carol))).toBe(false);
+    await h.fake.control({ op: 'status', user: FAKE_IDS.alice, status: { kind: 'recently' } });
+    await h.until(() => presence().some((e) => e.who === String(FAKE_IDS.alice) && e.state === 'offline'), 'Alice offline');
+    // Hidden says nothing; the same again is no news.
+    const m = presence().length;
+    await h.fake.control({ op: 'status', user: FAKE_IDS.bob, status: null });
+    await h.fake.control({ op: 'status', user: FAKE_IDS.alice, status: { kind: 'offline', wasOnline: soon - 600 } });
+    await h.fake.control({ op: 'status', user: FAKE_IDS.bob, status: { kind: 'online', expires: soon } });
+    await h.until(() => presence().some((e) => e.who === String(FAKE_IDS.bob)), 'Bob online');
+    expect(presence().slice(m).map((e) => [e.who, e.state])).toEqual([[String(FAKE_IDS.bob), 'online']]);
+    expect(h.fake.calls.some((c) => /status|presence/i.test(c.method))).toBe(false);
+    // A hub that started over hears it all again.
+    const k = h.events.length;
+    h.adapter.onHubConnect();
+    const again = h.since(k).filter((e): e is Extract<Ev, { t: 'presence' }> => e.t === 'presence');
+    expect(new Map(again.map((e) => [e.who, e.state]))).toEqual(
+      new Map([
+        [String(FAKE_IDS.alice), 'offline'],
+        [String(FAKE_IDS.bob), 'online'],
+      ]),
+    );
   });
 
   test('markRead, typing (no more than Telegram’s own apps send), history', async () => {
@@ -830,24 +869,38 @@ describe('contacts and blocks: relationships, changes, remove', () => {
     }
   });
 
-  test('changes: blocked and unblocked elsewhere (updatePeerBlocked), contacts added and removed elsewhere found by reading the lists again', async () => {
-    const h = new Harness(tmp(), { opts: { relations: { everyMs: 150, soonMs: 20, gapMs: 0 } } });
+  // No read of the lists by the clock here: one due while the update is on its way would find the change first, and
+  // the fact would come from the list (with when) rather than from updatePeerBlocked.
+  test('changes: blocked and unblocked elsewhere (updatePeerBlocked)', async () => {
+    const h = new Harness(tmp(), { opts: QUIET });
     try {
       await h.signIn();
       await h.until(() => h.of('relationships').length, 'the list');
-      // Read again with nothing changed: Telegram answers the list's hash with contactsNotModified, and nothing goes out.
-      await h.until(() => called(h, 'contacts.getContacts').length >= 3, 'two reads again');
-      expect(called(h, 'contacts.getContacts').slice(1).every((c) => String((c.req as { hash: unknown }).hash) !== '0')).toBe(true);
-      expect(rels(h)).toEqual([]);
-      let n = h.events.length;
+      const n = h.events.length;
       await h.fake.control({ op: 'block', user: FAKE_IDS.carol });
       await h.until(() => rels(h, n).length, 'Carol blocked');
       expect(rels(h, n)[0]).toEqual({ identity: CAROL, relationship: 'blocked' });
       await h.fake.control({ op: 'block', user: FAKE_IDS.grace, blocked: false });
       await h.until(() => rels(h, n).some((f) => f.identity === GRACE), 'Grace unblocked');
       expect(rels(h, n).find((f) => f.identity === GRACE)).toEqual({ identity: GRACE, relationship: 'stranger' });
+      expect(called(h, 'contacts.getBlocked')).toHaveLength(1);
+    } finally {
+      await h.stop();
+    }
+  });
+
+  test('changes: contacts added and removed elsewhere found by reading the lists again', async () => {
+    const h = new Harness(tmp(), { opts: { relations: { everyMs: 150, soonMs: 20, gapMs: 0 } } });
+    try {
+      await h.signIn();
+      await h.until(() => h.of('relationships').length, 'the list');
+      // Read again with nothing changed: Telegram answers the list's hash with contactsNotModified, and nothing goes out.
+      // A read ends with getBlocked (answered as it is called), so these two reads are done but for what they found.
+      await h.until(() => called(h, 'contacts.getBlocked').length >= 3, 'two reads again');
+      expect(called(h, 'contacts.getContacts').slice(1).every((c) => String((c.req as { hash: unknown }).hash) !== '0')).toBe(true);
+      expect(rels(h)).toEqual([]);
       // No update for these: the next read of the lists finds them.
-      n = h.events.length;
+      const n = h.events.length;
       await h.fake.control({ op: 'contact', user: FAKE_IDS.dave, silent: true });
       await h.fake.control({ op: 'contact', user: FAKE_IDS.alice, contact: false, silent: true });
       await h.until(() => rels(h, n).some((f) => f.identity === DAVE) && rels(h, n).some((f) => f.identity === ALICE), 'both found');
@@ -865,8 +918,8 @@ describe('contacts and blocks: relationships, changes, remove', () => {
       expect(aliceNow!.identity.contact).toBeUndefined();
       // Each change once: more reads find nothing more.
       const seen = rels(h, n).length;
-      const reads = called(h, 'contacts.getContacts').length;
-      await h.until(() => called(h, 'contacts.getContacts').length >= reads + 2, 'two more reads');
+      const reads = called(h, 'contacts.getBlocked').length;
+      await h.until(() => called(h, 'contacts.getBlocked').length >= reads + 2, 'two more reads');
       expect(rels(h, n).length).toBe(seen);
       expect(h.of('relationships').length).toBe(1);
     } finally {

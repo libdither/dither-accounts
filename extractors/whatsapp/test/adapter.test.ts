@@ -70,7 +70,8 @@ async function harness(o: { loggedIn?: boolean; opts?: Partial<AdapterOptions> }
   const events: P.AdapterEvent[] = [];
   const adapter = new WhatsAppAdapter(
     { emit: (e) => events.push(e), log: () => {}, accountDir: dir, config: {} },
-    { bridge: async () => ['bun', FAKE], restartBackoffMs: [50, 100], historyTimeoutMs: 400, expirySweepMs: 60_000, fetch: (async () => new Response('png', { headers: { 'content-type': 'image/png' } })) as any, ...o.opts },
+    // The database in memory: a file's commits and its close wait on the disk, seconds while other processes sync theirs.
+    { bridge: async () => ['bun', FAKE], statePath: ':memory:', restartBackoffMs: [50, 100], historyTimeoutMs: 400, expirySweepMs: 60_000, fetch: (async () => new Response('png', { headers: { 'content-type': 'image/png' } })) as any, ...o.opts },
   );
   const waitFor = async <T>(fn: () => T | undefined | null | false, ms = 5000): Promise<T> => {
     const until = Date.now() + ms;
@@ -483,11 +484,131 @@ test('older history comes from the phone on request', async () => {
   await h.emit({ t: 'history', syncType: 'ON_DEMAND', conversations: [{ ID: ALICE }], pushnames: [], lidMappings: [] });
   await h.emit(old);
   await h.emit({ t: 'history_done', syncType: 'ON_DEMAND', count: 1 });
-  expect(await pending).toEqual({ count: 1, done: false });
-  // the phone does not answer: nothing more
-  expect(await h.adapter.command({ t: 'history', id: '2', conversation: ALICE, limit: 50 })).toEqual({ count: 0, done: true });
-  // nothing to anchor a request on
-  expect(await h.adapter.command({ t: 'history', id: '3', conversation: GROUP, limit: 50 })).toEqual({ count: 0, done: true });
+  expect(await pending).toEqual({ count: 1, done: false, oldest: old.info.ts });
+  // the phone does not answer: not the chat's start, and no stretch claimed
+  expect(await h.adapter.command({ t: 'history', id: '2', conversation: ALICE, limit: 50 })).toEqual({ count: 0, done: false });
+  // nothing to anchor a request on: nothing asked, and not the chat's start either
+  expect(await h.adapter.command({ t: 'history', id: '3', conversation: GROUP, limit: 50 })).toEqual({ count: 0, done: false });
+  expect(h.cmd('historyRequest', 2)).toBeUndefined();
+});
+
+/** A history message: a fixture moved to another id and time, as the phone's on-demand answer sends it. */
+const historic = (name: string, id: string, ts: number) => {
+  const e = fx(name);
+  e.info.id = id;
+  e.info.ts = ts;
+  e.history = true;
+  return e;
+};
+const onDemand = (chats: string[]) => ({ t: 'history', syncType: 'ON_DEMAND', conversations: chats.map((ID) => ({ ID })), pushnames: [], lidMappings: [] });
+const T1 = FIX.get('text').info.ts;
+const T2 = FIX.get('own_text').info.ts;
+
+test('a history page of only reactions answers count 0 with how far back it read, not a page that failed', async () => {
+  // Long enough that the answer is never late on a slow machine: this test is about what the answer says.
+  const h = await harness({ opts: { historyTimeoutMs: 60_000 } });
+  await h.emit(fx('text'));
+  await h.emit(fx('own_text'));
+  const pending = h.adapter.command({ t: 'history', id: '1', conversation: ALICE, beforeTs: T1, limit: 50 });
+  await h.waitFor(() => h.cmd('historyRequest'));
+  await h.emit(onDemand([ALICE]));
+  const reaction = historic('reaction', 'R1', T1 - 60_000);
+  reaction.message.reactionMessage.key.ID = 'OLD0';
+  reaction.message.reactionMessage.senderTimestampMS = String(T1 - 60_000);
+  const seen = await h.emit(reaction);
+  expect(ofType(seen, 'reaction')).toHaveLength(1);
+  const done = await h.emit({ t: 'history_done', syncType: 'ON_DEMAND', count: 1 });
+  expect(ofType([...seen, ...done], 'message')).toEqual([]);
+  expect(await pending).toEqual({ count: 0, done: false, oldest: T1 - 60_000 });
+});
+
+test('a history page counts only its message facts for the chat asked about: not reactions, not other chats', async () => {
+  const h = await harness({ opts: { historyTimeoutMs: 60_000 } });
+  await h.emit(fx('text'));
+  const pending = h.adapter.command({ t: 'history', id: '1', conversation: ALICE, beforeTs: T1, limit: 50 });
+  await h.waitFor(() => h.cmd('historyRequest'));
+  await h.emit(onDemand([ALICE, GROUP]));
+  await h.emit(historic('text', 'OLD1', T1 - 120_000));
+  await h.emit(historic('reaction', 'R2', T1 - 90_000));
+  await h.emit(historic('group_from_me', 'GOLD', T1 - 300_000));
+  await h.emit({ t: 'history_done', syncType: 'ON_DEMAND', count: 2 });
+  // Alice's one old message; the group's older one is not hers, and the reaction is no message.
+  expect(await pending).toEqual({ count: 1, done: false, oldest: T1 - 120_000 });
+});
+
+test('a history page asks the phone from the message at beforeTs, not from the oldest one known', async () => {
+  const h = await harness({ opts: { historyTimeoutMs: 60_000 } });
+  await h.emit(fx('text'));
+  await h.emit(fx('own_text'));
+  const later = historic('text', 'A3', T2 + 60_000);
+  delete later.history;
+  const live = ofType(await h.emit(later), 'message')[0].message;
+  const ask = async (n: number, beforeTs: number | undefined) => {
+    const pending = h.adapter.command({ t: 'history', id: String(n), conversation: ALICE, ...(beforeTs !== undefined ? { beforeTs } : {}), limit: 20 });
+    const req = await h.waitFor(() => h.cmd('historyRequest', n));
+    return { pending, req };
+  };
+
+  // In the middle of the chat: from the first message at or after beforeTs, so nothing between is skipped.
+  let { pending, req } = await ask(0, T2);
+  expect(req).toMatchObject({ chat: ALICE, msgId: 'A2', fromMe: true, ts: T2, count: 20 });
+  await h.emit(onDemand([ALICE]));
+  await h.emit(historic('text', 'A1', T1));
+  await h.emit({ t: 'history_done', syncType: 'ON_DEMAND', count: 1 });
+  expect(await pending).toEqual({ count: 1, done: false, oldest: T1 });
+
+  ({ pending, req } = await ask(1, T2 + 1));
+  expect(req).toMatchObject({ msgId: 'A3', ts: T2 + 60_000 });
+  // The phone answers: nothing before A3 in this chat. A1 and A2 are kept here and older, so it is not the start.
+  await h.emit(onDemand([ALICE]));
+  await h.emit({ t: 'history_done', syncType: 'ON_DEMAND', count: 1 });
+  expect(await pending).toEqual({ count: 0, done: false });
+
+  // Newer than anything known: from the newest message, which lies inside the page and comes again with it.
+  ({ pending, req } = await ask(2, T2 + 3_600_000));
+  expect(req).toMatchObject({ msgId: 'A3' });
+  await h.emit(onDemand([ALICE]));
+  const n = h.events.length;
+  await h.emit(historic('own_text', 'A2', T2));
+  await h.emit({ t: 'history_done', syncType: 'ON_DEMAND', count: 1 });
+  expect(await pending).toEqual({ count: 2, done: false, oldest: T2 });
+  const sent = ofType(h.events.slice(n), 'message').filter((e) => e.message.conversation === ALICE);
+  expect(sent.map((e) => [e.message.nativeId, e.live])).toEqual([
+    [msgId(ALICE, 'A2'), false],
+    [msgId(ALICE, 'A3'), false],
+  ]);
+  // Said again as it was said live, as history.
+  expect(sent[1].message).toEqual(live);
+});
+
+test('an empty answer is the chat\'s start only when nothing older is kept', async () => {
+  const h = await harness({ opts: { historyTimeoutMs: 60_000 } });
+  await h.emit(fx('text'));
+  const later = historic('text', 'A3', T2 + 60_000);
+  delete later.history;
+  await h.emit(later);
+  // From the newest message, sent again with the page; the phone sends nothing older, but A1 is kept here.
+  let pending = h.adapter.command({ t: 'history', id: '1', conversation: ALICE, beforeTs: T2 + 3_600_000, limit: 50 });
+  expect(await h.waitFor(() => h.cmd('historyRequest'))).toMatchObject({ msgId: 'A3' });
+  await h.emit(onDemand([ALICE]));
+  await h.emit({ t: 'history_done', syncType: 'ON_DEMAND', count: 1 });
+  expect(await pending).toEqual({ count: 1, done: false, oldest: T2 + 60_000 });
+  // From the oldest kept: an empty answer there is the start.
+  pending = h.adapter.command({ t: 'history', id: '2', conversation: ALICE, beforeTs: T1, limit: 50 });
+  expect(await h.waitFor(() => h.cmd('historyRequest', 1))).toMatchObject({ msgId: 'A1' });
+  await h.emit(onDemand([ALICE]));
+  await h.emit({ t: 'history_done', syncType: 'ON_DEMAND', count: 1 });
+  expect(await pending).toEqual({ count: 0, done: true });
+});
+
+test('a history page the phone never answers is not the chat\'s start', async () => {
+  const h = await harness({ opts: { historyTimeoutMs: 200 } });
+  await h.emit(fx('text'));
+  expect(await h.adapter.command({ t: 'history', id: '1', conversation: ALICE, beforeTs: T1, limit: 50 })).toEqual({ count: 0, done: false });
+  expect(h.cmd('historyRequest')).toMatchObject({ msgId: 'A1' });
+  // Asked from before anything known: the request still goes, from the oldest message, and no answer is no start.
+  expect(await h.adapter.command({ t: 'history', id: '2', conversation: ALICE, beforeTs: T1 - 86_400_000, limit: 50 })).toEqual({ count: 0, done: false });
+  expect(h.cmd('historyRequest', 1)).toMatchObject({ msgId: 'A1' });
 });
 
 test('openDirect checks the number and opens the chat, nothing sent', async () => {

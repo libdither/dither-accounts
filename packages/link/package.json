@@ -3,6 +3,6 @@
   "license": "AGPL-3.0-or-later",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts", "./once": "./src/once.ts" },
-  "dependencies": { "@dither-chat/protocol": "workspace:*" }
+  "exports": { ".": "./src/index.ts", "./once": "./src/once.ts", "./records": "./src/records.ts" },
+  "dependencies": { "@dither-accounts/spec": "workspace:*", "@dither-chat/protocol": "workspace:*" }
 }

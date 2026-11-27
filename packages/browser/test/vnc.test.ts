@@ -1,16 +1,16 @@
 /**
  * The live view's socket (src/vnc.ts): where it goes, its directory's and its own modes, and a real x11vnc on it that
  * answers RFB there and holds no inet socket at all (no TCP port, v4 or v6). The x11vnc part is skipped without Xvfb
- * or x11vnc; every process it starts is gone at the end.
+ * or x11vnc; every process it starts is gone at the end, and x11vnc leaves none of its shared memory behind.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Subprocess } from 'bun';
-import { pickFreeDisplay } from '../src/display.ts';
+import { pickFreeXDisplay } from '../src/display.ts';
 import { resolveBins } from '../src/sandbox.ts';
-import { prepareVncSocket, SOCKET_PATH_MAX, vncSocketPath, waitForVncSocket, x11vncArgs } from '../src/vnc.ts';
+import { endProcess, prepareVncSocket, SOCKET_PATH_MAX, vncSocketPath, waitForVncSocket, x11vncArgs } from '../src/vnc.ts';
 import { inetSockets, rfbBanner } from './inet.ts';
 
 process.env.DITHER_DISPLAY_CLAIMS = mkdtempSync(join(tmpdir(), 'display-claims-vnc-'));
@@ -61,13 +61,26 @@ try {
 
 describe.skipIf(!bins)('a real x11vnc', () => {
   const procs: Subprocess[] = [];
+  // x11vnc removes its SysV shared memory on SIGTERM; a SIGKILL leaves every segment behind until reboot (22 at
+  // 640x480), and the machine's limit is 4096. So it ends the way the sandbox ends it: x11vnc first, then Xvfb.
   afterAll(async () => {
-    for (const p of procs) p.kill('SIGKILL');
-    await Promise.all(procs.map((p) => p.exited));
+    for (const p of procs.reverse()) await endProcess(p);
   });
 
-  test('answers RFB on the socket (0600), and holds no TCP or UDP socket, v4 or v6', async () => {
-    const { display } = await pickFreeDisplay();
+  /**
+   * The SysV shared memory segments `pid` created and left for good (Linux's /proc/sysvipc/shm, cpid in column 5). One
+   * it removed but Xvfb still has attached shows SHM_DEST (0o1000) in its perms and goes once Xvfb lets go.
+   */
+  const leftBy = (pid: number) =>
+    readFileSync('/proc/sysvipc/shm', 'utf8')
+      .split('\n')
+      .slice(1)
+      .map((l) => l.trim().split(/\s+/))
+      .filter((c) => Number(c[4]) === pid && !(Number.parseInt(c[2] ?? '0', 8) & 0o1000))
+      .map((c) => c[1]);
+
+  test('answers RFB on the socket (0600), holds no TCP or UDP socket, v4 or v6, and leaves no shared memory once stopped', async () => {
+    const { display } = await pickFreeXDisplay();
     const xvfb = Bun.spawn([bins!.xvfb, `:${display}`, '-screen', '0', '640x480x24', '-nolisten', 'tcp'], { stdout: 'ignore', stderr: 'ignore' });
     procs.push(xvfb);
     for (let i = 0; i < 80 && !existsSync(`/tmp/.X11-unix/X${display}`); i++) await Bun.sleep(100);
@@ -84,5 +97,8 @@ describe.skipIf(!bins)('a real x11vnc', () => {
     await Bun.sleep(1500);
     expect(vnc.exitCode).toBeNull();
     expect(inetSockets(vnc.pid)).toEqual([]);
+    await endProcess(vnc);
+    expect(vnc.signalCode).not.toBe('SIGKILL');
+    expect(leftBy(vnc.pid)).toEqual([]);
   }, 30_000);
 });

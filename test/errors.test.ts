@@ -15,6 +15,9 @@ import { newToken } from '../packages/manager/src/db.ts';
 
 setDefaultTimeout(30_000);
 const ROOT = resolve(import.meta.dir, '..');
+// Account ids are machine-wide: a manager will not start an account some live process already runs, from any data
+// directory (acquireLock). This file can run in several checkouts at once, so its ids carry this run's pid.
+const RUN = process.pid.toString(36);
 const dirs: string[] = [];
 afterAll(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
@@ -124,7 +127,7 @@ test('an extractor that crashes: its last error from stderr, with its kind and a
   let m: Manager | undefined;
   try {
     m = await createManager({ openPage: true, dataDir: dir, port: 0, errors: true, kinds: new Map([['fake', kindOf(fakeManifest, join(ROOT, 'extractors/fake'))]]) });
-    const id = 'acc-crashy-1';
+    const id = `acc-crashy-1-${RUN}`;
     const accDir = join(dir, 'crashy');
     mkdirSync(accDir);
     const now = Date.now();

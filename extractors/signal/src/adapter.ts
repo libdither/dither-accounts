@@ -24,11 +24,11 @@ import { ADD_MEMBERS_MAX, createGroupProblem, GROUP_RULES, PIN_DURATIONS, pollDr
 import { errorText, groupIdOfLink, isMessageRequest, joinError, lookupError, signalError, wantsCaptcha } from './add.ts';
 import { answerJoinParams, approvalParams, groupLeaving, groupModeration, isAdmin, joinRequests, labelOf, labelParams, moderateParams, ownLabel, parseJoinRequest, picturePath, quitParams } from './groups.ts';
 import { attachmentArg } from './attach.ts';
-import { ChildRegistry, type Logger } from './cli.ts';
+import { ChildRegistry, type Logger, signalCliEnv } from './cli.ts';
 import { Daemon, type DaemonExit } from './daemon.ts';
 import { DesktopCalls } from './desktop/calls.ts';
 import { type CallsHost, type DesktopOptions, SignalDesktop } from './desktop/desktop.ts';
-import { LinkFlow } from './link.ts';
+import { type Clock, LinkFlow } from './link.ts';
 import {
   adminChanges,
   checkAbout,
@@ -115,12 +115,15 @@ export function stickerRef(id: string): { packId: string; stickerId: number } | 
   return m ? { packId: m[1].toLowerCase(), stickerId: Number(m[2]) } : null;
 }
 
-/** A send result's failures in words the hub shows (extra.ts SendFailureFact). */
+/**
+ * A send result's failures in words the hub shows (extra.ts SendFailureFact). Someone who left Signal is left out, as
+ * Signal's apps leave them out: they are gone for good, so every message to their group would say so again.
+ */
 export function sendFailures(results: SigSendResult['results']): P.SendFailureFact[] {
   const reason = (type: string): P.SendFailureReason =>
     type === 'UNREGISTERED_FAILURE' ? 'unregistered' : type === 'IDENTITY_FAILURE' ? 'identity' : type === 'RATE_LIMIT_FAILURE' ? 'rateLimit' : type === 'NETWORK_FAILURE' ? 'network' : type === 'INVALID_PRE_KEY_FAILURE' ? 'keys' : 'other';
   return (results ?? [])
-    .filter((r) => r.type !== 'SUCCESS')
+    .filter((r) => r.type !== 'SUCCESS' && r.type !== 'UNREGISTERED_FAILURE')
     .map((r) => ({ who: lc(r.recipientAddress?.uuid) ?? null, ...(r.recipientAddress?.number ? { number: r.recipientAddress.number } : {}), reason: reason(r.type) }));
 }
 const ANSWERS: P.RequestAnswer[] = ['accept', 'decline', 'block'];
@@ -142,6 +145,8 @@ export interface AdapterOptions {
   signalCli: () => Promise<string[]>;
   linkRotateMs?: number;
   linkMaxActiveMs?: number;
+  /** Time and timers for the link flow's rotation and pause (link.ts); tests move it by hand. */
+  linkClock?: Clock;
   restartBackoffMs?: number[];
   /** Re-read contacts and groups at these offsets after the daemon is ready (sync data trickles in after linking)... */
   resnapshotMs?: number[];
@@ -274,7 +279,7 @@ export class SignalAdapter {
     // Keep the user's own ~/.config/signal-cli/config.json (account, output, ...) out of our runs.
     const globalCfg = join(host.accountDir, 'signal-cli.global.json');
     if (!existsSync(globalCfg)) writeFileSync(globalCfg, '{}\n', { mode: 0o600 });
-    this.env = { ...process.env, SIGNAL_CLI_CONFIG: globalCfg };
+    this.env = signalCliEnv({ ...process.env, SIGNAL_CLI_CONFIG: globalCfg });
     if (host.config.calls === true || this.callsOnly) {
       const make = opts.desktop ?? ((o: DesktopOptions) => new SignalDesktop(o));
       this.desktop = make({
@@ -525,6 +530,7 @@ export class SignalAdapter {
       log: this.host.log,
       rotateAfterMs: this.opts.linkRotateMs,
       maxActiveMs: this.opts.linkMaxActiveMs,
+      clock: this.opts.linkClock,
       onUri: (qr, note, qrRefreshAt) => this.setStatus('attention', { kind: 'link_device', message: (note ? note + ' ' : '') + intro + LINK_MESSAGE, qr, qrRefreshAt }),
       onScanned: () => this.setStatus('connecting', null),
       onTrouble: (message) => this.setStatus('attention', { kind: 'link_device', message }),

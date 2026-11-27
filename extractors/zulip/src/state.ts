@@ -46,9 +46,42 @@ export interface ZSub extends ZStream {
   in_home_view?: boolean;
   pin_to_top?: boolean;
   color?: string;
+  /** Per-channel notification settings; null: the account's default (`enable_stream_*` in NotifySettings). */
   desktop_notifications?: boolean | null;
   push_notifications?: boolean | null;
+  audible_notifications?: boolean | null;
+  /** @all, @everyone, @channel and @topic notify here; null: `wildcard_mentions_notify` in NotifySettings. */
+  wildcard_mentions_notify?: boolean | null;
 }
+
+/**
+ * The account's notification settings from `/register`'s `user_settings`, kept up to date by `user_settings` events.
+ * Defaults as Zulip's own for a new account (zerver/models/users.py).
+ */
+export interface NotifySettings {
+  enable_stream_desktop_notifications: boolean;
+  enable_stream_push_notifications: boolean;
+  enable_stream_audible_notifications: boolean;
+  enable_followed_topic_desktop_notifications: boolean;
+  enable_followed_topic_push_notifications: boolean;
+  enable_followed_topic_audible_notifications: boolean;
+  wildcard_mentions_notify: boolean;
+  enable_followed_topic_wildcard_mentions_notify: boolean;
+  /** "none": no sounds at all, so no audible notification counts. */
+  notification_sound: string;
+}
+
+export const NOTIFY_DEFAULTS: NotifySettings = {
+  enable_stream_desktop_notifications: false,
+  enable_stream_push_notifications: false,
+  enable_stream_audible_notifications: false,
+  enable_followed_topic_desktop_notifications: true,
+  enable_followed_topic_push_notifications: true,
+  enable_followed_topic_audible_notifications: true,
+  wildcard_mentions_notify: true,
+  enable_followed_topic_wildcard_mentions_notify: true,
+  notification_sound: 'zulip',
+};
 
 export interface ZMessage {
   id: number;
@@ -126,8 +159,12 @@ export class State {
   mutedUsers = new Set<number>();
   /** Unread message id → its conversation's native id. */
   unread = new Map<number, string>();
-  /** Unread messages that mention this account. */
+  /** Unread messages that mention this account (Zulip's `unread_msgs.mentions`: by name, a group, or a wildcard). */
   unreadMentions = new Set<number>();
+  /** Of those, the ones read with flags that say a wildcard (@all, @topic) and not this account or its group. */
+  unreadWildcards = new Set<number>();
+  /** What notifies this account (NotifySettings). */
+  notify: NotifySettings = { ...NOTIFY_DEFAULTS };
   /** Message id → ts, for unread ones and the newest of each conversation (to say read points). */
   ts = new Map<number, number>();
   /** Conversation → its newest message seen. */

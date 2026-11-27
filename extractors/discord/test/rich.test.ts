@@ -102,6 +102,16 @@ describe('role mentions', () => {
     const mine = mapMessage(ping, SELF, { selfRoles: ['400000000000000001'] });
     expect(mine.mentionsSelf).toBe(true);
     expect(mine.mentionsAll).toBeUndefined();
+    // Through your role, not by name: a group's mention.
+    expect(mine.mentionsGroup).toBe(true);
+    const both = mapMessage({ ...ping, content: `heads up <@&400000000000000001> <@${SELF}>` }, SELF, { selfRoles: ['400000000000000001'] });
+    expect(both.mentionsGroup).toBeUndefined();
+    expect(both.mentionsSelf).toBe(true);
+    // With @everyone too it stays a mention: a server may suppress role mentions and not @everyone.
+    const loud = mapMessage({ ...ping, mention_everyone: true }, SELF, { selfRoles: ['400000000000000001'] });
+    expect(loud).toMatchObject({ mentionsSelf: true });
+    expect(loud.mentionsGroup).toBeUndefined();
+    expect(loud.mentionsAll).toBeUndefined();
     expect(mapMessage(ping, SELF, { selfRoles: ['400000000000000999'] }).mentionsSelf).toBeUndefined();
     expect(mapMessage(ping, SELF).mentionsSelf).toBeUndefined();
   });

@@ -559,10 +559,10 @@ test('a history page asks the phone from the message at beforeTs, not from the o
 
   ({ pending, req } = await ask(1, T2 + 1));
   expect(req).toMatchObject({ msgId: 'A3', ts: T2 + 60_000 });
-  // The phone answers: nothing before A3 in this chat. It said so, so that is the chat's start.
+  // The phone answers: nothing before A3 in this chat. A1 and A2 are kept here and older, so it is not the start.
   await h.emit(onDemand([ALICE]));
   await h.emit({ t: 'history_done', syncType: 'ON_DEMAND', count: 1 });
-  expect(await pending).toEqual({ count: 0, done: true });
+  expect(await pending).toEqual({ count: 0, done: false });
 
   // Newer than anything known: from the newest message, which lies inside the page and comes again with it.
   ({ pending, req } = await ask(2, T2 + 3_600_000));
@@ -579,6 +579,26 @@ test('a history page asks the phone from the message at beforeTs, not from the o
   ]);
   // Said again as it was said live, as history.
   expect(sent[1].message).toEqual(live);
+});
+
+test('an empty answer is the chat\'s start only when nothing older is kept', async () => {
+  const h = await harness({ opts: { historyTimeoutMs: 60_000 } });
+  await h.emit(fx('text'));
+  const later = historic('text', 'A3', T2 + 60_000);
+  delete later.history;
+  await h.emit(later);
+  // From the newest message, sent again with the page; the phone sends nothing older, but A1 is kept here.
+  let pending = h.adapter.command({ t: 'history', id: '1', conversation: ALICE, beforeTs: T2 + 3_600_000, limit: 50 });
+  expect(await h.waitFor(() => h.cmd('historyRequest'))).toMatchObject({ msgId: 'A3' });
+  await h.emit(onDemand([ALICE]));
+  await h.emit({ t: 'history_done', syncType: 'ON_DEMAND', count: 1 });
+  expect(await pending).toEqual({ count: 1, done: false, oldest: T2 + 60_000 });
+  // From the oldest kept: an empty answer there is the start.
+  pending = h.adapter.command({ t: 'history', id: '2', conversation: ALICE, beforeTs: T1, limit: 50 });
+  expect(await h.waitFor(() => h.cmd('historyRequest', 1))).toMatchObject({ msgId: 'A1' });
+  await h.emit(onDemand([ALICE]));
+  await h.emit({ t: 'history_done', syncType: 'ON_DEMAND', count: 1 });
+  expect(await pending).toEqual({ count: 0, done: true });
 });
 
 test('a history page the phone never answers is not the chat\'s start', async () => {

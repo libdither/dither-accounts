@@ -108,7 +108,9 @@ test/partiful-browser.test.ts that no such call is made and no note reaches an a
   with the name and picture of their Partiful profile and `sameAs: <user id>`, so the hub puts the old id with their
   person (yours with you).
 - **Names.** Anyone the hub was told of without a name (a comment's author, a chat's person, someone in a
-  notification) is looked up with `getUsers`, up to 100 at a time, at most once a day each. Someone whose profile the
+  notification) is looked up with `getUsers`, up to 100 at a time, at most once a day each, whatever it answers: some
+  ids come back with no name, and when each was asked is kept in the state file, so a restart does not ask them all
+  again. The read's log line counts those asked and how many came back named. Someone whose profile the
   site showed with a bio or socials goes out as `personAbout` too, which the same-person engine reads.
 - **Notifications** (`feed`, read-only): each a system message from whoever caused it, or from Partiful.
 - **Profiles**: name, picture, bio, socials as links, parties hosted and attended.

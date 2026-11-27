@@ -67,8 +67,11 @@ dither-chat's network search and index jobs (its `netsearch.ts` and `jobs.ts`) a
 own servers (`search`, capability `search`), to list a channel's threads (`threads`, capability `listThreads`) and to
 list a server's members (`walkMembers`, capability `walkMembers`). Hits come first as message facts (live=false) after
 the conversations, threads and people they need, then the reply names them; a walk is a `members` event with source
-`walk`, then `{ count, total?, next? }`. `history`'s reply carries `oldest`, the ts of the page's oldest message, and
-on Discord `next`, its id (see "Reading like a person").
+`walk`, then `{ count, total?, next? }`. `history`'s reply carries `oldest`, the ts of the oldest thing the page read,
+and `next`, where the next page goes back from (on Discord the oldest message's id; see "Reading like a person").
+Its `count` is the message facts it sent for exactly that conversation, ones sent before too; reactions, edits,
+deleted rows and thread replies kept in their threads are not counted, and a page of only those answers `count: 0`
+with its `oldest`, not `done`, so the walk goes on. `done` only when the network has nothing older.
 
 - **Discord** (`extractors/discord/src/search.ts`, hook.js `search`, `threads` and `walkMembers`). Checked on a live
   client with a test account (its own test server, and a large public server, as an ordinary member).

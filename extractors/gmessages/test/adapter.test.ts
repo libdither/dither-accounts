@@ -518,7 +518,7 @@ test('history: older than what is known, as history; done when the phone has no 
   const h = await synced([conv()], [msg()]);
   await h.ctl({ result: { op: 'messages', value: { messages: [msg({ id: '98', ts: T0 - 2000, text: 'older' }), msg({ id: '97', ts: T0 - 3000, text: 'oldest', participant: '1', fromMe: true, state: 'read', status: 'OUTGOING_DISPLAYED' }), msg()], total: 3 } } });
   const n = h.events.length;
-  expect(await h.run({ t: 'history', conversation: C('10'), limit: 30 })).toEqual({ count: 2, done: false });
+  expect(await h.run({ t: 'history', conversation: C('10'), limit: 30 })).toEqual({ count: 2, done: false, oldest: T0 - 3000, next: `97:${T0 - 3000}` });
   const syncMessages = h.cmds.filter((c) => c.op === 'messages');
   expect(syncMessages.at(-1)).toMatchObject({ conversation: '10', count: 30, cursor: { id: '100', ts: T0 } });
   const got = ofType(h.events.slice(n), 'message');
@@ -529,10 +529,73 @@ test('history: older than what is known, as history; done when the phone has no 
   expect(got[0].message.author).toBe(ME);
   expect(ofType(h.events.slice(n), 'receipt')).toEqual([]);
 
-  // Asked from a point: the cursor is the newest known message before it.
+  // Asked from a point: the phone pages back from the oldest known message at or after it.
   await h.ctl({ result: { op: 'messages', value: { messages: [], total: 3 } } });
   expect(await h.run({ t: 'history', conversation: C('10'), beforeTs: T0 - 2000, limit: 10 })).toEqual({ count: 0, done: true });
-  expect(h.cmds.filter((c) => c.op === 'messages').at(-1).cursor).toEqual({ id: '97', ts: T0 - 3000 });
+  expect(h.cmds.filter((c) => c.op === 'messages').at(-1).cursor).toEqual({ id: '98', ts: T0 - 2000 });
+});
+
+test('history: the page is the messages just before beforeTs, known ones sent again', async () => {
+  const h = await synced([conv()], [msg(), msg({ id: '99', ts: T0 - 1000, text: 'earlier' })]);
+  // Nothing known at or after beforeTs: the newest page, from the phone's newest message down.
+  await h.ctl({ result: { op: 'messages', value: { messages: [msg(), msg({ id: '99', ts: T0 - 1000, text: 'earlier' }), msg({ id: '98', ts: T0 - 2000, text: 'older' })], total: 3 } } });
+  const n = h.events.length;
+  expect(await h.run({ t: 'history', conversation: C('10'), beforeTs: T0 + 1, limit: 10 })).toEqual({ count: 3, done: false, oldest: T0 - 2000, next: `98:${T0 - 2000}` });
+  expect(h.cmds.filter((c) => c.op === 'messages').at(-1).cursor).toBeUndefined();
+  expect(ofType(h.events.slice(n), 'message').map((e) => [e.message.nativeId, e.live])).toEqual([
+    [M('98'), false],
+    [M('99'), false],
+    [M('100'), false],
+  ]);
+});
+
+test('history: rows it skips are not counted, but still say where the page ended', async () => {
+  const h = await synced([conv()], [msg()]);
+  const page = [
+    msg({ id: '99', ts: T0 - 1000, text: 'kept' }),
+    msg({ id: '98', ts: T0 - 2000, status: 'MESSAGE_DELETED', state: 'deleted' }),
+    msg({ id: '97', ts: T0 - 3000, status: 'TOMBSTONE_RCS_GROUP_CREATED', state: 'system', ignore: true, text: undefined }),
+    msg({ id: '96', ts: T0 - 4000, text: 'also kept' }),
+    msg({ id: '95', ts: T0 - 5000, status: 'INCOMING_AUTO_DOWNLOADING', state: 'downloading', kind: 'mms', text: undefined }),
+  ];
+  await h.ctl({ result: { op: 'messages', value: { messages: page, total: 6 } } });
+  const n = h.events.length;
+  expect(await h.run({ t: 'history', conversation: C('10'), beforeTs: T0, limit: 10 })).toEqual({ count: 2, done: false, oldest: T0 - 5000, next: `95:${T0 - 5000}` });
+  expect(h.cmds.filter((c) => c.op === 'messages').at(-1).cursor).toEqual({ id: '100', ts: T0 });
+  expect(ofType(h.events.slice(n), 'message').map((e) => e.message.nativeId)).toEqual([M('96'), M('99')]);
+
+  // A page of nothing but skipped rows: none sent, not the start, and the walk goes on from its oldest row.
+  await h.ctl({
+    result: {
+      op: 'messages',
+      value: {
+        messages: [
+          msg({ id: '94', ts: T0 - 6000, status: 'MESSAGE_DELETED', state: 'deleted' }),
+          msg({ id: '93', ts: T0 - 7000, status: 'TOMBSTONE_RCS_GROUP_CREATED', state: 'system', ignore: true, text: undefined }),
+        ],
+        total: 8,
+      },
+    },
+  });
+  const m = h.events.length;
+  expect(await h.run({ t: 'history', conversation: C('10'), beforeTs: T0 - 5000, limit: 10, cursor: `95:${T0 - 5000}` })).toEqual({ count: 0, done: false, oldest: T0 - 7000, next: `93:${T0 - 7000}` });
+  expect(h.cmds.filter((c) => c.op === 'messages').at(-1).cursor).toEqual({ id: '95', ts: T0 - 5000 });
+  expect(ofType(h.events.slice(m), 'message')).toEqual([]);
+
+  // From that row (never kept here): only an empty answer is the start.
+  await h.ctl({ result: { op: 'messages', value: { messages: [], total: 8 } } });
+  expect(await h.run({ t: 'history', conversation: C('10'), beforeTs: T0 - 7000, limit: 10, cursor: `93:${T0 - 7000}` })).toEqual({ count: 0, done: true });
+  expect(h.cmds.filter((c) => c.op === 'messages').at(-1).cursor).toEqual({ id: '93', ts: T0 - 7000 });
+});
+
+test('history: an answer all newer than beforeTs is not the start; it pages back from there', async () => {
+  const h = await synced([conv()]);
+  await h.ctl({ result: { op: 'messages', value: { messages: [msg()], total: 1 } } });
+  const before = h.count('messages');
+  expect(await h.run({ t: 'history', conversation: C('10'), beforeTs: T0 - 5000, limit: 10 })).toEqual({ count: 0, done: true });
+  const asked = h.cmds.filter((c) => c.op === 'messages').slice(before);
+  expect(asked.map((c) => c.cursor)).toEqual([undefined, { id: '100', ts: T0 }]);
+  expect(ofType(h.events, 'message').filter((e) => e.message.nativeId === M('100'))).toEqual([]);
 });
 
 test('fetchMedia: a download by key, media sent inline, a preview (and the full picture asked for), avatars', async () => {

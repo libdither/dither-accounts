@@ -4,7 +4,7 @@
  * runs a browser), what it needs from you (a code to scan, a sign-in), what it is signed in as, its process and
  * session, the apps that reach it, its call counts, its files and log, and its operations to try.
  */
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import type { AccountDetail, AccountInfo, DirListing, ManagerState, StatusLayer } from '../../../src/api-types.ts';
 import { CATEGORIES, categoryOf, nicknameOf, subtitleOf, usernameOf } from '../catalog.ts';
 import { groupIdentities, gives, identityOf, SUITES } from '../suites.ts';
@@ -678,6 +678,8 @@ function AccountPane({ a, tab, sub }: { a: AccountInfo; tab: Tab; sub?: string }
   const [d, reload] = useDetail(a.id);
   const [live, setLive] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
+  const nickInput = useRef<HTMLInputElement>(null);
+  useEffect(() => void (renaming !== null && nickInput.current?.focus()), [renaming !== null]);
   const [replacing, setReplacing] = useState(false);
   const c = condition(a);
   const at = attentionOf(a);
@@ -735,7 +737,7 @@ function AccountPane({ a, tab, sub }: { a: AccountInfo; tab: Tab; sub?: string }
         <div class="pane-title">
           {renaming !== null ? (
             <form class="row" onSubmit={rename}>
-              <input value={renaming} placeholder={usernameOf(a) ?? kn} onInput={(e) => setRenaming((e.target as HTMLInputElement).value)} aria-label="Nickname (empty: none)" autoFocus />
+              <input value={renaming} placeholder={usernameOf(a) ?? kn} onInput={(e) => setRenaming((e.target as HTMLInputElement).value)} aria-label="Nickname (empty: none)" ref={nickInput} />
               <button class="btn sm primary">Save</button>
               <button type="button" class="btn sm ghost" onClick={() => setRenaming(null)}>
                 Cancel

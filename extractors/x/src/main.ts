@@ -345,8 +345,8 @@ async function onCommand(cmd: P.AdapterCommand): Promise<unknown> {
       need('history', 'load history');
       backfilling.add(cmd.conversation);
       try {
-        const r = await run('history', () => readPace.run(() => bridge.request<{ count: number; more: boolean }>({ kind: 'history', conv: cmd.conversation, limit: cmd.limit, ...(cmd.beforeTs ? { beforeTs: cmd.beforeTs } : {}) }, 240_000)));
-        return { count: r?.count ?? 0, done: !r?.more };
+        const r = await run('history', () => readPace.run(() => bridge.request<{ count: number; more: boolean; oldest?: number }>({ kind: 'history', conv: cmd.conversation, limit: cmd.limit, ...(cmd.beforeTs ? { beforeTs: cmd.beforeTs } : {}) }, 240_000)));
+        return { count: r?.count ?? 0, done: !r?.more, ...(typeof r?.oldest === 'number' ? { oldest: r.oldest } : {}) };
       } finally {
         // The messages arrive just before the reply; give them a moment before later ones count as live.
         timers.push(setTimeout(() => backfilling.delete(cmd.conversation), 3000));

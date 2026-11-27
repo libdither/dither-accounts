@@ -14,6 +14,9 @@ import { KindMark } from './bits.tsx';
 import { brandColor, Icon } from './icons.tsx';
 import { identityName, partState } from './Suites.tsx';
 
+/** Whether opening something puts the cursor in its first box: not on a touch screen, where that pops the keyboard up. */
+const focusOnOpen = () => !matchMedia('(pointer: coarse)').matches;
+
 /** The sheet, when open: from the top bar's Add (everything), a section's + (its category) or a service's mark. */
 export const adding = signal<{ category: CategoryId | null; service: string | null } | null>(null);
 export const openAdd = (category: CategoryId | null = null, service: string | null = null) => (adding.value = { category, service });
@@ -88,6 +91,9 @@ function Picker({ all, category, query, setQuery, onClose }: { all: Service[]; c
   const shown = all.filter((sv) => (!category || q || sv.category === category) && (!q || `${sv.name} ${sv.line} ${sv.category}`.toLowerCase().includes(q)));
   const cats = CATEGORIES.filter((c) => all.some((sv) => sv.category === c.id));
   const pick = (sv: Service) => (adding.value = { category, service: sv.id });
+  // Not the autofocus attribute: a browser honours that once per page load, so the sheet opened later never got it.
+  const search = useRef<HTMLInputElement>(null);
+  useEffect(() => void (focusOnOpen() && search.current?.focus()), []);
   return (
     <>
       <div class="sheet-head">
@@ -105,7 +111,7 @@ function Picker({ all, category, query, setQuery, onClose }: { all: Service[]; c
           value={query}
           onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
           aria-label="Search services"
-          autoFocus={matchMedia('(pointer: fine)').matches}
+          ref={search}
           data-add-search
           onKeyDown={(e) => e.key === 'Enter' && shown.length === 1 && pick(shown[0])}
         />
@@ -247,7 +253,7 @@ function KindForm({ sv, way, onClose }: { sv: Service; way: Way; onClose: () => 
   const [signInWith, setSignInWith] = useState('');
   const [busy, setBusy] = useState(false);
   const first = useRef<HTMLInputElement>(null);
-  useEffect(() => void (matchMedia('(pointer: fine)').matches && first.current?.focus()), []);
+  useEffect(() => void (focusOnOpen() && first.current?.focus()), []);
   if (!kind) return null;
   const set = (k: string, v: string) => setValues((x) => ({ ...x, [k]: v }));
   const add = async (e: Event) => {

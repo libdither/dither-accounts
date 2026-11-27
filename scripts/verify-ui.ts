@@ -306,8 +306,16 @@ try {
   await p.until(`!!document.querySelector('[data-add-account]')`, 6000);
   check((await text('.split-banner')).includes('access_denied'), 'a sign-in error coming back is shown');
   check(!(await p.eval<string>('location.search')).includes('google_error'), 'and taken out of the address');
-  await click('[data-add-account]');
-  await p.until(`!!document.querySelector('[data-add-dialog]')`, 3000);
+  // Twice: the autofocus attribute only works the first time a page shows one, so the second opening is the test.
+  for (const time of ['first', 'second']) {
+    await click('[data-add-account]');
+    await p.until(`!!document.querySelector('[data-add-dialog]')`, 3000);
+    check(await p.eval<boolean>(`document.activeElement?.hasAttribute('data-add-search') ?? false`), `the add sheet's search has the focus (${time} opening)`);
+    if (time === 'first') {
+      await click('[data-add-dialog] [aria-label="Close"]');
+      await p.until(`!document.querySelector('[data-add-dialog]')`, 3000);
+    }
+  }
   const now = await state();
   const offered = services(now);
   const addable = now.kinds.filter((k: any) => k.add).map((k: any) => k.kind);

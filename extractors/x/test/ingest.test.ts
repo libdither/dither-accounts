@@ -53,6 +53,14 @@ test('messages: backfill the first time; live once something is known and a newe
   // History is backfill whatever its times.
   const hist = ingestMessages(st, open([msg({ id: 'm0', seq: '0', ts: T0 - 1000 })]), { backfill: true, now: T0 + 62_000 });
   expect(hist.filter((e) => e.t === 'message').map((e: any) => e.live)).toEqual([false]);
+  // A history page of messages sent before sends them again, as backfill: the hub counts a page by what comes with it.
+  const again = ingestMessages(st, open([msg(), msg({ id: 'm2', seq: '2', ts: T0 + 1 })]), { backfill: true, now: T0 + 63_000 });
+  expect(again.filter((e) => e.t === 'message').map((e: any) => [e.message.nativeId, e.live, e.message.editedTs])).toEqual([
+    ['m1', false, undefined],
+    ['m2', false, undefined],
+  ]);
+  // Outside backfill, unchanged messages are not sent again.
+  expect(ingestMessages(st, open([msg(), msg({ id: 'm2', seq: '2', ts: T0 + 1 })]), { now: T0 + 64_000 }).filter((e) => e.t === 'message')).toEqual([]);
 });
 
 test('an edit sends the message again with when it was seen; reactions are diffed per person', () => {

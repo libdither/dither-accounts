@@ -212,7 +212,7 @@ toast they raise is the refusal.
 | `addMembers` | Add people with each from its search, Done; whom X refuses is in `failed` |
 | `about` | the inbox row's settings and members (a group's name, description, picture, admins, admin-only flags; a one-to-one's two people) |
 | `configure` | `name` and `topic` (description) on Edit Group, where the About says this account may; the picture is refused (not built) |
-| `history` | scrolls to the top (`ScrolledToTop`) until it has enough before `beforeTs` or X has no more; the 400 messages just before `beforeTs` arrive as backfill, and the answer says the oldest one's time (`oldest`) |
+| `history` | scrolls to the top (`ScrolledToTop`) until it has enough before `beforeTs` or X has no more; the 400 messages just before `beforeTs` arrive as backfill (the ones sent before too: the hub counts a page by what comes with it), and the answer says the oldest one's time (`oldest`) |
 | `fetchMedia` (`x-media://<conversation>/<message>/<n>`) | the attachment as the page shows it: its blob, or after `ResolveMediaImmediately` (the client loading it), or its twimg URL fetched with the page's cookies as an `<img>` would. At most 25 MB. |
 | `profile` | someone's profile and recent posts through responsive-web's own endpoints ("Notifications and profiles") |
 | `post` | one post's thread (what it answers, the post, its replies; `cursor` for more replies) through the post page's own endpoint ("Notifications and profiles", `post`) |

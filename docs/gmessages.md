@@ -112,7 +112,9 @@ Capabilities: `send history react redact markRead typing media sendMedia e2ee op
 - **redact** deletes the message from the phone (and so from every paired device). Google Messages has **no unsend**:
   the other side keeps it.
 - **markRead**, **typing** (RCS only; there is no "stopped typing" to send), **history** (older messages, paged from
-  the phone with its cursor; the phone has to answer), **fetchMedia** (downloads and decrypts; for a preview-only
+  the phone with its cursor; the phone has to answer. A page is the messages just before `beforeTs`, known ones sent
+  again; `count` is the message facts sent, so deleted rows, protocol noise and an MMS still downloading are not
+  counted, but `oldest` and `next` still move past them; `done` only when the phone has nothing older), **fetchMedia** (downloads and decrypts; for a preview-only
   picture it shows the preview and asks the phone for the full one), **openDirect** (any phone number; the phone makes
   or finds the conversation), **about** (a group's name and members; read-only), **profile** (name, number, contact or
   not: Messages has no profiles).

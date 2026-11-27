@@ -16,10 +16,12 @@
  * A chat's people come from Stream with Stream's own ids only; the chat requests (Firestore, as the app's chat list
  * reads them) say which Partiful users each chat is between, so they are filed by their Partiful id, named by
  * getUsers. People filed as `stream:<id>` before that are named too, and said to be their Partiful selves (`sameAs`).
- * Anyone the hub was told of without a name is looked up with getUsers, a batch at a time.
+ * Anyone the hub was told of without a name is looked up with getUsers, a batch at a time, at most once a day each
+ * (lookup.ts; the times are kept across restarts, so someone Partiful gives no name for is not asked on every read).
  *
  * Config: { city?, testOrigin?, noSandbox?, feedFirstMs?, feedEveryMs? (tests), logShapes? }. Keeps
- * partiful-state.json (ids and times of what it announced, the chat id pairs) in the account directory. Logs ids,
+ * partiful-state.json (ids and times of what it announced, the chat id pairs, when each person was looked up) in the
+ * account directory. Logs ids,
  * counts and statuses: never words, names or tokens. With `logShapes`, the first answer of each kind is logged as its
  * field names and types alone (values never; keys that look like ids as <id>), to see what the site sends.
  */
@@ -29,6 +31,7 @@ import { BridgeServer, displayName, type FreeDisplay, pickFreeDisplay, Sandbox }
 import type * as P from '@dither-chat/protocol';
 import { EVENT_RSVP_CHOICES } from '@dither-chat/protocol';
 import { linkHub } from '@dither-chat/protocol/client';
+import { LookedUp, type Looked, lookUp as lookUpWith } from './lookup.ts';
 import * as M from './map.ts';
 import { CAPABILITIES, compute, type Facts, type PageState } from './status.ts';
 
@@ -57,6 +60,8 @@ interface Kept {
   streamIds?: Record<string, string>;
   /** Chats announced before v2, whose people the hub has as `stream:<id>`. */
   legacyChats?: string[];
+  /** Person id → when getUsers was last asked for them (lookup.ts). */
+  lookedUp?: Record<string, number>;
 }
 function readKept(): Kept {
   try {
@@ -66,6 +71,8 @@ function readKept(): Kept {
   }
 }
 const kept = readKept();
+/** When each person was last asked for, kept across restarts. */
+const lookedUp = new LookedUp(kept.lookedUp);
 
 const drops = new M.Drops();
 const ctx = M.newCtx(drops, testOrigin);
@@ -230,7 +237,7 @@ let keepTimer: Timer | undefined;
 function writeKept() {
   try {
     while (announced.size > 3000) announced.delete(announced.values().next().value!);
-    const state: Kept = { v: 2, newestNotice: noticeNewest, ids: [...announced], convs: Object.fromEntries(convNewest), streamIds: Object.fromEntries(ctx.streamIds), legacyChats: [...legacyChats] };
+    const state: Kept = { v: 2, newestNotice: noticeNewest, ids: [...announced], convs: Object.fromEntries(convNewest), streamIds: Object.fromEntries(ctx.streamIds), legacyChats: [...legacyChats], lookedUp: lookedUp.toJSON(Date.now()) };
     writeFileSync(STATE_FILE, JSON.stringify(state), { mode: 0o600 });
   } catch {}
 }
@@ -373,11 +380,11 @@ async function feedTick() {
       return 0;
     });
     const cm = await readUpcomingComments(ev);
-    const un = await lookUpUnnamed().catch((e) => {
+    const un = await lookUpUnnamed().catch((e): Looked => {
       if (!(e instanceof Slowed)) log('warn', 'looking people up failed', { error: String((e as Error).message).slice(0, 160) });
-      return 0;
+      return { asked: 0, named: 0 };
     });
-    log('info', `read: ${n} notifications, ${ev.length} events, ${ch} chats, ${cm} comments${un ? `, ${un} people without a name looked up` : ''}`);
+    log('info', `read: ${n} notifications, ${ev.length} events, ${ch} chats, ${cm} comments${un.asked ? `, ${un.asked} people without a name looked up (${un.named} named)` : ''}`);
   } catch (e) {
     feedLastError = String((e as Error).message ?? e).slice(0, 160);
     log('warn', 'periodic read failed', { error: feedLastError });
@@ -502,31 +509,21 @@ function aliases(channels: unknown[]) {
   }
 }
 
-const LOOKUP_AGAIN_MS = 24 * 3600_000;
-const lookedUp = new Map<string, number>();
 /**
  * Names, pictures and socials (getUsers, as the app asks for people, up to 100 at a time) for people shown on the
  * site that the hub has without a name: a comment's author, someone in a notification or a chat. Each is asked at most
- * once a day.
+ * once a day, whatever Partiful answers (lookup.ts).
  */
-async function lookUp(ids: string[], max = 200) {
-  const now = Date.now();
-  const want = [...new Set(ids)].filter((id) => M.isId(id) && id !== ctx.selfId && id !== M.PARTIFUL_ACTOR && !ctx.users.get(id)?.name && now - (lookedUp.get(id) ?? 0) > LOOKUP_AGAIN_MS).slice(0, max);
-  for (let i = 0; i < want.length; i += 100) {
-    const batch = want.slice(i, i + 100);
-    for (const id of batch) lookedUp.set(id, now);
-    const r = await read<{ data: unknown }>({ kind: 'users', ids: batch });
-    for (const x of Array.isArray(r?.data) ? r.data : []) M.userOf(x, ctx);
+async function lookUp(ids: string[]): Promise<Looked> {
+  const r = await lookUpWith(ids, ctx, lookedUp, async (batch) => (await read<{ data: unknown }>({ kind: 'users', ids: batch }))?.data, { unsent: (e) => e instanceof Slowed });
+  if (r.asked) {
+    people();
+    keepSoon();
   }
-  if (want.length) people();
+  return r;
 }
-/** Everyone the hub was told of without a name, looked up (stubs and nameless people). */
-async function lookUpUnnamed(): Promise<number> {
-  const ids = [...peopleSent.keys()].filter((id) => M.isId(id) && !ctx.users.get(id)?.name);
-  const before = ids.length;
-  await lookUp(ids);
-  return before;
-}
+/** Everyone the hub was told of without a name, looked up (stubs and nameless people) where due. */
+const lookUpUnnamed = () => lookUp([...peopleSent.keys()]);
 
 /** The comments under the next two upcoming events you are in, in turn, so a new one reaches the chat. */
 async function readUpcomingComments(events: P.PostFact[]): Promise<number> {
@@ -707,6 +704,8 @@ async function thread(postId: string, cursor?: string): Promise<P.PostThread> {
     // Hosts by name: the page's own getUsers for those it named only by id.
     const owners = (Array.isArray(ev.ownerIds) ? ev.ownerIds : []).filter((x: unknown) => M.isId(x) && !ctx.users.get(x as string)?.name);
     if (owners.length && ev.showHostList !== false) {
+      lookedUp.mark(owners.slice(0, 20), Date.now());
+      keepSoon();
       const u = await read<{ data: unknown }>({ kind: 'users', ids: owners.slice(0, 20) }).catch(() => ({ data: [] }));
       for (const x of Array.isArray(u.data) ? u.data : []) M.userOf(x, ctx);
     }

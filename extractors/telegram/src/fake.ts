@@ -1304,8 +1304,12 @@ export class FakeTelegram implements TgBackend {
     return { library: 'fake Telegram', layer: 232, testMode: false, dc: DC };
   }
 
+  /** Told of each method as it is called (a test waiting for a call). */
+  onCall?: (method: string) => void;
+
   private record(method: string, req: unknown) {
     this.calls.push({ method, at: Date.now(), req });
+    this.onCall?.(method);
     if (this.calls.length > 2000) this.calls.splice(0, 500);
   }
 

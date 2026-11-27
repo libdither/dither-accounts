@@ -45,7 +45,16 @@ export interface PacerOptions {
   maxForegroundWaitMs?: number;
   maxBackgroundWaitMs?: number;
   onFlood?: (method: string, seconds: number) => void;
+  /** The time and the waits (Date.now and Bun.sleep): a test gives its own, so nothing it checks rests on the wall clock. */
+  clock?: Clock;
 }
+
+export interface Clock {
+  now(): number;
+  sleep(ms: number): Promise<void>;
+}
+
+const REAL: Clock = { now: () => Date.now(), sleep: (ms) => Bun.sleep(ms) };
 
 export class Pacer {
   private spacing: Record<Lane, number>;
@@ -54,15 +63,17 @@ export class Pacer {
   private blocked = new Map<string, number>();
   /** The last waits Telegram asked for, newest last. */
   readonly floods: { method: string; seconds: number; at: number }[] = [];
+  private clock: Clock;
 
   constructor(private o: PacerOptions = {}) {
     this.spacing = { ...SPACING, ...(o.spacing ?? {}) };
+    this.clock = o.clock ?? REAL;
   }
 
   /** What Telegram holds back now: method -> seconds left. */
   held(): Record<string, number> {
     const out: Record<string, number> = {};
-    const now = Date.now();
+    const now = this.clock.now();
     for (const [m, until] of this.blocked) if (until > now) out[m] = Math.ceil((until - now) / 1000);
     return out;
   }
@@ -76,26 +87,26 @@ export class Pacer {
     const limit = opts.once ? 0 : opts.background ? (this.o.maxBackgroundWaitMs ?? 15 * 60_000) : Math.min(opts.maxWaitMs ?? Infinity, this.o.maxForegroundWaitMs ?? 30_000);
     for (let attempt = 0; ; attempt++) {
       // A held method fails before it takes a turn in its lane, so the next call is not kept waiting for nothing.
-      const held = (this.blocked.get(method) ?? 0) - Date.now();
+      const held = (this.blocked.get(method) ?? 0) - this.clock.now();
       if (held > limit) throw new FloodError(method, Math.ceil(held / 1000));
       await this.slot(lane, this.spacing[lane]);
       if (lane === 'send' && opts.chat) await this.slot(`chat:${opts.chat}`, this.o.perChatSendMs ?? PER_CHAT_SEND_MS);
-      const wait = (this.blocked.get(method) ?? 0) - Date.now();
+      const wait = (this.blocked.get(method) ?? 0) - this.clock.now();
       if (wait > 0) {
         if (wait > limit) throw new FloodError(method, Math.ceil(wait / 1000));
-        await Bun.sleep(wait);
+        await this.clock.sleep(wait);
       }
       try {
         return await fn();
       } catch (e) {
         const s = floodSeconds(e);
         if (s === null) throw e;
-        this.blocked.set(method, Date.now() + s * 1000);
-        this.floods.push({ method, seconds: s, at: Date.now() });
+        this.blocked.set(method, this.clock.now() + s * 1000);
+        this.floods.push({ method, seconds: s, at: this.clock.now() });
         if (this.floods.length > 20) this.floods.shift();
         this.o.onFlood?.(method, s);
         if (opts.once || s * 1000 > limit || attempt >= 3) throw new FloodError(method, s);
-        await Bun.sleep(s * 1000);
+        await this.clock.sleep(s * 1000);
       }
     }
   }
@@ -110,9 +121,9 @@ export class Pacer {
       prev.then(() => mine),
     );
     await prev;
-    const wait = (this.next.get(key) ?? 0) - Date.now();
-    if (wait > 0) await Bun.sleep(wait);
-    this.next.set(key, Date.now() + gap);
+    const wait = (this.next.get(key) ?? 0) - this.clock.now();
+    if (wait > 0) await this.clock.sleep(wait);
+    this.next.set(key, this.clock.now() + gap);
     release();
   }
 }

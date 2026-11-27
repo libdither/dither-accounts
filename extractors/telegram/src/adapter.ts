@@ -1532,6 +1532,8 @@ export class TelegramAdapter {
   // ---------------------------------------------------------------- updates
 
   private onUpdate(u: UpdateInfo) {
+    // One already on its way when the account stopped: nothing to do, and nothing to write after the last flush.
+    if (this.phase === 'stopped') return;
     this.lastUpdateAt = Date.now();
     try {
       this.ingest(u.users, u.chats);

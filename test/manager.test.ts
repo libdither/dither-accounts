@@ -324,6 +324,19 @@ test('events reach every app with a grant, in order', async () => {
   expect(seen(gotA)).toEqual(Array.from({ length: 50 }, (_, i) => i));
 });
 
+test("a call's events reach the app before its result", async () => {
+  const a = clients[0];
+  const got: number[] = [];
+  (a as any).opts.onEvents = (_: string, evs: any[]) => got.push(...evs.filter((x) => x.t === 'note').map((x) => x.n));
+  // The outbox sends events on a timer; the answer must not overtake them. Several calls, so one that happened to
+  // land after the timer cannot pass the test by itself.
+  for (let round = 0; round < 5; round++) {
+    got.length = 0;
+    await a.callRaw(account, 'emit', { n: 20 });
+    expect(got).toEqual(Array.from({ length: 20 }, (_, i) => i));
+  }
+});
+
 test('an app that was away gets what it missed, then the account state; past the bound, a gap', async () => {
   const r = clients[1];
   r.close();

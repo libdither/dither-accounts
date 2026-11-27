@@ -372,6 +372,10 @@ export const liveViewPath = (account: string) => `/consumer/liveview/${encodeURI
 export type ConsumerOut =
   | { t: 'hello'; app: string; name: string; manager: string }
   | { t: 'accounts'; accounts: AccountView[] }
+  /**
+   * A call's answer. Events the account sent before it answered (a history page's messages) reach the app before it,
+   * so once a result comes, what the call made the account send is in.
+   */
   | { t: 'result'; id: string; ok: true; result: unknown }
   | { t: 'result'; id: string; ok: false; error: CallError }
   /** Events from one account, in order. */

@@ -730,6 +730,9 @@ export class Router {
     if (m.t !== 'call' && m.t !== 'admin') return;
     const answer = await this.once(ws.data.appId, m);
     const out: ConsumerOut = answer.ok ? { t: 'result', id: m.id, ok: true, result: answer.result } : { t: 'result', id: m.id, ok: false, error: answer.error };
+    // What the account sent before answering (a history page's messages) goes out before the answer, not after it on
+    // the outbox's timer: an app may count on a call's events being in once its result comes.
+    this.flushOutbox();
     try {
       ws.send(JSON.stringify(out));
     } catch {}

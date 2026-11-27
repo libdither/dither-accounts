@@ -23,7 +23,7 @@ read your chats. The browser profile keeps the sign-in.
 
 ## What runs
 
-- **The sandbox** (packages/browser, as for `google` and `proton`): a private Xvfb display (:80–:89, then :100–:159), an ordinary
+- **The sandbox** (packages/browser, as for `google` and `proton`): a private Xvfb display (:80–:89, then :100–:159) or sway on the wayland display backend (docs/browser.md), an ordinary
   non-headless Chromium with its profile in `<data>/accounts/<id>/profile`, the extension copied to `<id>/extension`
   each start, x11vnc on `<id>/vnc.sock` (no TCP port) for the live view. No CDP, no automation flags.
 - **Service workers**: Chromium goes on running the extension's service worker it first registered in a profile,
@@ -48,7 +48,9 @@ read your chats. The browser profile keeps the sign-in.
   media of an end-to-end encrypted chat).
 - **The extractor** checks everything the hook forwards against the fields it needs (drops and counts what fails),
   maps it to chat facts, paces commands like a person (1.5–3 s between writes, plus typing time for longer text;
-  3–6 s between history pages), and reports the hooks as status layers and details.
+  3–6 s between history pages), and reports the hooks as status layers and details. It forwards a message only when it
+  changes, except in a history page, which sends every message it holds again: the hub counts a page by the messages
+  that come with it.
 
 ## How the hook reaches the client
 

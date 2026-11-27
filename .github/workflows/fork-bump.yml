@@ -1,0 +1,39 @@
+# The display servers built from forks this project keeps (nix/README.md, "Forks"): each day, and by hand, look for a
+# newer `-dither.N` release of each, and open or update one pull request per fork that copies its nix file
+# (scripts/fork-bump.sh). CI runs on that pull request and builds the new file against nix/pin.json, then runs the
+# backend's tests with every program required. Nothing here merges: a person does, once it is green.
+name: Fork bump
+
+on:
+  schedule:
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write # the fork-bump/<name> branches
+  pull-requests: write
+  actions: write # starting CI on them: a push with this token starts no workflow
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: w0vncserver
+            fork: zyansheep/tigervnc
+            backend: wayland-tigervnc
+          - name: kasmvnc
+            fork: zyansheep/KasmVNC
+            backend: kasmvnc
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/fork-bump.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ matrix.name }}
+          FORK: ${{ matrix.fork }}
+          BACKEND: ${{ matrix.backend }}
+          BASE: ${{ github.event.repository.default_branch }}

@@ -297,7 +297,12 @@ class CliproxyProvider implements Provider {
     for (const [k, j] of this.jobs) if (now - j.updatedAt > JOB_KEEP) this.jobs.delete(k);
     const job: Job = { id: newId('job'), account: accountId, email: this.config(a).email ?? '', step: 'starting', error: null, liveView: false, auto, startedAt: now, updatedAt: now, authFile: null };
     this.jobs.set(job.id, job);
-    const p = this.run(job).finally(() => this.running.delete(accountId));
+    // Awake for the whole job (docs/supervisor.md "Sleeping"): it waits minutes for a mail between two calls.
+    const release = this.ctx.sup.hold(accountId, 'a cliproxy link job');
+    const p = this.run(job).finally(() => {
+      release();
+      this.running.delete(accountId);
+    });
     this.running.set(accountId, p);
     return job;
   }
@@ -321,7 +326,8 @@ class CliproxyProvider implements Provider {
         return (await this.ctx.router.callAsPage(account, op, input)) as T;
       } catch (e) {
         const code = e instanceof CallFailure ? e.error.code : null;
-        if ((code === 'offline' || code === 'starting') && Date.now() < end) {
+        // 'retry': never sent (it waited for an account waking from sleep, or restarting, past its time).
+        if ((code === 'offline' || code === 'starting' || code === 'retry') && Date.now() < end) {
           await sleep(3000);
           continue;
         }

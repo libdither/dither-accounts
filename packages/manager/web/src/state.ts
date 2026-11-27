@@ -213,6 +213,17 @@ export async function copy(text: string, what = 'Copied') {
   }
 }
 
+/** When a time to come is, in a few words: "at 05:28", "tomorrow at 05:28", "on 3 Dec at 05:28". */
+export function whenAt(ms: number): string {
+  const d = new Date(ms);
+  const hm = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const day = (t: Date) => t.toDateString();
+  const now = new Date();
+  if (day(d) === day(now)) return `at ${hm}`;
+  if (day(d) === day(new Date(now.getTime() + 86_400_000))) return `tomorrow at ${hm}`;
+  return `on ${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} at ${hm}`;
+}
+
 export function ago(ms: number | null | undefined): string {
   if (!ms) return 'never';
   const s = Math.round((Date.now() - ms) / 1000);

@@ -43,12 +43,22 @@ you would on your desktop (password, second step, whatever Google asks), and lea
 The account goes online once a Calendar call works. The browser profile keeps the sign-in, so this is once, until
 Google signs the browser out.
 
+That browser also answers other accounts' **Continue with Google** (Luma's, a website's: docs/signin-relay.md). The
+manager hands it a site's Google sign-in link; it opens the link in a tab of its own, in front, and hands back the
+address Google sent that tab to, stopped before it loaded. Google may ask to pick the account and allow the site: for a
+link you set up (and a site asking only who you are) it clicks this account in Google's chooser and Continue itself,
+with real input on its display; otherwise, and for anything else Google asks, the account shows an attention and you
+answer in the live view. The extension may read `accounts.google.com` for that (its host permission; the page is read,
+never changed), and its copy gets `webNavigation`, `declarativeNetRequest` and `scripting`.
+
 ### What runs
 
-- **The sandbox** (packages/browser, the Discord sandbox made general): a private Xvfb display, the first free one in
-  :80–:89, then :100–:159 (no live X server: its lock naming a running process, or a socket with no lock; and no live claim); an ordinary, non-headless Chromium with its profile in
-  `<data>/accounts/<id>/profile` and the extension copied to `<id>/extension` each start; x11vnc on
-  `<id>/vnc.sock` and no TCP port, which the manager carries to the page as the live view. Deliberately not automation: no CDP, no
+- **The sandbox** (packages/browser, the Discord sandbox made general): a private screen on the account's display
+  backend (docs/browser.md, "Display backends"): by default an Xvfb display, the first free one in :80–:89, then
+  :100–:159 (no live X server: its lock naming a running process, or a socket with no lock; and no live claim), or on
+  wayland a headless sway of its own; an ordinary, non-headless Chromium with its profile in
+  `<data>/accounts/<id>/profile` and the extension copied to `<id>/extension` each start; x11vnc (wayvnc on wayland)
+  on `<id>/vnc.sock` and no TCP port, which the manager carries to the page as the live view. Deliberately not automation: no CDP, no
   `--remote-debugging-port`, no `--enable-automation`, no Playwright. The extension is the only instrument.
 - **Service workers**: Chromium goes on running the extension's service worker it first registered in a profile,
   whatever the copy or the manifest's version says. So when the copied worker is not the one the last start ran (its
@@ -90,7 +100,8 @@ Config (all optional): `authuser` (default 0: which signed-in Google account in 
 `/calendar/u/<n>/r` and `/mail/u/<n>/`), `mail` (default true; `false`: no Gmail tab, and `mail` answers 501),
 `gmailPollSeconds` (default 60: how often the mail watch asks Gmail what changed, once a mail call was made; 0:
 never), `gmailCanaryHours` (default 24: how often the Gmail canary runs; 0: never; with `testMailOrigin`, 0 unless
-set), `apiBase` (default
+set), `calendarIdleSeconds` (default 600: how long the Calendar tab stays open with no Calendar call, with a Gmail
+tab only; 0: always open; "Which tabs stay open" below), `apiBase` (default
 `https://clients6.google.com`), `gmailApiBase` (default `https://gmail.googleapis.com`), `noSandbox`. `testOrigin` and
 `testMailOrigin` are for tests: the start pages, the extension's matches and the hook's allowed origins then include
 them. With `testOrigin` and no `testMailOrigin` there is no Gmail tab, so a test never opens the real Gmail.
@@ -106,6 +117,30 @@ The browser has two pages, each a **role**: the Calendar tab (`calendar`, the br
 background once the extension attaches, unless the config says `mail: false`. One sign-in covers both. Both tabs are
 marked not discardable, so Chromium does not drop the background one. The Gmail tab answers `mail` from
 inside its own signed-in page ("Gmail mail" below), and the diagnostic, the learn runs and the self-check below.
+There are no other tabs of ours: a Gmail download, an upload, a learn run's steering and the suggestions all happen
+inside the Gmail page.
+
+#### Which tabs stay open
+
+Each Google page holds a Chromium renderer of its own (and, for the frames it embeds from other Google hosts, often
+one or two more): measured live, 70–140 MB of RAM and about as much again in swap for each big one. So only what is
+needed all the time stays open:
+
+- **Gmail's tab: always.** The mail watch asks Gmail what changed every `gmailPollSeconds` (60), and `mail` calls,
+  sends, suggestions and the canary all go through it. It also says, while Calendar's tab is closed, whether Google is
+  still signed in.
+- **Calendar's tab: while Calendar is used.** It is only for `google.calendar` calls (and their key probe). Once no
+  Calendar call has started or ended for `calendarIdleSeconds` (600) and its page has been up that long, it is closed
+  (the worker's `tab.close`), if: Google is signed in and a key known (no sign-in or probe under way), no call or
+  reload is under way, and Gmail's page is up, signed in, in a tab of its own. The status stays `online`: `signed in`
+  is then Gmail's page's word (`details.calendarTabClosed` true, the `extension` layer "attached, in the Gmail page",
+  the `Calendar API` layer ok, its note saying the tab is closed). The next Calendar call opens it again, in front (the
+  start page, as before), and waits up to 20 s within its own time for its hook and sign-in; calls that come
+  meanwhile wait for the same reopening. An app that syncs every few minutes (dither-calendar: every 2) keeps it open.
+- Never closed: the browser's last tab (closing it would end the browser), so with `mail: false` Calendar's tab is
+  always open. Signed out while it is closed (Gmail's page says so), or Gmail's tab gone, it opens again, so the
+  sign-in in the live view goes on on Calendar's page as before. A Calendar page opened in the live view counts as
+  open again.
 
 - **Roles.** The same `hook.js` runs in both pages and says which one it is in when it comes up (from `location.host`:
   `calendar.google.com` or `mail.google.com`). The service worker keeps the role's current page, its newest port: a
@@ -166,9 +201,13 @@ only that one`, then `the Gmail tab was sent back to its start page` or `… was
 (`calendarReloads`, `gmailReloads`). Requests sent to a page before its reload do not count against the new page,
 nor does one cut short by its wait in the lane or by its op's time (given less than 12.5 s), nor a download or
 upload the page said it has (it is working on it; the hook cuts Gmail off at 80 s, more than `mail.get`'s 60 s). After a Calendar reload, one `calendarList` call shows it answers
-again; Gmail makes no call of its own, so its hook coming back up is its answer. A request made while a page's tab is
-being reloaded waits (up to 15 s, within its own time) for the new page's hook, instead of reaching the old page, whose
-unload would cut its fetch ("Failed to fetch"); past that it is sent as before. A dead Chromium still exits for a
+again; Gmail makes no call of its own, so its hook coming back up is its answer. A reload replaces the page the way
+every channel is replaced (packages/spec/src/handover.ts): a request made while a page's tab is being reloaded waits
+(up to 15 s, `RELOAD_SETTLE_MS`, within its own time) for the new page's hook, instead of reaching the old page, whose
+unload would cut its fetch ("Failed to fetch"); past 15 s requests go to the tab as it is, so a page that never comes
+back still counts as silent and is reloaded again. One whose own time runs out first fails `retry` (503: not sent).
+What the old page had when the reload was ordered is lost with it: reads and label changes are sent again to the new
+page, once; anything else (a send, a draft, a Calendar write) fails `unsure` (504): it may or may not have happened. A dead Chromium still exits for a
 supervised restart, as before.
 
 **Each unanswered request is told apart in the log, before any reload**, so the cause of a silence can be found from
@@ -341,7 +380,8 @@ The account's status (`{ status, attention, liveView: { vncSocket, width, height
 is Gmail, on a Workspace domain too), `email`, `authuser`, `display`, `page` (the Calendar tab's origin and path),
 `extensionAttached`, `calendarPage`, `signedIn`, `keySource` (which kind of key won: `calendar-request`,
 `page-request`, `page-html`, `embed`), `authStyle` (`plain` or `u`), `lastProbeAt`, `lastProbeStatus`,
-`endpointsSeen` and `pageAuth` (the schemes the Calendar page's own calls use). For the tabs: `tabs` (which tabs
+`endpointsSeen` and `pageAuth` (the schemes the Calendar page's own calls use). For the tabs: `calendarTabClosed`
+(closed while no Calendar call needs it; `email` and `signedIn` are then the Gmail page's), `tabs` (which tabs
 exist, by role, e.g. `calendar (hook up), gmail (hook up)`, a host where our hook is not, and how many others; no
 address or content), `mail` (whether this account has a Gmail tab), `gmailTab` (its origin and path), `gmailPage`
 (our hook is in it), `gmailSignedIn`, `calendarReloads` and `gmailReloads`, and the probe's `gmailProbeAt` and
@@ -454,6 +494,12 @@ mail.google.com, called from inside the signed-in Gmail tab, with the page's own
 What is known of the protocol comes from the shapes the learn run recorded on the live page (type tags and anchors,
 never values; `gmail-shapes.json`, above). Positions that the shapes cannot explain are marked as guesses below; the
 self-check (next section) settles most of them on the live account without reading anything private.
+
+What kind of failure each refusal is (`CallError.kind`, docs/manager.md) is said where it is made, not left to the
+status: a download the browser could not fetch, the sandbox browser or Gmail page not up yet, a back-off and a spent
+day's budget are `transient` (the back-off and the budget with `retryAfterMs`, until they end); a signed-out or
+verification page is `expected` (it waits for you); an answer not laid out as the extractor knows it, or not JSON,
+is a `bug`. People suggestions say the same of theirs.
 
 ### How a call is made
 
@@ -712,12 +758,22 @@ one call already under way. The rules (`BACKGROUND` in `mail.ts`):
   refused) is an answer from the hook, not a throw: 503 `unavailable`, `Gmail's message download failed: the browser
   could not fetch it, before any answer | while its body came in (N bytes in), after S s[, with the browser offline]`,
   and the same words in the log (`gmail raw: …`). It counts as trouble for the back-off, not against the download route.
+  One that failed before any answer is asked once more without following redirects (its body never read), and the
+  line ends with what that said: `(asked again, Gmail sent it elsewhere: a redirect the page may not follow)`, `(asked
+  again, the connection failed again)`, `(asked again, no answer in 5 s)` or `(asked again, Gmail answered N)`.
+- **Downloads sent elsewhere**: when that second try saw a redirect, three downloads in a row (either lane, with no
+  good download between them) stop the background lane for **1 hour** (`backgroundStopped: 'refused'`), doubling
+  each time it stops again, up to **24 hours**; kept in `gmail-reads.json`, so a restart does not end it. Background
+  calls answer 503 `paused` meanwhile (kind transient, `retryAfterMs` the pause's end). Past the pause the next
+  download tries again: one more redirect stops it for twice as long. The foreground is never stopped by it, and a
+  good download from either lane ends it at once. (2026-11-23: after a bulk read, Gmail redirected nearly every
+  download for over a day; the 5-minute back-off alone asked it again every 5 minutes all that time.)
 - **Stops**: a **challenge** (an answer that reads as a sign-in or verification page; any other 200 that is not what
   was asked for: no JSON from `bv`, `fd` or `s`, an HTML page from the download route; or a 403), the page **signed
   out** (the Gmail page's own signed-in state, or a 401), or the day's **quota** spent. From then on every background
   call answers **503 with code `paused`** (`StatusError(…, 503, 'paused')`: "Gmail background reading is paused: …"),
   queued ones included, and **none reaches Gmail**: nothing is retried into a stop. `details.backgroundStopped` is
-  `'challenge'`, `'signedOut'` or `'quota'` until the cause clears: the quota when the 24 h window has room again;
+  `'challenge'`, `'signedOut'`, `'quota'` or `'refused'` (above) until the cause clears: the quota when the 24 h window has room again;
   a challenge or a sign-out when the page is signed in and a (foreground) call is answered well again (the watch's
   look counts). Foreground calls go on as usual while Gmail answers them (a challenge page is a 502 to them).
 - **Too long a wait**: a background call that cannot start within 50 s (backed off past that, or behind a long queue)
@@ -952,11 +1008,14 @@ someone known only by address; the account id is there only for Google accounts)
   Suggestion calls have a lane of their own beside the Gmail page's (at most two in flight): keystrokes never wait
   behind mail, the watch or the background lane, and those never wait behind keystrokes. A suggestion call the page
   leaves unanswered counts toward reloading the Gmail tab, as any.
-- **Read strictly** (`readContacts`): every suggestion's people are read as persons (a group's too, so that another
-  nesting cannot pass for a group); an address not where it belongs (or not an address), a profile or a name of another
-  kind, or an answer in which no suggestion has an address is **502**: "Gmail's people suggestions answer is not laid
-  out as this extractor knows it (at json[0][0][0][0][0][1][0]: expected an address, got a list of 2); nothing was
-  returned rather than possibly wrong people".
+- **Read strictly, one suggestion at a time** (`readContacts`, through [records.md](records.md)'s `readEach`): every
+  suggestion's people are read as persons (a group's too, so that another nesting cannot pass for a group). A
+  suggestion whose address is not where it belongs (or not an address), or whose profile or name is of another kind,
+  is left out and counted (`details.contactsSkipped`, by what was expected; a log line per kind, at most hourly); the
+  rest are answered. The whole answer is **502** when its own layout is off, when no suggestion read has an address,
+  or when most of its suggestions are off (at least 3, and more than were read: the layout changed): "Gmail's people
+  suggestions answer is not laid out as this extractor knows it (at json[0][0][0][0][0][1][0]: expected an address,
+  got a list of 2, and 7 of 7 suggestions failed); nothing was returned rather than possibly wrong people".
 - **What it answers**: the people in Gmail's order, each address once (without regard to case; the first kept), `name`
   the display name with its spaces made one, or null when there is none or it is only the address again; groups and
   people without an address are left out. At most `limit` (8 by default, at most 20); Gmail is asked for 8, or for
@@ -1159,5 +1218,7 @@ that used it lose it at once (dither-calendar drops its copies of those calendar
 - `test/google-browser.test.ts`: the `google` extractor in its real sandbox against the same fake in its `web` mode
   (config `testOrigin` and `apiBase` point at it, `testMailOrigin`, `gmailApiBase` and `peopleApiBase` at its Gmail
   side; `stall()`
-  makes a page's API calls hang). The stall tests wait out the real 25 s, so the suite takes about three minutes. Skipped without Xvfb, chromium and x11vnc (found on PATH, through
-  `XVFB_BIN` / `X11VNC_BIN` / `CHROMIUM_BIN`, or with `nix build`).
+  makes a page's API calls hang). One account there has `calendarIdleSeconds: 2`: its Calendar tab closes with the
+  status still online and Gmail's page up, two calls at once open it again with one page load and are answered, the
+  Gmail page is not loaded again, and it closes again. The stall tests wait out the real 25 s, so the suite takes about three minutes. Skipped, saying so, without Xvfb, Chromium and x11vnc
+  prepared from the pinned nixpkgs (`DITHER_BINS`: nix/README.md), or `XVFB_BIN` / `X11VNC_BIN` / `CHROMIUM_BIN`.

@@ -15,6 +15,7 @@ import { groupIdentities, SUITES } from '../suites.ts';
 import { openAdd, ServiceMark } from './Add.tsx';
 import { attentionOf, Avatar, condition, Dot } from './bits.tsx';
 import { Icon } from './icons.tsx';
+import { Screens } from './Display.tsx';
 import { SuiteSection } from './Suites.tsx';
 
 function AccountCard({ a }: { a: AccountInfo }) {
@@ -26,7 +27,7 @@ function AccountCard({ a }: { a: AccountInfo }) {
       <Avatar a={a} size={40} />
       <span class="ov-card-text">
         <span class="ov-card-name">{named(a)}</span>
-        <span class="ov-card-sub">{c.tone === 'off' ? `${sub ?? kn} · ${c.text}` : (sub ?? c.text)}</span>
+        <span class="ov-card-sub">{c.tone === 'off' || c.tone === 'sleep' ? `${sub ?? kn} · ${c.text}` : (sub ?? c.text)}</span>
       </span>
       <span class={`ov-state ${c.tone}`} data-condition>
         <Dot tone={c.tone} title={c.text} />
@@ -59,6 +60,7 @@ export function Overview() {
     (byCat.get(c) ?? byCat.set(c, []).get(c)!).push(a);
   }
   const online = s.accounts.filter((a) => a.online).length;
+  const asleep = s.accounts.filter((a) => a.asleep).length;
   const needing = s.accounts.filter((a) => a.enabled && (a.error || attentionOf(a)));
   const asking = pending.value;
   return (
@@ -67,7 +69,7 @@ export function Overview() {
         <div>
           <h1>Accounts</h1>
           <p class="small muted">
-            {s.accounts.length ? `${online} of ${s.accounts.length} online` : 'None yet'}
+            {s.accounts.length ? `${online} of ${s.accounts.length} online${asleep ? `, ${asleep} asleep` : ''}` : 'None yet'}
             {needing.length > 0 && <span class="warn-text"> · {needing.length} need you</span>}
           </p>
         </div>
@@ -78,6 +80,16 @@ export function Overview() {
         </button>
       </header>
 
+      {s.bins?.state === 'failing' && (
+        <p class="banner error" role="alert" data-bins-failing>
+          <span>
+            <strong>The sandboxes' programs did not build</strong>
+            {s.bins.dir ? ' this time: accounts with a screen run on the last ones built.' : ': accounts with a screen wait for them.'}{' '}
+            {s.bins.retryAt ? `Trying again at ${new Date(s.bins.retryAt).toLocaleTimeString()} (${s.bins.tries} ${s.bins.tries === 1 ? 'try' : 'tries'} so far).` : ''}
+            {s.bins.why && <span class="small"> {s.bins.why}</span>}
+          </span>
+        </p>
+      )}
       {asking > 0 && (
         <a class="banner attention" href={href('apps')} data-asking>
           <span>
@@ -111,7 +123,7 @@ export function Overview() {
               <h2>{c.name}</h2>
               {list.length > 0 && (
                 <span class="faint small">
-                  {list.filter((a) => a.online).length}/{list.length}
+                  {list.filter((a) => a.online || a.asleep).length}/{list.length}
                 </span>
               )}
               <span class="grow" />
@@ -145,6 +157,8 @@ export function Overview() {
           </section>
         );
       })}
+
+      {s.accounts.some((a) => a.display) && <Screens />}
     </div>
   );
 }

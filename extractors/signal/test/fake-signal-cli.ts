@@ -45,7 +45,8 @@
  *       (username answers name.NN and a link, deleteUsername, deviceName); listDevices (the phone and this one, #2,
  *       named as last set); submitRateLimitChallenge (a captcha "BAD…" is rejected). A send of the text "CAPTCHA"
  *       fails with a rate-limit challenge, as the real one does when Signal wants one.
- * send: message "FAIL" fails the call; "PARTIAL" answers with one recipient failed (UNREGISTERED_FAILURE).
+ * send: message "FAIL" fails the call; "PARTIAL" answers with one recipient failed (IDENTITY_FAILURE) and one gone
+ *       from Signal (UNREGISTERED_FAILURE).
  *
  * Knobs (env): FAKE_NUMBER, FAKE_ACI, FAKE_LINK_TIMEOUT_MS, FAKE_PROFILE_NAME.
  */
@@ -69,7 +70,7 @@ const ACI = process.env.FAKE_ACI ?? '5f2c7a8e-1111-4aaa-8bbb-000000000001';
 const accountsFile = join(config, 'data', 'accounts.json');
 mkdirSync(join(config, 'data'), { recursive: true });
 const record = (o: unknown) => appendFileSync(join(config, 'fake-rpc.jsonl'), JSON.stringify(o) + '\n');
-record({ t: 'argv', argv: args, pid: process.pid });
+record({ t: 'argv', argv: args, pid: process.pid, javaOptions: process.env.JDK_JAVA_OPTIONS });
 process.on('SIGTERM', () => process.exit(143));
 
 if (sub === 'link') {
@@ -493,7 +494,8 @@ if (sub === 'daemon') {
             timestamp: nextTs(),
             results: [
               { recipientAddress: { uuid: 'a11ce000-2222-4ccc-9ddd-000000000002', number: '+15550137' }, type: 'SUCCESS' },
-              { recipientAddress: { uuid: '5a3e0000-3333-4eee-afff-000000000003', number: '+15550161' }, type: 'UNREGISTERED_FAILURE' },
+              { recipientAddress: { uuid: '5a3e0000-3333-4eee-afff-000000000003', number: '+15550161' }, type: 'IDENTITY_FAILURE' },
+              { recipientAddress: { uuid: '9a5e0000-7777-4aaa-8bbb-000000000009', number: '+15550199' }, type: 'UNREGISTERED_FAILURE' },
             ],
           };
         return { timestamp: nextTs(), results: [{ recipientAddress: { uuid: 'a11ce000-2222-4ccc-9ddd-000000000002', number: '+15550137' }, type: 'SUCCESS' }] };

@@ -27,8 +27,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AccountsClient, register } from '@dither-accounts/client';
 import { testEcho } from '@dither-accounts/interfaces';
-import { resolveBins } from '../extractors/discord/src/sandbox.ts';
-import { pickFreeDisplay } from '../packages/browser/src/display.ts';
+import { resolveBins } from '../packages/browser/src/sandbox.ts';
+import { pickFreeXDisplay } from '../packages/browser/src/display.ts';
 import { prepareVncSocket, waitForVncSocket, x11vncArgs } from '../packages/browser/src/vnc.ts';
 import { inetSockets } from '../packages/browser/test/inet.ts';
 import { services } from '../packages/manager/web/src/catalog.ts';
@@ -79,7 +79,7 @@ const c = new AccountsClient({ url: base, app: admin.app, token: admin.token });
 await until(() => c.connected, 5000, 'the admin app connected');
 // A real display for the live view: Xvfb and x11vnc on a free slot, x11vnc on a Unix socket as a sandbox's is, stopped
 // at the end.
-const { display } = await pickFreeDisplay();
+const { display } = await pickFreeXDisplay();
 const bins = resolveBins(() => {});
 const xvfb = Bun.spawn([bins.xvfb, `:${display}`, '-screen', '0', '800x600x24', '-nolisten', 'tcp'], { stdout: 'ignore', stderr: 'ignore' });
 await until(() => require('node:fs').existsSync(`/tmp/.X11-unix/X${display}`), 5000, 'Xvfb');
@@ -306,8 +306,16 @@ try {
   await p.until(`!!document.querySelector('[data-add-account]')`, 6000);
   check((await text('.split-banner')).includes('access_denied'), 'a sign-in error coming back is shown');
   check(!(await p.eval<string>('location.search')).includes('google_error'), 'and taken out of the address');
-  await click('[data-add-account]');
-  await p.until(`!!document.querySelector('[data-add-dialog]')`, 3000);
+  // Twice: the autofocus attribute only works the first time a page shows one, so the second opening is the test.
+  for (const time of ['first', 'second']) {
+    await click('[data-add-account]');
+    await p.until(`!!document.querySelector('[data-add-dialog]')`, 3000);
+    check(await p.eval<boolean>(`document.activeElement?.hasAttribute('data-add-search') ?? false`), `the add sheet's search has the focus (${time} opening)`);
+    if (time === 'first') {
+      await click('[data-add-dialog] [aria-label="Close"]');
+      await p.until(`!document.querySelector('[data-add-dialog]')`, 3000);
+    }
+  }
   const now = await state();
   const offered = services(now);
   const addable = now.kinds.filter((k: any) => k.add).map((k: any) => k.kind);

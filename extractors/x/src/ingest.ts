@@ -143,14 +143,18 @@ function reactionMap(m: RawMessage, selfId: string | null): Map<string, Set<stri
 const fingerprint = (f: P.MessageFact) => JSON.stringify({ b: f.body, k: f.kind, a: f.attachments?.map((a) => [a.url, a.mime, a.size]), r: f.replyTo, e: f.extra?.edited, f: !!f.forward });
 
 export interface MessagesOpts {
-  /** Backfill (history): no notifications, whatever the times. */
+  /**
+   * Backfill (history): no notifications, whatever the times, and every message of the page is sent, known ones too.
+   * The hub counts a history page by the messages that come with it (dither-chat historypage.ts): a page of messages
+   * sent before would otherwise come empty, and the hub would take it for one that never arrived.
+   */
   backfill?: boolean;
   now?: number;
 }
 
 /**
  * The open conversation's loaded messages. New ones are message facts (live when newer than anything announced in
- * that conversation and recent), changed ones are sent again (an edit), hidden ones and ones missing from inside the
+ * that conversation and recent), changed ones are sent again (an edit), and in backfill unchanged ones are too, hidden ones and ones missing from inside the
  * loaded range are deletes, and reactions are diffed per message.
  */
 export function ingestMessages(st: XState, raw: RawMessages, opts: MessagesOpts = {}): P.AdapterEvent[] {
@@ -197,7 +201,7 @@ export function ingestMessages(st: XState, raw: RawMessages, opts: MessagesOpts 
       if (prev.fp !== fp) {
         const edited = prev.text !== fact.body;
         events.push({ t: 'message', message: { ...fact, ...(edited ? { editedTs: now } : {}) }, live: false });
-      }
+      } else if (opts.backfill) events.push({ t: 'message', message: fact, live: false });
       // Reactions: what was added and what was taken away since the last look.
       for (const [key, users] of reactions) {
         const was = prev.reactions.get(key) ?? new Set();

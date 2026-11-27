@@ -69,6 +69,25 @@ describe('LightSpeed rows to chat facts', () => {
     expect(evs.some((e) => e.t === 'reaction')).toBe(false);
   });
 
+  test('a history page says its messages again, ones the snapshot said too; nothing it holds says them twice otherwise', () => {
+    const m = new Mapper('messenger', now);
+    const snap = lsSnap();
+    m.lsSnapshot(snap, { id: SELF });
+    const page = { messages: snap.messages.filter((x) => x.threadKey === A), reactions: snap.reactions, attachments: snap.attachments };
+    const { events, count } = m.lsHistory(page);
+    const msgs = events.filter((e) => e.t === 'message') as any[];
+    expect(count).toBe(3);
+    expect(msgs.map((e) => [e.message.nativeId, e.live])).toEqual([
+      ['mid.$1', false],
+      ['mid.$2', false],
+      ['mid.$3', false],
+    ]);
+    // The reactions it holds already are no news.
+    expect(events.some((e) => e.t === 'reaction')).toBe(false);
+    // A repeat of a row outside history still says nothing.
+    expect(m.lsChanges([{ table: 'messages', op: 'put', row: snap.messages[0] }])).toEqual([]);
+  });
+
   test('changes: live messages, reactions that replace, typing, edits, unsends, repeats that say nothing', () => {
     const m = new Mapper('messenger', now);
     m.lsSnapshot(lsSnap(), { id: SELF });
@@ -174,6 +193,17 @@ describe('Slide records to chat facts', () => {
     expect(msgs.find((x) => x.nativeId === 'm4').editedTs).toBe(clock - 20_000);
     expect(evs).toContainEqual({ t: 'read', conversation: 't1', upToTs: clock - 61_000 });
     expect(evs).toContainEqual({ t: 'receipt', conversation: 't1', messages: ['m1'], who: 'f2', state: 'read', ts: clock - 65_000 });
+  });
+
+  test('a history page says its messages again, ones the snapshot said too', () => {
+    const m = new Mapper('instagram', now);
+    const s = slide();
+    m.slideSnapshot(s, { id: 'fs', eimu: 'fs' });
+    const { events, count } = m.slideHistory({ messages: s.messages });
+    expect(count).toBe((s.messages as any[]).length);
+    expect(events.filter((e) => e.t === 'message').map((e: any) => e.live)).toEqual((s.messages as any[]).map(() => false));
+    // Outside history, a record of a message it holds says nothing.
+    expect(m.slideRecords({ messages: [(s.messages as any[])[1]] }).filter((e) => e.t === 'message')).toEqual([]);
   });
 
   test('records: a new message is live, a reaction changing on a message is a reaction event, deletes, typing', () => {

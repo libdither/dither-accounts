@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f6f6f4; --card: #fff; --fg: #1d1d1b; --mute: #6b6b66; --line: #deded8; --accent: #2f5fd0; --bad: #b3261e; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161615; --card: #20201e; --fg: #ececea; --mute: #a3a39c; --line: #3a3a36; --accent: #7aa2ff; --bad: #ff8a80; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, sans-serif; padding: 16px; }
+  main { width: 100%; max-width: 420px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px; }
+  h1 { font-size: 18px; margin: 0 0 6px; }
+  p { margin: 8px 0; }
+  .mute { color: var(--mute); font-size: 13px; }
+  .bad { color: var(--bad); }
+  ul { padding-left: 18px; margin: 6px 0 10px; }
+  .choices { display: grid; gap: 8px; margin: 14px 0; }
+  button { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: inherit; padding: 9px 12px; text-align: left; }
+  button.pick { display: grid; gap: 1px; }
+  button.pick:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.link { border: 0; padding: 4px 0; color: var(--accent); }
+  label { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--mute); }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
+</style>
+</head>
+<body>
+<main id="main"><p class="mute">Loading…</p></main>
+<script src="signin-page.js"></script>
+</body>
+</html>

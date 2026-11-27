@@ -5,7 +5,7 @@
  * on a fake bridge, from its QR to a pairing code for a phone number. Nothing reaches a network.
  */
 import type { UnixSocketListener } from 'bun';
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -13,6 +13,10 @@ import { AccountsClient, register } from '@dither-accounts/client';
 import { chat } from '@dither-accounts/interfaces';
 import { createManager, type Manager } from '@dither-accounts/manager';
 import type { PageCallResult } from '../packages/manager/src/api-types.ts';
+
+// These tests start real extractor processes, and under load one start can take seconds. A test's limit is longer
+// than the waits inside it, so one that hangs fails saying what it waited for, not with bun's bare 5 s timeout.
+setDefaultTimeout(30_000);
 
 const ROOT = resolve(import.meta.dir, '..');
 let m: Manager;

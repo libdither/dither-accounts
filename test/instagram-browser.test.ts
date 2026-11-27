@@ -14,16 +14,11 @@ import { join } from 'node:path';
 import { AccountsClient, register } from '@dither-accounts/client';
 import { chat } from '@dither-accounts/interfaces';
 import { createManager, type Manager } from '@dither-accounts/manager';
-import { resolveBins } from '../packages/browser/src/index.ts';
 import { ALICE, type FakeMeta, IG, SELF, startFakeMeta } from './fake-messenger.ts';
 import { metaKinds } from './messenger-kinds.ts';
+import { browserBins } from './needs.ts';
 
-let bins: ReturnType<typeof resolveBins> | null = null;
-try {
-  bins = resolveBins(() => {});
-} catch (e) {
-  console.warn(`instagram-browser: skipped, ${(e as Error).message}`);
-}
+const bins = browserBins('instagram-browser');
 const it = test.skipIf(!bins);
 
 let fake: FakeMeta;

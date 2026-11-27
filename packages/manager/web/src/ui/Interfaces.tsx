@@ -118,7 +118,7 @@ export function Interfaces() {
                 {accounts.length > 0 && (
                   <>
                     <br />
-                    {accounts.filter((a) => a.online).length} of {accounts.length} account{accounts.length === 1 ? '' : 's'} online
+                    {accounts.filter((a) => a.online).length} of {accounts.length} account{accounts.length === 1 ? '' : 's'} online{accounts.some((a) => a.asleep) ? `, ${accounts.filter((a) => a.asleep).length} asleep` : ''}
                   </>
                 )}
               </span>

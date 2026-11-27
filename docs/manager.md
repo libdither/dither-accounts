@@ -32,6 +32,42 @@ A failed call says why in `CallError.code`: the manager's own words (`denied`, `
 named its reason (`new StatusError(message, 422, 'recipients')` in packages/link), that word with the extractor's
 `status`. The interface documents its words (Proton's `mail.send`: `from`, `recipients`, `settings`, in
 packages/interfaces/src/mail.ts). An extractor cannot use one of the manager's words: those arrive as `failed`.
+Three words mean the same wherever they come from (packages/spec `CallError`): `retry` (503), the call was never
+sent and may be sent again (it waited for an extractor or a page being replaced, and its time ran out first);
+`unsure` (504), a write that may or may not have happened; and `duplicate` (409).
+
+It also says what kind of failure it is, in `CallError.kind` (spec `FailureKind`), so the app need not guess it from
+the message: `expected` for a refusal that is the right answer (`denied`, `invalid`, `offline`, a 404), `transient`
+for the world failing for a moment (`limited`, `timeout`, a 503; `retryAfterMs` says how long to wait when that is
+known, as for `limited`), and `bug` for something that waiting will not fix. The extractor says it
+(`new StatusError(message, 503, 'unavailable', { kind: 'transient', retryAfterMs })`); when it does not, the manager
+fills it in from its own code, else the status (a 4xx other than 408 and 429, or a 501: expected; 408, 429, 503, 504:
+transient). A 500, a 502 or a plain error stays without one: not known. The call's span carries the same `kind`, for
+bugwatch. `transient` does not make a write safe to send again: `unsure` is transient too.
+
+### A failed read is remembered (when the app asks for it)
+
+An app that asks again on every poll, watch or page open, about something that failed, would ask the manager again
+each time; the manager's trace and bugwatch would then count its loop, not how bad the failure is. With
+`new AccountsClient({ ..., remember: true })` (spec `memory.ts`, `FailureMemory`), the client keeps the last failure
+of each read, keyed by the account, the op and the input (its JSON with keys sorted), and answers a repeat from it
+until it is due, without sending it: the same error, with `remembered` (when it failed, how many times in a row, how
+many repeats since) and `retryAfterMs` the time left.
+
+- **When it is due**: a `transient` failure after 5 s, doubling to 5 minutes, and never before its own `retryAfterMs`;
+  a `bug` (or one of no known kind) after a minute, doubling to 30; an `expected` one after 10 minutes, or sooner when
+  something relevant changes.
+- **What clears it**: the same call answering; a write this client made to the account answering (it may change what
+  the reads answer); the account's state changing (running, online, enabled, its error, its grants); `forget(account?,
+  op?)`, for an app that knows better (a person asked to refresh). Another input is another call, asked at once (a new
+  sync token).
+- **What is never remembered**: writes, and failures the manager did not answer (the client's own timeout, a dropped
+  socket, `unsure`).
+- **Counted, not sent**: the call sent once it is due carries `repeats`, how many times it was answered from memory
+  since it last failed, and the manager puts it on the call's span (`attrs.repeats`). Kept to 500 calls, the oldest
+  failure dropped first.
+
+It is off by default: an app turns it on when it treats a remembered answer as it would the failure.
 
 ### A call runs once
 
@@ -77,7 +113,11 @@ the page's own origin; apps and extractors never log in (their own tokens, below
   facts its extractor reports, the apps that reach it, its call counts, its directory's files (names and sizes), its
   log, and its last `hello` and `status`. Its overview starts with what it rests on (`layers`, below), so a broken
   account says where it breaks. **Live view** opens its sandboxed browser (VNC carried through the manager) to sign
-  in or watch it work. What it needs from you shows on top: a QR code to scan, and for chat accounts a new code, a
+  in or watch it work. **Screen**, for a kind with a screen, picks the display backend its sandbox draws on, or the
+  manager's default; **Screens**, at the foot of the home page, picks that default, which then wins over
+  config.toml's `display_backend`. A backend built from a fork says "Experimental fork", and changing either restarts
+  the sandboxes it moves (docs/browser.md, "Display backends").
+  What it needs from you shows on top: a QR code to scan, and for chat accounts a new code, a
   pairing code by phone number, or a password to sign in again. **Try it** runs any of its operations. Removing an
   account keeps its directory unless you tick "also delete it" (only for directories the manager made, never one
   imported in place).
@@ -114,7 +154,7 @@ docs/notifications.md, without the account needing you); the page shows each whe
 - Apps get each status's `liveView` as its width and height only, never the socket (so an app knows there is one): an
   app that runs the account opens the live view through the manager (`liveViewPath`). The page and `/api/liveview`
   keep the socket.
-- No live view listens on a TCP port. A sandbox's x11vnc (`packages/browser/src/vnc.ts`) listens only on `vnc.sock` in
+- No live view listens on a TCP port. A sandbox's x11vnc, Xvnc, wayvnc or w0vncserver (`packages/browser/src/vnc.ts`, `wayland.ts`) listens only on `vnc.sock` in
   the account's directory (0700, the socket 0600), so nothing but this user reaches it, and the manager connects only
   to a Unix socket this user owns: it carries the stream to the page behind its login, and to an app on its token. (A
   VNC without a password on 127.0.0.1, as it was, let in every local process, and any web page open in a browser
@@ -128,7 +168,8 @@ the page. An app with an `accounts` grant at manage for a kind runs accounts of 
 create them (with config and a secret, or with `form`, the answers to the kind's add form, which the manager splits into
 config and secret.json and checks as its page does), rename, enable, disable, start, stop, restart, replace their
 secret, read the tail of their log (`do: 'log'`), and remove them (`do: 'delete'`, with `purge` to delete a directory
-the manager made). Its account list says, per account, why it is not running (`error`), whether it may run it
+the manager made). Its account list says, per account, why it is not running (`error`), whether it is asleep
+(`asleep`: idle, its extractor stopped until a call wakes it, [docs/supervisor.md](supervisor.md#sleeping-browser-accounts-only-needed-now-and-then)), whether it may run it
 (`manages`), whether it has a live view (`liveView`) and who made it (`origin`: this app, another app, the page, or an
 import). The live view of an account it manages is a WebSocket on its own token, `client.liveViewUrl(account)` (spec
 `liveViewPath`): the raw VNC stream, for the app to carry on to its own page, from this machine and never a browser.
@@ -139,12 +180,13 @@ import). The live view of an account it manages is a WebSocket on its own token,
 |---|---|
 | `packages/spec` | schemas, interfaces, levels, consent lines, the consumer wire |
 | `packages/interfaces` | `chat`, `google.calendar`, `calendar`, `contacts`, `mail`, `notifications` (with the manager's own notices about its accounts: [docs/notifications.md](notifications.md)), `desktop`, `exchange`, `privacy.session`, `statements` (financial accounts' pulled files, read only), `monero.view`, `approvals` (signed approval requests answered on paired approver devices, through the manager's built-in `approver` account: [docs/approver.md](approver.md#approvals)), `test.echo` |
-| `packages/manager` | the service: registry (`db.ts`), extractor supervisor with the per-account lock, whose extractors outlive a restart and are adopted by the next manager (`supervisor.ts`, `fingerprint.ts`, [docs/supervisor.md](supervisor.md)), router (`router.ts`), its error file (`errors.ts`, read by `bugwatch`), HTTP and sockets (`http.ts`), providers (`providers/google.ts`, the OAuth way in), CLI (`cli.ts`), page (`web/`) |
-| `packages/browser` | a sandboxed browser for extractors: Xvfb, an ordinary Chromium with a persistent profile and an extension, x11vnc for the live view, the extension's loopback bridge, the names the extension leaves in pages, made per install and account when it is copied (`src/markers.ts`), what every hook shares to keep out of the page's sight (`src/page`, docs/page-traces.md), the profile's service workers cleared before a launch whose extension worker changed, since Chromium otherwise keeps running the first one (`src/worker.ts`) |
-| `packages/sandbox` | a sandboxed native app for extractors: bubblewrap with its own network (pasta), Xvfb and x11vnc, a private session bus whose notifications and portals are ours, `xdg-open` shims, a watched downloads folder ([docs/native-sandbox.md](native-sandbox.md)) |
+| `packages/manager` | the service: registry (`db.ts`), extractor supervisor with the per-account lock, whose extractors outlive a restart and are adopted by the next manager, and whose idle browser accounts sleep until needed (`supervisor.ts`, `fingerprint.ts`, [docs/supervisor.md](supervisor.md)), router (`router.ts`), its error file (`errors.ts`, read by `bugwatch`), HTTP and sockets (`http.ts`), providers (`providers/google.ts`, the OAuth way in), CLI (`cli.ts`), page (`web/`), the sandboxes' programs built at start from the pinned nixpkgs (`prepare.ts`, [nix/README.md](../nix/README.md)) |
+| `packages/browser` | a sandboxed browser for extractors: a screen of its own (Xvfb and x11vnc, or a headless sway and wayvnc: `src/screen.ts`, docs/browser.md "Display backends"), an ordinary Chromium with a persistent profile and an extension, the live view, the extension's loopback bridge, the names the extension leaves in pages, made per install and account when it is copied (`src/markers.ts`), what every hook shares to keep out of the page's sight (`src/page`, docs/page-traces.md), the profile's service workers cleared before a launch whose extension worker changed, since Chromium otherwise keeps running the first one (`src/worker.ts`) |
+| `packages/sandbox` | a sandboxed native app for extractors: bubblewrap with its own network (pasta), its screen (either backend), a private session bus whose notifications and portals are ours, `xdg-open` shims, a watched downloads folder ([docs/native-sandbox.md](native-sandbox.md)) |
+| `nix` | the one pinned nixpkgs (`pin.json`) and the list of programs the sandboxes and the tests run (`bins.json`), built by the manager and by CI the same way ([nix/README.md](../nix/README.md)) |
 | `packages/approval` | approvals' statement (the bytes a device signs, dither-chat's contract), the request checks, P-256 signatures and fingerprints ([docs/approver.md](approver.md#approvals)) |
 | `packages/client` | an app's side: `register`, `AccountsClient` with typed calls, admin actions |
 | `packages/link` | an extractor's side (the same wire as dither-chat's adapter client) |
 | `packages/chat-protocol` | dither-chat's protocol, copied under its old name so the chat extractors did not change |
 | `apps/desk-signer` | the laptop's approver device: pairs, keeps its link, signs an approval after fprintd reports your finger ([apps/desk-signer/README.md](../apps/desk-signer/README.md)) |
-| `extractors/*` | chat: `discord`, `signal`, `matrix`, `whatsapp` (moved from dither-chat), `telegram`, `gmessages` (Google Messages: SMS and RCS through your phone), `x` (X's direct messages, legacy DMs and encrypted XChat, from the real x.com client in a sandboxed browser: [docs/x.md](x.md)), `reddit` (a Reddit account's front page, inbox and comment threads as posts and a feed, from old.reddit.com signed in in a sandboxed browser: [docs/reddit.md](reddit.md)), `t3` (T3 Code's coding threads as chats, each a conversation with its agent: [docs/t3.md](t3.md)), `substack` (a Substack reader's Inbox, Notes, Activity and threads for the Feed page, from substack.com in a sandboxed browser: [docs/substack.md](substack.md)); `google` (a browser sign-in: Calendar, and Gmail read through its own page as `mail`), `google-api` (an OAuth client); `dav` (CalDAV and CardDAV), `ics` (read-only feeds); `imap` (mail, with a Proton Bridge preset); `proton` (Proton Mail signed in in a sandboxed browser, decrypted here: [docs/proton.md](proton.md)); `messenger` and `instagram` (Meta's web apps in a sandboxed browser, read and driven through their own modules; shared code in `meta`: [docs/messenger.md](messenger.md)); `privacy` (Privacy.com in a sandboxed browser whose extension carries its own passkey, signing itself in for its `statements`: [docs/privacy.md](privacy.md)); finance: `simplefin` (SimpleFIN Bridge: [docs/simplefin.md](simplefin.md)), `monero` (a view-only wallet: [docs/monero.md](monero.md)), `venmo`, `amazon` and `schwab` (statements, order history and Schwab's History and Realized Gain/Loss exports from sandboxed browsers, extension only: [docs/venmo.md](venmo.md), [docs/amazon.md](amazon.md), [docs/schwab.md](schwab.md)), all `statements` with shared code in `statements-common` ([docs/statements.md](statements.md)); `github` (notifications); `bugwatch` (your own services' error files and logs as notices, each new bug handed to a T3 coding thread: [docs/bugwatch.md](bugwatch.md)); `njalla` (DNS records as `dns`: [docs/njalla.md](njalla.md)); `fake`/`chat-fake` for tests |
+| `extractors/*` | chat: `discord`, `signal`, `matrix`, `whatsapp` (moved from dither-chat), `telegram`, `gmessages` (Google Messages: SMS and RCS through your phone), `x` (X's direct messages, legacy DMs and encrypted XChat, from the real x.com client in a sandboxed browser: [docs/x.md](x.md)), `reddit` (a Reddit account's front page, inbox and comment threads as posts and a feed, from old.reddit.com signed in in a sandboxed browser: [docs/reddit.md](reddit.md)), `t3` (T3 Code's coding threads as chats, each a conversation with its agent: [docs/t3.md](t3.md)), `substack` (a Substack reader's Inbox, Notes, Activity and threads for the Feed page, from substack.com in a sandboxed browser: [docs/substack.md](substack.md)), `partiful` (Partiful's events by city and your own, who is going, comments and chats, from partiful.com in a sandboxed browser: [docs/partiful.md](partiful.md)), `luma` (Luma's events by city, your events, who is going, notifications, blasts and chats, from luma.com in a sandboxed browser: [docs/luma.md](luma.md)); `google` (a browser sign-in: Calendar, and Gmail read through its own page as `mail`), `google-api` (an OAuth client); `dav` (CalDAV and CardDAV), `ics` (read-only feeds); `imap` (mail, with a Proton Bridge preset); `proton` (Proton Mail signed in in a sandboxed browser, decrypted here: [docs/proton.md](proton.md)); `messenger` and `instagram` (Meta's web apps in a sandboxed browser, read and driven through their own modules; shared code in `meta`: [docs/messenger.md](messenger.md)); `privacy` (Privacy.com in a sandboxed browser whose extension carries its own passkey, signing itself in for its `statements`: [docs/privacy.md](privacy.md)); finance: `simplefin` (SimpleFIN Bridge: [docs/simplefin.md](simplefin.md)), `monero` (a view-only wallet: [docs/monero.md](monero.md)), `venmo`, `amazon` and `schwab` (statements, order history and Schwab's History and Realized Gain/Loss exports from sandboxed browsers, extension only: [docs/venmo.md](venmo.md), [docs/amazon.md](amazon.md), [docs/schwab.md](schwab.md)), all `statements` with shared code in `statements-common` ([docs/statements.md](statements.md)); `github` (notifications); `bugwatch` (your own services' error files and logs as notices, each new bug handed to a T3 coding thread: [docs/bugwatch.md](bugwatch.md)); `njalla` (DNS records as `dns`: [docs/njalla.md](njalla.md)); `site` (any website by its address in a sandboxed browser, signed in by you or with a Google account here, lent as `browser`: [docs/site.md](site.md)); `fake`/`chat-fake` for tests |

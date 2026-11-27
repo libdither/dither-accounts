@@ -1,12 +1,16 @@
 /** The manager's page API: account details, log, files, live view, running ops from the page, adding and removing. */
 import type { UnixSocketListener } from 'bun';
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createManager, type Manager } from '@dither-accounts/manager';
 import { CLI_HEADER, CLI_TOKEN_FILE } from '../packages/manager/src/auth.ts';
 import type { AccountDetail, DirListing, ManagerState, PageCallResult } from '../packages/manager/src/api-types.ts';
+
+// These tests start real extractor processes, and under load one start can take seconds. A test's limit is longer
+// than the waits inside it, so one that hangs fails saying what it waited for, not with bun's bare 5 s timeout.
+setDefaultTimeout(30_000);
 
 let m: Manager;
 let dir: string;
@@ -102,7 +106,8 @@ test('running an op from the page: input checked, counted as the page, dry run, 
   const dry = (await api<PageCallResult>(`/api/accounts/${id}/call`, 'POST', { op: 'shout', input: { text: 'x' }, dryRun: true })).body;
   expect(dry.result).toEqual({ dryRun: true });
   const up = (await api<PageCallResult>(`/api/accounts/${id}/call`, 'POST', { op: 'fail', input: { status: 404 } })).body;
-  expect(up.error).toEqual({ code: 'failed', message: 'failed with 404', status: 404 });
+  // A 404 is an answer, and says so (spec FailureKind).
+  expect(up.error).toEqual({ code: 'failed', message: 'failed with 404', status: 404, kind: 'expected' });
   expect((await api<PageCallResult>(`/api/accounts/${id}/call`, 'POST', { op: 'nope' })).body.error?.code).toBe('unknown-op');
   const d = (await api<AccountDetail>(`/api/accounts/${id}`)).body;
   expect(d.activity.find((r) => r.op === 'echo' && r.outcome === 'ok')?.app).toBe('page');

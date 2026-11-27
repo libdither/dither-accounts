@@ -142,9 +142,14 @@ export class State {
     this.db.query('DELETE FROM react WHERE msg = ?').run(id);
     this.db.query('DELETE FROM pin WHERE msg = ?').run(id);
   }
-  /** Oldest message we know in a conversation, at or before a time. */
-  oldest(conversation: string, beforeTs?: number): StoredMsg | undefined {
-    const r = this.db.query('SELECT * FROM msg WHERE conversation = ? AND ts < ? ORDER BY ts ASC LIMIT 1').get(conversation, beforeTs ?? Number.MAX_SAFE_INTEGER) as any;
+  /** Oldest message we know in a conversation at or after a time. */
+  firstFrom(conversation: string, ts: number): StoredMsg | undefined {
+    const r = this.db.query('SELECT * FROM msg WHERE conversation = ? AND ts >= ? ORDER BY ts ASC LIMIT 1').get(conversation, ts) as any;
+    return r ? rowToMsg(r) : undefined;
+  }
+  /** Newest message we know in a conversation before a time (any time when none is given). */
+  latest(conversation: string, beforeTs?: number): StoredMsg | undefined {
+    const r = this.db.query('SELECT * FROM msg WHERE conversation = ? AND ts < ? ORDER BY ts DESC LIMIT 1').get(conversation, beforeTs ?? Number.MAX_SAFE_INTEGER) as any;
     return r ? rowToMsg(r) : undefined;
   }
   /** Incoming messages in a conversation up to a time, newest first (for read receipts). */

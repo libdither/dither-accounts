@@ -5,6 +5,7 @@
  * exception, as every chat kind's signed-in layer has), a cookie or the modhash.
  */
 import type * as P from '@dither-chat/protocol';
+import { displayName, displayState, type FreeDisplay, type ScreenHealth } from '@dither-accounts/browser';
 
 /** What the page says about itself (hook.js `page`). */
 export type PageState = 'login' | 'verify' | 'ready' | 'other';
@@ -16,7 +17,7 @@ export const OTHER_MS = 30_000;
 
 export interface Facts {
   now: number;
-  sandbox: { started: boolean; error: string | null; browserAlive: boolean; display: number | null; startedAt: number };
+  sandbox: { started: boolean; error: string | null; browserAlive: boolean; screen?: ScreenHealth; display: FreeDisplay | number | null; startedAt: number };
   extensionAttached: boolean;
   hookTabs: number;
   tab: string | null;
@@ -86,12 +87,12 @@ export function compute(f: Facts): Computed {
   // ------------------------------------------------------------ layers
   const browserFailed = !!f.sandbox.error && /chromium/i.test(f.sandbox.error);
   const display: P.StatusLayer = f.sandbox.started
-    ? { name: 'display', state: 'ok', note: `Xvfb :${f.sandbox.display}, live view ready` }
+    ? { name: 'display', ...displayState(f.sandbox.display, f.sandbox.screen) }
     : f.sandbox.error && !browserFailed
       ? { name: 'display', state: 'failed', note: f.sandbox.error }
       : browserFailed
         ? { name: 'display', state: 'off', note: 'not started' }
-        : { name: 'display', state: 'waiting', note: 'starting Xvfb' };
+        : { name: 'display', state: 'waiting', note: 'starting the display' };
   const browser: P.StatusLayer = f.sandbox.started
     ? f.sandbox.browserAlive
       ? { name: 'browser', state: 'ok', note: f.tab ? `Chromium, on ${hostOf(f.tab) ?? f.tab}` : 'Chromium is running' }
@@ -131,7 +132,7 @@ export function compute(f: Facts): Computed {
 
   // ------------------------------------------------------------ details
   const details: Record<string, string | number | boolean | null> = {
-    display: f.sandbox.display !== null ? `:${f.sandbox.display}` : null,
+    display: displayName(f.sandbox.display),
     page: page?.path ?? null,
     pageState: page?.state ?? null,
     oldReddit: page?.old ?? null,

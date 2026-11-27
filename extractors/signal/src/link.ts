@@ -18,7 +18,7 @@
  */
 
 import type { Subprocess } from 'bun';
-import { type ChildRegistry, type Logger, readLines, redactLinkUri, stopProcess } from './cli.ts';
+import { type ChildRegistry, isJavaOptionsNote, type Logger, readLines, redactLinkUri, stopProcess } from './cli.ts';
 
 export interface LinkOptions {
   argv: (deviceName: string) => string[];
@@ -142,7 +142,7 @@ export class LinkFlow {
       if (m) number = m[1];
     });
     const err = readLines(proc.stderr as ReadableStream<Uint8Array>, (line) => {
-      if (!line.trim()) return;
+      if (!line.trim() || isJavaOptionsNote(line)) return;
       if (/linking in progress/i.test(line)) this.gotScan(a);
       // The last non-stacktrace line of a failed command is its error message.
       if (!/^\s+at |^\s*\.\.\.|^Caused by/.test(line)) a.lastErr = line.trim();

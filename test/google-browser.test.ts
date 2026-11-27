@@ -11,9 +11,9 @@ import { join } from 'node:path';
 import { AccountsClient, type CallFailed, register } from '@dither-accounts/client';
 import { googleCalendar, mail as mailIface } from '@dither-accounts/interfaces';
 import { createManager, type Manager } from '@dither-accounts/manager';
-import { resolveBins } from '../packages/browser/src/index.ts';
 import { inetSockets, rfbBanner, x11vncs } from '../packages/browser/test/inet.ts';
 import { type FakeGoogle, type FakeMessage, fakeEml, GMAIL_ROWS, startFakeGoogle } from './fake-google.ts';
+import { browserBins } from './needs.ts';
 
 const LA = 'America/Los_Angeles';
 /** How long the hook gives a Gmail call here before it cuts it off (testFetchMs; 20 s live). */
@@ -35,12 +35,7 @@ const WEB = {
 /** What the Gmail side holds that must never reach a log, a status, the probe's answer or the recorded shapes. */
 const MAIL_SECRETS = [WEB.mailKey, WEB.mailEmail, 'secret-label-name', 'another-secret-label', 'secret-subject-line', '424242', WEB.mailMark, 'Mk%237731', WEB.peopleKey];
 
-let bins: ReturnType<typeof resolveBins> | null = null;
-try {
-  bins = resolveBins(() => {});
-} catch (e) {
-  console.warn(`google-browser: skipped, ${(e as Error).message}`);
-}
+const bins = browserBins('google-browser');
 const it = test.skipIf(!bins);
 
 let fake: FakeGoogle;
@@ -50,6 +45,7 @@ let app: AccountsClient;
 let signedIn: string;
 let signedOut: string;
 let mailOff: string;
+let idle: string;
 const events: Record<string, any[]> = {};
 const saved = process.env.DITHER_GOOGLE_BACKOFF_MS;
 const savedGap = process.env.DITHER_GOOGLE_RELOAD_GAP_MS;
@@ -124,7 +120,7 @@ afterAll(async () => {
   app?.close();
   await m?.stop();
   // Whatever a failed test left running.
-  for (const pid of processesOf([signedIn, signedOut, mailOff].filter(Boolean))) {
+  for (const pid of processesOf([signedIn, signedOut, mailOff, idle].filter(Boolean))) {
     try {
       process.kill(pid, 'SIGKILL');
     } catch {}
@@ -630,9 +626,10 @@ it(
     expect(Buffer.from(raw.base64, 'base64').toString()).toBe(fakeEml(src));
     expect((await mailCall('mail.raw', { id: src.id, background: true })).base64).toBe(raw.base64);
     // A download whose connection breaks ("Failed to fetch" in the page) says where it broke, in the answer and the log.
-    fake.gmail.cutNext();
+    // Two cuts: the download and the hook's second try, which does not follow redirects and so sees this one.
+    fake.gmail.cutNext(2);
     const cut = await mailCall('mail.get', { id: src.id }).catch((x) => x);
-    expect(String(cut?.message)).toMatch(/^Gmail's message download failed: the browser could not fetch it, (before any answer|while its body came in \(\d+ bytes in\)), after [\d.]+ s; try again in a moment$/);
+    expect(String(cut?.message)).toMatch(/^Gmail's message download failed: the browser could not fetch it, before any answer, after [\d.]+ s \(asked again, Gmail sent it elsewhere: a redirect the page may not follow\); try again in a moment$/);
     expect(logOf(signedIn)).toMatch(/gmail raw: the browser could not fetch it, /);
     expect((await mailCall('mail.get', { id: src.id })).id).toBe(src.id);
     // That message is unread: it was looked at again after each read (the unread guard), and Gmail (this fake) left it so.
@@ -739,18 +736,24 @@ it(
     const [list, ...sug] = await Promise.all([mailCall('mail.list', { mailboxId: '^i', limit: 5 }), mailCall('mail.contacts', { query: 'b' }), mailCall('mail.contacts', { query: 'c' }), mailCall('mail.contacts', { query: 'stone' })]);
     expect(list.messages.length).toBe(5);
     expect(sug.map((s) => s.contacts.map((c: any) => c.email))).toEqual([['bob.stone@example.com'], ['carol@example.com'], ['bob.stone@example.com']]);
-    // Another layout: 502 and why, details.contacts false; the next good answer puts it back.
+    // Another layout. Two odd suggestions could be two bad records: left out and counted, not a refusal (records.ts).
     fake.people.layout = 'swapped';
+    const extra = ['dora.one@example.com', 'dora.two@example.com', 'dora.three@example.com'].map((email) => ({ email, name: null }));
+    fake.people.list.push(...extra);
     try {
-      const e = (await mailCall('mail.contacts', { query: 'al' }).catch((x) => x)) as CallFailed;
+      expect(await mailCall('mail.contacts', { query: 'al' })).toEqual({ contacts: [] });
+      await until(() => statusOf(signedIn)?.details?.contactsSkipped != null, 5000, 'details.contactsSkipped');
+      // Three or more, and none read: a changed layout, 502 and why, details.contacts false; the next good answer puts it back.
+      const e = (await mailCall('mail.contacts', { query: 'dora' }).catch((x) => x)) as CallFailed;
       expect([e.code, e.status]).toEqual(['failed', 502]);
-      expect(e.message).toBe("Gmail's people suggestions answer is not laid out as this extractor knows it (at json[0][0][0][0][0][1][0]: expected an address, got a list of 2); nothing was returned rather than possibly wrong people");
+      expect(e.message).toBe("Gmail's people suggestions answer is not laid out as this extractor knows it (at json[0][0][0][0][0][1][0]: expected an address, got a list of 2, and 3 of 3 suggestions failed); nothing was returned rather than possibly wrong people");
       await until(() => statusOf(signedIn)?.details?.contacts === false, 5000, 'details.contacts false');
       expect(statusOf(signedIn).details.contactsNote).toBe(e.message);
       // Mail does not rest on it.
       expect(layerOf(signedIn, 'Gmail protocol').state).toBe('ok');
     } finally {
       fake.people.layout = 'normal';
+      fake.people.list.splice(fake.people.list.length - extra.length);
     }
     expect((await mailCall('mail.contacts', { query: 'car' })).contacts).toEqual([{ email: 'carol@example.com', name: 'Carol Ames' }]);
     await until(() => statusOf(signedIn)?.details?.contacts === true, 5000, 'details.contacts again');
@@ -919,6 +922,57 @@ it(
     expect(await app.call(mailIface, signedOut, 'mail.contacts', { query: '' })).toEqual({ contacts: [] });
   },
   90_000,
+);
+
+it(
+  'the Calendar tab closes once no Calendar call came for calendarIdleSeconds, and the next call opens it again; Gmail stays',
+  async () => {
+    idle = (await app.admin({ do: 'create', kind: 'google', label: 'Google (idle Calendar)', config: config(0, { calendarIdleSeconds: 2 }) })).id;
+    await until(() => statusOf(idle)?.status === 'online' && layerOf(idle, 'Gmail page')?.state === 'ok', 60_000, 'online, the Gmail page up');
+    const loads = () => fake.pageLoads('calendar', 0);
+    const closed = async (what: string) => {
+      await until(() => statusOf(idle)?.details?.calendarTabClosed === true && statusOf(idle)?.details?.tabs === 'gmail (hook up)', 20_000, what);
+      // Still online and signed in, as Gmail's page says; Calendar's chain ok, its tab put away.
+      const st = statusOf(idle);
+      expect([st.status, st.attention]).toEqual(['online', null]);
+      expect(st.self.email).toBe(WEB.email);
+      expect(st.details).toMatchObject({ email: WEB.email, signedIn: true, calendarPage: false, page: null, gmailPage: true, gmailSignedIn: true });
+      for (const l of st.layers) if (l.state !== 'ok') expect(['Gmail protocol', 'Gmail canary']).toContain(l.name);
+      expect(layerOf(idle, 'extension')?.note).toBe('attached, in the Gmail page');
+      expect(layerOf(idle, 'Calendar API')?.note).toContain('its tab is closed while no Calendar call comes, and the next one opens it');
+    };
+    await closed('the Calendar tab closed');
+    expect(logOf(idle)).toContain('closed the Calendar tab: no Calendar call for 2 s');
+
+    // A call opens it again, and waits for it; two at once open it once.
+    const before = loads();
+    const gmailLoads = fake.pageLoads('gmail', 0);
+    const mark = events[idle]!.length;
+    const [a, b] = await Promise.all([
+      app.call(googleCalendar, idle, 'calendar.calendarList.list', { maxResults: 250 }),
+      app.call(googleCalendar, idle, 'calendar.calendarList.list', { maxResults: 250 }),
+    ]);
+    // The fake's calendars are shared with the tests before this one, which add their own: both answers name them all.
+    const ids = fake.calendarIds();
+    expect(ids).toContain(PRIMARY);
+    expect([a.items.map((c: any) => c.id).sort(), b.items.map((c: any) => c.id).sort()]).toEqual([ids, ids]);
+    expect(loads()).toBe(before + 1);
+    // Both tabs open, said in a status since the calls (it may close again right after: 2 s idle).
+    const bothOpen = (e: any) => e.t === 'status' && e.details?.calendarTabClosed === false && [...String(e.details?.tabs).matchAll(/(calendar|gmail) \(hook up\)/g)].length === 2;
+    await until(() => events[idle]!.slice(mark).some(bothOpen), 10_000, 'both tabs open again');
+    expect(logOf(idle)).toContain('opened the Calendar tab again');
+    // The Gmail page was not loaded again, and mail goes on meanwhile.
+    expect(fake.pageLoads('gmail', 0)).toBe(gmailLoads);
+    const mailboxes = await app.call(mailIface, idle, 'mail.mailboxes', {});
+    expect(mailboxes.mailboxes.length).toBeGreaterThan(0);
+
+    // Idle again: closed again.
+    await closed('the Calendar tab closed again');
+    expect(statusOf(idle).details.calendarReloads).toBe(0);
+    await app.admin({ do: 'stop', account: idle });
+    await until(() => processesOf([idle]).length === 0, 15_000, 'its processes gone');
+  },
+  120_000,
 );
 
 it('no cookie, key, query or event content in the logs or the statuses', () => {

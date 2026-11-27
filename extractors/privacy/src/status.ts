@@ -17,6 +17,7 @@
  * (packages/passkey signin.ts) is the attention `approval`, saying what asks it again.
  */
 import { type PasskeySummary, refusalMessage, refusalNote, type StandingRefusal } from '@dither-accounts/passkey';
+import { displayName, displayState, type FreeDisplay, type ScreenHealth } from '@dither-accounts/browser';
 
 export const SETTLE_MS = 6000;
 /** Paths of the app that are about signing in, not a signed-in page. */
@@ -45,10 +46,13 @@ export type Layer = { name: string; state: 'ok' | 'waiting' | 'failed' | 'off'; 
 
 export interface View {
   sandboxError: string | null;
-  display: number | null;
+  /** The sandbox's display (a number is an X display). */
+  display: FreeDisplay | number | null;
   /** The sandbox is up and its live view listens. */
   liveView: boolean;
   browserAlive: boolean;
+  /** The live view's server: down while it is started again (packages/browser Screen.health). */
+  screen?: ScreenHealth;
   attached: boolean;
   /** The extension should have attached by now. */
   attachOverdue: boolean;
@@ -168,10 +172,10 @@ export function layers(v: View): Layer[] {
   const p = v.passkey;
   const display: Layer =
     v.liveView
-      ? { name: 'display', state: 'ok', note: `Xvfb :${v.display}, live view ready` }
+      ? { name: 'display', ...displayState(v.display, v.screen) }
       : v.sandboxError
         ? { name: 'display', state: 'failed', note: v.sandboxError }
-        : { name: 'display', state: 'waiting', note: 'starting Xvfb' };
+        : { name: 'display', state: 'waiting', note: 'starting the display' };
   const browser: Layer =
     !v.liveView
       ? { name: 'browser', state: v.sandboxError ? 'off' : 'waiting', note: 'not started yet' }
@@ -218,7 +222,7 @@ export function layers(v: View): Layer[] {
 export function details(v: View, counts: { creations: number; assertions: number; refusals: number }): Record<string, string | number | boolean | null> {
   const n = v.passkey.newest;
   return {
-    display: v.display !== null && v.liveView ? `:${v.display}` : null,
+    display: v.display !== null && v.liveView ? displayName(v.display) : null,
     page: v.page,
     pageKind: v.kind,
     extensionAttached: v.attached,

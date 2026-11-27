@@ -55,7 +55,7 @@
  *   its own (the google kind: one list or search page per 3 s, one message per 2 s, 2 GB a day, backing off after a
  *   slow, 429 or 5xx answer). Send it only where this is true. Absent: there is no background lane.
  * - `details.backgroundStopped: string | null`: why background calls are refused now (the google kind: 'challenge',
- *   'signedOut' or 'quota'), until the cause clears; null when they are not.
+ *   'signedOut', 'quota' or 'refused'), until the cause clears; null when they are not.
  * - `details.readsMarkRead: boolean`: reading a message was seen to mark it read on the server, so unread messages are
  *   refused (409 'unread', below). Absent or false: reading leaves a message as it was.
  * - `details.writes: MailWriteKind[]`: the writes this account makes now: `seen` and `flagged` (`mail.flag`), `move`

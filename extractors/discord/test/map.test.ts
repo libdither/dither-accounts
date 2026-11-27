@@ -214,6 +214,7 @@ describe('attachments', () => {
     expect(attachmentKind({ url: 'x', content_type: 'application/pdf' })).toBe('file');
     expect(attachmentKind({ url: 'https://cdn/clip.webm' })).toBe('video'); // no content_type
     expect(attachmentKind({ filename: 'photo.JPG', url: 'x' })).toBe('image');
+    expect(attachmentKind({ filename: 'photo.jxl', url: 'x' })).toBe('image');
   });
 });
 

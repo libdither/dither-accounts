@@ -6,6 +6,7 @@ export default {
   name: 'Discord',
   interfaces: ['chat'],
   entry: 'src/main.ts',
+  screen: true,
   add: {
     blurb: 'Runs the real Discord web client in a sandboxed browser on this machine; dither-chat reads and writes through it.',
     next: 'Its live view opens once the browser is up: sign in to Discord there, once.',

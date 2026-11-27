@@ -44,7 +44,12 @@ when a pull ends (`needs` says what it needs from you, or why it failed), and th
 - **Runner** (`runner.ts`): the ops above, one pull at a time, and the **daily pull**: config `pullAt` ("HH:MM" local,
   default 05:30) plus a jitter of up to `jitterMinutes` (default 20) fixed per account and day. Like a systemd timer
   with `Persistent=true`, a start that finds the last pull older than the last slot pulls at once; an account that has
-  never pulled waits for its slot or a `statements.refresh`. A failed daily pull is tried hourly, three times.
+  never pulled waits for its slot or a `statements.refresh`. A failed daily pull is tried hourly, three times; a retry
+  still due when the extractor restarts is kept (`pulls.json` `retryAt`). It tells the manager (`link.sleep`) while a
+  pull runs and when the next one is due, so the browser kinds (amazon, venmo, schwab, privacy) sleep in between
+  ([supervisor.md](supervisor.md#sleeping-browser-accounts-only-needed-now-and-then)); a `statements.refresh` that
+  wakes one, before its browser is up, starts the pull once it is (`{ started: true, reason }`), and reports through
+  `statements.pulled` as any pull does.
   `schedule: false` turns the daily pull off. `pulls.json` keeps how the last pull went; the status's `details` show
   it (`lastPullAt`, `lastPullOk`, `lastPullSaved`, `nextPullAt`, `spoolSeq`, `spoolAcked`, `spoolWaiting`) and its last
   layer is `pull`. A pull that throws `NeedsYou` (a revoked access URL) becomes the status's `attention`.
@@ -69,7 +74,9 @@ pull by themselves daily (05:30 + jitter), so an app asks for a pull (`statement
 now. dither-finance's `ledger/accounts.py` does this with a small stdlib WebSocket client: it saves under its
 `data/raw/` (600; a file already there with the same bytes is skipped, with other bytes it is never overwritten and
 the cursor stops before it), asks an account to pull only when its last pull is older than 18 hours, and its pull
-button always asks for a pull now and waits.
+button always asks for a pull now and waits. An account may be asleep (`AccountView.asleep`): that is not an outage, and
+a call wakes it (`statements.list` and `statements.fetch` answer from the spool as soon as its extractor is up, without
+waiting for its browser).
 
 ## A command the page does not answer
 

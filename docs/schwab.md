@@ -52,6 +52,11 @@ disallowed loss).
 - **When it pulls**: right after you sign in; daily at `pullAt` (05:30 + jitter); on `statements.refresh`. Schwab ends
   idle sessions and nothing here keeps one alive: with a checked passkey a pull that finds Schwab signed out signs in
   with it first; without one it skips quietly.
+- **Asleep in between** ([supervisor.md](supervisor.md#sleeping-browser-accounts-only-needed-now-and-then)): after 20
+  idle minutes its browser stops; it is woken 2 minutes before its daily pull (or a failed pull's retry) and by any
+  call. No keep-alive: Schwab logs an idle session out long before the next pull, which signs in with the passkey
+  either way. Not while it signs in, while it waits for you, or while tabs an app opened are open. Stay awake (a
+  setting) keeps it running.
 - **Status**: the three steps below, then online (signed in, or signed out with a checked passkey). Layers: display →
   browser → extension → signed in → passkey → passkey sign-in → pull. Details: the passkey's facts (as Privacy's), the
   accounts seen (masks), backfills done, `downloadsWaiting`, `downloadsIgnored`, and the runner's pull facts. Logs
@@ -115,7 +120,9 @@ the passkey after two or three sign-ins within a few minutes (more clicks did no
 - **At start** (config `signInOnStart`, default on) it signs in only when a pull follows: when the last pull that found
   Schwab signed in is over `autoPullHours` (12) old, and that pull starts once it is in. Each restart of the manager
   (each deploy) restarts the extractor, whose new browser has no Schwab session, so signing in at every start meant a
-  sign-in per deploy. A missed daily pull is the runner's catch-up, which signs in for itself.
+  sign-in per deploy. A missed daily pull is the runner's catch-up, which signs in for itself. A wake from sleep
+  (`DITHER_WOKE`) signs nothing in at start: the daily pull it was woken for signs in by itself, and a call asks for
+  what it needs.
 - **A gap**: an automatic sign-in (at start, the daily pull, its retries, the pull after you sign in) waits until
   `signInGapMinutes` (default 30; 0 for none) after the last passkey try: a click on the passkey option by itself, or
   any passkey sign-in answered, yours in the live view too. The time is `state.json` `lastPasskeyTry`, so restarts in a

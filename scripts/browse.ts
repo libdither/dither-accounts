@@ -142,7 +142,7 @@ async function main() {
     if (cmd === 'accounts') {
       const reach = reachable(accounts);
       if (!reach.length) die(await pending(c), 2);
-      for (const a of reach) console.log(`${a.id}  ${a.kind.padEnd(8)} ${a.grants.browser.padEnd(6)} ${a.online ? 'online ' : 'offline'} ${a.label}`);
+      for (const a of reach) console.log(`${a.id}  ${a.kind.padEnd(8)} ${a.grants.browser.padEnd(6)} ${a.online ? 'online ' : a.asleep ? 'asleep ' : 'offline'} ${a.label}`);
       return;
     }
     const acc = pick(accounts) ?? die(await pending(c), 2);

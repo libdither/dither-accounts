@@ -24,6 +24,7 @@
  * write.ts and go through the hook's own path for them (gmail.write).
  */
 import type { MailAddress, MailboxRole, MailFlags } from '@dither-accounts/interfaces';
+import { looksChanged, SYSTEMIC } from '@dither-accounts/link/records';
 
 export type Endpoint = 'bv' | 'fd' | 's' | 'raw' | 'write' | 'upload';
 export const ENDPOINTS: Endpoint[] = ['bv', 'fd', 's', 'raw', 'write', 'upload'];
@@ -267,8 +268,8 @@ export interface Skip {
 }
 /** How a skip is named to an app: the message id (all digits), else `thread:<thread id>`; null when neither is known. */
 export const skipKey = (k: Skip): string | null => k.id ?? (k.thread ? `thread:${k.thread}` : null);
-/** At least this many records failing, and more of them than read well, is a changed layout: the answer is refused. */
-export const SYSTEMIC = 3;
+/** At least this many records failing, and more of them than read well, is a changed layout: the answer is refused (packages/link records.ts, the rule every parser shares). */
+export { SYSTEMIC };
 
 export interface ThreadRow {
   /** Gmail's thread id, decimal (from `thread-f:`, else from the row's hex id); null when neither is there. */
@@ -355,7 +356,7 @@ class Tally {
    */
   check(named = false) {
     const n = this.skipped.length;
-    if (n >= SYSTEMIC && n > this.ok) throw new LayoutError(this.ep, this.first!.where, this.first!.expected, `${this.first!.got}, and ${n} of ${n + this.ok} records failed`);
+    if (looksChanged(this.ok, n)) throw new LayoutError(this.ep, this.first!.where, this.first!.expected, `${this.first!.got}, and ${n} of ${n + this.ok} records failed`);
     const anon = named ? this.skipped.find((k) => !k.id && !k.thread) : undefined;
     if (anon) throw new LayoutError(this.ep, anon.where, anon.reason.replace(/^at \S+: expected /, '').replace(/, got .*$/, ''), `${anon.reason.replace(/^.*, got /, '')}, in a record with neither a message id nor a thread id`);
   }

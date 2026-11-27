@@ -10,7 +10,8 @@
  *   bun extractors/bugwatch/src/cli.ts --account-dir <dir> --clear <bug id>
  *       clears a fingerprint of a running bugwatch account (it may get a thread again); applied at its next scan.
  *   bun extractors/bugwatch/src/cli.ts --account-dir <dir> --report [--days 7]
- *       the threads a running bugwatch account started in the last days, and what each cost as far as threads.show said.
+ *       the threads a running bugwatch account started in the last days, what each cost and concluded (its Verdict,
+ *       Class and Design cause lines) as far as threads.show said, and the threads counted by class.
  */
 import { appendFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -58,6 +59,19 @@ if (flag('report')) {
     const r = t.record;
     const cost = t.failed ? `failed to start (${t.failed})` : !r || r.runs === undefined ? (r?.error ? `not read: ${r.error}` : 'no record yet') : `${r.status ?? '?'}${r.done ? ', done' : ''}: ${r.runs} runs, ${r.items ?? '?'} items, ${r.prs ?? 0} PRs, ${r.minutes ?? '?'} min`;
     console.log(`${new Date(t.at).toISOString().slice(0, 16).replace('T', ' ')}  ${t.title}\n    bug ${b.id}, seen ${b.count} times; ${cost}${t.id ? `; thread ${t.id}` : ''}`);
+    const v = b.verdicts?.find((x) => x.thread === t.id);
+    if (v?.verdict) console.log(`    verdict: ${v.verdict}`);
+    if (v?.class) console.log(`    class: ${v.class}`);
+    if (v?.cause) console.log(`    design cause: ${v.cause}`);
+  }
+  const byClass = new Map<string, number>();
+  for (const b of bugs) {
+    const c = b.verdicts?.find((x) => x.thread === b.thread!.id)?.class?.toLowerCase() ?? (b.thread!.failed ? null : '(no class line)');
+    if (c) byClass.set(c, (byClass.get(c) ?? 0) + 1);
+  }
+  if (byClass.size) {
+    console.log('\nby class:');
+    for (const [c, n] of [...byClass].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))) console.log(`  ${String(n).padStart(3)}  ${c}`);
   }
   const w = new Watch({ sources: [], ignore: [], always: [], threads: null, briefs: [], spikeGapHours: 6 }, st, { now: () => now, run: async () => ({ code: null, stdout: '', stderr: '' }), log: () => {}, emit: () => {}, briefTemplate: '' });
   const r = w.report(days, now);

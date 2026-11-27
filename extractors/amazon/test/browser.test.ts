@@ -12,15 +12,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server, ServerWebSocket, Subprocess } from 'bun';
-import { resolveBins } from '../../../packages/browser/src/index.ts';
 import { EMAIL, type FakeAmazon, PASSWORD, startFakeAmazon, TOTP_SECRET } from './fake-amazon.ts';
+import { browserBins } from '../../../test/needs.ts';
 
-let bins: ReturnType<typeof resolveBins> | null = null;
-try {
-  bins = resolveBins(() => {});
-} catch (e) {
-  console.warn(`amazon browser: skipped, ${(e as Error).message}`);
-}
+const bins = browserBins('amazon browser');
 const it = test.skipIf(!bins);
 const FIX = join(import.meta.dir, 'fixtures');
 const meta = JSON.parse(readFileSync(join(FIX, 'meta.json'), 'utf8'));

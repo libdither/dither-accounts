@@ -134,5 +134,5 @@ No service worker is touched by any of this: every change is in the content scri
   key it probes translation bundles with shows in a Proxy's `get` trap.
 - **Out of scope here**: the call lab's probe (`DITHER_LAB` only: Discord's `installDitherProbe`, which dither-chat's
   `call-lab.ts` calls by name; the sandbox warns when it puts it in), and what the browser itself shows rather than
-  our scripts: Xvfb (and its `-nocursor`), SwiftShader WebGL where there is no GPU, no audio devices, and the
+  our scripts: the display (Xvfb and its `-nocursor`, or sway), SwiftShader WebGL where there is no GPU, no audio devices, and the
   command-line flags.

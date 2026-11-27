@@ -6,6 +6,7 @@ export default {
   name: 'Signal',
   interfaces: ['chat'],
   entry: 'src/main.ts',
+  screen: true,
   add: {
     blurb: 'Links this machine as another Signal device through signal-cli. Your phone stays in charge.',
     next: 'A code to scan shows here in a moment: on your phone, Signal → Settings → Linked devices → Link new device.',

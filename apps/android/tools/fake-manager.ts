@@ -7,6 +7,12 @@
  *
  *   bun apps/android/tools/fake-manager.ts [--port 9120] [--url http://10.0.2.2:9120] [--no-wake] [--approvals]
  *
+ * With --approvals --batch it checks quick approvals and the switch to a quick-approval key instead of the seven
+ * requests below: one merge after the first keys frame (approve it: one prompt), then, each time the keys frame brings
+ * a different approval key (the app switched to its quick-approval key), three merges at once (Approve selected: at
+ * most one prompt), then `again` right after them (inside the window: no prompt) and `late` 40 s after that (past the
+ * 30 s default window: one prompt). Every signature is checked against the approval key the app last sent.
+ *
  * With --approvals it checks approvals instead (dither-chat's docs/approvals.md): the keys frame after every ready
  * (its signature by the identity key), then several approve requests at once, each answer checked (a signed one with
  * WebCrypto against the approval key, over the statement rebuilt here):
@@ -43,6 +49,7 @@ if (!(port >= 9120 && port <= 9129)) throw new Error('--port must be 9120 to 912
 const publicUrl = (opt('--url') ?? `http://10.0.2.2:${port}`).replace(/\/$/, '');
 const wake = !args.includes('--no-wake');
 const approvalsMode = args.includes('--approvals');
+const batchMode = args.includes('--batch');
 
 const b64u = (b: Uint8Array) => Buffer.from(b).toString('base64url');
 const unb64u = (s: string) => new Uint8Array(Buffer.from(s, 'base64url'));
@@ -435,8 +442,16 @@ async function onKeys(ws: ServerWebSocket<Link>, m: Record<string, unknown>) {
   const fp = ok ? [...(await sha256(unb64(approval))).slice(0, 8)].map((b) => b.toString(16).padStart(2, '0')).join(':') : '';
   check(`keys (link ${ws.data.serial})`, ok, ok ? `kind ${m.kind}, approval key fingerprint ${fp} (compare with the app)` : JSON.stringify(m).slice(0, 200));
   if (!ok) return;
-  if (approvalKey && Buffer.compare(Buffer.from(approvalKey), Buffer.from(unb64(approval))) !== 0) log('keys: the approval key changed');
+  const changed = !!approvalKey && Buffer.compare(Buffer.from(approvalKey), Buffer.from(unb64(approval))) !== 0;
+  if (changed) log('keys: the approval key changed');
   approvalKey = unb64(approval);
+  if (batchMode) {
+    if (!approvalsStarted || changed) {
+      approvalsStarted = true;
+      await sendMerges(ws, changed ? ['batch-1', 'batch-2', 'batch-3'] : ['first']);
+    } else for (const a of asked.values()) if (!a.done) ws.send(JSON.stringify(a.ask));
+    return;
+  }
   if (!approvalsStarted) {
     approvalsStarted = true;
     await sendApprovals(ws);
@@ -552,6 +567,26 @@ async function sendApprovals(ws: ServerWebSocket<Link>) {
   }, 15 * 60_000 + 5000);
 }
 
+/** A signed merge answer, checked against the approval key the app last sent. */
+const signedApprove = (askText: string, ws: ServerWebSocket<Link>) => async (m: Record<string, unknown>) => {
+  if (m.ok !== true || m.op !== 'approve' || m.action !== 'approve') return `expected ok approve, got ${JSON.stringify(m).slice(0, 300)}`;
+  if (typeof m.signed !== 'number' || typeof m.signature !== 'string') return 'no signed time or signature';
+  const msg = m.message === null || m.message === undefined ? '' : String(m.message);
+  const text = askText + lines('action approve', `message-sha256 ${await sha256hexText(msg)}`, `device ${ws.data.device!.id}`, `signed ${m.signed}`);
+  if (!approvalKey || !(await verifyDer(approvalKey, new TextEncoder().encode(text), unb64u(m.signature)))) return 'the signature does not verify (WebCrypto, the current approval key)';
+  return null;
+};
+
+/** --batch: merges to approve, each checked like `merge` above. Ends 2 s after all are answered. */
+async function sendMerges(ws: ServerWebSocket<Link>, names: string[]) {
+  for (const name of names) {
+    const req = await approveRequest({ kind: 'merge', asker: 'review', title: `Merge review/${name} into main (system-config)`, body: mergeBody, payload: mergePayload, actions: yesNo, expiresIn: 1800 });
+    asked.set(req.id, { name, id: req.id, ask: req.frame as never, expect: signedApprove(req.askText, ws), done: false });
+    log(`-> approve ${name} (${req.id})`);
+    ws.send(JSON.stringify(req.frame));
+  }
+}
+
 async function onApprovalAnswer(m: Record<string, unknown>) {
   const a = asked.get(String(m.id));
   if (!a) return log(`<- an answer for ${m.id}, not asked: dropped`);
@@ -559,11 +594,20 @@ async function onApprovalAnswer(m: Record<string, unknown>) {
   if (a.name === 'cancelled') return check('cancelled', false, `answered after the cancel: ${JSON.stringify(m).slice(0, 200)}`);
   a.done = true;
   const why = await a.expect(m).catch((e) => `threw: ${(e as Error).message}`);
+  if (batchMode && current) {
+    const all = [...asked.values()];
+    const has = (n: string) => all.some((x) => x.name === n);
+    if (a.name.startsWith('batch-') && all.filter((x) => x.name.startsWith('batch-')).every((x) => x.done) && !has('again')) await sendMerges(current, ['again']);
+    else if (a.name === 'again' && !has('late')) setTimeout(() => current && sendMerges(current, ['late']), 40_000);
+  }
   check(a.name, why === null, why ?? `${m.ok ? `ok ${m.action}` : m.reason}${m.message ? `, message "${m.message}"` : ''}${m.signature ? ', signed' : ''}`);
   maybeFinish();
 }
 
 function maybeFinish() {
+  // --batch waits for the switch to the quick-approval key after the first merge.
+  if (batchMode && !asked.size) return;
+  if (batchMode && ![...asked.values()].some((a) => a.name === 'late')) return;
   if ([...asked.values()].every((a) => a.done)) setTimeout(finish, 2000);
 }
 

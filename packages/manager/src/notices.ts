@@ -6,7 +6,8 @@
  *
  * What it says, each under an id stable per account and condition (`attention:<account>`), so a repeat replaces:
  * - an account whose status keeps an `attention` for 2 minutes (`high`), read again when the attention goes;
- * - an enabled account that is not running, with an error, for 5 minutes (`high`), read again when it runs;
+ * - an enabled account that is not running, with an error, for 5 minutes (`high`), read again when it runs (one
+ *   asleep is not: docs/supervisor.md "Sleeping");
  * - a passkey approval asked of a device that is not paired here (`high`);
  * - an extractor that crashed 3 times in 10 minutes (`normal`), read again after 10 quiet minutes;
  * - an account whose status says `changed: true` (a service it reads changed its layout and it reads around it: the
@@ -282,6 +283,9 @@ export class Notices {
   private condition(cond: Exclude<Cond, 'no-device'>, a: Row, now: number): { holdMs: number; urgency: Urgency; title: string; body: string } | false | null {
     if (!a.enabled) return false;
     const st = this.sup.state(a.id);
+    // Asleep (docs/supervisor.md "Sleeping") is not stopped; it sleeps only while it needs nothing, and what it said
+    // before is kept for when it wakes.
+    if (st.asleep) return cond === 'stopped' ? false : null;
     if (cond === 'attention') {
       const status = this.router.lastStatus(a.id);
       const at = status?.attention as { kind?: unknown } | undefined;

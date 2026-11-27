@@ -35,6 +35,7 @@
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { displayName } from '@dither-accounts/browser';
 import { type Command, linkManager, StatusError } from '@dither-accounts/link';
 import { ALG_NAMES, approverVia, Authenticator, PasskeySignIn, refusalNote, respond, secretStore, type Trigger, type Try as SignInTry, type WebauthnUp } from '@dither-accounts/passkey';
 import { NeedsYou, sha256hex, StatementsRunner, type Why, writeWhole } from '@dither-accounts/statements-common';
@@ -613,6 +614,8 @@ const runner = new StatementsRunner({
       .map(([mask, a]) => ({ id: `schwab-${mask}`, name: a.label, institution: 'Charles Schwab', currency: 'USD', kind: (a.kind === 'checking' ? 'bank' : a.kind === 'brokerage' || a.realized ? 'brokerage' : 'unknown') as 'bank' | 'brokerage' | 'unknown' })),
   blocked: () => blockedNow(),
   onChange: () => status(),
+  // Asleep while idle (docs/supervisor.md "Sleeping"): not while it signs in, nor while an app's browser tabs are open.
+  busy: (): string | null => (signingIn ? 'a sign-in with its passkey' : browserOps.inUse()),
 });
 
 // ------------------------------------------------------------------- status
@@ -623,11 +626,12 @@ function view(): View {
 
 let lastSent = '';
 function status(force = false) {
+  runner.report();
   const base = host.baseState();
   const v = view();
   const s = base ?? statusOf(v);
   const details = {
-    display: host.liveView ? `:${host.display}` : null,
+    display: host.liveView ? displayName(host.display) : null,
     page,
     pageKind: kind,
     extensionAttached: host.attached,
@@ -877,6 +881,8 @@ host.start().then(
     // in is over autoPullHours old). Otherwise not: the session would go unused until Schwab logs it out, and each
     // restart of the manager (every deploy) would sign in again.
     if (cfg.signInOnStart === false) return;
+    // Woken from sleep (docs/supervisor.md "Sleeping"): for its daily pull, which signs in by itself, or for a call.
+    if (process.env.DITHER_WOKE) return void log('info', 'no sign-in at start: it was woken from sleep, and a pull signs in by itself');
     void until(() => host.attached, 60_000).then(async (up) => {
       if (!up) return;
       await until(() => settledOnApp() || kind === 'signin', 30_000 * Math.max(scale, 0.2));

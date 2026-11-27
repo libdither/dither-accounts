@@ -11,7 +11,9 @@
  *
  * Copied into each kind's extension as sw.js by the extractor at start (statements-common/src/tabs.ts); page.js is
  * the kind's own file and defines self.PAGE = { name: function }. A kind with a passkey (schwab) gets passkeys.js
- * appended to the copy: it adds the command `webauthn.answer` to EXTRA and takes the page hooks' ports.
+ * appended to the copy: it adds the command `webauthn.answer` to EXTRA and takes the page hooks' ports. One that signs
+ * in with another account (site) gets signin.js: the relay's worker, whose `signin.*` commands and tabs are its own
+ * (both read only after this script has run, so the relay may come after it in the copy).
  *
  * It says `got` (at 'worker') for each command it takes, and answers `tab.state` (how Chromium sees a tab), so a
  * command that times out is told apart in the extractor's log (packages/browser's silence.ts and worker-watch.js).
@@ -69,7 +71,9 @@ function bare(url) {
 async function reportTabs(force) {
   try {
     const tabs = await chrome.tabs.query({});
-    const list = tabs.map((t) => ({ id: t.id, url: bare(t.url || t.pendingUrl || ''), active: !!t.active, loading: t.status === 'loading' }));
+    // A sign-in relay's own tabs (signin.js, when appended) are not the site's.
+    const mine = typeof signinRelay !== 'undefined' ? (id) => signinRelay.owns(id) : () => false;
+    const list = tabs.filter((t) => !mine(t.id)).map((t) => ({ id: t.id, url: bare(t.url || t.pendingUrl || ''), active: !!t.active, loading: t.status === 'loading' }));
     const s = JSON.stringify(list);
     if (s === lastTabs && !force) return;
     lastTabs = s;
@@ -206,6 +210,7 @@ async function connect() {
     }
     if (msg.t !== 'cmd' || !msg.cmd) return; // pings only keep this worker awake
     workerWatch.got(sendUp, msg.id);
+    if (typeof signinRelay !== 'undefined' && signinRelay.command(msg)) return;
     run(msg.cmd).then(
       (result) => sendUp({ t: 'reply', id: msg.id, ok: true, result }),
       (err) => sendUp({ t: 'reply', id: msg.id, ok: false, error: String((err && err.message) || err).slice(0, 300) }),

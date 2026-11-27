@@ -175,7 +175,8 @@ reach your browser only through the page, behind its login.
 
 You need [Bun](https://bun.sh) (the version CI uses is in [.github/workflows/ci.yml](.github/workflows/ci.yml)).
 The kinds that run a sandboxed browser or native app also need Xvfb, Chromium, x11vnc, bubblewrap and pasta on the
-machine. The other kinds need nothing more.
+machine (or, on the wayland display backend, sway, wayvnc and grim in place of Xvfb and x11vnc: docs/browser.md,
+"Display backends"). The other kinds need nothing more.
 
 ```sh
 bun install
@@ -245,7 +246,9 @@ bun packages/manager/src/cli.ts apps                # apps, their grants and req
 bun packages/manager/src/cli.ts approve <request>   # or on the page
 bun packages/manager/src/cli.ts import-dither-chat --hub-data <dither-chat data dir> --accounts <id>
 bun packages/manager/src/cli.ts forget <id>         # hand an account back (its directory stays)
-bun packages/manager/src/cli.ts set <id> <setting> on|off   # a kind's own setting (its manifest's `settings`, e.g. Signal's calls); restarts it
+bun packages/manager/src/cli.ts add <kind> [key=value…] [--sign-in-with <google id>]   # as the page's Add does (no secret fields)
+bun packages/manager/src/cli.ts sign-in <id> --with <google id>   # its browser presses the site's Continue with Google (docs/signin-relay.md)
+bun packages/manager/src/cli.ts set <id> <setting> on|off|<text>   # a kind's own setting (its manifest's `settings`, e.g. Signal's calls, Luma's city; "" clears a text one); restarts it
 bun packages/manager/src/cli.ts set-password --file <file>   # the page's password (or on stdin); signs every browser out
 bun packages/manager/src/cli.ts sessions | revoke-sessions   # the page's signed-in browsers
 bun packages/manager/src/cli.ts export-to-dither-chat <id> --hub-data <dither-chat data dir>
@@ -260,20 +263,22 @@ How to move a dither-chat account here and back is in dither-chat's `docs/accoun
   [auth.md](docs/auth.md) (the page's login), [supervisor.md](docs/supervisor.md) (extractors that outlive a
   restart), [notifications.md](docs/notifications.md) (the built-in notices account),
   [browser.md](docs/browser.md) (lending an account's signed-in browser to an app or agent),
+  [signin-relay.md](docs/signin-relay.md) (a site's "Continue with Google" answered by a Google account here),
   [native-sandbox.md](docs/native-sandbox.md) (native apps in a sandbox), [page-traces.md](docs/page-traces.md) and
   [page-silence.md](docs/page-silence.md) (keeping hooks out of a page's sight; a page that stops answering),
   [passkeys.md](docs/passkeys.md) and [approver.md](docs/approver.md) (passkeys held by an account, or on your phone).
 - **Chat:** [chat.md](docs/chat.md) (the chat extractors, and importing from dither-chat), [signal.md](docs/signal.md),
   [whatsapp.md](docs/whatsapp.md), [telegram.md](docs/telegram.md), [gmessages.md](docs/gmessages.md),
   [x.md](docs/x.md), [reddit.md](docs/reddit.md), [substack.md](docs/substack.md), [lesswrong.md](docs/lesswrong.md), [messenger.md](docs/messenger.md) (and Instagram), [t3.md](docs/t3.md),
-  [mastodon.md](docs/mastodon.md), [lemmy.md](docs/lemmy.md), [bluesky.md](docs/bluesky.md), [zulip.md](docs/zulip.md).
+  [mastodon.md](docs/mastodon.md), [lemmy.md](docs/lemmy.md), [bluesky.md](docs/bluesky.md), [zulip.md](docs/zulip.md),
+  [partiful.md](docs/partiful.md), [luma.md](docs/luma.md).
 - **Mail, calendars, contacts:** [google.md](docs/google.md), [proton.md](docs/proton.md), [mail.md](docs/mail.md),
   [dav.md](docs/dav.md), [ics.md](docs/ics.md).
 - **Money:** [statements.md](docs/statements.md) (how the finance kinds hand over files), [simplefin.md](docs/simplefin.md),
   [schwab.md](docs/schwab.md), [privacy.md](docs/privacy.md), [venmo.md](docs/venmo.md), [amazon.md](docs/amazon.md),
   [monero.md](docs/monero.md), [haveno.md](docs/haveno.md).
-- **Other:** [github.md](docs/github.md), [njalla.md](docs/njalla.md), [bugwatch.md](docs/bugwatch.md),
-  [claude.md](docs/claude.md).
+- **Other:** [site.md](docs/site.md) (any website, kept signed in), [github.md](docs/github.md),
+  [njalla.md](docs/njalla.md), [bugwatch.md](docs/bugwatch.md), [claude.md](docs/claude.md).
 
 ## Test
 

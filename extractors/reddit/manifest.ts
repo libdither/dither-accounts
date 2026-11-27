@@ -9,6 +9,7 @@ export default {
   name: 'Reddit',
   interfaces: ['chat'],
   entry: 'src/main.ts',
+  screen: true,
   add: {
     blurb: "Runs Reddit in a sandboxed browser on this machine; dither-chat's Feed reads your front page, inbox and comment threads through it, and can vote, comment and post. You sign in to Reddit once in the live view.",
     next: 'Open its live view and sign in to Reddit as on your desktop (password, any code or check Reddit shows). It goes online once old.reddit.com shows you signed in.',

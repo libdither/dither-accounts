@@ -11,19 +11,15 @@ import { join } from 'node:path';
 import { AccountsClient, register } from '@dither-accounts/client';
 import { chat } from '@dither-accounts/interfaces';
 import { createManager, kindOf, type Manager } from '@dither-accounts/manager';
-import { markerName, resolveBins } from '../packages/browser/src/index.ts';
+import { markerName } from '../packages/browser/src/index.ts';
 import { inetSockets, rfbBanner, x11vncs } from '../packages/browser/test/inet.ts';
 import { pageMarkerKey } from '../packages/manager/src/supervisor.ts';
 import { ALICE, BOB, CAROL, DAVE, DIRECT, ERIN, type FakeX, GROUP, LEGACY, PIXEL, REQUEST, SELF, startFakeX } from './fake-x.ts';
 import { ANN, CARA, DEV, EMI, FINN, TRANSLATIONS } from './fake-x-feed.ts';
+import { browserBins } from './needs.ts';
 
 const ROOT = join(import.meta.dir, '..');
-let bins: ReturnType<typeof resolveBins> | null = null;
-try {
-  bins = resolveBins(() => {});
-} catch (e) {
-  console.warn(`x-browser: skipped, ${(e as Error).message}`);
-}
+const bins = browserBins('x-browser');
 const it = test.skipIf(!bins);
 
 let fake: FakeX;
@@ -718,6 +714,12 @@ it(
     await until(() => lastMessage(acc, 'm1'), 10_000, 'the oldest message');
     expect(lastMessage(acc, 'm1')).toMatchObject({ live: false, message: { body: 'legacy line 1', author: ALICE.id } });
     expect(fake.calls.filter((c) => c.op === 'read').length).toBe(1);
+    // The page's oldest message, so the hub can mark the stretch whole; asked before a time, only what is older.
+    const first = lastMessage(acc, 'm1').message.ts;
+    expect(r.oldest).toBe(first);
+    const second = fake.msgs.filter((x) => x.conv === LEGACY)[1]!;
+    const before = await call('history', { conversation: LEGACY, limit: 40, beforeTs: lastMessage(acc, second.id).message.ts });
+    expect(before).toMatchObject({ count: 1, done: true, oldest: first });
   },
   120_000,
 );

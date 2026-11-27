@@ -64,7 +64,7 @@ exec sleep 600
   const free = await pickFreeDisplay();
   sb = new AppSandbox({
     dir,
-    display: free.display,
+    display: free,
     width: 640,
     height: 480,
     command: [resolveBin(BINS.sh, () => {}), join(app, 'app.sh')],

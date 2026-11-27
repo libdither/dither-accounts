@@ -50,7 +50,7 @@ last 24 hours, its bugs listed without a notification. One that stops reading ke
     "dayMax": 6,
     "recurMinutes": 60,
     "budgetMinutes": 60,
-    "show": ["t3", "thread", "show", "--json", "--messages", "0", "{id}"]
+    "show": ["t3", "thread", "show", "--json", "--messages", "1", "{id}"]
   },
   "briefs": [{ "match": "^hub ", "file": "/path/to/hub-addendum.md" }]
 }
@@ -90,15 +90,19 @@ config. A file that appears later in a source it already reads (a new account's 
   { v: 1, at: <ms since the epoch>, app: 'hub' | 'web' | 'manager',
     source: 'uncaught' | 'rejection' | 'request' | 'job' | 'attempt' | 'client',
     where: <route template, span or job name>, name: <error class>, message: <one line, ≤ 300 characters>,
-    stack: [<≤ 10 frames, repo-relative paths>], status?: number, trace?: <32 hex>, version?: string,
-    extra?: { ids and short words }, count?: number }
+    stack: [<≤ 10 frames, repo-relative paths>], status?: number, kind?: 'expected' | 'transient' | 'bug',
+    trace?: <32 hex>, version?: string, extra?: { ids and short words }, count?: number }
   ```
 
-  `count` (the writer merged repeats) counts as that many occurrences. Lines that are not this are skipped.
+  `count` (the writer merged repeats) counts as that many occurrences. `kind` is what the writer knows the failure
+  is (spec `FailureKind`, below in "What is a bug"); a record without one, as an older writer's, is read as before.
+  Lines that are not this are skipped.
 - **`trace-ndjson`**: a span file (dither-chat's `hub.trace.ndjson`, the manager's `manager.trace.ndjson`; the format
   is `SpanRecord` in packages/manager/src/trace.ts): its spans with `status: 'error'`, `where` the span's name, the
-  error's class and message from its `error` (`SQLiteError: database is locked`), and its trace id. Expected refusals
-  are not bugs and are left out: a status under 500 (the hub's `http.status`; the manager's `call <op>` spans carry
+  error's class and message from its `error` (`SQLiteError: database is locked`), and its trace id. A span whose
+  attrs say its `kind` (the manager's `call <op>` spans do whenever the extractor, the manager's code or the status
+  tells it) is taken at its word: `expected` is left out, and the rest are kept whatever their status or words.
+  A span without one is judged as before. Expected refusals are not bugs and are left out: a status under 500 (the hub's `http.status`; the manager's `call <op>` spans carry
   `status`, the upstream status an extractor gave its refusal, as 410 for a stale sync token), the manager's own refusals (`outcome` `denied`, `limited`,
   `invalid`, `unknown-op`, `unknown-account`, `offline`), and an error that says 429, a 4xx status, a rate limit, a
   captcha, terms, or an abort. A failed span whose trace an `errors-ndjson` record named in the last hour is the same
@@ -124,6 +128,8 @@ The manager writes `<data>/traces/errors.ndjson` (packages/manager/src/errors.ts
 - failed calls are not repeated in it: they are failed `call <op>` spans in `manager.trace.ndjson`, read as a
   `trace-ndjson` source.
 
+Both of its kinds of record are crashes, so they say `kind: 'bug'`.
+
 The same error (source, where, name, message) within 10 s is one record with `count`; at most 30 records are written a
 minute, and the number a full minute dropped goes in the next record's `extra.dropped`. Frames are relative to the
 repository (`extractors/fake/src/main.ts:12:3`; a dependency's from its `node_modules/`). The file rotates at 2 MB,
@@ -147,6 +153,15 @@ fingerprint's id is the first 16 hex characters of its text's SHA-256.
 
 ## What is a bug
 
+A record's `kind`, when it has one, decides first. It is the error maker's own word, not a guess from the text:
+
+- `expected`: a refusal that is the right answer (not found, the account offline, not allowed, not signed in). Never
+  a bug: it is dropped before it is counted.
+- `transient`: the world failing for a moment (a network drop, a 503, a page reloading, a rate limit). It is counted,
+  but one is not news: a fingerprint whose records have all been transient is raised only by a spike (below), the
+  sustained rate being the signal. Its first record that is not transient raises it as new.
+- `bug`, or no kind: as follows.
+
 - **New**: a fingerprint not seen in the 14 days before.
 - **A spike**: in the last hour (in 10-minute buckets), at least max(20, 5 × its mean an hour over the 7 days before
   that hour); at most once per `spikeGapHours`.
@@ -164,11 +179,11 @@ One per fingerprint, id `bug:<fingerprint id>`, so a repeat replaces it:
 | --- | --- |
 | `source` | `bugwatch` |
 | `title` | `<source name>: <name>: <normalized message>`, at most 120 characters (`hub: SQLiteError: database is locked`) |
-| `body` | where, how many times since when (and for a spike, the last hour against the week's mean), then the thread: "A T3 thread is looking into it (<thread title>).", "A T3 thread already looked into it (…)." (a spike after one), "A T3 thread will start when the limits allow (…).", "No T3 thread yet: one starts if it comes back N minutes or more after it was first seen (…)", "Starting a T3 thread failed (exit code N): the bugwatch account's log says more.", or why there is none (no `threads` in the config; the source names no project and base; more bugs waited than the queue keeps) |
+| `body` | where, how many times since when (and for a spike, the last hour against the week's mean), then the thread: "A T3 thread is looking into it (<thread title>).", "A T3 thread already looked into it (…)." (a spike after one), "A T3 thread will start when the limits allow (…).", "No T3 thread yet: one starts if it comes back N minutes or more after it was first seen (…)", "No T3 thread of its own: it shares a trace with <title>, whose thread (…) covers both.", "Starting a T3 thread failed (exit code N): the bugwatch account's log says more.", or why there is none (no `threads` in the config; the source names no project and base; more bugs waited than the queue keeps) |
 | `reason` | `new`, `spike` or `always` |
 | `context` | the source's name |
-| `subject` | `{ kind: 'bug', title: '<name>: <message>', url: null, state: 'thread' \| 'queued' \| 'held' \| 'thread-failed' \| 'no-thread' }` |
-| `urgency` | `high` when one of its records was a process crash (`uncaught`), else `normal` |
+| `subject` | `{ kind: 'bug', title: '<name>: <message>', url: null, state: 'thread' \| 'joined' \| 'queued' \| 'held' \| 'thread-failed' \| 'no-thread' }` |
+| `urgency` | `high` when one of its records was a process crash (`uncaught`) or the machine ran out of something (a full disk, memory, file handles), else `normal` |
 | `at` | when it was raised; `url` null; `actors` empty |
 
 **Never a stack, a sample, a raw log line or anything else of a record**: only bugwatch's words and the record's
@@ -192,7 +207,9 @@ until cleared.
   `recurMinutes` after it was first seen. A one-off, or a burst that stops by itself within that time (an outage
   elsewhere, a deploy's restart), gets its notice and no thread. Its notice says so (`subject.state` `held`), and the
   log says when one comes back and waits for its thread. A process crash (`uncaught`), a spike and an `always` match
-  don't wait. The catch-up counts too: a bug seen over more than `recurMinutes` in its window waits for a thread at once.
+  don't wait, and neither does an error whose kind makes it a bug the first time: a code error (a TypeError on null,
+  "Illegal invocation", "is not a function", a ReferenceError; a browser's "TypeError: Failed to fetch" is a network
+  failure and still waits) or the machine running out of something (ENOSPC, out of memory, too many open files). The catch-up counts too: a bug seen over more than `recurMinutes` in its window waits for a thread at once.
 - **Armed, then pointed at the logs**: a fingerprint is armed when first seen. Each later occurrence notes, with its
   sample, which plain logs (`text-log` sources) had `[warn]` or `[error]` lines from 10 minutes before it to 1 minute
   after, and how many (at most 6 files, the busiest first). The brief names those files and the window, with an `awk`
@@ -202,26 +219,39 @@ until cleared.
   Logging a failure's state at the point it fails (as the Google extractor's "the <page> page's silence" line does) is
   what turns this into an answer on the next occurrence.
 - **Caps**: one thread per fingerprint, until you clear it; one start every `gapMinutes`; at most `dayMax` in 24
-  hours. Bugs over the caps wait in a queue of `queueMax` (10), the most frequent first; the rest are left out and
-  their notices say so. The queue starts as the caps allow, one a scan.
+  hours. Bugs over the caps wait in a queue of `queueMax` (10): crashes and resources running out first, then code
+  errors, then the rest, the most frequent first within each (a count mostly measures how often something retries);
+  the rest are left out and their notices say so. The queue starts as the caps allow, one a scan.
+- **One failure, one thread**: a failure seen from two places (the hub's request and the manager's call it made) makes
+  a fingerprint in each. A queued bug that shares a trace id with a bug whose thread started in the last 3 days gets
+  no thread of its own (`subject.state` `joined`, until cleared); that thread's brief lists it.
 - **Clearing** a fingerprint (it may get a thread again, and is unmuted): `bun extractors/bugwatch/src/cli.ts
   --account-dir <the account's directory> --clear <fingerprint id>` writes it to `clear.txt` there, applied at the
   next scan. One whose notice is still unread waits for a thread again at once.
 - **What threads cost**: with `threads.show`, bugwatch reads each started thread's state, one thread a scan, every 30
   minutes, until it is settled or archived or 3 days old. It keeps the thread's status, runs, items (messages and tool
-  calls), pull requests, and the minutes from its start to its last change. The `threads` layer and the details
+  calls), pull requests, and the minutes from its start to its last change. With `--messages 1`, it also keeps the
+  `Verdict:`, `Class:` and `Design cause:` lines of the thread's latest reply (the brief asks for them), with the bug,
+  past a clear (the last 5); they go in later briefs, never in a notice. The `threads` layer and the details
   (`threadsWeek`) add up the last 7 days. `bun extractors/bugwatch/src/cli.ts --account-dir <dir> --report [--days 7]`
-  lists each thread with its record. A failed read is logged and tried again later.
+  lists each thread with its record and those lines, then the threads counted by class. A failed read is logged and
+  tried again later.
 - **The brief** (`extractors/bugwatch/brief.md`, filled in): what was seen (the fingerprint, where, the counts, first
   and last seen, the last hour and the week's mean, the sample records, the trace id and how to read it with
   `bun scripts/trace-summary.ts --data <dir> --since all --trace <id>` in a dither-chat checkout), how far back each
   source goes now (the first dated line of each file's oldest rotated copy, `<file>.1` to `.9`; `--dry` prints it too),
-  then the rules:
+  its kind when it is a code or resource error, then **related bugs**: its own earlier threads' verdicts, bugs that
+  share a trace with it, bugs with the same error (name and message) elsewhere that a thread looked at, and bugs first
+  seen within 10 minutes of it (at most 8), each with what its thread concluded; the thread is told to read them first
+  and stop if this is one of them. Then **look past the symptom**: name the general mechanism as a reader who doesn't
+  know the code would need it, ask why the design let it happen and list the sibling cases, choose the fix's level on
+  purpose (a local patch, a shared building block, a contract change; a general fix left for later becomes an issue),
+  say why any timing constant has its value, and back "not a bug" with its rate. Then the rules:
   read only on live systems (never re-send a command, never act on a real account, never restart a live service);
   reproduce it in a test or a demo instance; fix it in a pull request and leave it for the owner's review (no merge, no
   auto-merge, no deploy); a budget of `budgetMinutes`, after which it reports what it knows and which log line would
-  settle it next time; finish with what failed, why, the pull request's link and what is unproven. Then each
-  matching `briefs` addendum.
+  settle it next time; finish with what failed, the mechanism, why, the pull request's link and what is unproven,
+  ending with the `Verdict:`, `Class:` and `Design cause:` lines. Then each matching `briefs` addendum.
 
 ## Its account
 
@@ -236,7 +266,8 @@ fingerprints kept, unread notices, threads today, queued, held, `threadsWeek`, t
 `test/bugwatch-unit.test.ts`: normalizing and fingerprints across line changes, each reader (a Bun crash block with its
 excerpt left out, failed spans without expected refusals), tailing across rotation and truncation, the config, new,
 spike and `always`, the catch-up, the caps and the queue with a fake thread command, a failing command, notices that
-hold no raw content, read, mute and clear, triage, the log files named for an armed fingerprint's occurrence and each source's reach in the brief,
+hold no raw content, read, mute and clear, triage (and by kind, and the queue's order), one thread for bugs sharing a
+trace, related bugs and earlier verdicts in the brief, the log files named for an armed fingerprint's occurrence and each source's reach in the brief,
 and a thread's record with the week's report. `test/bugwatch.test.ts`: over the real wire, a manager with the kind, an
 account added as the page adds it, an app hearing `notify.new` and `notify.read`, a restart, and the CLI's `--dry`.
 `test/errors.test.ts`: the manager's error file, with a fake extractor that crashes.

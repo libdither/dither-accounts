@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Luma bridge",
+  "version": "0.1.0",
+  "description": "Relays a luma.com page's events, notifications and chats to a local extractor, and runs its commands with the site's own calls. Personal use.",
+  "minimum_chrome_version": "111",
+  "background": { "service_worker": "sw.js" },
+  "permissions": ["tabs", "alarms"],
+  "host_permissions": ["https://luma.com/*", "https://api.luma.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://luma.com/*"],
+      "js": ["hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://luma.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ]
+}

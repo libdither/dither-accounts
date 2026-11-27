@@ -13,7 +13,7 @@
  */
 import type { ServerWebSocket } from 'bun';
 import { isAbsolute } from 'node:path';
-import { type AccountView, type AdminAction, type AppKind, type CallError, type ConsumerIn, type ConsumerOut, covers, type Iface, type Level, levelRank } from '@dither-accounts/spec';
+import { type AccountView, type AdminAction, type AppKind, type CallError, type ConsumerIn, type ConsumerOut, covers, failureKindOf, type Iface, type Level, levelRank, retryAfterOf } from '@dither-accounts/spec';
 import { addForm } from './addform.ts';
 import { accountDir, ExtractorError, releaseLock, type Supervisor, writeSecret } from './supervisor.ts';
 import { type GrantRow, newId, newToken, type Row, type Store } from './db.ts';
@@ -41,13 +41,22 @@ export interface Call {
 export type Next = (c: Call) => Promise<unknown>;
 export type Handler = (c: Call, next: Next) => Promise<unknown>;
 
+/**
+ * A call's failure as the app gets it. Its kind is filled in here when whoever threw it did not say one: from the
+ * manager's code or the status (spec failureKindOf), so every refusal of the manager's own has one.
+ */
 export class CallFailure extends Error {
-  constructor(readonly error: CallError) {
+  readonly error: CallError;
+  constructor(error: CallError) {
     super(error.message);
+    const kind = failureKindOf(error);
+    const retryAfterMs = retryAfterOf(error.retryAfterMs);
+    const { kind: _k, retryAfterMs: _r, ...rest } = error;
+    this.error = { ...rest, ...(kind ? { kind } : {}), ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) };
   }
 }
-const fail = (code: CallError['code'], message: string, status?: number): never => {
-  throw new CallFailure({ code, message, ...(status !== undefined ? { status } : {}) });
+const fail = (code: CallError['code'], message: string, status?: number, more: Pick<CallError, 'kind' | 'retryAfterMs'> = {}): never => {
+  throw new CallFailure({ code, message, ...(status !== undefined ? { status } : {}), ...more });
 };
 
 /** The manager's own page, as the app its calls are counted under. */
@@ -179,6 +188,7 @@ export class Router {
         interfaces: kind?.ifaces.map((i) => i.name) ?? [],
         running: st.running,
         online: st.online,
+        asleep: st.asleep,
         enabled: !!a.enabled,
         error: st.error,
         grants: per,
@@ -221,16 +231,26 @@ export class Router {
 
   // ---------------------------------------------------------------- calls
 
-  async call(appId: string, accountId: string, op: string, input: Record<string, unknown> = {}, trace?: string): Promise<unknown> {
-    // A span for every call from an app (trace.ts), a child of the app's when it sent its traceparent.
-    const span = new Span(`call ${op}`, { app: appId, account: accountId, op }, parseTraceparent(trace));
+  async call(appId: string, accountId: string, op: string, input: Record<string, unknown> = {}, trace?: string, repeats?: unknown): Promise<unknown> {
+    // A span for every call from an app (trace.ts), a child of the app's when it sent its traceparent. `repeats`: the
+    // times the app answered this call from its memory of the last failure since then (spec memory.ts), so a reader of
+    // the trace counts the app's loop once, with its size, rather than as so many failures.
+    const asked = typeof repeats === 'number' && Number.isInteger(repeats) && repeats > 0 ? Math.min(repeats, 1_000_000) : 0;
+    const span = new Span(`call ${op}`, { app: appId, account: accountId, op, ...(asked ? { repeats: asked } : {}) }, parseTraceparent(trace));
     try {
       return await this.callIn(appId, accountId, op, input, span);
     } catch (e) {
-      // The upstream status an extractor gave its refusal (410: a stale sync token), so a reader of the trace (bugwatch)
-      // can tell an expected refusal from a failure.
-      const status = e instanceof CallFailure ? e.error.status : undefined;
-      span.set({ outcome: e instanceof CallFailure ? e.error.code : 'failed', ...(typeof status === 'number' ? { status } : {}) }).fail(e);
+      // The upstream status an extractor gave its refusal (410: a stale sync token) and the failure's kind, so a reader
+      // of the trace (bugwatch) can tell an expected refusal or a passing failure from a bug without guessing.
+      const err = e instanceof CallFailure ? e.error : undefined;
+      span
+        .set({
+          outcome: err ? err.code : 'failed',
+          ...(typeof err?.status === 'number' ? { status: err.status } : {}),
+          ...(err?.kind ? { kind: err.kind } : {}),
+          ...(err?.retryAfterMs !== undefined ? { retryAfterMs: err.retryAfterMs } : {}),
+        })
+        .fail(e);
       throw e;
     } finally {
       span.end();
@@ -289,7 +309,8 @@ export class Router {
     this.buckets.set(key, b);
     if (b.tokens < 1) {
       this.count(c.app.id, c.account.id, c.op, 'limited');
-      return fail('limited', `too many ${c.level} calls to ${c.account.label}; at most ${rate} a second`);
+      // When the bucket has a whole token again.
+      return fail('limited', `too many ${c.level} calls to ${c.account.label}; at most ${rate} a second`, undefined, { retryAfterMs: ((1 - b.tokens) / rate) * 1000 });
     }
     b.tokens -= 1;
     return next(c);
@@ -320,11 +341,12 @@ export class Router {
     try {
       c.span?.event('to the extractor');
       // The extractor's span (one that reads `trace`) is a child of the call's.
-      const r = await this.sup.command(c.account.id, { ...c.input, t: c.op, ...(c.span ? { trace: c.span.traceparent } : {}) }, c.iface.ops[c.op].timeoutMs ?? 30_000);
+      // A read is run again on a restarted extractor that lost it; a write never is (supervisor.ts command).
+      const r = await this.sup.command(c.account.id, { ...c.input, t: c.op, ...(c.span ? { trace: c.span.traceparent } : {}) }, c.iface.ops[c.op].timeoutMs ?? 30_000, { repeatable: c.level === 'read' });
       c.span?.event('the extractor answered');
       return r;
     } catch (e) {
-      if (e instanceof ExtractorError) return fail(e.code, e.message, e.status);
+      if (e instanceof ExtractorError) return fail(e.code, e.message, e.status, { ...(e.kind ? { kind: e.kind } : {}), ...(e.retryAfterMs !== undefined ? { retryAfterMs: e.retryAfterMs } : {}) });
       throw e;
     }
   }
@@ -613,9 +635,16 @@ export class Router {
   /**
    * An account's extractor process ended: its last status (online, a QR to scan, a live view's port) was the old
    * process's, so the page stops showing it until the next one reports. A socket that only reconnects keeps it.
+   * One stopped to sleep keeps it (it slept only while online and needing nothing): the page and apps still see how
+   * it was, such as its last pull, but not its live view, which went with it.
    */
-  processGone(accountId: string) {
-    this.lastAccountEvents.get(accountId)?.delete('status');
+  processGone(accountId: string, asleep = false) {
+    const last = this.lastAccountEvents.get(accountId);
+    const st = last?.get('status');
+    if (!st) return;
+    if (!asleep) return void last!.delete('status');
+    const { liveView: _gone, ...kept } = st;
+    last!.set('status', kept as typeof st);
   }
 
   /** The last status an account's extractor reported, for the manager's page (status and attention, not data). */
@@ -675,7 +704,7 @@ export class Router {
     }
     const answer = (async (): Asked['answer'] => {
       try {
-        const result = m.t === 'call' ? await this.call(appId, m.account, m.op, m.input, m.trace) : await this.admin(appId, m.action);
+        const result = m.t === 'call' ? await this.call(appId, m.account, m.op, m.input, m.trace, m.repeats) : await this.admin(appId, m.action);
         return { ok: true, result };
       } catch (e) {
         return { ok: false, error: e instanceof CallFailure ? e.error : { code: 'failed', message: String((e as Error)?.message ?? e) } };
@@ -701,6 +730,9 @@ export class Router {
     if (m.t !== 'call' && m.t !== 'admin') return;
     const answer = await this.once(ws.data.appId, m);
     const out: ConsumerOut = answer.ok ? { t: 'result', id: m.id, ok: true, result: answer.result } : { t: 'result', id: m.id, ok: false, error: answer.error };
+    // What the account sent before answering (a history page's messages) goes out before the answer, not after it on
+    // the outbox's timer: an app may count on a call's events being in once its result comes.
+    this.flushOutbox();
     try {
       ws.send(JSON.stringify(out));
     } catch {}

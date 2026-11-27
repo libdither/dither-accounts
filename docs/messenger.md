@@ -48,7 +48,9 @@ read your chats. The browser profile keeps the sign-in.
   media of an end-to-end encrypted chat).
 - **The extractor** checks everything the hook forwards against the fields it needs (drops and counts what fails),
   maps it to chat facts, paces commands like a person (1.5–3 s between writes, plus typing time for longer text;
-  3–6 s between history pages), and reports the hooks as status layers and details.
+  3–6 s between history pages), and reports the hooks as status layers and details. It forwards a message only when it
+  changes, except in a history page, which sends every message it holds again: the hub counts a page by the messages
+  that come with it.
 
 ## How the hook reaches the client
 

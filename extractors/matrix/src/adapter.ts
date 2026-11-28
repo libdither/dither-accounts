@@ -1775,6 +1775,9 @@ export class MatrixAdapter {
         for (const raw of res.chunk ?? []) {
           const ev = await this.decrypted(room, raw);
           const rel = relationOf(ev.content);
+          // Only reactions to this message: continuwuity (26.9) counts a reply as related to its parent and lists the
+          // reply's reactions here too, and taking back yours on the parent must not take back the same one on a reply.
+          if (rel.relType !== 'm.annotation' || rel.eventId !== message) continue;
           if (ev.sender === this.selfId && rel.key && canonicalReactionKey(rel.key) === canonicalReactionKey(key)) this.db.putReaction({ id: ev.event_id, room: roomId, target: message, key: rel.key, sender: this.selfId, ts: ev.origin_server_ts });
         }
       } catch (e) {

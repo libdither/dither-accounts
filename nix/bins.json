@@ -1,5 +1,5 @@
 {
-  "note": "The packages the sandboxes run (nix/README.md). Each is a BinSpec's `nix` attribute with `pinned: true` (packages/browser bins.ts, packages/sandbox bins.ts); a test checks the lists agree. `run` is dither-bins, built at the manager's start; `forks` is dither-bins-forks, the servers built from forks this project keeps, built after it and only once a backend that needs them is in use; `test` is what only the tests run.",
+  "note": "The packages the sandboxes run (nix/README.md). Each is a BinSpec's `nix` attribute with `pinned: true` (packages/browser bins.ts, packages/sandbox bins.ts); a test checks the lists agree. `run` is dither-bins, built at the manager's start; `forks` is dither-bins-forks, the servers built from forks this project keeps, built after it and only once a backend that needs them is in use; `test` is what only the tests run (continuwuity: the Matrix homeserver test/chat-parity runs against).",
   "run": [
     "xvfb",
     "x11vnc",
@@ -31,6 +31,7 @@
     "electron",
     "xorg.xev",
     "wev",
-    "xclip"
+    "xclip",
+    "matrix-continuwuity"
   ]
 }

@@ -26,6 +26,12 @@ export interface FakeOptions {
   users?: Record<number, Record<string, unknown>>;
   /** GET /realm/profile_fields's answer. */
   profileFields?: any[];
+  /**
+   * Keep what is written, as a real server does: a message sent, edited, deleted or reacted to is stored and each
+   * change goes out on the event queue (the sender's own queue too, as Zulip does), and `act` lets someone else do
+   * the same server-side. Off, writes are answered and forgotten (the unit tests read `calls`).
+   */
+  live?: boolean;
 }
 
 export function fakeZulip(opts: FakeOptions = {}) {
@@ -80,7 +86,7 @@ export function fakeZulip(opts: FakeOptions = {}) {
       if (req.method !== 'GET' && req.headers.get('content-type')?.startsWith('application/x-www-form-urlencoded')) for (const [k, v] of new URLSearchParams(await req.text())) params[k] = parse(v);
       const path = url.pathname.replace(/^\/api\/v1/, '');
       calls.push({ method: req.method, path, params });
-      if (url.pathname === '/static/generated/emoji/emoji_codes.json') return json({ name_to_codepoint: { thumbs_up: '1f44d', smile: '1f604' }, codepoint_to_name: { '1f44d': 'thumbs_up', '1f604': 'smile' } });
+      if (url.pathname === '/static/generated/emoji/emoji_codes.json') return json({ name_to_codepoint: { thumbs_up: '1f44d', smile: '1f604', tada: '1f389' }, codepoint_to_name: { '1f44d': 'thumbs_up', '1f604': 'smile', '1f389': 'tada' } });
       if (path === '/server_settings') return ok({ zulip_version: '13.2', zulip_feature_level: 517, realm_name: 'Example Org' });
       const auth = req.headers.get('authorization') ?? '';
       if (path === '/fetch_api_key') return params.password === 'pw' ? ok({ api_key: KEY, email: 'quinn@example.com', user_id: 8 }) : json({ result: 'error', msg: 'Bad password', code: 'AUTHENTICATION_FAILED' }, 403);
@@ -125,8 +131,24 @@ export function fakeZulip(opts: FakeOptions = {}) {
         return ok({ messages: list, found_oldest: true, found_newest: true });
       }
       if (path === '/messages' && req.method === 'POST') {
+        if (opts.live) {
+          const to = params.type === 'stream' || params.type === 'channel' ? { stream: Number(params.to), topic: String(params.topic ?? '') } : { dm: (Array.isArray(params.to) ? params.to : [params.to]).map(Number) };
+          return ok({ id: act.send(8, to, String(params.content)) });
+        }
         const id = nextId++;
         return ok({ id });
+      }
+      if (opts.live && /^\/messages\/\d+\/reactions$/.test(path) && (req.method === 'POST' || req.method === 'DELETE')) {
+        act.react(Number(path.split('/')[2]), 8, String(params.emoji_name), req.method === 'POST' ? 'add' : 'remove');
+        return ok();
+      }
+      if (opts.live && /^\/messages\/\d+$/.test(path) && req.method === 'PATCH') {
+        act.edit(Number(path.split('/')[2]), String(params.content), 8);
+        return ok();
+      }
+      if (opts.live && /^\/messages\/\d+$/.test(path) && req.method === 'DELETE') {
+        act.delete(Number(path.split('/')[2]));
+        return ok();
       }
       if (path === '/messages/flags/narrow') {
         const before = Number(params.anchor);
@@ -161,8 +183,59 @@ export function fakeZulip(opts: FakeOptions = {}) {
     },
   });
 
+  const now = () => Math.floor(Date.now() / 1000);
+  const find = (id: number) => {
+    const m = messages.find((x) => x.id === id);
+    if (!m) throw new Error(`the fake has no message ${id}`);
+    return m;
+  };
+  const emojiCodes: Record<string, string> = { thumbs_up: '1f44d', smile: '1f604', tada: '1f389' };
+  /** What the server does when someone writes (live mode): the message stored, and an event for it. */
+  const act = {
+    send(sender: number, to: { stream: number; topic: string } | { dm: number[] }, content: string): number {
+      const id = nextId++;
+      const who = users.find((u) => u.user_id === sender)!;
+      const base = { id, sender_id: sender, sender_full_name: who.full_name, content, timestamp: now(), reactions: [] as any[], submessages: [], flags: sender === 8 ? ['read'] : [] };
+      const m =
+        'stream' in to
+          ? { ...base, type: 'stream', stream_id: to.stream, subject: to.topic, display_recipient: to.stream === 3 ? 'general' : 'design' }
+          : { ...base, type: 'private', display_recipient: [...new Set([sender, ...to.dm])].sort((a, b) => a - b).map((uid) => ({ id: uid, email: users.find((u) => u.user_id === uid)!.email, full_name: users.find((u) => u.user_id === uid)!.full_name })) };
+      messages = [...messages, m];
+      push({ type: 'message', message: { ...m, flags: undefined }, flags: m.flags });
+      return id;
+    },
+    edit(id: number, content: string, by: number) {
+      const m = find(id);
+      const orig = m.content;
+      m.content = content;
+      m.last_edit_timestamp = now();
+      push({ type: 'update_message', user_id: by, message_id: id, message_ids: [id], content, orig_content: orig, rendered_content: content, edit_timestamp: m.last_edit_timestamp, flags: m.flags, ...(m.type === 'stream' ? { stream_id: m.stream_id } : {}) });
+    },
+    delete(id: number) {
+      const m = find(id);
+      messages = messages.filter((x) => x.id !== id);
+      push({ type: 'delete_message', message_id: id, message_ids: [id], message_type: m.type, ...(m.type === 'stream' ? { stream_id: m.stream_id, topic: m.subject } : {}) });
+    },
+    react(id: number, user: number, emojiName: string, op: 'add' | 'remove') {
+      const m = find(id);
+      const code = emojiCodes[emojiName] ?? emojiName;
+      const r = { emoji_name: emojiName, emoji_code: code, reaction_type: 'unicode_emoji', user_id: user };
+      const has = m.reactions.some((x: any) => x.user_id === user && x.emoji_code === code);
+      if (op === 'add' && has) throw new Error('Reaction already exists');
+      if (op === 'remove' && !has) throw new Error("Reaction doesn't exist");
+      m.reactions = op === 'add' ? [...m.reactions, r] : m.reactions.filter((x: any) => !(x.user_id === user && x.emoji_code === code));
+      push({ type: 'reaction', op, message_id: id, ...r });
+    },
+  };
+
   return {
     url: `http://127.0.0.1:${server.port}`,
+    /** Someone writing on the server (live mode): what their client's requests would do. */
+    act,
+    /** The server's messages as they stand (the oracle of tests/chat-parity). */
+    get messages(): readonly any[] {
+      return messages;
+    },
     key: KEY,
     calls,
     push,

@@ -8,7 +8,7 @@ event loop, and it would get whatever nixpkgs the machine's registry says that d
 | file | |
 |---|---|
 | `pin.json` | the nixpkgs revision and its tarball's hash |
-| `bins.json` | the attributes built: `run`, what the sandboxes start (Chromium among them); `forks`, the servers built from forks this project keeps (KasmVNC, w0vncserver); `test`, what only the tests start (Electron, xev, wev) |
+| `bins.json` | the attributes built: `run`, what the sandboxes start (Chromium among them); `forks`, the servers built from forks this project keeps (KasmVNC, w0vncserver); `test`, what only the tests start (Electron, xev, wev, xclip, continuwuity) |
 | `overlay.nix` | this repo's additions: `dither-bins`, `dither-bins-forks` and `dither-test-bins` (below), and any program nixpkgs lacks or that is built differently here |
 | `w0vncserver.nix`, `kasmvnc.nix` | the two VNC servers built from forks (below), each its fork's release file as it is |
 | `default.nix` | the pinned nixpkgs with the overlay |

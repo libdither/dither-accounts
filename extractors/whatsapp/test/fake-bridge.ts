@@ -7,6 +7,8 @@
  *
  * Built-in behaviour: prints ready; `connect` prints connected when $FAKE_WA_LOGGED_IN=1, else a QR
  * code; `send` answers with a fresh id; `download` writes a file; stdin closing ends it, as it ends the real bridge.
+ * Every answer is copied to the socket too, as {replied: {id, op, ok, result}}. `send` dates its messages in 2026
+ * unless $FAKE_WA_NOW=1, which dates them now (the parity suite edits them, and WhatsApp edits only for 15 minutes).
  */
 
 import { writeFileSync } from 'node:fs';
@@ -53,7 +55,9 @@ out({ t: 'ready', version: 'fake', loggedIn });
 const reply = (id: string, op: string, value: unknown) => {
   if (errors[op]) out({ t: 'reply', id, ok: false, error: errors[op] });
   else out({ t: 'reply', id, ok: true, result: op in results ? results[op] : value });
+  toCtl({ replied: { id, op, ok: !errors[op], result: errors[op] ? undefined : op in results ? results[op] : value } });
 };
+const now = process.env.FAKE_WA_NOW === '1';
 
 let buf = '';
 for await (const chunk of Bun.stdin.stream()) {
@@ -70,7 +74,7 @@ for await (const chunk of Bun.stdin.stream()) {
         else out({ t: 'qr', code: '2@fake-qr', timeoutMs: 60_000 });
         break;
       case 'send':
-        reply(cmd.id, cmd.op, { id: `SENT${++sent}`, ts: 1_770_000_000_000 + sent });
+        reply(cmd.id, cmd.op, { id: `SENT${++sent}`, ts: now ? Date.now() : 1_770_000_000_000 + sent });
         break;
       case 'download':
         writeFileSync(cmd.dest, 'fake media bytes');

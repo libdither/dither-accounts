@@ -131,6 +131,9 @@ the edit before it. The hub knows the message by the first one only (`<author>:<
   poll votes and ends, a reply's `quoteTimestamp`, and `markRead`'s and `viewed`'s receipts name the newest
   version's timestamp, as Signal's apps do.
 - A deleted message's edits' ids go with it.
+- The composition parity suite (`test/chat-parity/signal-parity.test.ts`, [parity-testing.md](parity-testing.md))
+  runs edits, reactions, replies, deletes and pins against a model of Signal that knows a message only by its newest
+  version, so a target naming an older one fails there.
 
 ## Your phone's settings
 

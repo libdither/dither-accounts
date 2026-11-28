@@ -20,6 +20,8 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, 
 import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type * as P from '@dither-chat/protocol';
+import { SchemaWatch } from '@dither-accounts/manager/schema-drift';
+import { watchSignalEnvelope } from '@dither-accounts/manager/schema-drift-signal';
 import { ADD_MEMBERS_MAX, createGroupProblem, GROUP_RULES, PIN_DURATIONS, pollDraftProblem, previewsRemovable, signalStickerLink, STICKER_PAGE_PACKS, STORIES_ACTION } from '@dither-chat/protocol';
 import { errorText, groupIdOfLink, isMessageRequest, joinError, lookupError, signalError, wantsCaptcha } from './add.ts';
 import { answerJoinParams, approvalParams, groupLeaving, groupModeration, isAdmin, joinRequests, labelOf, labelParams, moderateParams, ownLabel, parseJoinRequest, picturePath, quitParams } from './groups.ts';
@@ -262,6 +264,8 @@ export class SignalAdapter {
   /** Calls through Signal Desktop: only with the account's `calls` setting on (docs/signal.md "Calls through Signal Desktop"). */
   private desktop: CallsHost | null = null;
   private calls: DesktopCalls | null = null;
+  /** Envelope keys, data message keys and tags this extractor does not map (schema-drift-signal.ts): names only. */
+  readonly drift = new SchemaWatch({ log: (level, msg) => this.host.log(level, msg) });
 
   constructor(
     private host: AdapterHost,
@@ -1004,6 +1008,7 @@ export class SignalAdapter {
   /** One `receive` notification. Public for tests. */
   received(rcv: SigReceive) {
     if (!this.account) return;
+    watchSignalEnvelope(this.drift, rcv.envelope);
     let r: MapResult;
     try {
       r = mapReceive(rcv, this.mapContext());
@@ -2743,6 +2748,7 @@ export class SignalAdapter {
     if (this.devices?.length) d['linked devices'] = devicesDetail(this.devices, id);
     if (this.state.username?.name) d.username = this.state.username.name;
     if (this.desktop) Object.assign(d, this.desktop.details());
+    Object.assign(d, this.drift.details());
     return Object.keys(d).length ? d : undefined;
   }
 

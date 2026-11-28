@@ -117,9 +117,10 @@ Where each kind checks (its `src/drift.ts` holds the known sets):
 | telegram | `telegram.update` (no case in handleUpdate, not skipped on purpose), `telegram.messageMedia`, `telegram.messageAction` (shown by name only), `telegram.message` (fields past layer 232) |
 | whatsapp | `whatsapp.message` (waE2E parts), `whatsapp.protocolMessage.type`, `whatsapp.bridge` (a bridge event with no case) |
 | discord | `discord.message.type` (no words in map.ts), `discord.embed.type`, `discord.component.type`. The hook whitelists fields and Flux actions, so those cannot drift past it |
+| signal | `signal.envelope`, `signal.dataMessage` (an edit's too), `signal.editMessage`, `signal.syncMessage`, `signal.sentMessage`, `signal.attachment`, `signal.receiptMessage`, `signal.typingMessage`, `signal.callMessage`, and the tags `signal.textStyle` and `signal.typingAction` |
 
-Signal's key sets and a walk over a received envelope are ready in `@dither-accounts/manager/schema-drift-signal`
-(`watchSignalEnvelope(watch, envelope)`), for the signal extractor to call where it handles `receive`.
+Signal's key sets live beside the watch, in `@dither-accounts/manager/schema-drift-signal`; the signal extractor calls
+`watchSignalEnvelope(watch, envelope)` on each `receive` notification, before mapping it.
 
 ## The page
 

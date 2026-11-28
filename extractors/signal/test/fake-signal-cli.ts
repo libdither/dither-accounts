@@ -11,7 +11,7 @@
  *
  *   --config DIR -a ACI daemon --socket PATH --receive-mode on-connection ...
  *       JSON-RPC over the UNIX socket. Every request is appended to
- *       DIR/fake-rpc.jsonl. Files dropped into DIR/fake-push/ are sent to
+ *       DIR/fake-rpc.jsonl, and each answer after it (`t: 'result'`). Files dropped into DIR/fake-push/ are sent to
  *       connected clients as `receive` notifications. DIR/fake-exit makes it
  *       exit with the code inside; DIR/fake-hang holding this daemon's pid makes it
  *       stop answering (socket stays open). If data/accounts.json marks the account
@@ -595,7 +595,10 @@ if (sub === 'daemon') {
           const hang = join(config, 'fake-hang');
           if (existsSync(hang) && readFileSync(hang, 'utf8').trim() === String(process.pid)) continue;
           try {
-            send(s, { jsonrpc: '2.0', id: req.id, result: handle(req.method, req.params) });
+            const result = handle(req.method, req.params);
+            // What it answered, before the answer goes out: a test reading the log after the call sees it.
+            record({ t: 'result', method: req.method, result: result ?? null });
+            send(s, { jsonrpc: '2.0', id: req.id, result });
           } catch (e: any) {
             send(s, { jsonrpc: '2.0', id: req.id, error: { code: e.code ?? -1, message: e.message, data: e.data ?? null } });
           }

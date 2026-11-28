@@ -706,7 +706,7 @@ The rest of the CLI covers `accounts`, `apps`, `approve <request> [--level L] [-
 
 ## Schema drift
 
-Matrix, Zulip, Telegram, WhatsApp and Discord count the event types, fields and enum values they do not map, by name
+Matrix, Zulip, Telegram, WhatsApp, Discord and Signal count the event types, fields and enum values they do not map, by name
 only, log each once, and show the count in the account's details (`schemaDrift`, `schemaDriftTop`). What each checks,
 and the privacy rule: [manager.md](manager.md), "Schema drift".
 
@@ -714,7 +714,7 @@ and the privacy rule: [manager.md](manager.md), "Schema drift".
 
 - **Unit tests:** `bun test` in each `extractors/<kind>` runs that adapter's own tests in their new place.
   - Discord's `pipeline.test.ts` and `attention-pipeline.test.ts` feed the adapter's facts into dither-chat's real hub store. It needs a dither-chat checkout beside this repo (or `DITHER_CHAT_REPO`) and is skipped without one.
-- **Composition parity:** `test/chat-parity/` runs sequences of interacting operations (edit after edit, a reaction after an edit, a reply to an edited message, a delete of one) from both sides on Matrix (against a real continuwuity), Telegram, WhatsApp and Zulip, and compares the conversation the extractor reported, folded as the hub folds it, with the one the network holds ([parity-testing.md](parity-testing.md)).
+- **Composition parity:** `test/chat-parity/` runs sequences of interacting operations (edit after edit, a reaction after an edit, a reply to an edited message, a delete of one) from both sides on Matrix (against a real continuwuity), Telegram, WhatsApp, Zulip and Signal, and compares the conversation the extractor reported, folded as the hub folds it, with the one the network holds ([parity-testing.md](parity-testing.md)).
 - **Zulip testbed:** `extractors/zulip/testbed/sandbox.ts`, a real Zulip in rootless podman, seeded ([zulip.md](zulip.md), "Testing").
 - **Matrix testbed:** `extractors/matrix/testbed/testbed.ts`, with its integration harnesses in `extractors/matrix/test/` (see its README). Use `DITHER_TESTBED_DIR` and `DITHER_TESTBED_PORT` so a run has its own homeserver.
 - **This repo's tests:** `test/chat-import.test.ts` covers the import, the process check, forgetting an account, and the interface's types. `test/chat-add.test.ts` adds chat accounts the page's way and reads them as the hub does: a fake chat account (and the hub's `createGroup` through the manager to it), Signal on a fake signal-cli (QR, new code, linked) and WhatsApp on a fake bridge (QR, pairing code).

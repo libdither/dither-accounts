@@ -58,6 +58,15 @@ scenario whose capability no one has is a skipped test that says so.
 | `telegram-parity.test.ts` | `extractors/telegram` on the fake Telegram | the fake's control ops (Alice's client); the oracle is the fake's world |
 | `whatsapp-parity.test.ts` | `extractors/whatsapp` on the fake bridge process | bridge events shaped after `test/fixtures/events.jsonl` for Alice; the oracle is a model of WhatsApp kept by the test, fed by Alice's actions and by decoding each `send` the extractor gave the bridge (with the id it answered) |
 | `zulip-parity.test.ts` | `extractors/zulip` on the fake Zulip server in its `live` mode | the server's own writes for Ann (`act`), the same paths the extractor's requests take; the oracle is the server's message list; a topic per scenario |
+| `signal-parity.test.ts` | `extractors/signal` on the fake signal-cli process (`extractors/signal/test/fake-signal-cli.ts`) | `receive` envelopes for Alice pushed through the fake, shaped after `extractors/signal/test/fixtures`; the oracle is a model of Signal kept by the test, fed by Alice's actions and by decoding each request the extractor made of signal-cli, with the timestamp the fake answered (its `fake-rpc.jsonl`) |
+
+**Signal's edit chains.** An edit is a message of its own with a timestamp of its own, and from then on Signal's apps
+name the message by its newest version (`docs/signal.md`, "Edits"). The Signal oracle holds each message as its chain
+of timestamps (T0, T1, T2...) and finds a message only by the newest: Alice's edits name the version before them, her
+reactions, replies, deletes and pins the newest. The extractor's `editTimestamp`, `sendReaction`, `remoteDelete`,
+`sendPinMessage`, `sendUnpinMessage` and a reply's `quoteTimestamp` are held to the same rule; one naming T0 of a
+message edited since lands on nothing in the model, and the action fails saying which version it named. A test in the
+same file checks the oracle catches that, with the extractor made to name the first timestamp again.
 
 The Matrix file needs continuwuity: `CONTINUWUITY_BIN`, the prepared test programs (`nix/bins.json` "test",
 `DITHER_BINS`: CI's `nix` job has them and must run it), or `conduwuit` on PATH. Elsewhere it skips, saying so.

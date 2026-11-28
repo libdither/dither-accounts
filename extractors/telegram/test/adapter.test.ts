@@ -613,6 +613,19 @@ describe('signed in', () => {
     expect((await h.cmd({ t: 'profile', who: `channel:${FAKE_IDS.news}` })) as P.PersonAbout).toMatchObject({ displayName: 'Announcements', handle: '@ditherNews' });
   });
 
+  test('an update this extractor does not map is logged once by its name only, and messages after it still come', async () => {
+    const n = h.events.length;
+    const l = h.logs.length;
+    const secret = 'secret-words-9e2b';
+    await h.fake.control({ op: 'rawUpdate', update: { _: 'updateExampleNew', note: secret } });
+    await h.fake.control({ op: 'rawUpdate', update: { _: 'updateExampleNew', note: secret } });
+    const { id } = (await h.fake.control({ op: 'incoming', peer: `user:${FAKE_IDS.alice}`, from: FAKE_IDS.alice, text: 'still here' })) as { id: number };
+    await h.until(() => h.since(n).some((e) => e.t === 'message' && e.message.nativeId === `${DM_ALICE}#${id}`), 'the message');
+    expect(h.logs.slice(l).filter((x) => x.includes('schema drift:'))).toEqual(['[info] schema drift: unknown tag "updateExampleNew" on "telegram.update"']);
+    expect(h.adapter.drift.summary().unknown.find((e) => e.name === 'updateExampleNew')).toMatchObject({ surface: 'telegram.update', kind: 'unknown_tag', count: 2 });
+    expect(JSON.stringify([h.logs, h.adapter.drift.summary()])).not.toContain(secret);
+  });
+
   test("Telegram's updates as events: messages, edits, deletes, reactions, typing, receipts, pins, renames", async () => {
     let n = h.events.length;
     const { id } = (await h.fake.control({ op: 'incoming', peer: `user:${FAKE_IDS.alice}`, from: FAKE_IDS.alice, text: 'are you there?' })) as { id: number };

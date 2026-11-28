@@ -32,6 +32,8 @@ import { encryptedFileOf, FORWARD_KEY, forwardableContent, forwardOf, isRedacted
 import { Directory, Room, STRUCTURAL, type MxEvent } from './rooms.ts';
 import { bodyMentionsRoom, contentMentionsRoom, mayMentionRoom, RoomMentions } from './mentions.ts';
 import { searchBody, searchKey, SearchPages, type SearchCommand } from './search.ts';
+import { SchemaWatch } from '@dither-accounts/manager/schema-drift';
+import { watchTimelineEvent } from './drift.ts';
 
 export const VERSION = '0.1.0';
 // Adding (add.ts): resolve, join (and knock), requests. Not 'connect': Matrix has no friends, follows or contacts to add.
@@ -229,6 +231,8 @@ export class MatrixAdapter {
   private sessionFailure: { message: string; failures: number } | null = null;
   private syncFailure: { message: string; failures: number } | null = null;
   private sentLayers = '';
+  /** Event types, content keys and relations this extractor does not map yet (drift.ts): names and counts only. */
+  readonly drift = new SchemaWatch({ log: (level, msg) => this.log(level, msg) });
 
   // ================================================================ lifecycle
 
@@ -289,7 +293,8 @@ export class MatrixAdapter {
   private emitStatus() {
     const layers = this.layers();
     this.sentLayers = JSON.stringify(layers);
-    this.hub.emit({ t: 'status', status: this.status, attention: this.attention, ...(this.self ? { self: this.self } : {}), layers });
+    const drift = this.drift.details();
+    this.hub.emit({ t: 'status', status: this.status, attention: this.attention, ...(this.self ? { self: this.self } : {}), ...(Object.keys(drift).length ? { details: drift } : {}), layers });
   }
 
   private setStatus(status: P.AccountStatus, attention: Omit<P.Attention, 'since'> | null) {
@@ -957,6 +962,7 @@ export class MatrixAdapter {
     }
     if (isRedacted(ev)) return this.redactedEvent(room, ev, ctx);
     ev = await this.decrypted(room, ev);
+    watchTimelineEvent(this.drift, ev);
     switch (ev.type) {
       case 'm.reaction':
         return this.reactionEvent(room, ev);

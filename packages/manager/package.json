@@ -7,7 +7,9 @@
     ".": "./src/index.ts",
     "./kinds": "./src/kinds.ts",
     "./errors": "./src/errors.ts",
-    "./api-types": "./src/api-types.ts"
+    "./api-types": "./src/api-types.ts",
+    "./schema-drift": "./src/schema-drift.ts",
+    "./schema-drift-signal": "./src/schema-drift-signal.ts"
   },
   "dependencies": {
     "@dither-accounts/spec": "workspace:*",

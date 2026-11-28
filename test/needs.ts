@@ -50,7 +50,18 @@ export const TEST_BINS = {
   xev: { name: 'xev', env: 'XEV_BIN', nix: 'xorg.xev', pinned: true },
   xclip: { name: 'xclip', env: 'XCLIP_BIN', nix: 'xclip', pinned: true },
   wev: { name: 'wev', env: 'WEV_BIN', nix: 'wev', pinned: true },
+  /** The Matrix homeserver the composition parity suite runs the Matrix extractor against (test/chat-parity). */
+  continuwuity: { name: 'conduwuit', env: 'CONTINUWUITY_BIN', nix: 'matrix-continuwuity', pinned: true },
 } satisfies Record<string, BinSpec>;
+
+/** continuwuity's path, or null where it is not prepared, set (CONTINUWUITY_BIN) or on PATH. */
+export const continuwuity = (() => {
+  try {
+    return resolveBin(TEST_BINS.continuwuity, () => {});
+  } catch {
+    return null;
+  }
+})();
 
 /** A Wayland client with a window that prints what it gets (wev), for the backend's own window and input tests. */
 export const wev = (() => {

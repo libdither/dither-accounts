@@ -145,6 +145,8 @@ before the account is online, the rest just after, so a big organization is not 
 ## Testing
 
 - `bun test extractors/zulip/test/`: Markdown both ways, widgets and emoji, and the adapter against a fake server
-  (`test/fake-zulip.ts`: start, live events, a lost queue, commands).
+  (`test/fake-zulip.ts`: start, live events, a lost queue, commands). Its `live` mode keeps what is written and
+  sends each change down the event queue, as a server does: the composition parity suite runs on it
+  ([parity-testing.md](parity-testing.md)).
 - `extractors/zulip/testbed/`: a real Zulip 13.2 in rootless podman, seeded with invented people and traffic
   ([its README](../extractors/zulip/testbed/README.md)); `testbed/drive.ts` runs the extractor against it end to end.

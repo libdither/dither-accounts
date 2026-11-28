@@ -18,7 +18,8 @@ src/e2ee.ts      end-to-end encryption: the OlmMachine and the requests it asks 
 src/cryptostore.ts  IndexedDB for that library under Bun, written through to crypto.sqlite
 src/recovery.ts  recovery key format and Secret Storage
 src/http.ts      tiny CS API client (rate limits, retries, typed errors)
-testbed/         local continuwuity homeserver with users and sample traffic
+testbed/         local continuwuity homeserver with users and sample traffic (homeserver.ts: its config, and a throwaway
+                 server for a test: test/chat-parity/matrix-oracle.test.ts)
 test/            unit tests (bun test) and an end-to-end harness with a fake hub
 ```
 

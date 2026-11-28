@@ -5,7 +5,7 @@
  *
  *   bun scripts/prepare-bins.ts --out <dir> [--tests] [--no-forks]
  *
- * --tests adds what only the tests run (nix/bins.json "test": Electron, xev, wev). --no-forks leaves the forks' servers
+ * --tests adds what only the tests run (nix/bins.json "test": Electron, xev, wev, xclip, continuwuity). --no-forks leaves the forks' servers
  * out (the kasmvnc and wayland-tigervnc backends then cannot start). CI's `nix` job runs it before the tests that need
  * Nix; run it before them yourself, then export the DITHER_BINS it prints.
  */

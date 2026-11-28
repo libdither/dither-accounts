@@ -33,6 +33,7 @@ import { LOG } from './files.ts';
 import type { Kind } from './kinds.ts';
 import { allPids, cgroupMembers, cgroupOf, descendants, endAll, groupMembers, serviceOf, procAlive, procCmdline, procEnv, type ProcRef, procsWithEnv, procStartedAt, procStat, signalRef } from './procs.ts';
 import { spanRecordOf, writeSpan } from './trace.ts';
+import { AdapterStreamRecorder } from './wire-capture.ts';
 
 export interface ExtractorSocketData {
   kind: 'extractor';
@@ -447,6 +448,8 @@ export class Supervisor {
   /** Accounts woken from sleep, and why, until their extractor starts: it gets DITHER_WOKE. */
   private woke = new Map<string, string>();
   private sleepTimer?: Timer;
+  /** Golden wire traces (wire-capture.ts): only when DITHER_WIRE_CAPTURE_DIR is set, else nothing is recorded. */
+  private wire = AdapterStreamRecorder.fromEnv();
 
   constructor(
     private store: Store,
@@ -1399,6 +1402,7 @@ export class Supervisor {
   }
 
   receive(ws: ServerWebSocket<ExtractorSocketData>, raw: string | Buffer) {
+    this.wire?.record(ws.data.accountId, 'event', raw);
     let ev: ExtractorEvent;
     try {
       ev = JSON.parse(typeof raw === 'string' ? raw : raw.toString('utf8'));
@@ -1663,7 +1667,9 @@ export class Supervisor {
       // The call's own id travels as `rid`, so an op input named `id` (mail.get, cal.delete…) reaches the extractor
       // as it was sent. Inputs without one also get it as `id`, which chat adapters (dither-chat's protocol) answer by.
       // 0: dropped, the socket is closing (its close is on its way): never sent.
-      if (ws.send(JSON.stringify({ ...cmd, ...(cmd.id === undefined ? { id } : {}), rid: id })) === 0) {
+      const sent = { ...cmd, ...(cmd.id === undefined ? { id } : {}), rid: id };
+      this.wire?.record(accountId, 'command', sent);
+      if (ws.send(JSON.stringify(sent)) === 0) {
         this.settle(id, this.pending.get(id)!);
         reject(new HandoverError("the account's extractor's socket was closing, so this was not sent", 'retry', 0));
       }

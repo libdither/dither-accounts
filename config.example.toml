@@ -34,3 +34,5 @@ sleep = 1                           # 0: keep every account running. Else an acc
 # A few environment variables change how the sandboxes run, for machines that need it:
 #   DITHER_CHROMIUM_NO_SANDBOX=1     run Chromium without its own sandbox (inside containers that forbid it)
 #   DITHER_TELEGRAM_DESKTOP=1        offer Telegram sign-in through Telegram Desktop in a sandbox (docs/telegram.md)
+#   DITHER_WIRE_CAPTURE_DIR=<dir>    record what the manager and its extractors say to each other, anonymized, as
+#                                    NDJSON in <dir> (docs/golden-traces.md); off when unset

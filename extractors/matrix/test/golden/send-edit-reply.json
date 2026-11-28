@@ -1,0 +1,835 @@
+{
+  "scenario": "send-edit-reply",
+  "about": "Alice sends and edits; the self user (quinn) replies to the edited message.",
+  "source": "continuwuity 26.9.4, a local testbed with invented users (scripts/capture-fixtures.ts matrix-golden)",
+  "self": "@quinn:example.test",
+  "room": "!room1:example.test",
+  "steps": [
+    {
+      "do": "send",
+      "by": "@alice:example.test",
+      "body": "golden: the build is red",
+      "event": "$ev1"
+    },
+    {
+      "do": "edit",
+      "by": "@alice:example.test",
+      "body": "golden: the build is green again",
+      "event": "$ev2",
+      "target": "$ev1"
+    },
+    {
+      "do": "reply",
+      "by": "@quinn:example.test",
+      "body": "golden: nice, thanks",
+      "event": "$ev3",
+      "target": "$ev1"
+    }
+  ],
+  "syncs": [
+    {
+      "after": "setup",
+      "response": {
+        "next_batch": "160",
+        "rooms": {
+          "join": {
+            "!room1:example.test": {
+              "summary": {
+                "m.joined_member_count": 3,
+                "m.invited_member_count": 0
+              },
+              "unread_notifications": {
+                "highlight_count": 0,
+                "notification_count": 0
+              },
+              "timeline": {
+                "prev_batch": "93",
+                "events": [
+                  {
+                    "content": {
+                      "room_version": "12"
+                    },
+                    "event_id": "$ev4",
+                    "origin_server_ts": 1700000000000,
+                    "sender": "@quinn:example.test",
+                    "state_key": "",
+                    "type": "m.room.create",
+                    "unsigned": {
+                      "age": 14
+                    }
+                  },
+                  {
+                    "content": {
+                      "displayname": "Quinn",
+                      "is_direct": false,
+                      "membership": "join"
+                    },
+                    "event_id": "$ev5",
+                    "origin_server_ts": 1700000000000,
+                    "sender": "@quinn:example.test",
+                    "state_key": "@quinn:example.test",
+                    "type": "m.room.member",
+                    "unsigned": {
+                      "age": 14,
+                      "membership": "leave"
+                    }
+                  },
+                  {
+                    "content": {
+                      "events": {
+                        "m.poll.response": 0,
+                        "m.room.encryption": 100,
+                        "m.room.history_visibility": 100,
+                        "m.room.power_levels": 100,
+                        "m.room.server_acl": 100,
+                        "m.room.tombstone": 150,
+                        "org.matrix.msc3381.poll.response": 0
+                      },
+                      "users": {}
+                    },
+                    "event_id": "$ev6",
+                    "origin_server_ts": 1700000000002,
+                    "sender": "@quinn:example.test",
+                    "state_key": "",
+                    "type": "m.room.power_levels",
+                    "unsigned": {
+                      "age": 12,
+                      "membership": "join"
+                    }
+                  },
+                  {
+                    "content": {
+                      "join_rule": "invite"
+                    },
+                    "event_id": "$ev7",
+                    "origin_server_ts": 1700000000003,
+                    "sender": "@quinn:example.test",
+                    "state_key": "",
+                    "type": "m.room.join_rules",
+                    "unsigned": {
+                      "age": 11,
+                      "membership": "join"
+                    }
+                  },
+                  {
+                    "content": {
+                      "history_visibility": "shared"
+                    },
+                    "event_id": "$ev8",
+                    "origin_server_ts": 1700000000004,
+                    "sender": "@quinn:example.test",
+                    "state_key": "",
+                    "type": "m.room.history_visibility",
+                    "unsigned": {
+                      "age": 10,
+                      "membership": "join"
+                    }
+                  },
+                  {
+                    "content": {
+                      "guest_access": "can_join"
+                    },
+                    "event_id": "$ev9",
+                    "origin_server_ts": 1700000000005,
+                    "sender": "@quinn:example.test",
+                    "state_key": "",
+                    "type": "m.room.guest_access",
+                    "unsigned": {
+                      "age": 9,
+                      "membership": "join"
+                    }
+                  },
+                  {
+                    "content": {
+                      "name": "golden send-edit-reply"
+                    },
+                    "event_id": "$ev10",
+                    "origin_server_ts": 1700000000006,
+                    "sender": "@quinn:example.test",
+                    "state_key": "",
+                    "type": "m.room.name",
+                    "unsigned": {
+                      "age": 8,
+                      "membership": "join"
+                    }
+                  },
+                  {
+                    "content": {
+                      "displayname": "Alice Chen",
+                      "is_direct": false,
+                      "membership": "invite"
+                    },
+                    "event_id": "$ev11",
+                    "origin_server_ts": 1700000000007,
+                    "sender": "@quinn:example.test",
+                    "state_key": "@alice:example.test",
+                    "type": "m.room.member",
+                    "unsigned": {
+                      "age": 7,
+                      "membership": "join"
+                    }
+                  },
+                  {
+                    "content": {
+                      "displayname": "Bob Okafor",
+                      "is_direct": false,
+                      "membership": "invite"
+                    },
+                    "event_id": "$ev12",
+                    "origin_server_ts": 1700000000008,
+                    "sender": "@quinn:example.test",
+                    "state_key": "@bob:example.test",
+                    "type": "m.room.member",
+                    "unsigned": {
+                      "age": 6,
+                      "membership": "join"
+                    }
+                  },
+                  {
+                    "content": {
+                      "displayname": "Alice Chen",
+                      "membership": "join"
+                    },
+                    "event_id": "$ev13",
+                    "origin_server_ts": 1700000000010,
+                    "sender": "@alice:example.test",
+                    "state_key": "@alice:example.test",
+                    "type": "m.room.member",
+                    "unsigned": {
+                      "age": 4,
+                      "membership": "join",
+                      "prev_content": {
+                        "displayname": "Alice Chen",
+                        "is_direct": false,
+                        "membership": "invite"
+                      },
+                      "prev_sender": "@quinn:example.test",
+                      "replaces_state": "$ev11"
+                    }
+                  },
+                  {
+                    "content": {
+                      "displayname": "Bob Okafor",
+                      "membership": "join"
+                    },
+                    "event_id": "$ev14",
+                    "origin_server_ts": 1700000000012,
+                    "sender": "@bob:example.test",
+                    "state_key": "@bob:example.test",
+                    "type": "m.room.member",
+                    "unsigned": {
+                      "age": 2,
+                      "membership": "join",
+                      "prev_content": {
+                        "displayname": "Bob Okafor",
+                        "is_direct": false,
+                        "membership": "invite"
+                      },
+                      "prev_sender": "@quinn:example.test",
+                      "replaces_state": "$ev12"
+                    }
+                  }
+                ]
+              },
+              "ephemeral": {
+                "events": [
+                  {
+                    "type": "m.typing",
+                    "content": {
+                      "user_ids": []
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "presence": {
+          "events": [
+            {
+              "type": "m.presence",
+              "content": {
+                "currently_active": true,
+                "displayname": "Quinn",
+                "last_active_ago": 15,
+                "presence": "online"
+              },
+              "sender": "@quinn:example.test"
+            },
+            {
+              "type": "m.presence",
+              "content": {
+                "currently_active": true,
+                "displayname": "Alice Chen",
+                "last_active_ago": 15,
+                "presence": "online"
+              },
+              "sender": "@alice:example.test"
+            },
+            {
+              "type": "m.presence",
+              "content": {
+                "currently_active": true,
+                "displayname": "Bob Okafor",
+                "last_active_ago": 15,
+                "presence": "online"
+              },
+              "sender": "@bob:example.test"
+            }
+          ]
+        },
+        "account_data": {
+          "events": [
+            {
+              "content": {
+                "global": {
+                  "override": [
+                    {
+                      "actions": [],
+                      "conditions": [],
+                      "default": true,
+                      "enabled": false,
+                      "rule_id": ".m.rule.master"
+                    },
+                    {
+                      "actions": [],
+                      "conditions": [
+                        {
+                          "key": "content.msgtype",
+                          "kind": "event_match",
+                          "pattern": "m.notice"
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".m.rule.suppress_notices"
+                    },
+                    {
+                      "actions": [
+                        "notify",
+                        {
+                          "set_tweak": "sound",
+                          "value": "default"
+                        }
+                      ],
+                      "conditions": [
+                        {
+                          "key": "type",
+                          "kind": "event_match",
+                          "pattern": "m.room.member"
+                        },
+                        {
+                          "key": "content.membership",
+                          "kind": "event_match",
+                          "pattern": "invite"
+                        },
+                        {
+                          "key": "state_key",
+                          "kind": "event_match",
+                          "pattern": "@quinn:example.test"
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".m.rule.invite_for_me"
+                    },
+                    {
+                      "actions": [],
+                      "conditions": [
+                        {
+                          "key": "type",
+                          "kind": "event_match",
+                          "pattern": "m.room.member"
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".m.rule.member_event"
+                    },
+                    {
+                      "actions": [
+                        "notify",
+                        {
+                          "set_tweak": "sound",
+                          "value": "default"
+                        },
+                        {
+                          "set_tweak": "highlight"
+                        }
+                      ],
+                      "conditions": [
+                        {
+                          "key": "content.m\\.mentions.user_ids",
+                          "kind": "event_property_contains",
+                          "value": "@quinn:example.test"
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".m.rule.is_user_mention"
+                    },
+                    {
+                      "actions": [
+                        "notify",
+                        {
+                          "set_tweak": "highlight"
+                        }
+                      ],
+                      "conditions": [
+                        {
+                          "key": "content.m\\.mentions.room",
+                          "kind": "event_property_is",
+                          "value": true
+                        },
+                        {
+                          "key": "room",
+                          "kind": "sender_notification_permission"
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".m.rule.is_room_mention"
+                    },
+                    {
+                      "actions": [
+                        "notify",
+                        {
+                          "set_tweak": "highlight"
+                        }
+                      ],
+                      "conditions": [
+                        {
+                          "key": "type",
+                          "kind": "event_match",
+                          "pattern": "m.room.tombstone"
+                        },
+                        {
+                          "key": "state_key",
+                          "kind": "event_match",
+                          "pattern": ""
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".m.rule.tombstone"
+                    },
+                    {
+                      "actions": [],
+                      "conditions": [
+                        {
+                          "key": "type",
+                          "kind": "event_match",
+                          "pattern": "m.reaction"
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".m.rule.reaction"
+                    },
+                    {
+                      "actions": [],
+                      "conditions": [
+                        {
+                          "key": "type",
+                          "kind": "event_match",
+                          "pattern": "m.room.server_acl"
+                        },
+                        {
+                          "key": "state_key",
+                          "kind": "event_match",
+                          "pattern": ""
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".m.rule.room.server_acl"
+                    },
+                    {
+                      "actions": [],
+                      "conditions": [
+                        {
+                          "key": "content.m\\.relates_to.rel_type",
+                          "kind": "event_property_is",
+                          "value": "m.replace"
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".m.rule.suppress_edits"
+                    },
+                    {
+                      "actions": [],
+                      "conditions": [
+                        {
+                          "key": "type",
+                          "kind": "event_property_is",
+                          "value": "org.matrix.msc3381.poll.response"
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".org.matrix.msc3930.rule.poll_response"
+                    }
+                  ],
+                  "underride": [
+                    {
+                      "actions": [
+                        "notify",
+                        {
+                          "set_tweak": "sound",
+                          "value": "ring"
+                        }
+                      ],
+                      "conditions": [
+                        {
+                          "key": "type",
+                          "kind": "event_match",
+                          "pattern": "m.call.invite"
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".m.rule.call"
+                    },
+                    {
+                      "actions": [
+                        "notify",
+                        {
+                          "set_tweak": "sound",
+                          "value": "default"
+                        }
+                      ],
+                      "conditions": [
+                        {
+                          "is": "2",
+                          "kind": "room_member_count"
+                        },
+                        {
+                          "key": "type",
+                          "kind": "event_match",
+                          "pattern": "m.room.encrypted"
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".m.rule.encrypted_room_one_to_one"
+                    },
+                    {
+                      "actions": [
+                        "notify",
+                        {
+                          "set_tweak": "sound",
+                          "value": "default"
+                        }
+                      ],
+                      "conditions": [
+                        {
+                          "is": "2",
+                          "kind": "room_member_count"
+                        },
+                        {
+                          "key": "type",
+                          "kind": "event_match",
+                          "pattern": "m.room.message"
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".m.rule.room_one_to_one"
+                    },
+                    {
+                      "actions": [
+                        "notify"
+                      ],
+                      "conditions": [
+                        {
+                          "key": "type",
+                          "kind": "event_match",
+                          "pattern": "m.room.message"
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".m.rule.message"
+                    },
+                    {
+                      "actions": [
+                        "notify"
+                      ],
+                      "conditions": [
+                        {
+                          "key": "type",
+                          "kind": "event_match",
+                          "pattern": "m.room.encrypted"
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".m.rule.encrypted"
+                    },
+                    {
+                      "actions": [
+                        "notify",
+                        {
+                          "set_tweak": "sound",
+                          "value": "default"
+                        }
+                      ],
+                      "conditions": [
+                        {
+                          "is": "2",
+                          "kind": "room_member_count"
+                        },
+                        {
+                          "key": "type",
+                          "kind": "event_property_is",
+                          "value": "org.matrix.msc3381.poll.start"
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".org.matrix.msc3930.rule.poll_start_one_to_one"
+                    },
+                    {
+                      "actions": [
+                        "notify"
+                      ],
+                      "conditions": [
+                        {
+                          "key": "type",
+                          "kind": "event_property_is",
+                          "value": "org.matrix.msc3381.poll.start"
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".org.matrix.msc3930.rule.poll_start"
+                    },
+                    {
+                      "actions": [
+                        "notify",
+                        {
+                          "set_tweak": "sound",
+                          "value": "default"
+                        }
+                      ],
+                      "conditions": [
+                        {
+                          "is": "2",
+                          "kind": "room_member_count"
+                        },
+                        {
+                          "key": "type",
+                          "kind": "event_property_is",
+                          "value": "org.matrix.msc3381.poll.end"
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".org.matrix.msc3930.rule.poll_end_one_to_one"
+                    },
+                    {
+                      "actions": [
+                        "notify"
+                      ],
+                      "conditions": [
+                        {
+                          "key": "type",
+                          "kind": "event_property_is",
+                          "value": "org.matrix.msc3381.poll.end"
+                        }
+                      ],
+                      "default": true,
+                      "enabled": true,
+                      "rule_id": ".org.matrix.msc3930.rule.poll_end"
+                    }
+                  ]
+                }
+              },
+              "type": "m.push_rules"
+            }
+          ]
+        },
+        "device_unused_fallback_key_types": []
+      }
+    },
+    {
+      "after": "0",
+      "response": {
+        "next_batch": "165",
+        "rooms": {
+          "join": {
+            "!room1:example.test": {
+              "summary": {
+                "m.joined_member_count": 3,
+                "m.invited_member_count": 0
+              },
+              "unread_notifications": {
+                "highlight_count": 0,
+                "notification_count": 1
+              },
+              "timeline": {
+                "prev_batch": "163",
+                "events": [
+                  {
+                    "content": {
+                      "body": "golden: the build is red",
+                      "msgtype": "m.text"
+                    },
+                    "event_id": "$ev1",
+                    "origin_server_ts": 1700000000016,
+                    "sender": "@alice:example.test",
+                    "type": "m.room.message",
+                    "unsigned": {
+                      "age": 2,
+                      "membership": "join"
+                    }
+                  }
+                ]
+              },
+              "state": {
+                "events": [
+                  {
+                    "content": {
+                      "displayname": "Alice Chen",
+                      "membership": "join"
+                    },
+                    "event_id": "$ev13",
+                    "origin_server_ts": 1700000000010,
+                    "sender": "@alice:example.test",
+                    "state_key": "@alice:example.test",
+                    "type": "m.room.member",
+                    "unsigned": {
+                      "prev_content": {
+                        "displayname": "Alice Chen",
+                        "is_direct": false,
+                        "membership": "invite"
+                      },
+                      "prev_sender": "@quinn:example.test",
+                      "replaces_state": "$ev11"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "device_unused_fallback_key_types": []
+      }
+    },
+    {
+      "after": "1",
+      "response": {
+        "next_batch": "170",
+        "rooms": {
+          "join": {
+            "!room1:example.test": {
+              "summary": {
+                "m.joined_member_count": 3,
+                "m.invited_member_count": 0
+              },
+              "unread_notifications": {
+                "highlight_count": 0,
+                "notification_count": 1
+              },
+              "timeline": {
+                "prev_batch": "168",
+                "events": [
+                  {
+                    "content": {
+                      "body": "* golden: the build is green again",
+                      "m.new_content": {
+                        "body": "golden: the build is green again",
+                        "msgtype": "m.text"
+                      },
+                      "m.relates_to": {
+                        "event_id": "$ev1",
+                        "rel_type": "m.replace"
+                      },
+                      "msgtype": "m.text"
+                    },
+                    "event_id": "$ev2",
+                    "origin_server_ts": 1700000000020,
+                    "sender": "@alice:example.test",
+                    "type": "m.room.message",
+                    "unsigned": {
+                      "age": 1,
+                      "membership": "join"
+                    }
+                  }
+                ]
+              },
+              "state": {
+                "events": [
+                  {
+                    "content": {
+                      "displayname": "Alice Chen",
+                      "membership": "join"
+                    },
+                    "event_id": "$ev13",
+                    "origin_server_ts": 1700000000010,
+                    "sender": "@alice:example.test",
+                    "state_key": "@alice:example.test",
+                    "type": "m.room.member",
+                    "unsigned": {
+                      "prev_content": {
+                        "displayname": "Alice Chen",
+                        "is_direct": false,
+                        "membership": "invite"
+                      },
+                      "prev_sender": "@quinn:example.test",
+                      "replaces_state": "$ev11"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "device_unused_fallback_key_types": []
+      }
+    },
+    {
+      "after": "2",
+      "response": {
+        "next_batch": "175",
+        "rooms": {
+          "join": {
+            "!room1:example.test": {
+              "unread_notifications": {
+                "highlight_count": 0,
+                "notification_count": 0
+              },
+              "timeline": {
+                "prev_batch": "173",
+                "events": [
+                  {
+                    "content": {
+                      "body": "golden: nice, thanks",
+                      "m.relates_to": {
+                        "m.in_reply_to": {
+                          "event_id": "$ev1"
+                        }
+                      },
+                      "msgtype": "m.text"
+                    },
+                    "event_id": "$ev3",
+                    "origin_server_ts": 1700000000023,
+                    "sender": "@quinn:example.test",
+                    "type": "m.room.message",
+                    "unsigned": {
+                      "age": 2,
+                      "membership": "join",
+                      "transaction_id": "dcmwzt7cjsj12u.1"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "device_unused_fallback_key_types": []
+      }
+    }
+  ]
+}

@@ -327,6 +327,11 @@ The integration harness logs in as a fresh quinn device (logged out again at the
 test messages to "Notes to self" and the `#dev` thread, redacting them afterwards. Its encryption half
 (`test/integration-e2ee.ts`) makes a new encrypted room each run and leaves it again, and replaces quinn's cross-signing keys and backup on the testbed.
 
+`test/golden/` holds real `/sync` responses from a fresh continuwuity, anonymized, one file per scenario (send → edit →
+edit, send → edit → react → unreact, send → edit → reply, send → edit → redact). `test/golden-replay.test.ts` replays
+them through the adapter with no server. `bun scripts/capture-fixtures.ts matrix-golden` captures them again
+(docs/golden-traces.md).
+
 ## Not done yet
 
 - State changes (joins, renames) are not rendered as system messages.

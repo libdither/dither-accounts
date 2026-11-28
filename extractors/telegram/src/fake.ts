@@ -120,6 +120,8 @@ interface WChat {
   reactions?: 'all' | 'none' | string[];
   /** Its members may not add people (the default banned rights); admins still may. */
   inviteBanned?: boolean;
+  /** A basic group upgraded to a supergroup: the channel it became (it is deactivated from then on). */
+  migratedTo?: number;
 }
 interface WMedia {
   kind: 'photo' | 'document';
@@ -157,7 +159,7 @@ interface WMsg {
   /** When each person last reacted (seconds), as Telegram dates a messagePeerReaction; the message's date when unset. */
   reactedAt?: Record<number, number>;
   counts?: Record<string, number>;
-  service?: { kind: 'chatCreate' | 'topicCreate' | 'topicEdit' | 'editTitle' | 'pin' | 'addUser'; title?: string; users?: number[] };
+  service?: { kind: 'chatCreate' | 'topicCreate' | 'topicEdit' | 'editTitle' | 'pin' | 'addUser' | 'migrateTo' | 'migrateFrom'; title?: string; users?: number[]; channel?: number; chat?: number };
   fwd?: { fromName?: string; from?: number; date: number; channel?: number; post?: number };
   grouped?: string;
   pinned?: boolean;
@@ -514,6 +516,25 @@ export class FakeTelegram implements TgBackend {
         this.push(this.isChannel(c.peer) ? { _: 'updatePinnedChannelMessages', channelId: idOf(c.peer), messages: [m.id], pinned: !!c.pinned, pts: ++this.world.pts, ptsCount: 1 } : { _: 'updatePinnedMessages', peer: this.tlPeer(c.peer), messages: [m.id], pinned: !!c.pinned, pts: ++this.world.pts, ptsCount: 1 });
         return {};
       }
+      case 'migrate': {
+        // A basic group upgraded to a supergroup (messages.migrateChat), as Telegram tells its members: the group's
+        // last message (messageActionChatMigrateTo) and the supergroup's first (messageActionChannelMigrateFrom), with
+        // the group deactivated and pointing at the channel. The old group stays in the dialogs, as Telegram lists it.
+        const g = this.chat(c.chat);
+        if (g.kind !== 'chat' || g.migratedTo) throw new FakeRpcError(400, 'CHAT_ID_INVALID');
+        const id = Number(c.channel ?? 1_700_000_100 + g.id % 1000);
+        this.world.chats.push({ id, kind: 'channel', hash: hashOf(), title: g.title, members: [...g.members], admins: [...g.admins], creator: g.creator, invite: null, nextId: 2 });
+        g.migratedTo = id;
+        const by = Number(c.by ?? g.creator);
+        const from: WMsg = { id: this.nextId(`chat:${g.id}`), from: by, date: now(), text: '', service: { kind: 'migrateTo', channel: id } };
+        const into: WMsg = { id: 1, from: by, date: now(), text: '', service: { kind: 'migrateFrom', title: g.title, chat: g.id } };
+        this.list(`chat:${g.id}`).push(from);
+        this.list(`channel:${id}`).push(into);
+        this.save();
+        this.push(this.newMessageUpdate(`chat:${g.id}`, from), undefined, [by]);
+        this.push(this.newMessageUpdate(`channel:${id}`, into), undefined, [by]);
+        return { channel: id, from: from.id };
+      }
       case 'rename': {
         const ch = this.chat(idOf(c.peer));
         ch.title = c.title;
@@ -853,6 +874,7 @@ export class FakeTelegram implements TgBackend {
         ...(c.creator === self ? { creator: true } : {}),
         ...(isAdmin ? { adminRights: rights } : {}),
         defaultBannedRights: banned,
+        ...(c.migratedTo ? { deactivated: true, migratedTo: { _: 'inputChannel', channelId: c.migratedTo, accessHash: Long.fromString(this.chat(c.migratedTo).hash!) } } : {}),
       } as tl.TypeChat;
     }
     return {
@@ -941,7 +963,11 @@ export class FakeTelegram implements TgBackend {
                 ? { _: 'messageActionChatEditTitle', title: m.service.title ?? '' }
                 : m.service.kind === 'addUser'
                   ? { _: 'messageActionChatAddUser', users: m.service.users ?? [] }
-                  : { _: 'messageActionPinMessage' };
+                  : m.service.kind === 'migrateTo'
+                    ? { _: 'messageActionChatMigrateTo', channelId: m.service.channel ?? 0 }
+                    : m.service.kind === 'migrateFrom'
+                      ? { _: 'messageActionChannelMigrateFrom', title: m.service.title ?? '', chatId: m.service.chat ?? 0 }
+                      : { _: 'messageActionPinMessage' };
       return { _: 'messageService', ...base, action } as tl.TypeMessage;
     }
     const mentioned = (m.entities ?? []).some((e) => e._ === 'messageEntityMentionName' && Number(e.userId) === self) || (m.replyTo !== undefined && this.list(peer).find((x) => x.id === m.replyTo)?.from === self);

@@ -14,7 +14,7 @@
  */
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { MemoryAuthKeysRepository, MemoryStorage, MemoryStorageDriver, MtTimeoutError, SqliteStorage, TelegramClient, type tl } from '@mtcute/bun';
+import { Long, MemoryAuthKeysRepository, MemoryStorage, MemoryStorageDriver, MtTimeoutError, SqliteStorage, TelegramClient, type tl } from '@mtcute/bun';
 import type { InitConnection } from './profile.ts';
 import type { BackendInfo, ConnState, DeskClient, DesktopKey, QrHandlers, SentCode, TgBackend, UpdateInfo, UploadSpec } from './backend.ts';
 
@@ -286,4 +286,17 @@ export class MtcuteDeskClient implements DeskClient {
   async close(): Promise<void> {
     await this.client.destroy().catch(() => {});
   }
+}
+
+// ---------------------------------------------------------------- a bare client, for the Test DC parity runner
+
+export { Long, TelegramClient };
+
+/**
+ * A plain mtcute client: the other person, and the network's own view, in the Test DC parity runner
+ * (test/chat-parity/telegram-testdc-oracle.ts). Nothing of this extractor's mapping runs on it. In memory unless given
+ * a path for its state.
+ */
+export function bareClient(o: { apiId: number; apiHash: string; testMode: boolean; storagePath?: string; logLevel?: number }): TelegramClient {
+  return new TelegramClient({ apiId: o.apiId, apiHash: o.apiHash, storage: o.storagePath ? new SqliteStorage(o.storagePath) : new MemoryStorage(), testMode: o.testMode, logLevel: o.logLevel ?? 1 });
 }

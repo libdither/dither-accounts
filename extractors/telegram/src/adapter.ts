@@ -106,6 +106,8 @@ export interface AdapterOptions {
    * within `gapMs` (60 s) of the last such read.
    */
   relations?: { everyMs?: number; soonMs?: number; gapMs?: number };
+  /** Message ids placed for Telegram's id-only deletes (state.ts MSG_CONV_MAX); tests lower it. */
+  msgConvMax?: number;
 }
 
 /** Telegram Desktop's own app (profile.ts says when a session uses it, and how it then describes itself). */
@@ -164,6 +166,8 @@ export class TelegramAdapter {
   private snapshotCount = 0;
   private lastUpdateAt = 0;
   private code: { phone: string; hash: string; sent: SentCode } | null = null;
+  /** Deletes Telegram named by an id too old to place (updateDeleteMessages): see handleUpdate. */
+  private deletesUnplaced = 0;
   private passwordWait: Pending<string> | null = null;
   private passwordRound: Pending<unknown> | null = null;
   private passwordHint: string | null = null;
@@ -256,7 +260,7 @@ export class TelegramAdapter {
       secret: () => host.secret(),
       saveSecret: (v) => host.saveSecret(v),
     };
-    this.state = new State(host.accountDir);
+    this.state = new State(host.accountDir, opts.msgConvMax);
     this.pacer = new Pacer({ ...opts.pacer, onFlood: (m, s) => this.onFlood(m, s) });
   }
 
@@ -472,6 +476,7 @@ export class TelegramAdapter {
       d.blocked = this.relationsKnown ? this.blockedIds.size : null;
     }
     if (this.lastUpdateAt) d.lastUpdate = new Date(this.lastUpdateAt).toISOString();
+    if (this.deletesUnplaced) d.deletesUnplaced = this.deletesUnplaced;
     Object.assign(d, this.drift.details());
     const waits = Object.entries(held);
     d.floodWait = waits.length ? waits.map(([m, s]) => `${m} ${s} s`).join(', ') : null;
@@ -937,6 +942,7 @@ export class TelegramAdapter {
           chats: this.state.dialogs.size,
           held: this.pacer.held(),
           floods: this.pacer.floods,
+          deletesUnplaced: this.deletesUnplaced,
           ...(this.opts.desktop ? { desktop: this.opts.desktop.session.details(), session: this.shared ? 'shared' : this.host.secret().session ? 'own' : 'none', importNote: this.importNote } : {}),
         };
       case 'approveLogin':
@@ -1395,6 +1401,11 @@ export class TelegramAdapter {
           const peer = peerOf(d.peer);
           const top = tops.get(`${peerKeyOf(d.peer)}#${d.topMessage}`);
           const info = peer.kind === 'user' ? { user: this.users.get(peer.id) } : { chat: this.chats.get(peer.id) };
+          // An upgraded basic group Telegram still lists: the supergroup it became is the conversation now.
+          if (migrated(info.chat)) {
+            this.leave(convId(self, peer));
+            continue;
+          }
           const f = conversationOf(this.ctx, peer, info, d, top && top._ !== 'messageEmpty' ? top.date : undefined);
           this.sendConversation(f);
           if (peer.kind === 'channel' && this.state.forums.has(peer.id)) forums.push(peer.id);
@@ -1465,6 +1476,13 @@ export class TelegramAdapter {
   private emitMessage(m: tl.TypeMessage, live: boolean): P.MessageFact | null {
     const f = messageFact(this.ctx, m);
     if (!f || m._ === 'messageEmpty') return null;
+    if (live && m.peerId._ === 'peerChat' && migrated(this.chats.get(Number(m.peerId.chatId)))) {
+      // A basic group upgraded to a supergroup (docs/telegram.md, "Upgraded groups"): it was left when its chat came
+      // deactivated (ingest), and a message now would bring it back to the hub. Its last one says it was upgraded,
+      // which the supergroup's first (messageActionChannelMigrateFrom) says too; the snapshot reads the supergroup.
+      if (m._ === 'messageService' && m.action._ === 'messageActionChatMigrateTo') this.snapshotSoon();
+      return null;
+    }
     if (live) this.newChat(m);
     this.remember(f, !!m.out);
     this.watchPreview(m, f);
@@ -1478,7 +1496,6 @@ export class TelegramAdapter {
         const peer = peerOf(m.peerId);
         this.sendConversation({ ...(known ?? { nativeId: f.conversation, shape: 'thread', variant: 'text', parentConversation: convId(this.selfId, peer), encrypted: false }), name: title });
       }
-      if (a._ === 'messageActionChatMigrateTo') this.snapshotSoon();
     }
     return f;
   }
@@ -1493,7 +1510,7 @@ export class TelegramAdapter {
     const conv = convId(this.selfId, peer);
     if (this.convFacts.has(conv) || this.state.dialogs.has(conv)) return;
     const chat = peer.kind === 'user' ? undefined : this.chats.get(peer.id);
-    if (chat && (chat._ === 'chatForbidden' || chat._ === 'channelForbidden' || ((chat._ === 'chat' || chat._ === 'channel') && chat.left))) return;
+    if (chat && (chat._ === 'chatForbidden' || chat._ === 'channelForbidden' || ((chat._ === 'chat' || chat._ === 'channel') && chat.left) || migrated(chat))) return;
     this.sendConversation(conversationOf(this.ctx, peer, peer.kind === 'user' ? { user: this.users.get(peer.id) } : { chat }, undefined, m.date));
   }
 
@@ -1628,7 +1645,13 @@ export class TelegramAdapter {
       case 'updateDeleteMessages':
         for (const id of upd.messages) {
           const conv = this.state.msgConv.get(id);
-          if (!conv) continue;
+          if (!conv) {
+            // Telegram names only the id, and ids in private chats and basic groups are the account's own, across all
+            // of them: one too old to be placed any more (MSG_CONV_MAX) cannot be told apart from any other chat's.
+            // Nothing is guessed; the count shows on the account's page.
+            this.deletesUnplaced++;
+            continue;
+          }
           this.state.msgConv.delete(id);
           this.host.emit({ t: 'delete', conversation: this.recent.get(msgId(conv, id))?.conversation ?? conv, nativeId: msgId(conv, id) });
         }
@@ -3808,6 +3831,11 @@ export function locationOf(media: tl.TypeMessageMedia): { location: tl.TypeInput
     return { location: { _: 'inputDocumentFileLocation', id: d.id, accessHash: d.accessHash, fileReference: d.fileReference, thumbSize: '' }, dcId: d.dcId, size: Number(d.size), mime: d.mimeType };
   }
   return null;
+}
+
+/** A basic group upgraded to a supergroup: deactivated, with migratedTo naming the channel it became. */
+export function migrated(c: tl.TypeChat | undefined): boolean {
+  return c?._ === 'chat' && !!c.deactivated && !!c.migratedTo;
 }
 
 function codeMessage(sent: SentCode, phone: string): string {

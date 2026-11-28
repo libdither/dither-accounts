@@ -319,6 +319,20 @@ Events: `message` (live, and `live: false` for the snapshot and history), `delet
 own unread and mention counts), `receipt` (read, in private chats: Telegram says who only there), `typing` (6 s, as
 Telegram's apps), `pin`, `role` (admins given and taken), `presence` (below), `identity`, `conversation`, `leave`.
 
+**Deletes in private chats and basic groups.** Telegram's `updateDeleteMessages` names message ids only, and those ids
+are the account's own across all its private chats and basic groups. The extractor keeps the last 20 000 it has seen
+and the chat of each (`msgConv` in state.json; one seen again, by an edit, counts as new). A delete of an older one
+cannot be placed and is not guessed: nothing is sent, and the account's details count it (`deletesUnplaced`, also
+in the `status` action). Supergroups and channels name the channel with each delete, so they always place.
+
+**Upgraded groups.** A basic group upgraded to a supergroup (`messages.migrateChat`) becomes a new conversation,
+`channel:<id>`, with its own message ids. The old `group:` one is left (`leave`) when Telegram says it is deactivated,
+and stays left: the old group's last message ("upgraded this group to a supergroup") is not sent, as it would bring
+the group back to the hub, and the snapshot passes over the old group, which Telegram still lists. The supergroup
+arrives with its first message ("this supergroup was upgraded from the group …") and a snapshot two seconds later.
+The hub is not told the two are one chat (the protocol has no way to say so yet): it drops the old group as it drops
+any chat the account left.
+
 `presence`, for dither-chat's status dots: online or offline, for contacts and people with a DM only, never a stranger
 met in a group (`src/presence.ts`). From what Telegram sends every client anyway, so nothing is asked for: the
 `status` on the users it hands over, and `updateUserStatus`. Telegram says online until a time and sends offline when
@@ -541,3 +555,39 @@ SMS. A test account has to exist first (sign-up is for official apps), e.g. from
 Alt+Shift and right-click **Add Account**, then **Test Server**) with such a number. Then add a Telegram account here
 with "Telegram's test servers" set to `yes`, and sign in by phone: `sendCode {"phone": "+99966XYYYY"}`, `signIn {"code":
 "XXXXX"}`. Test accounts are wiped from time to time; nothing there touches your real account.
+
+### Test DC parity testing
+
+The composition parity suite (`test/chat-parity/scenarios.ts`: send, edit twice, react and take it back, reply, delete,
+pin, a file, each sequence by your account and by the other person) runs against Telegram's test DC too, free and with
+no SIM or SMS: all it needs is an api_id and api_hash (https://my.telegram.org, "API development tools").
+
+```sh
+TELEGRAM_API_ID=… TELEGRAM_API_HASH=… bun scripts/parity-telegram-testdc.ts --state-dir ~/.cache/tg-parity
+bun scripts/parity-telegram-testdc.ts --creds-file <file> --dc 2 --chat group --only "pin" --capture /tmp/tg-traces --keep
+```
+
+Two test accounts (`+99966<dc><4 digits>`, login code the DC's digit five times) face each other: A is this
+extractor, in process on a fresh account directory with `testDc` on, signed in by `sendCode` and `signIn` as the
+manager would; B is a bare mtcute client (`bareClient` in `src/mtcute.ts`), the other person and the oracle. After each
+step the extractor's events, folded as dither-chat's hub folds them, must equal what B reads back from Telegram
+(`channels.getMessages` or `messages.getMessages`, `messages.getMessageReactionsList`), mapped by
+`normalizeTelegramHistory` (`test/chat-parity/telegram-testdc-oracle.ts`), which shares nothing with `src/mapping.ts`.
+A failure names each difference.
+
+- `--chat group` runs in a supergroup B makes for the run (and deletes after, unless `--keep`), A invited and made an
+  admin who may pin; `--chat dm` in their private chat, where each side has its own message ids (matched once, by a
+  mark at the end of each text) and deletes take the id-only path above. `both` (the default) runs each.
+- The test DC's numbers are shared by everyone who uses it, so one may already have a password: the runner passes
+  over it, and over one the test DC will not sign up, and tries the next of a list fixed by the state dir.
+  `--state-dir` keeps the two sessions (0700, files 0600) so later runs sign in once; delete its `sessions.json`
+  to start over. The test DC wipes accounts from time to time.
+- `--capture <dir>` writes each run's commands and events through `scrubTrace` (`packages/manager/src/wire-capture.ts`):
+  ids, numbers, times and text swapped for synthetic ones, and the leak sweep run on the result. They are traces of
+  invented test accounts, but stay out of the repo all the same unless reviewed.
+- The credentials are read from the environment or the file only, and are never logged or written anywhere.
+
+Offline, in CI: `test/chat-parity/telegram-testdc.test.ts` checks the numbers and codes, the normalizer (edits,
+reactions, replies, pins, deletes, files) and that it names a disagreement, runs the whole matrix with the normalizer
+as the oracle over the fake Telegram's own TL, and covers the two edge cases above (deletes past the 20 000, an upgraded
+group) with the fake's `migrate {chat, by?, channel?}` op.

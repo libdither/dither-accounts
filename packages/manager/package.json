@@ -7,7 +7,8 @@
     ".": "./src/index.ts",
     "./kinds": "./src/kinds.ts",
     "./errors": "./src/errors.ts",
-    "./api-types": "./src/api-types.ts"
+    "./api-types": "./src/api-types.ts",
+    "./wire-capture": "./src/wire-capture.ts"
   },
   "dependencies": {
     "@dither-accounts/spec": "workspace:*",

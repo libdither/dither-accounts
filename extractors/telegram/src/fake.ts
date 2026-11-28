@@ -450,6 +450,10 @@ export class FakeTelegram implements TgBackend {
         this.world.hint = c.hint ?? null;
         this.save();
         return {};
+      case 'rawUpdate':
+        // Tests: an update as given, such as one the adapter does not map (schema drift).
+        this.push(c.update);
+        return {};
       case 'incoming':
         return this.incoming(c.peer, c.from, c.text, { topic: c.topic, replyTo: c.replyTo, entities: c.entities });
       case 'pageReady': {

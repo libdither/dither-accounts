@@ -71,7 +71,10 @@ export interface MapContext {
   signalDir: string;
   /** Conversation of a message we have seen, for read syncs and receipts (which carry no conversation). */
   conversationOf?: (messageNativeId: string) => string | undefined;
-  /** The message an edit's own id stands for: receipts name the newest version by its timestamp. */
+  /**
+   * The message an edit's own id stands for. Signal names an edited message by its newest version's timestamp (in
+   * receipts, reactions, quotes, deletes, pins and the next edit), so every such reference goes through this.
+   */
   originalOf?: (messageNativeId: string) => string | undefined;
   /** Resolve a phone number to an ACI (sync transcripts to number-only recipients). */
   aciOfNumber?: (number: string) => string | undefined;
@@ -387,6 +390,15 @@ export function adminChanges(before: SigGroup, after: SigGroup): { given: string
 
 // ------------------------------------------------------------------ envelopes
 
+/** The message a Signal reference names: the one an edit's own id stands for, else itself. */
+export const resolveId = (ctx: Pick<MapContext, 'originalOf'>, id: string) => ctx.originalOf?.(id) ?? id;
+
+/** resolveId on `<author>:<ts>`, with the original's timestamp: where an edit lands (an edit of an edit included). */
+function resolveMsg(ctx: MapContext, author: string, ts: number): { id: string; ts: number } {
+  const id = resolveId(ctx, msgId(author, ts));
+  return { id, ts: parseMsgId(id)?.ts ?? ts };
+}
+
 interface Build {
   ctx: MapContext;
   out: MapResult;
@@ -426,7 +438,9 @@ export function mapReceive(rcv: SigReceive, ctx: MapContext): MapResult {
   if (env.editMessage?.dataMessage) {
     const dm = env.editMessage.dataMessage;
     const conv = conversationFor(b, dm, fromSelf ? ctx.self : source, fromSelf);
-    emitMessage(b, dm, { author: source, conversation: conv, ts: env.editMessage.targetSentTimestamp, editedTs: dm.timestamp });
+    // The second edit names the first by its timestamp, and so on: each lands on the message they all edit.
+    const { ts } = resolveMsg(ctx, source, env.editMessage.targetSentTimestamp);
+    emitMessage(b, dm, { author: source, conversation: conv, ts, editedTs: dm.timestamp });
   }
   if (env.syncMessage) sync(b, env);
   if (env.storyMessage && !fromSelf) story(b, env.storyMessage, source, env.timestamp);
@@ -534,7 +548,7 @@ function dataCommon(b: Build, dm: Partial<SigDataMessage>, author: string, conve
       out.events.push({
         t: 'reaction',
         conversation,
-        message: msgId(target, dm.reaction.targetSentTimestamp),
+        message: resolveId(ctx, msgId(target, dm.reaction.targetSentTimestamp)),
         author,
         key: dm.reaction.emoji,
         ...(dm.reaction.isRemove ? { remove: true } : {}),
@@ -545,12 +559,12 @@ function dataCommon(b: Build, dm: Partial<SigDataMessage>, author: string, conve
     return;
   }
   if (dm.remoteDelete) {
-    out.events.push({ t: 'delete', conversation, nativeId: msgId(author, dm.remoteDelete.timestamp) });
+    out.events.push({ t: 'delete', conversation, nativeId: resolveId(ctx, msgId(author, dm.remoteDelete.timestamp)) });
     return;
   }
   if (dm.adminDelete) {
     const target = lc(dm.adminDelete.targetAuthorUuid);
-    if (target) out.events.push({ t: 'delete', conversation, nativeId: msgId(target, dm.adminDelete.targetSentTimestamp) });
+    if (target) out.events.push({ t: 'delete', conversation, nativeId: resolveId(ctx, msgId(target, dm.adminDelete.targetSentTimestamp)) });
     return;
   }
   if (dm.pollVote) {
@@ -559,7 +573,7 @@ function dataCommon(b: Build, dm: Partial<SigDataMessage>, author: string, conve
     const pollAuthor = lc(v.authorUuid) ?? (v.authorNumber ? (ctx.aciOfNumber?.(v.authorNumber) ?? null) : null);
     if (pollAuthor && typeof v.targetSentTimestamp === 'number') {
       const options = [...new Set((v.optionIndexes ?? []).filter((i) => Number.isInteger(i) && i >= 0).map(String))];
-      out.events.push({ t: 'pollUpdate', conversation, message: msgId(pollAuthor, v.targetSentTimestamp), vote: { voter: author, options, seq: v.voteCount ?? 0, ...(ts ? { ts } : {}) } });
+      out.events.push({ t: 'pollUpdate', conversation, message: resolveId(ctx, msgId(pollAuthor, v.targetSentTimestamp)), vote: { voter: author, options, seq: v.voteCount ?? 0, ...(ts ? { ts } : {}) } });
     }
     return;
   }
@@ -567,7 +581,7 @@ function dataCommon(b: Build, dm: Partial<SigDataMessage>, author: string, conve
   if (dm.pinMessage || dm.unpinMessage) {
     const p = (dm.pinMessage ?? dm.unpinMessage)!;
     const target = lc(p.targetAuthorUuid) ?? (p.targetAuthorNumber ? (ctx.aciOfNumber?.(p.targetAuthorNumber) ?? null) : null);
-    const message = target ? msgId(target, p.targetSentTimestamp) : undefined;
+    const message = target ? resolveId(ctx, msgId(target, p.targetSentTimestamp)) : undefined;
     systemMessage(b, author, conversation, ts, `${who} ${dm.pinMessage ? 'pinned' : 'unpinned'} a message.`, message ? { replyTo: message } : {});
     if (message) {
       out.events.push({ t: 'pin', conversation, message, pinned: !!dm.pinMessage, by: author, ...(ts ? { ts } : {}) });
@@ -579,7 +593,7 @@ function dataCommon(b: Build, dm: Partial<SigDataMessage>, author: string, conve
   }
   if (dm.pollTerminate) {
     // Only its author ends a poll, so the poll is theirs.
-    const poll = msgId(author, dm.pollTerminate.targetSentTimestamp);
+    const poll = resolveId(ctx, msgId(author, dm.pollTerminate.targetSentTimestamp));
     systemMessage(b, author, conversation, ts, `${who} ended the poll.`, { replyTo: poll });
     out.events.push({ t: 'pollUpdate', conversation, message: poll, ended: true, ...(ts ? { ts } : {}) });
     return;
@@ -709,7 +723,7 @@ function emitMessage(b: Build, dm: Partial<SigDataMessage>, o: { author: string;
   const q = dm.quote;
   if (q) {
     const qa = lc(q.authorUuid) ?? (q.authorNumber ? (ctx.aciOfNumber?.(q.authorNumber) ?? null) : null);
-    if (qa) fact.replyTo = msgId(qa, q.id);
+    if (qa) fact.replyTo = resolveId(ctx, msgId(qa, q.id));
     // Linked devices have no history, so the quoted message is often unknown to the hub.
     extra.quote = {
       author: qa ?? q.authorNumber ?? q.author ?? null,
@@ -794,7 +808,7 @@ function receipts(b: Build, env: SigEnvelope, source: string) {
       unknown++;
       continue;
     }
-    (byConversation.get(conversation) ?? byConversation.set(conversation, new Set()).get(conversation)!).add(ctx.originalOf?.(id) ?? id);
+    (byConversation.get(conversation) ?? byConversation.set(conversation, new Set()).get(conversation)!).add(resolveId(ctx, id));
   }
   if (unknown) out.logs.push({ level: 'debug', msg: `${state} receipt for ${unknown} message(s) we have not seen`, data: { from: source } });
   for (const [conversation, ids] of byConversation) out.events.push({ t: 'receipt', conversation, messages: [...ids], who: source, state, ts: r.when || env.timestamp });
@@ -852,12 +866,14 @@ function sync(b: Build, env: SigEnvelope) {
     for (const r of s.readMessages) {
       const sender = lc(r.senderUuid) ?? (r.senderNumber ? (ctx.aciOfNumber?.(r.senderNumber) ?? null) : null);
       if (!sender) continue;
-      const conv = ctx.conversationOf?.(msgId(sender, r.timestamp));
+      // An edited message is read by its newest version's timestamp; it stands where it was first sent.
+      const { id, ts } = resolveMsg(ctx, sender, r.timestamp);
+      const conv = ctx.conversationOf?.(id) ?? ctx.conversationOf?.(msgId(sender, r.timestamp));
       if (!conv) {
         out.logs.push({ level: 'debug', msg: 'read sync for a message we have not seen', data: { sender, ts: r.timestamp } });
         continue;
       }
-      upTo.set(conv, Math.max(upTo.get(conv) ?? 0, r.timestamp));
+      upTo.set(conv, Math.max(upTo.get(conv) ?? 0, ts));
     }
     for (const [conversation, ts] of upTo) out.events.push({ t: 'read', conversation, upToTs: ts });
   }
@@ -875,7 +891,8 @@ function sentTranscript(b: Build, sent: SigSentMessage) {
     const dm = sent.editMessage.dataMessage;
     if (!groupOf(dm) && !peer) return void out.logs.push({ level: 'warn', msg: 'edit transcript without a resolvable recipient', data: { number: sent.destinationNumber } });
     const conversation = conversationFor(b, dm, peer ?? self, true);
-    emitMessage(b, dm, { author: self, conversation, ts: sent.editMessage.targetSentTimestamp, editedTs: dm.timestamp });
+    const { ts } = resolveMsg(ctx, self, sent.editMessage.targetSentTimestamp);
+    emitMessage(b, dm, { author: self, conversation, ts, editedTs: dm.timestamp });
     return;
   }
   if (sent.timestamp == null) return;

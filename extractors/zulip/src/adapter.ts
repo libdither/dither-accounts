@@ -24,6 +24,8 @@ import { NOTIFY_DEFAULTS, State, type NotifySettings, type TopicInfo, type ZMess
 import { apply, fold, pollCommand, pollFact, todoBody, voteChanges, type Submessage } from './widgets.ts';
 import * as about from './about.ts';
 import { Receipts, START_WINDOW_MS } from './receipts.ts';
+import { SchemaWatch } from '@dither-accounts/manager/schema-drift';
+import { watchEvent, watchMessage } from './drift.ts';
 
 /** A channel's subscription properties its topics' facts say too (topicNotify). */
 const TOPIC_PROPS = new Set(['is_muted', 'in_home_view', 'desktop_notifications', 'push_notifications', 'audible_notifications', 'wildcard_mentions_notify']);
@@ -116,6 +118,8 @@ export class ZulipAdapter {
   private presencePolling = false;
   private eventsHeard = 0;
   private searches = new Map<string, number[]>();
+  /** Event types, ops and message keys this extractor does not know (drift.ts): names and counts only. */
+  readonly drift = new SchemaWatch({ log: (level, msg) => this.link?.log(level, msg) });
 
   constructor(private fetchImpl: typeof fetch = fetch) {}
 
@@ -171,7 +175,7 @@ export class ZulipAdapter {
       status: this.phase === 'online' ? 'online' : this.phase === 'signin' ? 'attention' : this.phase === 'unreachable' ? 'error' : 'connecting',
       attention: this.phase === 'signin' ? { kind: 'login', message: this.problem ?? 'Sign in again: set a new API key or password on the account.' } : null,
       ...(self ? { self: this.identity(self) } : {}),
-      details: { server: host, version: this.st.version || null, featureLevel: this.st.featureLevel || null, requests: this.api.requests, ...(this.api.remaining !== null ? { rateRemaining: this.api.remaining } : {}) },
+      details: { server: host, version: this.st.version || null, featureLevel: this.st.featureLevel || null, requests: this.api.requests, ...(this.api.remaining !== null ? { rateRemaining: this.api.remaining } : {}), ...this.drift.details() },
       layers,
     });
   }
@@ -431,6 +435,7 @@ export class ZulipAdapter {
         this.queue.last = Math.max(this.queue.last, ev.id);
         if (ev.type === 'heartbeat') continue;
         this.eventsHeard++;
+        watchEvent(this.drift, ev);
         try {
           await this.event(ev);
         } catch (e) {
@@ -1194,6 +1199,7 @@ export class ZulipAdapter {
   /** A message as facts: its conversation (and topic, channel, people) first, then the message. */
   emitMessage(m: ZMessage, o: { live: boolean; late?: boolean; moved?: boolean }) {
     const st = this.st;
+    watchMessage(this.drift, m);
     st.remember(m);
     // An unread mention from `/register` read now: its flags say whether it was only a wildcard.
     if (m.flags && st.unreadMentions.has(m.id)) this.noteWildcard(m.id, m.flags);

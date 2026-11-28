@@ -10,6 +10,8 @@
  */
 
 import type * as P from '@dither-chat/protocol';
+import type { SchemaWatch } from '@dither-accounts/manager/schema-drift';
+import { watchMessage } from './drift.ts';
 import type { DispatchName, RawAddRecipients, RawChannel, RawCustomStatus, RawGuild, RawGuildSettings, RawMembersSeen, RawMessage, RawPresence, RawRecipientChange, RawSeenMember, RawSnapshot, RawUser } from './discord-types.ts';
 import { manyVoteEvents, pollResultEvents, VOTE_REACTION, voteEvents } from './polls.ts';
 import { type Changes, newChanges, pinSystemMessage, pinUpdate, pinsChanged, presenceChanges, roleChanges, sawMessage, statusChanges } from './changes.ts';
@@ -35,6 +37,8 @@ export interface AdapterState {
   relationships: Map<string, P.RelationshipFact>;
   /** Your own roles in each server, by id: a ping to one is a mention of you (rich.ts). Absent: not known yet. */
   selfRoles?: Map<string, string[]>;
+  /** Where message, embed and component types this extractor does not know are counted (drift.ts); names only. */
+  drift?: SchemaWatch;
 }
 
 export function newState(): AdapterState {
@@ -149,6 +153,7 @@ export function addedFacts(channelId: string, r: RawAddRecipients, st: AdapterSt
 
 /** A message and the people it names. Guild members are not in the snapshot, so this is the only place the hub learns their names. */
 export function messageEvents(m: RawMessage, st: AdapterState, live: boolean): P.AdapterEvent[] {
+  if (st.drift) watchMessage(st.drift, m);
   const message = mapMessage(m, st.selfId, { selfRoles: m.guild_id ? st.selfRoles?.get(m.guild_id) : undefined });
   // Pinned already is where a change starts from, not a change.
   if (!live) sawMessage(m, st.changes, false);

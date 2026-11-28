@@ -88,6 +88,39 @@ while the extractors keep running: docs/supervisor.md). So that a resend never m
 
 Only code in this repo runs as an extractor. Apps ask for operations; they never bring code.
 
+### Schema drift
+
+A network changes what it sends without telling anyone: a new field, event type, constructor or enum value. An
+extractor that maps by name drops it without a word. `SchemaWatch` (`@dither-accounts/manager/schema-drift`,
+packages/manager/src/schema-drift.ts) counts what an extractor does not know, so the day a client update starts
+sending something new it shows up:
+
+- `checkKeys(surface, obj, known)`: each key of `obj` that is not in `known` and whose value is not null or undefined
+  (an optional field left out is not drift). `checkTag(surface, tag, known)`: an event type, constructor, enum value
+  or `type/op` pair not in `known`. `unknownTag(surface, tag)`: for the `default:` of a switch whose cases are the
+  known tags.
+- The first sighting of each (surface, name) is logged once at `info`: `schema drift: unknown key "foo" on
+  "matrix.event.content"`. `summary()` gives every entry with its count, first and last seen, most seen first;
+  `details()` gives `schemaDrift` (how many) and `schemaDriftTop` (the most seen) for the account's status details.
+- **Names only.** A watch keeps (surface, name, kind, count, firstSeen, lastSeen) and never a value, text, id, URL or
+  payload. A name that looks like a value (a Matrix id, a run of five digits, an address, a URL, anything outside a
+  short identifier's alphabet) is counted as `(value-like)`, so a map keyed by ids cannot leak them either.
+- **Bounded and cheap.** At most 500 entries a watch; sightings of new names past that are only counted
+  (`schemaDriftOverflow`). A known key or tag costs one Set lookup.
+
+Where each kind checks (its `src/drift.ts` holds the known sets):
+
+| Kind | Surfaces |
+| --- | --- |
+| matrix | `matrix.event.type` (timeline events), `matrix.msgtype`, `matrix.event.content` (m.room.message keys), `matrix.relates_to`, `matrix.rel_type`, `matrix.unsigned.relations` |
+| zulip | `zulip.event` (/events types), `zulip.event.op` (`type/op` where the adapter tells ops apart), `zulip.message` |
+| telegram | `telegram.update` (no case in handleUpdate, not skipped on purpose), `telegram.messageMedia`, `telegram.messageAction` (shown by name only), `telegram.message` (fields past layer 232) |
+| whatsapp | `whatsapp.message` (waE2E parts), `whatsapp.protocolMessage.type`, `whatsapp.bridge` (a bridge event with no case) |
+| discord | `discord.message.type` (no words in map.ts), `discord.embed.type`, `discord.component.type`. The hook whitelists fields and Flux actions, so those cannot drift past it |
+
+Signal's key sets and a walk over a received envelope are ready in `@dither-accounts/manager/schema-drift-signal`
+(`watchSignalEnvelope(watch, envelope)`), for the signal extractor to call where it handles `receive`.
+
 ## The page
 
 The page (say https://accounts.example.net) is for this machine and your tailnet, behind a login ([docs/auth.md](auth.md)):

@@ -4,7 +4,9 @@
  */
 import type * as P from '@dither-chat/protocol';
 import { canonicalReactionKey } from '@dither-chat/protocol';
+import type { SchemaWatch } from '@dither-accounts/manager/schema-drift';
 import type { tl } from './backend.ts';
+import { MESSAGE_KEYS } from './drift.ts';
 import { fromTelegram } from './entities.ts';
 import { avatarUrl, channelIdentity, convId, customKey, emojiUrl, mediaUrl, msgId, type PeerRef, userId } from './ids.ts';
 
@@ -17,6 +19,8 @@ export interface MapCtx {
   nameOf(peer: PeerRef): string | undefined;
   /** The user with this @username (without the @), when this account knows them: an @username in a message names them. */
   userByName?(username: string): number | undefined;
+  /** Where constructors and fields this mapping does not know are counted (drift.ts); names only. */
+  drift?: SchemaWatch;
 }
 
 export const TYPING_TTL = 6000;
@@ -226,7 +230,7 @@ function largestPhotoSize(sizes: tl.TypePhotoSize[]): { type: string; w: number;
 }
 export { largestPhotoSize };
 
-export function attachmentsOf(base: string, m: tl.RawMessage): { attachments: P.AttachmentFact[]; kind?: P.MessageKind; text?: string } {
+export function attachmentsOf(base: string, m: tl.RawMessage, drift?: SchemaWatch): { attachments: P.AttachmentFact[]; kind?: P.MessageKind; text?: string } {
   const media = m.media;
   if (!media) return { attachments: [] };
   const url = mediaUrl(base, m.id);
@@ -284,8 +288,10 @@ export function attachmentsOf(base: string, m: tl.RawMessage): { attachments: P.
     case 'messageMediaEmpty':
       return { attachments: [] };
     case 'messageMediaUnsupported':
+      drift?.unknownTag('telegram.messageMedia', media._);
       return { attachments: [], text: '[a message this version of Telegram does not show]' };
     default:
+      drift?.unknownTag('telegram.messageMedia', media._);
       return { attachments: [], text: `[${media._.replace(/^messageMedia/, '').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()}]` };
   }
 }
@@ -330,6 +336,7 @@ export function forwardOf(ctx: MapCtx, f: tl.TypeMessageFwdHeader | undefined): 
 /** A message fact, or null for an empty one. */
 export function messageFact(ctx: MapCtx, m: tl.TypeMessage): P.MessageFact | null {
   if (m._ === 'messageEmpty') return null;
+  ctx.drift?.checkKeys('telegram.message', m, MESSAGE_KEYS);
   const { conv, base } = placeOf(ctx, m);
   const f: P.MessageFact = { nativeId: msgId(base, m.id), conversation: conv, author: authorOfMessage(ctx, m), ts: m.date * 1000, body: '' };
   const reply = replyOf(ctx, base, m.replyTo);
@@ -352,7 +359,7 @@ export function messageFact(ctx: MapCtx, m: tl.TypeMessage): P.MessageFact | nul
   });
   if (mentioned && !m.out) f.mentionsSelf = true;
   if (m.editDate && !m.editHide) f.editedTs = m.editDate * 1000;
-  const media = attachmentsOf(base, m);
+  const media = attachmentsOf(base, m, ctx.drift);
   if (media.attachments.length) f.attachments = media.attachments;
   if (media.kind) f.kind = media.kind;
   if (media.text) f.body = f.body ? `${f.body}\n${media.text}` : media.text;
@@ -441,6 +448,7 @@ export function serviceText(ctx: MapCtx, a: tl.TypeMessageAction, _author: strin
     case 'messageActionEmpty':
       return '';
     default:
+      ctx.drift?.unknownTag('telegram.messageAction', a._);
       return `[${a._.replace(/^messageAction/, '').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()}]`;
   }
 }

@@ -30,6 +30,8 @@ import { Bridge, type Logger } from './bridge.ts';
 import { toWhatsApp } from './format.ts';
 import { Aliases, avatarUrl, bare, checkAbout, contextOf, ignoredChat, isGroup, isPhoneJid, isUser, Mapper, type MapOut, mediaOf, msgId, phoneOf } from './mapping.ts';
 import { State, type StoredMsg } from './state.ts';
+import { SchemaWatch } from '@dither-accounts/manager/schema-drift';
+import { watchMessage } from './drift.ts';
 import type { BridgeEvent, WaContact, WaGroup, WaJoinRequest, WaMessage, WaOnWhatsApp, WaSelf, WaUserInfo } from './types.ts';
 
 /** How long WhatsApp's own clients show "typing…" without another chat state. */
@@ -157,6 +159,8 @@ export class WhatsAppAdapter {
   private requestsKnown = false;
   /** Requests WhatsApp announced or took back while the list was being read, laid over what the read found. */
   private reqLoad: { added: Map<string, JoinReq>; gone: Set<string> } | null = null;
+  /** Message parts, protocolMessage types and bridge events this extractor does not map (drift.ts): names only. */
+  readonly drift = new SchemaWatch({ log: (level, msg) => this.host.log(level, msg) });
 
   constructor(
     private host: AdapterHost,
@@ -253,6 +257,8 @@ export class WhatsAppAdapter {
     if (attention !== undefined) ev.attention = attention;
     if (self) ev.self = self;
     ev.layers = this.layers(status, attention ?? null);
+    const drift = this.drift.details();
+    if (Object.keys(drift).length) ev.details = drift;
     this.lastStatus = ev;
     this.host.emit(ev);
   }
@@ -370,6 +376,7 @@ export class WhatsAppAdapter {
         this.host.log('warn', `stream error ${ev.code}`);
         return;
       case 'message':
+        watchMessage(this.drift, ev);
         return this.apply(this.mapper.message(ev), ev.info.pushName && !ev.info.fromMe ? { jid: ev.info.sender, alt: ev.info.senderAlt, name: ev.info.pushName } : undefined, ev.history);
       case 'undecryptable':
         return this.undecryptable(ev);
@@ -439,6 +446,9 @@ export class WhatsAppAdapter {
       case 'offline_sync':
         if (ev.done) this.host.log('info', `caught up on ${ev.total} events received while offline`);
         return;
+      default:
+        // A bridge event this adapter has no case for: a bridge newer than the adapter.
+        this.drift.unknownTag('whatsapp.bridge', (ev as { t?: unknown }).t);
     }
   }
 

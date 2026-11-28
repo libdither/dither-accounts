@@ -145,3 +145,17 @@ test('a link preview as an embed: only once made, and only with something to sho
   const photo: tl.TypePhoto = { _: 'photo', id, accessHash: id, fileReference: new Uint8Array(), date: 1, sizes: [], dcId: 2 };
   expect(webPageEmbed({ ...page, siteName: 'Example', photo }, img)).toEqual({ url: 'https://example.com/a', provider: 'Example', image: img });
 });
+
+test('schema drift: a media, an action and a message field the mapping does not know are counted by name, and the message still maps', async () => {
+  const { SchemaWatch } = await import('@dither-accounts/manager/schema-drift');
+  const drift = new SchemaWatch();
+  const c: MapCtx = { ...ctx, drift };
+  const known = messageFact(c, msg({ peerId: pu(200), fromId: pu(200), message: 'hi', media: { _: 'messageMediaDice', value: 3, emoticon: '🎲' } as tl.TypeMessageMedia }));
+  expect(known?.body).toBe('hi\n🎲 3');
+  expect(drift.size).toBe(0);
+  const f = messageFact(c, msg({ peerId: pu(200), fromId: pu(200), message: 'secret words', media: { _: 'messageMediaExampleNew', value: 'secret' } as unknown as tl.TypeMessageMedia, exampleNewField: 'secret' } as unknown as tl.RawMessage));
+  expect(f?.body).toBe('secret words\n[example new]');
+  messageFact(c, { _: 'messageService', id: 2, date: 1, peerId: pu(200), fromId: pu(200), action: { _: 'messageActionExampleNew', title: 'secret' } } as unknown as tl.TypeMessage);
+  expect(drift.summary().unknown.map((e) => `${e.surface} ${e.name}`).sort()).toEqual(['telegram.message exampleNewField', 'telegram.messageAction messageActionExampleNew', 'telegram.messageMedia messageMediaExampleNew']);
+  expect(JSON.stringify(drift.summary())).not.toContain('secret');
+});

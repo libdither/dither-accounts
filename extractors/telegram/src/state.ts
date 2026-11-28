@@ -24,7 +24,8 @@ interface File {
   outbox: Record<string, { ids: number[]; readUpTo: number }>;
 }
 
-const MSG_CONV_MAX = 20_000;
+/** How many private-chat and basic-group message ids are placed (an older one's delete goes unplaced: see the adapter). */
+export const MSG_CONV_MAX = 20_000;
 const OUTBOX_MAX = 200;
 
 export class State {
@@ -39,7 +40,8 @@ export class State {
   outbox = new Map<string, { ids: number[]; readUpTo: number }>();
   private timer?: Timer;
 
-  constructor(dir: string) {
+  /** msgConvMax: tests lower it to reach the eviction. */
+  constructor(dir: string, private readonly msgConvMax = MSG_CONV_MAX) {
     this.path = join(dir, 'state.json');
     if (!existsSync(this.path)) return;
     try {
@@ -51,6 +53,7 @@ export class State {
       for (const id of f.forums ?? []) this.forums.add(id);
       for (const c of f.dialogs ?? []) this.dialogs.add(c);
       for (const [id, c] of f.msgConv ?? []) this.msgConv.set(id, c);
+      this.evict();
       for (const [c, o] of Object.entries(f.outbox ?? {})) this.outbox.set(c, o);
     } catch {
       // A torn or foreign file: start over; Telegram tells us everything again.
@@ -59,9 +62,10 @@ export class State {
 
   rememberMessage(id: number, conv: string, own: boolean) {
     if (!conv.startsWith('channel:')) {
+      // Seen again, it is the newest: the least recently seen go first.
       this.msgConv.delete(id);
       this.msgConv.set(id, conv);
-      if (this.msgConv.size > MSG_CONV_MAX) for (const k of [...this.msgConv.keys()].slice(0, this.msgConv.size - MSG_CONV_MAX)) this.msgConv.delete(k);
+      this.evict();
     }
     if (own) {
       const o = this.outbox.get(conv) ?? { ids: [], readUpTo: 0 };
@@ -71,6 +75,14 @@ export class State {
       this.outbox.set(conv, o);
     }
     this.save();
+  }
+
+  /** The least recently seen ids past msgConvMax go, one at a time from the front (no copy of 20 000 keys per message). */
+  private evict() {
+    for (const k of this.msgConv.keys()) {
+      if (this.msgConv.size <= this.msgConvMax) break;
+      this.msgConv.delete(k);
+    }
   }
 
   /** Own messages the other side has now read up to `maxId`, newly. */

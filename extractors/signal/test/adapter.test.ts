@@ -15,6 +15,7 @@ import type { About, AddMembersResult, AdapterEvent, CreateGroupResult, PersonAb
 import type { Clock } from '../src/link.ts';
 import { type AdapterHost, CAPABILITIES, createGroupError, createGroupParams, LINK_MESSAGE, readSignalSettings, SignalAdapter, socketPathFor, untold, untoldNotes, updateGroupParams } from '../src/adapter.ts';
 import { SIGNAL_CLI_JAVA_OPTIONS } from '../src/cli.ts';
+import { AdapterState } from '../src/state.ts';
 
 const FAKE = join(import.meta.dir, 'fake-signal-cli.ts');
 const SELF = '5f2c7a8e-1111-4aaa-8bbb-000000000001';
@@ -358,13 +359,19 @@ describe('signal adapter against a fake signal-cli', () => {
     mark = events.length;
     await cmd({ t: 'edit', conversation: DM_ALICE, message: sent.nativeId, body: 'fixed *now*' });
     expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: 'fixed now', textStyle: ['6:3:ITALIC'], editTimestamp: ts });
-    expect(of('message', mark)[0].message).toMatchObject({ nativeId: sent.nativeId, ts, editedTs: expect.any(Number), body: 'fixed *now*' });
+    // Read before any toMatchObject with expect.any: bun writes the matcher into the object it checks.
+    const firstEdit = of('message', mark)[0].message.editedTs!;
+    expect(firstEdit).toBeGreaterThan(ts);
+    expect(of('message', mark)[0].message).toMatchObject({ nativeId: sent.nativeId, ts, editedTs: firstEdit, body: 'fixed *now*' });
 
-    // The preview off: the same words again as an edit, with no preview, as Signal's apps do it.
+    // The preview off: the same words again as an edit, with no preview, as Signal's apps do it. A second edit names
+    // the message by the first edit, as Signal's apps do.
     mark = events.length;
     expect(await cmd({ t: 'suppressEmbeds', conversation: DM_ALICE, message: sent.nativeId, body: 'fixed *now*' })).toEqual({});
-    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: 'fixed now', textStyle: ['6:3:ITALIC'], editTimestamp: ts });
-    expect(of('message', mark)[0].message).toMatchObject({ nativeId: sent.nativeId, ts, editedTs: expect.any(Number), body: 'fixed *now*' });
+    expect(calls('send').at(-1).params).toEqual({ recipient: [ALICE], message: 'fixed now', textStyle: ['6:3:ITALIC'], editTimestamp: firstEdit });
+    const secondEdit = of('message', mark)[0].message.editedTs!;
+    expect(secondEdit).toBeGreaterThan(firstEdit);
+    expect(of('message', mark)[0].message).toMatchObject({ nativeId: sent.nativeId, ts, editedTs: secondEdit, body: 'fixed *now*' });
     const edits = calls('send').length;
     await expect(cmd({ t: 'suppressEmbeds', conversation: DM_ALICE, message: sent.nativeId })).rejects.toThrow(/words from the hub/);
     await expect(cmd({ t: 'suppressEmbeds', conversation: GROUP, message: `${ALICE}:${T + 1000}`, body: 'x' })).rejects.toThrow(/someone else's/);
@@ -374,7 +381,7 @@ describe('signal adapter against a fake signal-cli', () => {
 
     mark = events.length;
     await cmd({ t: 'redact', conversation: DM_ALICE, message: sent.nativeId });
-    expect(calls('remoteDelete').at(-1).params).toEqual({ recipient: [ALICE], targetTimestamp: ts });
+    expect(calls('remoteDelete').at(-1).params).toEqual({ recipient: [ALICE], targetTimestamp: secondEdit });
     expect(of('delete', mark)).toEqual([{ t: 'delete', conversation: DM_ALICE, nativeId: sent.nativeId }]);
     await expect(cmd({ t: 'redact', conversation: GROUP, message: `${ALICE}:${T + 1000}` })).rejects.toThrow(/own messages/);
 
@@ -668,6 +675,93 @@ describe('signal adapter against a fake signal-cli', () => {
       { t: 'pin', conversation: GROUP, message: `${ALICE}:${T + 1000}`, pinned: true, by: ALICE, ts: T + 28000 },
       { t: 'pin', conversation: GROUP, message: `${ALICE}:${T + 1000}`, pinned: false, by: ALICE, ts: T + 26000 },
     ]);
+  });
+
+  test("edit chains: someone's edits stay one message, and whatever names a newer version lands on it", async () => {
+    // Alice's message at T0, edited four times; each edit names the version before it, as Signal's apps send them.
+    const T0 = T + 300_000;
+    const at = [T0, T0 + 1000, T0 + 2000, T0 + 3000, T0 + 4000];
+    const original = `${ALICE}:${T0}`;
+    const fromAlice = (ts: number, body: object) => ({ account: '+15550100', envelope: { sourceNumber: '+15550137', sourceUuid: ALICE, sourceName: 'Alice', sourceDevice: 1, timestamp: ts, ...body } });
+    let mark = events.length;
+    push(fromAlice(T0, { dataMessage: { timestamp: T0, message: 'v0' } }));
+    await until('the message', () => of('message', mark).find((e) => e.message.nativeId === original));
+    for (let k = 1; k < at.length; k++) {
+      push(fromAlice(at[k], { editMessage: { targetSentTimestamp: at[k - 1], dataMessage: { timestamp: at[k], message: `v${k}` } } }));
+      const e = await until(`edit ${k}`, () => of('message', mark).find((x) => x.message.editedTs === at[k]));
+      expect(e.message).toMatchObject({ nativeId: original, ts: T0, editedTs: at[k], body: `v${k}` });
+    }
+    // One message, never a second one at an edit's timestamp.
+    expect(new Set(of('message', mark).map((e) => e.message.nativeId))).toEqual(new Set([original]));
+
+    // Reactions, a reply and a pin that name the first edit or the newest one.
+    mark = events.length;
+    const react = (ts: number, target: number, isRemove = false) => fromAlice(ts, { dataMessage: { timestamp: ts, reaction: { emoji: '🧗', targetAuthorUuid: ALICE, targetSentTimestamp: target, isRemove } } });
+    push(react(T0 + 5000, at[1]));
+    push(react(T0 + 5100, at[4], true));
+    await until('two reactions', () => of('reaction', mark).length >= 2);
+    expect(of('reaction', mark).map((r) => [r.message, !!r.remove])).toEqual([
+      [original, false],
+      [original, true],
+    ]);
+    push(fromAlice(T0 + 6000, { dataMessage: { timestamp: T0 + 6000, message: 'and this', quote: { id: at[4], authorUuid: ALICE, text: 'v4' } } }));
+    const reply = await until('the reply', () => of('message', mark).find((e) => e.message.nativeId === `${ALICE}:${T0 + 6000}`));
+    expect(reply.message.replyTo).toBe(original);
+    push(fromAlice(T0 + 7000, { dataMessage: { timestamp: T0 + 7000, pinMessage: { targetAuthorUuid: ALICE, targetSentTimestamp: at[4], pinDurationSeconds: -1 } } }));
+    expect(await until('the pin', () => of('pin', mark)[0])).toMatchObject({ conversation: DM_ALICE, message: original, pinned: true, by: ALICE });
+
+    // What you do to it names its newest version, as Signal's apps do.
+    await cmd({ t: 'react', conversation: DM_ALICE, message: original, key: '👍' });
+    expect(calls('sendReaction').at(-1).params).toEqual({ recipient: [ALICE], emoji: '👍', targetAuthor: ALICE, targetTimestamp: at[4] });
+    await cmd({ t: 'send', conversation: DM_ALICE, body: 'ok', replyTo: original });
+    expect(calls('send').at(-1).params).toMatchObject({ quoteTimestamp: at[4], quoteAuthor: ALICE });
+    await cmd({ t: 'configure', target: { kind: 'conversation', nativeId: DM_ALICE }, change: { key: 'pin', message: original, remove: true } });
+    expect(calls('sendUnpinMessage').at(-1).params).toEqual({ recipient: [ALICE], targetAuthor: ALICE, targetTimestamp: at[4] });
+    // Read: the receipt for it names the newest version.
+    await cmd({ t: 'markRead', conversation: DM_ALICE, upTo: original });
+    const read = calls('sendReceipt').at(-1).params;
+    expect(read).toMatchObject({ recipient: ALICE, type: 'read' });
+    expect(read.targetTimestamp).toContain(at[4]);
+    expect(read.targetTimestamp).not.toContain(T0);
+
+    // Deleted for everyone by its newest version: the message goes, and its edits' ids with it.
+    mark = events.length;
+    push(fromAlice(T0 + 8000, { dataMessage: { timestamp: T0 + 8000, remoteDelete: { timestamp: at[4] } } }));
+    expect(await until('the delete', () => of('delete', mark)[0])).toEqual({ t: 'delete', conversation: DM_ALICE, nativeId: original });
+    await cmd({ t: 'react', conversation: DM_ALICE, message: original, key: '👍' });
+    expect(calls('sendReaction').at(-1).params.targetTimestamp).toBe(T0);
+  });
+
+  test('edit chains of your own: here twice, then on your phone, then here again', async () => {
+    const sent = (await cmd({ t: 'send', conversation: DM_ALICE, body: 'meet at 7' })) as { nativeId: string };
+    const ts = Number(sent.nativeId.split(':')[1]);
+    const edited: number[] = [];
+    for (const body of ['meet at 7:30', 'meet at 8']) {
+      const mark = events.length;
+      await cmd({ t: 'edit', conversation: DM_ALICE, message: sent.nativeId, body });
+      expect(calls('send').at(-1).params.editTimestamp).toBe(edited.at(-1) ?? ts);
+      edited.push(of('message', mark)[0].message.editedTs!);
+    }
+    // The phone edits the newest version.
+    const phone = edited[1] + 5;
+    const mark = events.length;
+    push({
+      account: '+15550100',
+      envelope: {
+        sourceNumber: '+15550100',
+        sourceUuid: SELF,
+        sourceDevice: 2,
+        timestamp: phone,
+        syncMessage: { sentMessage: { destinationNumber: '+15550137', destinationUuid: ALICE, editMessage: { targetSentTimestamp: edited[1], dataMessage: { timestamp: phone, message: 'meet at 8:15' } } } },
+      },
+    });
+    const fromPhone = await until('the phone edit', () => of('message', mark).find((e) => e.message.editedTs === phone));
+    expect(fromPhone.message).toMatchObject({ nativeId: sent.nativeId, ts, editedTs: phone, body: 'meet at 8:15' });
+    await cmd({ t: 'edit', conversation: DM_ALICE, message: sent.nativeId, body: 'meet at 8:20' });
+    expect(calls('send').at(-1).params.editTimestamp).toBe(phone);
+    const last = of('message', mark).find((e) => e.message.body === 'meet at 8:20')!.message.editedTs!;
+    await cmd({ t: 'redact', conversation: DM_ALICE, message: sent.nativeId });
+    expect(calls('remoteDelete').at(-1).params).toEqual({ recipient: [ALICE], targetTimestamp: last });
   });
 
   test('hello advertises about, configure and addMembers', () => {
@@ -1512,6 +1606,57 @@ describe('signal adapter against a fake signal-cli', () => {
       .map((r) => r.pid);
     await adapter.shutdown();
     await until('children gone', () => pids.every((p) => !alive(p)), 5000);
+  });
+});
+
+describe('edit chains in state.json', () => {
+  test('every edit points at the first message, which keeps the newest timestamp across a reload', () => {
+    const d = mkdtempSync(join(tmpdir(), 'dither-sig-state-'));
+    try {
+      const path = join(d, 'state.json');
+      const st = new AdapterState(path);
+      const id = (ts: number) => `${ALICE}:${ts}`;
+      st.remember(id(T), DM_ALICE, 'v0');
+      st.alias(id(T + 1), id(T), DM_ALICE);
+      st.alias(id(T + 2), id(T + 1), DM_ALICE); // an edit of the edit
+      st.alias(id(T + 3), id(T + 2), DM_ALICE);
+      // Seen again out of order: the newest stays the newest.
+      st.alias(id(T + 2), id(T + 1), DM_ALICE);
+      // The edit's text lands on the message without losing where its edits point.
+      st.remember(id(T), DM_ALICE, 'v3');
+      for (const k of [1, 2, 3]) expect(st.originalOf(id(T + k))).toBe(id(T));
+      expect(st.latestTsOf(id(T))).toBe(T + 3);
+      expect(st.latestTsOf(id(T + 2))).toBe(T + 3);
+      expect(st.conversationOf(id(T + 3))).toBe(DM_ALICE);
+      st.flush();
+
+      const again = new AdapterState(path);
+      expect(again.originalOf(id(T + 3))).toBe(id(T));
+      expect(again.latestTsOf(id(T))).toBe(T + 3);
+      expect(again.textOf(id(T))).toBe('v3');
+
+      // An edit of a message never seen here still knows its newest version.
+      again.alias(`${SAM}:${T + 50}`, `${SAM}:${T + 40}`, GROUP);
+      expect(again.latestTsOf(`${SAM}:${T + 40}`)).toBe(T + 50);
+
+      // Deleted: its edits go with it; nothing else does.
+      again.forget(id(T));
+      for (const k of [0, 1, 2, 3]) expect(again.conversationOf(id(T + k))).toBeUndefined();
+      expect(again.latestTsOf(id(T))).toBeUndefined();
+      expect(again.originalOf(`${SAM}:${T + 50}`)).toBe(`${SAM}:${T + 40}`);
+      again.flush();
+
+      // A state.json from before edits kept their newest timestamp: the edits' ids it has say it.
+      writeFileSync(path, JSON.stringify({ v: 1, dms: [], index: [[id(T), { c: DM_ALICE, t: 'old' }], [id(T + 1), { c: DM_ALICE, t: '', o: id(T) }]], unread: {}, expiring: [], groups: {} }));
+      const old = new AdapterState(path);
+      expect(old.originalOf(id(T + 1))).toBe(id(T));
+      expect(old.latestTsOf(id(T))).toBe(T + 1);
+      old.alias(id(T + 2), id(T + 1), DM_ALICE);
+      expect(old.latestTsOf(id(T))).toBe(T + 2);
+      old.flush();
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
   });
 });
 

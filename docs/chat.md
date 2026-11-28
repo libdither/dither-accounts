@@ -704,6 +704,12 @@ When the manager is running, the tool goes through its loopback-only `POST /api/
 
 The rest of the CLI covers `accounts`, `apps`, `approve <request> [--level L] [--dry-run]` and `grant <app> <interface> <level> [--accounts a,b] [--kinds k,l] [--dry-run]`.
 
+## Schema drift
+
+Matrix, Zulip, Telegram, WhatsApp and Discord count the event types, fields and enum values they do not map, by name
+only, log each once, and show the count in the account's details (`schemaDrift`, `schemaDriftTop`). What each checks,
+and the privacy rule: [manager.md](manager.md), "Schema drift".
+
 ## Testing
 
 - **Unit tests:** `bun test` in each `extractors/<kind>` runs that adapter's own tests in their new place.

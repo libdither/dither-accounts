@@ -70,6 +70,8 @@ import { type ApprovedSession, approvedSession, approveRefusal, bySessionOrder, 
 import { inDates, SEARCH_PAGE, SEARCH_REQUESTS, type SearchCommand, searchDates, searchFilter, searchWords } from './search.ts';
 import { State } from './state.ts';
 import { mentionablesOf, mentionQuery } from './mentions.ts';
+import { SchemaWatch } from '@dither-accounts/manager/schema-drift';
+import { UPDATE_SKIPPED } from './drift.ts';
 
 export const ADAPTER_VERSION = '0.1.0';
 export const CAPABILITIES: P.Capability[] = ['send', 'history', 'react', 'edit', 'redact', 'markRead', 'typing', 'threads', 'media', 'sendMedia', 'openDirect', 'forward', 'about', 'configure', 'profile', 'resolve', 'join', 'connect', 'requests', 'relationships', 'disconnect', 'addMembers', 'createGroup', 'search', 'mentionables', 'suppressEmbeds', 'sendGifs'];
@@ -230,6 +232,8 @@ export class TelegramAdapter {
   private relationsSoonAt = 0;
 
   private host: Host;
+  /** Update, media and action constructors and message fields this extractor does not map (drift.ts): names only. */
+  readonly drift = new SchemaWatch({ log: (level, msg) => this.host.log(level, msg) });
   /** Forums told to the hub as spaces this run (route). */
   private spacesSent = new Set<string>();
 
@@ -282,6 +286,7 @@ export class TelegramAdapter {
         return c && 'title' in c ? c.title : undefined;
       })()),
       userByName: (name) => this.userByName(name),
+      drift: this.drift,
     };
   }
 
@@ -467,6 +472,7 @@ export class TelegramAdapter {
       d.blocked = this.relationsKnown ? this.blockedIds.size : null;
     }
     if (this.lastUpdateAt) d.lastUpdate = new Date(this.lastUpdateAt).toISOString();
+    Object.assign(d, this.drift.details());
     const waits = Object.entries(held);
     d.floodWait = waits.length ? waits.map(([m, s]) => `${m} ${s} s`).join(', ') : null;
     if (this.opts.desktop) {
@@ -1751,6 +1757,7 @@ export class TelegramAdapter {
         return null;
       }
       default:
+        this.drift.checkTag('telegram.update', upd._, UPDATE_SKIPPED);
         return null;
     }
   }

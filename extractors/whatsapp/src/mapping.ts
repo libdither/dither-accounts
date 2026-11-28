@@ -119,7 +119,7 @@ const MEDIA_KEYS = ['imageMessage', 'videoMessage', 'ptvMessage', 'audioMessage'
 type MediaKey = (typeof MEDIA_KEYS)[number];
 
 /** Parts of a message that carry nothing to show on their own. */
-const SILENT = new Set(['senderKeyDistributionMessage', 'messageContextInfo', 'pollUpdateMessage', 'keepInChatMessage', 'pinInChatMessage', 'encReactionMessage', 'encEventResponseMessage', 'secretEncryptedMessage', 'deviceSentMessage', 'botInvokeMessage', 'appStateSyncKeyShare', 'call']);
+export const SILENT: ReadonlySet<string> = new Set(['senderKeyDistributionMessage', 'messageContextInfo', 'pollUpdateMessage', 'keepInChatMessage', 'pinInChatMessage', 'encReactionMessage', 'encEventResponseMessage', 'secretEncryptedMessage', 'deviceSentMessage', 'botInvokeMessage', 'appStateSyncKeyShare', 'call']);
 
 /** The contextInfo of whichever part of the message carries one. */
 export function contextOf(m: WaMessage | null | undefined): WaContextInfo | undefined {

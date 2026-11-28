@@ -42,6 +42,7 @@ import { contactNote, moreThanBio, noteFact, presenceCommand, presenceOf, profil
 import { forumFact as mapForum, ThreadOps, threadCapabilities, threadDispatch, THREAD_DISPATCHES, withThreads } from './threads.ts';
 import { attentionCapabilities, attentionDispatch, attentionSnapshot, markReadManyHookCommand, markUnreadHookCommand, mentionEvents, MentionsPacer, messageAnswerOutcome, messageRequestChannel, muteHookCommand, muteOutcome, newAttention, withMessageRequests, type RawMuted } from './attention.ts';
 import { commandsOutcome, interactCapabilities, interactCapability, interactDispatch, interactHookCommand, INTERACT_DISPATCHES, type RawCommands } from './interact.ts';
+import { SchemaWatch } from '@dither-accounts/manager/schema-drift';
 
 const CAPABILITIES: P.Capability[] = ['send', 'history', 'react', 'edit', 'redact', 'markRead', 'typing', 'threads', 'media', 'liveView', 'sendMedia', 'openDirect', 'calls', 'forward', 'about', 'configure', 'profile', 'editProfile', 'members', 'search', 'walkMembers', 'listThreads', 'moderate', 'setPicture', 'sendStickers', 'searchGifs', 'sendVoice'];
 const VERSION = '0.1.0';
@@ -69,6 +70,8 @@ const adapterPort = Number(hub.config.adapterPort ?? process.env.DITHER_ADAPTER_
 const startUrl: string = hub.config.startUrl ?? 'https://discord.com/app';
 
 const st = newState();
+/** Message, embed and component types this extractor does not map (drift.ts): names and counts only. */
+st.drift = new SchemaWatch({ log: (level, msg) => log(level, msg) });
 /** Calls going on in DMs and group DMs, as the hook last said (calls.ts). */
 const callMem = newCallMemory();
 /** Message requests, mutes as told, mentions told (attention.ts). */
@@ -166,6 +169,7 @@ function sessionDetails(): Record<string, string | number | boolean | null> {
     hooks: gotFinders ? `${hooks.filter(Boolean).length} of ${hooks.length} resolve` : 'not reported yet',
     'first snapshot': snapshotReceived,
     start: startUrl,
+    ...st.drift!.details(),
   };
 }
 

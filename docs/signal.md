@@ -134,6 +134,7 @@ the edit before it. The hub knows the message by the first one only (`<author>:<
 - The composition parity suite (`test/chat-parity/signal-parity.test.ts`, [parity-testing.md](parity-testing.md))
   runs edits, reactions, replies, deletes and pins against a model of Signal that knows a message only by its newest
   version, so a target naming an older one fails there.
+- The same matrix runs on live throwaway accounts too, against Signal Desktop's own database (Live parity testing).
 
 ## Your phone's settings
 
@@ -389,6 +390,45 @@ requests: 144 MB and 477 MB (PSS) with the JVM's defaults, 128 MB and 202 MB wit
 -XX:+UseSerialGC`; empty for the JVM's defaults). Options already in `JDK_JAVA_OPTIONS` come after these, so they
 win. A daemon that runs out of heap exits (`Terminating due to java.lang.OutOfMemoryError` in the account's log) and
 is restarted like any daemon that ends; raise the cap if that repeats.
+
+## Live parity testing
+
+`scripts/parity-signal.ts` runs the composition matrix (`test/chat-parity/scenarios.ts`) on real throwaway accounts
+through a running manager, and compares the extractor's conversation after every step with what Signal holds. It
+sends for real, so it refuses to start without `--account` and `--confirm-throwaway`, has no default account, and
+with `DITHER_SIGNAL_THROWAWAYS` (comma-separated account ids, set outside the repo) refuses any other. Never point it
+at a real account.
+
+- **Mode 1: one throwaway and its linked Signal Desktop, in Note to Self.** Works with a single number:
+  `bun scripts/parity-signal.ts --account <id> --desktop-dir <dir> --confirm-throwaway`. The scenarios run in the
+  account's Note to Self (`dm:<self>:<self>`), both sides being the account itself, so only the matrix's `self:`
+  half runs. The oracle is the Desktop linked to the same account: `<dir>` is its profile (the folder with
+  `config.json` and `sql/db.sqlite`) or, for the Desktop the extractor runs as its calls body, the account's
+  directory (the profile is `desktop/home/.config/Signal` in it).
+- **Mode 2: two throwaways** (a second number, such as a prepaid SIM):
+  `--account <id> --peer-account <id2> --confirm-throwaway`. The whole matrix runs both ways, the peer editing,
+  reacting, quoting, deleting and pinning for real; the oracle is the peer's extractor, or Desktop with `--desktop-dir`
+  (linked to `--account`), and then the peer's extractor is checked against Desktop as well. The two must have
+  accepted each other's message request first.
+- The app: `--credentials <file>` holds an app's `{"app","token"}`. Without one the script registers `parity-signal`,
+  asks for `chat` at manage on those accounts only (pins are a `configure`), waits for the page's approval and saves
+  them to that file (0600). `--filter <text>` runs some scenarios, `--list` names them, `--media` adds the file one.
+- `--capture <dir>` writes every command and event, anonymized (`packages/manager/src/wire-capture.ts`) and checked by
+  `assertNoConcreteLeaks`. It comes from a real account even so: it stays on the machine, never in the repo.
+
+**The oracle** (`test/chat-parity/signal-desktop-oracle.ts`) copies `sql/db.sqlite` and its `-wal` (opened
+read-only; no lock, nothing written), decrypts the copy (SQLCipher 4, the key from `config.json`: plain, or wrapped by
+Electron's `basic_text` store as the sandbox's Desktop keeps it), and reads one conversation as a
+`NormalizedConversationState`: `messages` by `<author>:<sent_at>` (an edited message stays one row whose `sent_at` is its
+first send, its body and `editMessageTimestamp` the newest; `editHistory` and `edited_messages` map each version to
+it), `quote` resolved through those versions, `reactions` by their `fromId` conversation, `deletedForEveryone` or
+`isErased` as deleted, `pinnedMessages` (unexpired) as pinned, `message_attachments` (`editHistoryIndex` -1) as files.
+Notices (a pin's line, safety numbers) are not messages. A Desktop linked to another account than the one under test is
+refused before any conversation is read. A copy taken mid-write does not authenticate; the last good one
+is kept until the next. `test/chat-parity/signal-live-oracle.test.ts` checks it offline on made-up databases, plain
+and sealed, against the real extractor on the fake signal-cli, and with bugs planted in the extractor's events: an edit
+as a message of its own, a dropped reaction, a reply to a parent never sent or to an edit, a delete or pin that never
+landed.
 
 ## Not built
 

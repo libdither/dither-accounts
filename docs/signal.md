@@ -115,6 +115,23 @@ What you send:
 - **`resetSession`**: `send --end-session` (`endSession: true`) in a 1:1, and a system line "You reset the secure
   session." (id `<self>:<ts>:endsession`).
 
+## Edits
+
+An edit is a message of its own with a timestamp of its own (`editMessage.dataMessage.timestamp`), naming the version
+it edits by `targetSentTimestamp`. From then on Signal's apps name the message by its newest version's timestamp: in
+reactions, quotes, deletes (yours and an admin's), pins, polls, receipts, read syncs and the next edit, whose target is
+the edit before it. The hub knows the message by the first one only (`<author>:<first ts>`).
+
+- **Coming in**, the state index (`state.json`) keeps each edit's own id, anyone's, pointing at the message it edits
+  (`o`), and the message keeps its newest edit's timestamp (`l`). An edit of an edit lands on the first message, so
+  a chain of edits stays one message with `ts` the first send and `editedTs` the newest edit; a reaction, quote
+  (`replyTo`), delete, pin or vote naming any version lands on it too. A read sync naming the newest version reads up
+  to the message's own place. An edit of a message this device never saw lands on the version it names.
+- **Going out**, `edit`'s `editTimestamp`, `react`, `redact` (`remoteDelete`, `sendAdminDelete`), pins,
+  poll votes and ends, a reply's `quoteTimestamp`, and `markRead`'s and `viewed`'s receipts name the newest
+  version's timestamp, as Signal's apps do.
+- A deleted message's edits' ids go with it.
+
 ## Your phone's settings
 
 signal-cli keeps the configuration your phone syncs in its account database, and no JSON-RPC method reads it (in

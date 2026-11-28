@@ -645,3 +645,78 @@ describe('ids', () => {
     expect(parseConversation('!room:matrix.org', SELF)).toBeNull();
   });
 });
+
+describe('edit chains: Signal names an edited message by its newest version', () => {
+  // Alice's message at T+2000 (in the 1:1), edited at E1..E4, each edit naming the one before it. The aliases are what
+  // the adapter's state keeps once it has seen each edit.
+  const T0 = T + 2000;
+  const E = [T0, T + 7000, T + 7100, T + 7200, T + 7300];
+  const original = `${ALICE}:${T0}`;
+  const aliases = new Map<string, string>(E.slice(1).map((ts) => [`${ALICE}:${ts}`, original]));
+  const ectx = (over: Partial<MapContext> = {}) => ctx({ originalOf: (id) => aliases.get(id), conversationOf: (id) => (aliases.has(id) || id === original ? DM_ALICE : index.get(id)), ...over });
+  const fromAlice = (ts: number, body: object): SigReceive => ({
+    account: '+15550100',
+    envelope: { sourceNumber: '+15550137', sourceUuid: ALICE, sourceName: 'Alice Chen', sourceDevice: 1, timestamp: ts, ...body },
+  });
+  const data = (ts: number, dm: object) => fromAlice(ts, { dataMessage: { timestamp: ts, ...dm } });
+
+  test("someone's edits, however many, stay the one message they edit", () => {
+    const seen = new Map<string, string>();
+    for (let k = 1; k < E.length; k++) {
+      const rcv = fromAlice(E[k], { editMessage: { targetSentTimestamp: E[k - 1], dataMessage: { timestamp: E[k], message: `v${k}` } } });
+      const r = mapReceive(rcv, ctx({ originalOf: (id) => seen.get(id) }));
+      expect(message(r.events)).toMatchObject({ nativeId: original, ts: T0, editedTs: E[k], body: `v${k}` });
+      expect(r.messages[0]).toMatchObject({ nativeId: original, ts: T0, editedTs: E[k] });
+      // As the adapter keeps it after each one.
+      seen.set(`${ALICE}:${E[k]}`, original);
+    }
+  });
+
+  test('an edit of a message this device never saw lands on the version it names', () => {
+    const rcv = fromAlice(T + 9100, { editMessage: { targetSentTimestamp: T + 9000, dataMessage: { timestamp: T + 9100, message: 'x' } } });
+    expect(message(mapReceive(rcv, ectx()).events)).toMatchObject({ nativeId: `${ALICE}:${T + 9000}`, ts: T + 9000, editedTs: T + 9100 });
+  });
+
+  test('your own edits from the phone, an edit of an edit included', () => {
+    const mine = `${SELF}:${T + 9000}`;
+    const rcv = fixture('sync-sent-edit');
+    rcv.envelope!.syncMessage!.sentMessage!.editMessage!.targetSentTimestamp = T + 18000;
+    rcv.envelope!.syncMessage!.sentMessage!.editMessage!.dataMessage.timestamp = T + 18500;
+    const m = message(mapReceive(rcv, ctx({ originalOf: (id) => (id === `${SELF}:${T + 18000}` ? mine : undefined) })).events);
+    expect(m).toMatchObject({ nativeId: mine, ts: T + 9000, editedTs: T + 18500, author: SELF });
+  });
+
+  test('reactions that name an edit land on the message', () => {
+    const react = (ts: number, target: number, isRemove = false) => data(ts, { reaction: { emoji: '🧗', targetAuthorUuid: ALICE, targetSentTimestamp: target, isRemove } });
+    expect(of(mapReceive(react(T + 8000, E[1]), ectx()).events, 'reaction')).toEqual([{ t: 'reaction', conversation: DM_ALICE, message: original, author: ALICE, key: '🧗', ts: T + 8000 }]);
+    expect(of(mapReceive(react(T + 8100, E[4], true), ectx()).events, 'reaction')).toEqual([{ t: 'reaction', conversation: DM_ALICE, message: original, author: ALICE, key: '🧗', remove: true, ts: T + 8100 }]);
+  });
+
+  test("a reply to the newest version replies to the message; the quote keeps Signal's own timestamp", () => {
+    const m = message(mapReceive(data(T + 8200, { message: 'and this', quote: { id: E[4], authorUuid: ALICE, text: 'v4' } }), ectx()).events);
+    expect(m.replyTo).toBe(original);
+    expect(m.extra?.quote).toMatchObject({ author: ALICE, ts: E[4], text: 'v4' });
+  });
+
+  test('deletes, pins and polls that name the newest version land on the message', () => {
+    expect(of(mapReceive(data(T + 8300, { remoteDelete: { timestamp: E[4] } }), ectx()).events, 'delete')).toEqual([{ t: 'delete', conversation: DM_ALICE, nativeId: original }]);
+    // An admin's delete in a group: Sam deletes Alice's message there.
+    const adminDel = { account: '+15550100', envelope: { sourceNumber: '+15550161', sourceUuid: SAM, sourceName: 'Sam Rivera', sourceDevice: 1, timestamp: T + 8400, dataMessage: { timestamp: T + 8400, groupInfo: { groupId: GID, type: 'DELIVER' }, adminDelete: { targetAuthorUuid: ALICE, targetSentTimestamp: E[3] } } } } as SigReceive;
+    expect(of(mapReceive(adminDel, ectx()).events, 'delete')).toEqual([{ t: 'delete', conversation: GROUP, nativeId: original }]);
+    for (const key of ['pinMessage', 'unpinMessage'] as const) {
+      const r = mapReceive(data(T + 8500, { [key]: { targetAuthorUuid: ALICE, targetSentTimestamp: E[4] } }), ectx());
+      expect(of(r.events, 'pin')).toEqual([{ t: 'pin', conversation: DM_ALICE, message: original, pinned: key === 'pinMessage', by: ALICE, ts: T + 8500 }]);
+      expect(message(r.events).replyTo).toBe(original);
+    }
+    const vote = mapReceive(data(T + 8600, { pollVote: { targetSentTimestamp: E[4], authorUuid: ALICE, optionIndexes: [0], voteCount: 1 } }), ectx());
+    expect(of(vote.events, 'pollUpdate')[0]).toMatchObject({ message: original });
+    const end = mapReceive(data(T + 8700, { pollTerminate: { targetSentTimestamp: E[4] } }), ectx());
+    expect(of(end.events, 'pollUpdate')[0]).toMatchObject({ message: original, ended: true });
+  });
+
+  test('a read sync naming the newest version reads up to where the message stands', () => {
+    const rcv = fixture('sync-read');
+    rcv.envelope!.syncMessage!.readMessages = [{ sender: '+15550137', senderNumber: '+15550137', senderUuid: ALICE, timestamp: E[4] }];
+    expect(of(mapReceive(rcv, ectx()).events, 'read')).toEqual([{ t: 'read', conversation: DM_ALICE, upToTs: T0 }]);
+  });
+});

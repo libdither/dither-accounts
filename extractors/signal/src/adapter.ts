@@ -1066,7 +1066,8 @@ export class SignalAdapter {
       if (m.author !== self && !m.editedTs && m.kind !== 'system' && m.kind !== 'call' && m.ts > (this.acked.get(m.conversation) ?? 0)) {
         this.state.addUnread(m.conversation, m.author, m.ts);
       }
-      if (m.author === self && m.editedTs) this.state.alias(msgId(self, m.editedTs), m.nativeId, m.conversation);
+      // Anyone's edit: Signal names the message by it from now on (docs/signal.md "Edits").
+      if (m.editedTs) this.state.alias(msgId(m.author, m.editedTs), m.nativeId, m.conversation);
       const dm = parseConversation(m.conversation, self);
       if (dm?.kind === 'dm') {
         if (m.author === self) this.spoke(dm.peer);
@@ -1185,6 +1186,14 @@ export class SignalAdapter {
     return m;
   }
 
+  /**
+   * The timestamp to name a message by when telling Signal about it (a reaction, a quote, a delete, a pin, a receipt,
+   * the next edit): its newest edit's, once edited, as Signal's apps name it; else the one it was sent with.
+   */
+  private signalTs(id: string, m = this.message(id)) {
+    return this.state.latestTsOf(id) ?? m.ts;
+  }
+
   async command(cmd: P.AdapterCommand): Promise<unknown> {
     switch (cmd.t) {
       case 'history':
@@ -1209,7 +1218,7 @@ export class SignalAdapter {
       case 'react': {
         const m = this.message(cmd.message);
         await this.refuseQuiet(cmd.conversation);
-        const res = await this.call('sendReaction', { ...this.target(cmd.conversation), emoji: cmd.key, targetAuthor: m.author, targetTimestamp: m.ts, ...(cmd.remove ? { remove: true } : {}) });
+        const res = await this.call('sendReaction', { ...this.target(cmd.conversation), emoji: cmd.key, targetAuthor: m.author, targetTimestamp: this.signalTs(cmd.message, m), ...(cmd.remove ? { remove: true } : {}) });
         // Its time is the one it was sent with, as for anyone's.
         this.host.emit({ t: 'reaction', conversation: cmd.conversation, message: cmd.message, author: this.self, key: cmd.key, ...(cmd.remove ? { remove: true } : {}), ts: res?.timestamp ?? Date.now() });
         return {};
@@ -1223,7 +1232,7 @@ export class SignalAdapter {
         if (m.author !== this.self && cmd.moderator) return this.adminDelete(cmd.conversation, cmd.message);
         if (m.author !== this.self) throw new Error('Signal only lets you delete your own messages for everyone');
         await this.refuseQuiet(cmd.conversation);
-        await this.call('remoteDelete', { ...this.target(cmd.conversation), targetTimestamp: m.ts });
+        await this.call('remoteDelete', { ...this.target(cmd.conversation), targetTimestamp: this.signalTs(cmd.message, m) });
         this.host.emit({ t: 'delete', conversation: cmd.conversation, nativeId: cmd.message });
         this.purge(cmd.message);
         return {};
@@ -1306,7 +1315,7 @@ export class SignalAdapter {
     const indexes = options.map((o) => Number(o));
     if (indexes.some((i) => !Number.isInteger(i) || i < 0)) throw new Error('Not an option of this poll');
     const voteCount = Math.max(seq ?? 0, this.pollSeq.get(message) ?? 0) + 1;
-    await this.call('sendPollVote', { ...this.target(conversation), pollAuthor: m.author, pollTimestamp: m.ts, option: indexes, voteCount });
+    await this.call('sendPollVote', { ...this.target(conversation), pollAuthor: m.author, pollTimestamp: this.signalTs(message, m), option: indexes, voteCount });
     this.pollSeq.set(message, voteCount);
     this.host.emit({ t: 'pollUpdate', conversation, message, vote: { voter: this.self, options: indexes.map(String), seq: voteCount, ts: Date.now() } });
     return {};
@@ -1335,7 +1344,7 @@ export class SignalAdapter {
     const m = this.message(message);
     if (m.author !== this.self) throw new Error('Only whoever made a poll can end it');
     await this.refuseQuiet(conversation);
-    const res = await this.call<Partial<SigSendResult>>('sendPollTerminate', { ...this.target(conversation), pollTimestamp: m.ts });
+    const res = await this.call<Partial<SigSendResult>>('sendPollTerminate', { ...this.target(conversation), pollTimestamp: this.signalTs(message, m) });
     const ts = res?.timestamp ?? Date.now();
     this.systemMessage(conversation, ts, 'You ended the poll.');
     this.host.emit({ t: 'pollUpdate', conversation, message, ended: true, ts });
@@ -1351,7 +1360,7 @@ export class SignalAdapter {
     await this.refuseQuiet(conversation);
     const self = this.self;
     if (change.remove) {
-      const res = await this.call<Partial<SigSendResult>>('sendUnpinMessage', { ...this.target(conversation), targetAuthor: m.author, targetTimestamp: m.ts });
+      const res = await this.call<Partial<SigSendResult>>('sendUnpinMessage', { ...this.target(conversation), targetAuthor: m.author, targetTimestamp: this.signalTs(change.message, m) });
       const ts = res?.timestamp ?? Date.now();
       this.host.emit({ t: 'pin', conversation, message: change.message, pinned: false, by: self, ts });
       this.dropPinTimer(change.message);
@@ -1361,7 +1370,7 @@ export class SignalAdapter {
     const choices = PIN_DURATIONS.signal ?? [];
     const seconds = change.seconds === undefined ? choices[0] : change.seconds;
     if (!choices.includes(seconds ?? null)) throw new Error('Not one of the pin durations Signal offers');
-    const res = await this.call<Partial<SigSendResult>>('sendPinMessage', { ...this.target(conversation), targetAuthor: m.author, targetTimestamp: m.ts, pinDuration: seconds ?? -1 });
+    const res = await this.call<Partial<SigSendResult>>('sendPinMessage', { ...this.target(conversation), targetAuthor: m.author, targetTimestamp: this.signalTs(change.message, m), pinDuration: seconds ?? -1 });
     const ts = res?.timestamp ?? Date.now();
     this.host.emit({ t: 'pin', conversation, message: change.message, pinned: true, by: self, ts });
     this.dropPinTimer(change.message);
@@ -1418,7 +1427,7 @@ export class SignalAdapter {
    */
   private quoteParams(replyTo: string): Record<string, unknown> {
     const q = this.message(replyTo);
-    const params: Record<string, unknown> = { quoteTimestamp: q.ts, quoteAuthor: q.author };
+    const params: Record<string, unknown> = { quoteTimestamp: this.signalTs(replyTo, q), quoteAuthor: q.author };
     const src = this.state.quoteOf(replyTo);
     if (src) {
       if (src.t) params.quoteMessage = src.t;
@@ -1558,7 +1567,8 @@ export class SignalAdapter {
     if (m.author !== self) throw new Error('you can only edit your own messages');
     await this.refuseQuiet(conversation);
     const st = toSignal(body);
-    const params: Record<string, unknown> = { ...this.target(conversation), message: st.text, editTimestamp: m.ts };
+    // A second edit edits the first: Signal's apps name the message by its newest version.
+    const params: Record<string, unknown> = { ...this.target(conversation), message: st.text, editTimestamp: this.signalTs(message, m) };
     if (st.textStyles.length) params.textStyle = st.textStyles;
     if (st.mentions.length) params.mention = st.mentions;
     // Clients rebuild the message from the edit, so a quote has to be sent again.
@@ -1608,7 +1618,7 @@ export class SignalAdapter {
       return { sent: false };
     }
     if (this.settings().readReceipts !== true) return { sent: false };
-    await this.call('sendReceipt', { recipient: m.author, targetTimestamp: [m.ts], type: 'viewed' });
+    await this.call('sendReceipt', { recipient: m.author, targetTimestamp: [this.signalTs(message, m)], type: 'viewed' });
     this.viewedSent.add(message);
     if (this.viewedSent.size > 2000) this.viewedSent.delete(this.viewedSent.values().next().value!);
     return { sent: true };
@@ -1646,7 +1656,8 @@ export class SignalAdapter {
     this.acked.set(conversation, Math.max(this.acked.get(conversation) ?? 0, m.ts));
     this.startExpiry(conversation, m.ts);
     const byAuthor = new Map<string, number[]>();
-    for (const [a, ts] of acks) if (a !== self) (byAuthor.get(a) ?? byAuthor.set(a, []).get(a)!).push(ts);
+    // An edited message is acknowledged by its newest version, as Signal's apps do.
+    for (const [a, ts] of acks) if (a !== self) (byAuthor.get(a) ?? byAuthor.set(a, []).get(a)!).push(this.state.latestTsOf(msgId(a, ts)) ?? ts);
     for (const [author, tss] of byAuthor) {
       // Also tells your other devices (the phone) that these are read.
       await this.call('sendReceipt', { recipient: author, targetTimestamp: tss.sort((a, b) => a - b), type: 'read' });
@@ -2311,7 +2322,7 @@ export class SignalAdapter {
     if (!g || g.isMember === false || g.isTerminated || !isAdmin(g, this.self)) throw new Error('Only group admins can delete others’ messages.');
     const m = this.message(message);
     try {
-      await this.call('sendAdminDelete', { groupId: [g.id], targetAuthor: m.author, targetTimestamp: m.ts });
+      await this.call('sendAdminDelete', { groupId: [g.id], targetAuthor: m.author, targetTimestamp: this.signalTs(message, m) });
     } catch (e) {
       throw signalError(e, 'delete messages');
     }
